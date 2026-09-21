@@ -37,6 +37,31 @@ Supabase Cloud you point `DATABASE_URL` at it and set
 
 ## First deployment
 
+### 0. Rehearse it locally first
+
+Before you touch a server, run the deployment against an empty database on
+your own machine:
+
+```bash
+npm run rehearse
+```
+
+It does the real thing in miniature: starts an empty Postgres, provisions the
+unprivileged `app_api` role, applies the migrations with the same
+`tools/migrate.mjs` the container runs, boots the production entry point with
+`NODE_ENV=production`, creates the first administrator, signs in over HTTP,
+creates a company and a job, then kills it all and checks the data is still
+there. It ends with `24 passed, 0 failed` or it tells you what broke.
+
+This is not decoration. The first version of this runbook was wrong, and only
+a rehearsal against an *empty* database showed it: there was no way to create
+a **company**, every job requires one, so a fresh production database could
+never hold a single job. A seeded database hides that — the demo companies
+are always there.
+
+What it cannot rehearse, and you therefore find out on the server: the Docker
+image build, container networking, nginx, TLS, and a real connection pool.
+
 ### 1. Prepare the server
 
 ```bash
@@ -130,6 +155,22 @@ docker compose exec -e SEED_ADMIN_PASSWORD='<a strong password>' \
 `seed-auth.js` bcrypt-hashes the password and prints each account once. If
 you omit `SEED_ADMIN_PASSWORD` it generates a strong one and shows it —
 **that is the only time it is ever displayed.**
+
+### 6b. Create your first company
+
+A job cannot exist without a company, and a fresh database has none. Sign in
+as the administrator you just made, then:
+
+```bash
+curl -fsS -X POST https://jobs.yourdomain.com/api/companies \
+  -H 'Content-Type: application/json' \
+  -H "X-CSRF-Token: $CSRF" -b cookies.txt \
+  -d '{"name":"Your Company","industry":"Staffing","hq":"Hyderabad, IN"}'
+```
+
+The id is derived from the name (`Your Company` becomes `your-company`) unless
+you pass one, and it never changes afterwards because every job references it.
+Only an administrator can create or edit a company.
 
 ### 7. Verify
 
