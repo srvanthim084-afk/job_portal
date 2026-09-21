@@ -403,8 +403,13 @@
       if (TL.session) queuePref(k, v);
     },
     removeItem: function (k) {
-      delete mem[String(k)];
+      k = String(k);
+      delete mem[k];
       if (isLocalOnly(k)) { try { native && native.removeItem(k); } catch (e) {} return; }
+      // Mirror setItem's guards. Without the SERVER_OWNED check this sent a
+      // DELETE /api/prefs/<key> for keys that were never stored as prefs -
+      // a wasted round trip that 401s once the user signs out.
+      if (SERVER_OWNED[k] === 1 || ENTITY_SYNC[k]) return;
       if (TL.ready && TL.session) api.del('/prefs/' + encodeURIComponent(k)).catch(function () {});
     },
     clear: function () { mem = Object.create(null); },
@@ -589,7 +594,20 @@
       TL.ready = true;      // let the app render rather than hang on a blank page
       say(err);
       window.render();
-      console.error('TeamLink: could not load data from the server.', err);
+      // Requirement 9: the console must name the fault, not repeat the toast.
+      if (err && err.code === 'NOT_SERVED') {
+        console.error('TeamLink is not connected to a server.\n\n' +
+          'This page was opened directly from disk (' + location.protocol + '//), ' +
+          'so there is no origin to call - every request to ' + API + ' fails ' +
+          'before it leaves the browser, and no data can load.\n\n' +
+          'Start the app and open it over http instead:\n' +
+          '    npm run dev\n' +
+          '    http://127.0.0.1:4323/\n\n' +
+          'Run TL.diagnose() for the full picture.');
+      } else {
+        console.error('TeamLink: could not load data from the server (' +
+          (err && err.code) + '). Run TL.diagnose() for details.', err);
+      }
     });
   }
 
@@ -606,8 +624,14 @@
   // submitLogin(role, ev) is wired to the existing <form onsubmit=...>.
   // Only the body changes: a comparison against the hardcoded
   // ROLE_CREDENTIALS object becomes a call to the API.
+  // A second submit while the first is still in flight produces two
+  // sessions' worth of work and two toasts. Requirement 10.
+  var signingIn = false;
+
   window.submitLogin = function (role, ev) {
     if (ev && ev.preventDefault) ev.preventDefault();
+    if (signingIn) return;
+    signingIn = true;
     var form = ev && ev.target;
     var email = form && form.elements.email ? String(form.elements.email.value || '').trim() : '';
     var password = form && form.elements.password ? String(form.elements.password.value || '') : '';
@@ -616,6 +640,7 @@
     if (btn) { btn.disabled = true; btn.dataset.tlLabel = btn.textContent; btn.textContent = 'Signing in…'; }
 
     var done = function () {
+      signingIn = false;
       if (btn) { btn.disabled = false; if (btn.dataset.tlLabel) btn.textContent = btn.dataset.tlLabel; }
     };
 
@@ -642,6 +667,13 @@
   };
 
   window.doLogout = function () {
+    // Clear the local view of the session FIRST. The prototype clears
+    // several localStorage keys on the way out; with TL.session still set,
+    // the shim forwarded those as authenticated DELETE /api/prefs calls
+    // that arrived after the cookie was gone and came back 401 - a console
+    // error for something that had already succeeded.
+    TL.session = null;
+    STATE.session = null;
     return api.post('/auth/logout', {})
       .catch(function () { /* sign out locally even if the call fails */ })
       .then(function () {
@@ -802,6 +834,11 @@
    * 7. Applying
    * ------------------------------------------------------------------ */
 
+  // One application per click, per job. Double-clicking Apply Now used to
+  // fire two POSTs; the second lost the race and came back 409, so a
+  // successful application also showed a failure. Requirement 10.
+  var applying = Object.create(null);
+
   window.applyToJob = function (jobId, viaEasyApply) {
     if (!STATE.session || STATE.session.role !== 'candidate') {
       if (typeof window.toast === 'function') window.toast('Please log in as a candidate to apply');
@@ -813,8 +850,11 @@
       if (typeof window.toast === 'function') window.toast('You already applied to this role');
       return;
     }
+    if (applying[jobId]) return applying[jobId];
 
-    return api.post('/applications', { jobId: jobId, source: 'portal' })
+    var done = function () { delete applying[jobId]; };
+
+    applying[jobId] = api.post('/applications', { jobId: jobId, source: 'portal' })
       .then(function (res) {
         // reconcile the cache with what the server actually recorded
         DATA.applications.push(res.application);
@@ -829,7 +869,22 @@
         }
         window.render();
       })
-      .catch(say);
+      .catch(function (err) {
+        // 409 means the database already holds this application - the click
+        // did not fail, the cache was simply behind. Adopt the server's view
+        // instead of reporting an error for something that is true.
+        if (err && err.code === 'DUPLICATE_APPLICATION') {
+          return refresh().then(function () {
+            if (typeof window.toast === 'function') {
+              window.toast('You already applied to this role', 'ℹ️');
+            }
+          });
+        }
+        return say(err);
+      })
+      .then(done, done);
+
+    return applying[jobId];
   };
 
   /* ------------------------------------------------------------------ *
@@ -1504,11 +1559,33 @@
   TL.onAuthFailure = function (err) {
     if (expiryHandled) return;
     if (!err || (err.code !== 'SESSION_EXPIRED' && err.code !== 'UNAUTHENTICATED')) return;
+    if (!TL.session) return;              // not signed in - nothing to expire
     expiryHandled = true;
-    STATE.session = null;
-    TL.session = null;
-    window.navigate('/');
-    setTimeout(function () { expiryHandled = false; }, 3000);
+
+    // Do NOT sign the user out on the strength of one 401.
+    //
+    // Any call can 401 for its own reasons - a background preference sync
+    // racing a logout, a route the role may not touch. Treating each one as
+    // "your session ended" threw candidates back to the login screen in the
+    // middle of applying, with a valid cookie still in the jar.
+    //
+    // /auth/me is the authority: it answers {session:null} when the cookie
+    // is really gone, and never 401s.
+    api.get('/auth/me').then(function (me) {
+      if (me && me.session) return;       // still signed in - a false alarm
+      STATE.session = null;
+      TL.session = null;
+      window.navigate('/');
+      if (typeof window.toast === 'function') {
+        window.toast('Your session has expired — please sign in again', '🔒');
+      }
+    }).catch(function () {
+      // The server could not be asked. Losing the local session as well
+      // would only add a second failure; leave it and let the next call
+      // report the real problem.
+    }).then(function () {
+      setTimeout(function () { expiryHandled = false; }, 3000);
+    });
   };
 
   var baseSay = say;
