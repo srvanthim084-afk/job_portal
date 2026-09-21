@@ -129,7 +129,33 @@ if (REAL_DB) {
   process.env.DB_POOL_MAX = '1';        // pglite-socket serves one connection
 
   describeDb = `embedded (${DEV_DB})`;
-  stopDb = async () => { await pgServer.stop().catch(() => {}); await db.close().catch(() => {}); };
+
+  /**
+   * Force a durable flush on a timer.
+   *
+   * PGlite buffers writes and only flushes them on a clean close(). Kill
+   * the process instead — a crash, Task Manager, `kill -9` — and recent
+   * writes are simply gone, even though the API reported success and the
+   * UI showed the record. That is not theoretical: a job created through
+   * the status page vanished when the process was killed a second later.
+   *
+   * CHECKPOINT forces the flush, bounding the exposure to whatever has
+   * happened since the last one rather than the whole session.
+   *
+   * This is a MITIGATION, not crash safety. An embedded engine is for
+   * development. Real business data belongs on a real PostgreSQL server —
+   * set DATABASE_URL and this entire branch is skipped.
+   */
+  const CHECKPOINT_MS = parseInt(process.env.CHECKPOINT_MS, 10) || 5000;
+  const ticker = setInterval(() => { db.exec('checkpoint').catch(() => {}); }, CHECKPOINT_MS);
+  ticker.unref();
+
+  stopDb = async () => {
+    clearInterval(ticker);
+    await db.exec('checkpoint').catch(() => {});
+    await pgServer.stop().catch(() => {});
+    await db.close().catch(() => {});
+  };
 
   // Give the seeded profiles logins, but only the first time — never
   // overwrite credentials on an existing database.
@@ -186,8 +212,12 @@ const server = app.listen(PORT, () => {
   console.log(`  storage  : ${process.env.STORAGE_LOCAL_DIR}`);
   console.log(`  providers: ${JSON.stringify(providerStatus())}`);
   console.log(REAL_DB
-    ? '\n  PERSISTENT — this is a real PostgreSQL server.'
-    : '\n  PERSISTENT — data is written to disk and survives restarts.');
+    ? '\n  PERSISTENT — a real PostgreSQL server.'
+    : '\n  PERSISTENT — written to disk, checkpointed every '
+      + ((parseInt(process.env.CHECKPOINT_MS, 10) || 5000) / 1000) + 's.'
+      + '\n  NOTE: an embedded engine can lose the last few seconds of writes if'
+      + '\n  the process is KILLED rather than stopped cleanly. For real business'
+      + '\n  data, point DATABASE_URL at a real PostgreSQL server.');
   if (seedAccounts.length) {
     console.log(`\n  sign in with password: ${DEV_PASSWORD}`);
     for (const a of seedAccounts.filter((a) => a.role !== 'candidate').slice(0, 4)) {

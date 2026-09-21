@@ -23,7 +23,10 @@
     "verify:search": "node tools/verify-search.mjs",
     "verify:interaction": "node tools/verify-interaction.mjs",
     "verify:live": "npm run verify:interaction && npm run verify:search",
-    "verify:stack": "node tools/verify-stack.mjs"
+    "verify:stack": "node tools/verify-stack.mjs",
+    "watch": "node tools/watch.mjs",
+    "watch:push": "node tools/watch.mjs --push",
+    "sync": "node tools/sync.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",
