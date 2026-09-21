@@ -47,7 +47,8 @@
   var API = window.TL_API_BASE || '/api';
   var TL = (window.TL = window.TL || {});
 
-  TL.ready = false;
+  TL.ready = false;        // the app may paint (true even if loading failed)
+  TL.connected = false;    // /api/bootstrap actually answered - a different question
   TL.primaryAppId = Object.create(null);   // candidateId -> real application id
 
   /* ------------------------------------------------------------------ *
@@ -210,7 +211,7 @@
       protocol: location.protocol,
       apiBase: API,
       browserOnline: navigator.onLine,
-      dataLoaded: TL.ready,
+      backendConnected: TL.connected,
       signedInAs: TL.session ? TL.session.role + ':' + TL.session.id : null,
       jobsInCache: (window.DATA && DATA.jobs || []).length,
       recentFailures: TL.failures.slice(-5),
@@ -218,8 +219,9 @@
     if (NO_ORIGIN) {
       out.verdict = 'NOT SERVED - this page is running from a file, so there is ' +
         'no server to call. Start the app (npm run dev) and open http://127.0.0.1:4323/.';
-    } else if (!TL.ready) {
-      out.verdict = 'NOT CONNECTED - the page loaded but /api/bootstrap has not succeeded.';
+    } else if (!TL.connected) {
+      out.verdict = 'NOT CONNECTED - the page loaded but /api/bootstrap did not answer. ' +
+        'The API is probably not running. See TL.failures for the exact call.';
     } else {
       out.verdict = 'CONNECTED - data came from ' + API + '.';
     }
@@ -588,10 +590,12 @@
   function boot() {
     return hydrate().then(function () {
       TL.ready = true;
+      TL.connected = true;
       if (!location.hash) location.hash = '#/';
       window.render();
     }).catch(function (err) {
       TL.ready = true;      // let the app render rather than hang on a blank page
+      TL.connected = false;
       say(err);
       window.render();
       // Requirement 9: the console must name the fault, not repeat the toast.
