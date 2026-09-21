@@ -32,6 +32,7 @@ const ROOT = resolve(HERE, '..');
 
 const PROTOTYPE = join(ROOT, 'baseline', 'prototype.html');
 const INTEGRATION = join(ROOT, 'web', 'teamlink-integration.js');
+const FIXTURES = join(ROOT, 'web', 'demo-fixtures.json');
 
 // The untouched prototype, as supplied. Asserted, never assumed.
 const SHA = '8cc4b430d496694618d72a51ce0a7cd11fe567701d3544ac852d38186efc0862';
@@ -54,6 +55,15 @@ if (sha !== SHA || proto.length !== BYTES) {
 }
 
 const integration = readFileSync(INTEGRATION, 'utf8');
+
+// Two marketing screens (the AI pipeline walkthrough and the WhatsApp demo)
+// name candidates that no signed-out visitor is allowed to see. They read
+// from these fixtures, which are normally a sibling file. A single file has
+// no siblings, so they travel inside it - otherwise those screens lose their
+// sample data and the console carries a 404 for a request that cannot
+// succeed.
+const fixtures = readFileSync(FIXTURES, 'utf8');
+JSON.parse(fixtures);          // refuse to inline something that is not JSON
 
 // A </script> inside the inlined JS would end the block early. There is none
 // today; check rather than trust, because the failure would be silent and
@@ -90,6 +100,9 @@ const tail = `
 <script>
   /* The API answers on this port, on whatever hostname served this page. */
   window.TL_API_PORT = ${JSON.stringify(String(API_PORT))};
+
+  /* Demo-only sample data for the two marketing screens - see the exporter. */
+  window.TL_DEMO_FIXTURES = ${fixtures.replace(/<\//g, '<\\/')};
 </script>
 <script>
 ${integration}
@@ -109,6 +122,7 @@ if (!written.subarray(0, BYTES).equals(proto)) {
 console.log(`wrote ${OUT}`);
 console.log(`  prototype bytes preserved : ${BYTES} (sha256 verified)`);
 console.log(`  integration inlined       : ${integration.length} bytes`);
+console.log(`  demo fixtures inlined     : ${fixtures.length} bytes`);
 console.log(`  total                     : ${statSync(OUT).size} bytes`);
 console.log(`  API expected on port      : ${API_PORT} (same hostname as the page)`);
 console.log(`\n  ${basename(OUT)} needs the API running - it is the UI, not the database.`);

@@ -48,6 +48,38 @@ Sign in with `TeamLink@2026`: `admin@teamlink.com`,
 `recruiter@teamlink.com`, `client@teamlink.com`,
 `ananya.rao@example.com`.
 
+### One file, served from anywhere
+
+`TeamLink_JobPortal_Backend_Integrated.html` is the whole frontend in a
+single file - the prototype byte for byte, with the integration layer and
+the demo fixtures inlined instead of linked.
+
+```bash
+npm run export:single                    # rebuild it
+npm run export:single -- --api-port 8080 # if the API is elsewhere
+```
+
+It still needs the API running: the file is the interface, not the
+database. Start `npm run dev`, then serve the file from any static server
+**on the same hostname**:
+
+```bash
+python -m http.server 5183      # then open http://localhost:5183/
+```
+
+The port may differ; the hostname may not. Session cookies are
+SameSite=Lax, so `localhost` and `127.0.0.1` count as different sites and
+a session opened on one is not sent to the other. To point the file at a
+different API without rebuilding, add `?api=` to the URL:
+
+```
+http://localhost:5183/?api=https://jobs.example.com/api
+```
+
+Outside production the API accepts any loopback origin so this works
+without configuration. In production the allowlist is `PUBLIC_ORIGIN`
+plus `EXTRA_ORIGINS`, and nothing else.
+
 ### Against a real PostgreSQL server
 
 Set `DATABASE_URL` and the same command uses it instead — identical stack

@@ -1098,8 +1098,13 @@
 
   function loadDemoFixtures() {
     if (demoPromise) return demoPromise;
-    demoPromise = fetch('demo-fixtures.json', { credentials: 'same-origin' })
-      .then(function (r) { return r.ok ? r.json() : null; })
+    // The single-file export has no sibling files to fetch, so it carries
+    // the fixtures inline. Served normally, this is undefined and the
+    // static file is fetched exactly as before.
+    demoPromise = (window.TL_DEMO_FIXTURES
+      ? Promise.resolve(window.TL_DEMO_FIXTURES)
+      : fetch('demo-fixtures.json', { credentials: 'same-origin' })
+          .then(function (r) { return r.ok ? r.json() : null; }))
       .then(function (j) {
         if (!j) return;
         demoList = (j.candidates || []).slice();

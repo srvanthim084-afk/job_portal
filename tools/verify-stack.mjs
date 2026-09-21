@@ -197,12 +197,27 @@ await check('12. anonymous visitors see no candidate data', async () => {
 await check('13. the frontend is NOT hardcoded to localhost', async () => {
   const res = await fetch(BASE + '/teamlink-integration.js');
   const js = await res.text();
+
   const hard = js.match(/https?:\/\/(127\.0\.0\.1|localhost)[:\d]*/g);
   if (hard) throw new Error(`hardcoded local URLs found: ${[...new Set(hard)].join(', ')}`);
-  if (!/TL_API_BASE\s*\|\|\s*'\/api'/.test(js)) {
-    throw new Error('the API base is not relative — it will not follow the domain in production');
+
+  // The base must FALL BACK to a relative path, so the deployed app follows
+  // whatever domain serves it. Overrides exist for the standalone export,
+  // which is opened from a different port; they must never be the default.
+  if (!/return '\/api';/.test(js)) {
+    throw new Error('the API base does not fall back to a relative /api — ' +
+                    'it will not follow the domain in production');
   }
-  return 'API base is relative (/api)';
+
+  // ...and the SERVED page must not pin one. The export sets TL_API_PORT;
+  // a deployment that did the same would call the wrong host forever.
+  const page = await fetch(BASE + '/').then((r) => r.text());
+  const pinned = page.match(/window\.TL_API_(BASE|PORT)\s*=/g);
+  if (pinned) {
+    throw new Error(`the served page pins the API base: ${[...new Set(pinned)].join(', ')}`);
+  }
+
+  return 'API base falls back to a relative /api, and the page does not pin one';
 });
 
 await check('14. storage is a real directory, not the browser', async () => {

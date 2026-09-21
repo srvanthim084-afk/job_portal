@@ -28,7 +28,8 @@
     "watch:push": "node tools/watch.mjs --push",
     "sync": "node tools/sync.mjs",
     "rehearse": "node tools/rehearse.mjs",
-    "verify:candidate": "node tools/verify-candidate-flow.mjs"
+    "verify:candidate": "node tools/verify-candidate-flow.mjs",
+    "export:single": "node tools/export-single-file.mjs"
   },
   "dependencies": {
     "playwright": "^1.63.0"
