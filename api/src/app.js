@@ -10,7 +10,7 @@ import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
 
-import { config } from './config.js';
+import { config, originAllowed } from './config.js';
 import { errorHandler, ApiError, CODES, wrap } from './errors.js';
 import { attachSession, csrfProtection, issueCsrfToken } from './auth.js';
 
@@ -80,21 +80,11 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
     referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
   }));
 
-  const origins = [config.publicOrigin, ...config.extraOrigins];
-
-  // Outside production only, any loopback origin is accepted. The standalone
-  // export is served by whatever static server the developer already has -
-  // :5183, :5500, :8000 - while the API answers on its own port, and
-  // requiring EXTRA_ORIGINS to be set correctly before anything works at all
-  // is a poor first five minutes. This is gated on NODE_ENV: in production
-  // the allowlist is the allowlist, and a test below holds that line.
-  const LOOPBACK = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
-
   app.use(cors({
+    // originAllowed() lives in config.js because the CSRF guard has to reach
+    // the same verdict - see the note there.
     origin(origin, cb) {
-      // same-origin requests arrive with no Origin header
-      if (!origin || origins.includes(origin)) return cb(null, true);
-      if (!config.isProd && LOOPBACK.test(origin)) return cb(null, true);
+      if (originAllowed(origin)) return cb(null, true);
       cb(new ApiError(403, CODES.FORBIDDEN, 'Origin not allowed.'));
     },
     credentials: true,               // the session cookie must travel

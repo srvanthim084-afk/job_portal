@@ -474,6 +474,41 @@ test('admin dashboard reads real database totals (requirement 16)', async () => 
  * session, CSRF, uploads, errors
  * ------------------------------------------------------------------ */
 
+test('a foreign origin cannot write, even with a valid session and token', async () => {
+  // The loopback exception exists so the standalone export can be served
+  // from any local port. It must not become a hole: an origin that is not
+  // this machine is refused whatever else it presents.
+  const res = await client.put('/api/candidates/cand1',
+    { location: 'Moved by someone else' },
+    { headers: { origin: 'https://evil.example.com' } });
+  assert.equal(res.status, 403, 'a foreign origin was allowed to write');
+  // Either layer may catch it first - CORS rejects the origin, the CSRF
+  // guard rejects the write. Which one gets there is not the point.
+  assert.ok(['FORBIDDEN', 'CSRF_FAILED'].includes(res.body.error.code),
+    `refused, but with an unexpected code: ${res.body.error.code}`);
+
+  const after = await client.get('/api/candidates/cand1');
+  assert.notEqual(after.body.candidate.location, 'Moved by someone else',
+    'the write went through despite the 403');
+});
+
+test('a loopback origin on another port can write (the standalone export)', async () => {
+  const res = await client.put('/api/candidates/cand1',
+    { location: 'Hyderabad, IN' },
+    { headers: { origin: 'http://localhost:5183' } });
+  assert.equal(res.status, 200,
+    `the export's origin was blocked: ${JSON.stringify(res.body)}`);
+});
+
+test('originAllowed refuses loopback once NODE_ENV is production', async () => {
+  // The same rule, read directly, because the running app cannot change
+  // NODE_ENV after config.js has been imported.
+  const src = await import('node:fs').then((fs) =>
+    fs.readFileSync(new URL('../src/config.js', import.meta.url), 'utf8'));
+  assert.match(src, /return !config\.isProd && LOOPBACK_ORIGIN\.test\(origin\);/,
+    'the loopback exception is no longer gated on NODE_ENV');
+});
+
 test('a write without the CSRF header is refused', async () => {
   const bare = makeClient(`http://127.0.0.1:${API_PORT}`);
   await bare.post('/api/auth/login', { email: 'cand1@test.local', password: 'TestPass123' });

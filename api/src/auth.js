@@ -17,7 +17,7 @@
  */
 import bcrypt from 'bcryptjs';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
-import { config } from './config.js';
+import { config, originAllowed } from './config.js';
 import { withUser } from './db.js';
 import { unauthorized, sessionExpired, forbidden, CODES, ApiError } from './errors.js';
 
@@ -198,7 +198,6 @@ export function issueCsrfToken(res) {
 const SAFE = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 export function csrfProtection() {
-  const allowed = new Set([config.publicOrigin, ...config.extraOrigins]);
   return (req, _res, next) => {
     if (SAFE.has(req.method)) return next();
     if (!req.session) return next();   // nothing to ride on without a session
@@ -214,9 +213,9 @@ export function csrfProtection() {
       return next(new ApiError(403, CODES.CSRF_FAILED, 'Your session could not be verified. Please refresh and try again.'));
     }
 
-    // Belt and braces: reject an unexpected Origin outright.
-    const origin = req.get('origin');
-    if (origin && allowed.size && !allowed.has(origin)) {
+    // Belt and braces: reject an unexpected Origin outright. Same verdict as
+    // the CORS layer, from the same function, so the two cannot disagree.
+    if (!originAllowed(req.get('origin'))) {
       return next(new ApiError(403, CODES.CSRF_FAILED, 'Request blocked: unrecognised origin.'));
     }
     next();

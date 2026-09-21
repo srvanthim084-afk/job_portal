@@ -74,6 +74,32 @@ export const config = {
 /** Placeholders from .env.example must never survive into production. */
 const PLACEHOLDERS = ['', 'changeme', 'change-me', 'replace-me', 'your-secret-here', 'xxx'];
 
+/**
+ * Is this browser Origin allowed to make a state-changing request?
+ *
+ * ONE definition, used by both the CORS layer and the CSRF guard. They
+ * enforce different things - who may read a response, and who may write -
+ * but they must agree on who is trusted, and two copies of a rule like that
+ * drift. They already had: relaxing CORS alone left writes failing with
+ * CSRF_FAILED, which reads as a broken app rather than a blocked origin.
+ *
+ * In production this is exactly PUBLIC_ORIGIN plus EXTRA_ORIGINS - nothing
+ * else, whatever it claims to be.
+ *
+ * Outside production any loopback origin is also accepted, so the standalone
+ * export works from whatever static server a developer already has running
+ * (:5183, :5500, :8000) against the API on its own port. A loopback origin
+ * is a page already running on this machine; it is not a stranger's site.
+ */
+export const LOOPBACK_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
+
+export function originAllowed(origin) {
+  if (!origin) return true;                       // same-origin sends no Origin
+  if (origin === config.publicOrigin) return true;
+  if (config.extraOrigins.includes(origin)) return true;
+  return !config.isProd && LOOPBACK_ORIGIN.test(origin);
+}
+
 export function assertConfig() {
   const problems = [];
 
