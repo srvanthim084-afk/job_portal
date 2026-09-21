@@ -2,7 +2,7 @@
   "name": "teamlink-job-portal",
   "private": true,
   "version": "1.0.0",
-  "description": "TeamLink Job Portal — production backend for the existing prototype UI",
+  "description": "TeamLink Job Portal \u2014 production backend for the existing prototype UI",
   "type": "module",
   "scripts": {
     "verify:schema": "node tools/verify-schema.mjs",
@@ -26,7 +26,8 @@
     "verify:stack": "node tools/verify-stack.mjs",
     "watch": "node tools/watch.mjs",
     "watch:push": "node tools/watch.mjs --push",
-    "sync": "node tools/sync.mjs"
+    "sync": "node tools/sync.mjs",
+    "rehearse": "node tools/rehearse.mjs"
   },
   "dependencies": {
     "playwright": "^1.63.0"
