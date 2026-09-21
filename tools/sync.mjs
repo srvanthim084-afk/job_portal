@@ -26,8 +26,15 @@ console.log(`${files.length} change(s):`);
 for (const f of files.slice(0, 12)) console.log('  ' + f);
 if (files.length > 12) console.log(`  …and ${files.length - 12} more`);
 
+/** "?? path", " M path", "R  old -> new" -> just the file name. */
+const fileName = (line) => String(line)
+  .replace(/^..\s+/, '')
+  .split(' -> ').pop()
+  .replace(/^"|"$/g, '')
+  .split('/').pop();
+
 const msg = process.argv.slice(2).join(' ')
-  || `Update ${files.slice(0, 3).map((l) => l.slice(3).split('/').pop()).join(', ')}`
+  || `Update ${files.slice(0, 3).map(fileName).join(', ')}`
      + (files.length > 3 ? ` +${files.length - 3} more` : '');
 
 await git('add', '-A');

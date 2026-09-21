@@ -50,6 +50,18 @@ const WATCH = [
   'web/build.mjs', 'web/teamlink-integration.js', 'web/status.html',
 ].map((p) => join(ROOT, p)).filter(existsSync);
 
+/**
+ * "?? path", " M path", "R  old -> new" -> just the file name.
+ *
+ * A fixed slice(3) looks right and is not: it mangles renames, and a path
+ * containing a space comes back quoted.
+ */
+const fileName = (line) => String(line)
+  .replace(/^..\s+/, '')        // drop the two status characters
+  .split(' -> ').pop()          // renames report "old -> new"
+  .replace(/^"|"$/g, '')        // git quotes paths containing spaces
+  .split('/').pop();
+
 const stamp = () => new Date().toLocaleTimeString('en-GB', { hour12: false });
 const log = (msg) => console.log(`[${stamp()}] ${msg}`);
 
@@ -120,8 +132,7 @@ async function pushNow() {
     if (!dirty) return;
 
     const files = dirty.split('\n').filter(Boolean);
-    const names = files.slice(0, 3)
-      .map((l) => l.slice(3).split('/').pop()).join(', ');
+    const names = files.slice(0, 3).map(fileName).join(', ');
     const more = files.length > 3 ? ` +${files.length - 3} more` : '';
 
     await git('add', '-A');
