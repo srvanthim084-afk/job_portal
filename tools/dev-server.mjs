@@ -1,0 +1,207 @@
+/**
+ * Runs the whole application locally: database + API + the prototype.
+ *
+ *   node tools/dev-server.mjs [port]
+ *
+ * TWO DATABASE MODES, chosen by whether DATABASE_URL is set.
+ *
+ * ── A. DATABASE_URL set  → a REAL PostgreSQL server ───────────────────
+ *
+ *     DATABASE_URL=postgres://app_api:pw@host:5432/teamlink \
+ *     ADMIN_DATABASE_URL=postgres://postgres:pw@host:5432/teamlink \
+ *     node tools/dev-server.mjs 4323
+ *
+ *   This is the architecture to develop against. It is byte-for-byte the
+ *   same stack production runs, and if the URL points at the database
+ *   production will use, then local and live genuinely share one dataset —
+ *   records entered here are the records the deployed site serves.
+ *
+ * ── B. No DATABASE_URL  → an embedded Postgres, ON DISK ───────────────
+ *
+ *   PGlite is real PostgreSQL compiled to WebAssembly, stored under
+ *   var/dev-db. Nothing to install, and data SURVIVES restarts.
+ *
+ *   It is for working offline before a server exists. It is a single-user
+ *   embedded engine, so it is not what production should run — but the
+ *   schema and every migration are identical, and tools/export-data.mjs
+ *   moves the contents into a real Postgres when you are ready.
+ *
+ * The previous version of this file used `new PGlite()` with no path: an
+ * IN-MEMORY database that discarded everything on restart. That is fine
+ * for a test run and catastrophic for real data entry, which is why the
+ * mode is now explicit and printed at boot.
+ */
+import { readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { join, resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { applyPendingMigrations } from './lib/migrate-core.mjs';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const ROOT = resolve(HERE, '..');
+const WEB  = join(ROOT, 'web');
+
+const PORT     = parseInt(process.argv[2], 10) || 4323;
+const PG_PORT  = parseInt(process.env.PG_PORT, 10) || 5434;
+const DEV_DB   = process.env.DEV_DB_DIR || join(ROOT, 'var', 'dev-db');
+const LOAD_SEED = process.env.LOAD_SEED === 'true';
+const DEV_PASSWORD = process.env.DEV_PASSWORD || 'TeamLink@2026';
+
+if (!existsSync(join(WEB, 'index.html'))) {
+  console.error('web/index.html is missing — run `node web/build.mjs` first.');
+  process.exit(1);
+}
+
+const REAL_DB = !!process.env.DATABASE_URL;
+let stopDb = async () => {};
+let describeDb = '';
+let seedAccounts = [];
+
+/* ------------------------------------------------------------------ *
+ * A. real PostgreSQL
+ * ------------------------------------------------------------------ */
+if (REAL_DB) {
+  const pg = (await import('pg')).default;
+  const adminUrl = process.env.ADMIN_DATABASE_URL || process.env.DATABASE_URL;
+
+  console.log('database: REAL PostgreSQL');
+  const admin = new pg.Client({
+    connectionString: adminUrl,
+    ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : undefined,
+  });
+  await admin.connect();
+  try {
+    const res = await applyPendingMigrations({
+      // node-postgres runs multi-statement SQL through the simple protocol
+      // when no parameters are supplied, so one method serves both roles.
+      exec: (sql) => admin.query(sql),
+      query: (sql, params) => admin.query(sql, params),
+    }, { seed: LOAD_SEED, log: console.log });
+    console.log(`  migrations: ${res.applied.length} applied, ${res.alreadyApplied.length} already present`);
+    if (res.skippedSeed.length) {
+      console.log(`  seed skipped (set LOAD_SEED=true to load demo content)`);
+    }
+    const who = await admin.query(`select current_database() db, current_user usr, version() v`);
+    describeDb = `${who.rows[0].db} as ${who.rows[0].usr}`;
+    console.log(`  ${who.rows[0].v.split(',')[0]}`);
+  } finally {
+    await admin.end();
+  }
+
+  // The API uses DATABASE_URL as given — no override, so what runs here is
+  // exactly what runs in production.
+  stopDb = async () => {};
+
+/* ------------------------------------------------------------------ *
+ * B. embedded Postgres, persisted to disk
+ * ------------------------------------------------------------------ */
+} else {
+  const { PGlite } = await import('@electric-sql/pglite');
+  const { PGLiteSocketServer } = await import('@electric-sql/pglite-socket');
+
+  mkdirSync(DEV_DB, { recursive: true });
+  const firstRun = !existsSync(join(DEV_DB, 'PG_VERSION'));
+
+  console.log(`database: embedded PostgreSQL, persisted at ${DEV_DB}`);
+  console.log(firstRun ? '  (new database — creating schema)' : '  (existing database — data preserved)');
+
+  const db = await new PGlite(DEV_DB);
+
+  const res = await applyPendingMigrations({
+    exec: (sql) => db.exec(sql),
+    query: (sql, params) => db.query(sql, params),
+  }, { seed: LOAD_SEED, log: console.log });
+  console.log(`  migrations: ${res.applied.length} applied, ${res.alreadyApplied.length} already present`);
+  if (res.skippedSeed.length) {
+    console.log('  seed skipped (set LOAD_SEED=true to load demo content)');
+  }
+
+  // app_api must be able to log in over the wire.
+  await db.exec(`do $$ begin
+    if exists (select 1 from pg_roles where rolname='app_api') then
+      alter role app_api login password 'dev_only_password';
+    end if; end $$;`);
+
+  const pgServer = new PGLiteSocketServer({ db, port: PG_PORT, host: '127.0.0.1' });
+  await pgServer.start();
+
+  process.env.DATABASE_URL = `postgres://postgres:postgres@127.0.0.1:${PG_PORT}/postgres`;
+  process.env.DB_ROLE = 'app_api';      // drop privileges so RLS applies
+  process.env.DB_POOL_MAX = '1';        // pglite-socket serves one connection
+
+  describeDb = `embedded (${DEV_DB})`;
+  stopDb = async () => { await pgServer.stop().catch(() => {}); await db.close().catch(() => {}); };
+
+  // Give the seeded profiles logins, but only the first time — never
+  // overwrite credentials on an existing database.
+  const need = await db.query(
+    `select count(*)::int n from users`).catch(() => ({ rows: [{ n: 0 }] }));
+  if (need.rows[0].n === 0) {
+    const { hashPassword } = await import('../api/src/auth.js');
+    const hash = await hashPassword(DEV_PASSWORD);
+    for (const [table, role] of [
+      ['admins', 'admin'], ['recruiters', 'recruiter'],
+      ['client_users', 'client'], ['candidates', 'candidate'],
+    ]) {
+      const { rows } = await db.query(
+        `select id, email from ${table} where user_id is null order by id`);
+      for (const p of rows) {
+        if (!p.email) continue;
+        const u = await db.query(
+          `insert into users (email,password_hash,role) values ($1,$2,$3) returning id`,
+          [p.email, hash, role]);
+        await db.query(`update ${table} set user_id=$1 where id=$2`, [u.rows[0].id, p.id]);
+        seedAccounts.push({ role, email: p.email });
+      }
+    }
+    if (seedAccounts.length) console.log(`  created ${seedAccounts.length} login accounts`);
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * the application
+ * ------------------------------------------------------------------ */
+process.env.NODE_ENV = process.env.NODE_ENV || 'development';
+process.env.AUTH_SECRET = process.env.AUTH_SECRET
+  || 'dev-secret-not-for-production-0000000000000000';
+process.env.PUBLIC_ORIGIN = process.env.PUBLIC_ORIGIN || `http://127.0.0.1:${PORT}`;
+process.env.STORAGE_DRIVER = process.env.STORAGE_DRIVER || 'local';
+process.env.STORAGE_LOCAL_DIR = process.env.STORAGE_LOCAL_DIR || join(ROOT, 'var', 'uploads');
+process.env.BCRYPT_ROUNDS = process.env.BCRYPT_ROUNDS || '10';
+process.env.RATE_LIMIT_MAX = process.env.RATE_LIMIT_MAX || '100000';
+process.env.LOGIN_RATE_LIMIT_MAX = process.env.LOGIN_RATE_LIMIT_MAX || '1000';
+
+const { createApp } = await import('../api/src/app.js');
+const { getPool, assertUnprivileged, closePool } = await import('../api/src/db.js');
+const { providerStatus } = await import('../api/src/notify/providers.js');
+
+const c = await getPool().connect();
+let dbUser;
+try { dbUser = await assertUnprivileged(c); } finally { c.release(); }
+
+const app = createApp({ serveStatic: WEB });
+const server = app.listen(PORT, () => {
+  console.log(`\nTeamLink: http://127.0.0.1:${PORT}/`);
+  console.log(`  database : ${describeDb}`);
+  console.log(`  db role  : ${dbUser} (unprivileged — RLS enforced)`);
+  console.log(`  storage  : ${process.env.STORAGE_LOCAL_DIR}`);
+  console.log(`  providers: ${JSON.stringify(providerStatus())}`);
+  console.log(REAL_DB
+    ? '\n  PERSISTENT — this is a real PostgreSQL server.'
+    : '\n  PERSISTENT — data is written to disk and survives restarts.');
+  if (seedAccounts.length) {
+    console.log(`\n  sign in with password: ${DEV_PASSWORD}`);
+    for (const a of seedAccounts.filter((a) => a.role !== 'candidate').slice(0, 4)) {
+      console.log(`    ${a.role.padEnd(10)} ${a.email}`);
+    }
+  }
+  console.log('');
+});
+
+const stop = async () => {
+  server.close();
+  await closePool().catch(() => {});
+  await stopDb();
+  process.exit(0);
+};
+process.on('SIGINT', stop);
+process.on('SIGTERM', stop);

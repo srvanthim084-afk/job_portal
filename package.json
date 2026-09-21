@@ -1,0 +1,37 @@
+{
+  "name": "teamlink-job-portal",
+  "private": true,
+  "version": "1.0.0",
+  "description": "TeamLink Job Portal \u2014 production backend for the existing prototype UI",
+  "type": "module",
+  "scripts": {
+    "verify:schema": "node tools/verify-schema.mjs",
+    "verify:rls": "node tools/verify-rls.mjs",
+    "verify:seed": "node tools/verify-seed.mjs",
+    "verify:db": "npm run verify:schema && npm run verify:rls && npm run verify:seed && npm run verify:migrate",
+    "seed:generate": "node tools/extract-seed.mjs",
+    "ui:capture": "node tools/ui-snapshot.mjs capture",
+    "ui:compare": "node tools/ui-snapshot.mjs compare",
+    "verify:all": "npm run verify:db && npm run test:api",
+    "test:api": "npm --prefix api test",
+    "dev": "node tools/dev-server.mjs 4323",
+    "build:web": "node web/build.mjs",
+    "demo:fixtures": "node tools/extract-demo-fixtures.mjs",
+    "verify:migrate": "node tools/verify-migrate.mjs",
+    "migrate": "node tools/migrate.mjs",
+    "migrate:status": "node tools/migrate.mjs --status",
+    "verify:search": "node tools/verify-search.mjs",
+    "verify:interaction": "node tools/verify-interaction.mjs",
+    "verify:live": "npm run verify:interaction && npm run verify:search",
+    "verify:stack": "node tools/verify-stack.mjs"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "playwright": "^1.63.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite-socket": "^0.2.11",
+    "js-yaml": "^5.4.2",
+    "pg": "^8.23.0"
+  }
+}

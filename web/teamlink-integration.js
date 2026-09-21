@@ -1,0 +1,1347 @@
+/* =====================================================================
+   TeamLink — backend integration layer
+   =====================================================================
+
+   This is the only file added to the prototype. It changes WHERE data
+   comes from. It does not touch the DOM, the CSS, or any render function.
+
+   THE CENTRAL PROBLEM
+   -------------------
+   The prototype reads data synchronously, inline, inside template
+   literals. `DATA.jobById(id)` alone appears 163 times, always as a plain
+   expression. Making those async would mean rewriting all 19 page
+   renderers and most of the 691 functions — the rebuild the requirements
+   forbid.
+
+   THE APPROACH
+   ------------
+   `DATA` stays exactly what it is: a synchronous in-memory cache. Only
+   its edges change.
+
+     boot    one await, before the first paint, fills DATA from /api/bootstrap
+     reads   unchanged — all ~700 synchronous call sites keep working
+     writes  intercepted, sent to the API, then reconciled into the cache
+
+   Two interception seams are used, both of which the prototype already
+   uses on itself:
+
+     1. Function wrapping (`const prev = window.fn; window.fn = ...`).
+        The prototype does this in a dozen places already.
+
+     2. localStorage. Every persistence path in the prototype funnels
+        through a known key — `persistPosting()` writes both job creates
+        AND edits through `teamlink_posted_jobs_v1`, for example. Shimming
+        localStorage therefore catches flows without needing to know the
+        name of every function that triggers them.
+
+   RULES OBSERVED THROUGHOUT
+   -------------------------
+   - Never edit or replace a render function.
+   - Never reassign a DATA array. Existing code holds references to them
+     and monkey-patches their `.push`; arrays are refilled IN PLACE.
+   - Never invent data. If the server says no, the UI says so.
+   ===================================================================== */
+(function () {
+  'use strict';
+
+  var API = window.TL_API_BASE || '/api';
+  var TL = (window.TL = window.TL || {});
+
+  TL.ready = false;
+  TL.primaryAppId = Object.create(null);   // candidateId -> real application id
+
+  /* ------------------------------------------------------------------ *
+   * 1. Transport
+   * ------------------------------------------------------------------ */
+
+  function cookie(name) {
+    var m = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+    return m ? decodeURIComponent(m[2]) : null;
+  }
+
+  /**
+   * Error codes come back from the API as stable strings (see
+   * api/src/errors.js). They are mapped to the wording and icon the
+   * prototype's own toast() already uses, so failures look native.
+   */
+  var TOAST = {
+    INVALID_CREDENTIALS: ['Incorrect email or password', '⚠️'],
+    VALIDATION_FAILED:   [null, '⚠️'],
+    UNAUTHENTICATED:     ['Please sign in to continue', '🔒'],
+    SESSION_EXPIRED:     ['Your session has expired — please sign in again', '🔒'],
+    FORBIDDEN:           [null, '🚫'],
+    NOT_FOUND:           [null, '⚠️'],
+    DUPLICATE_APPLICATION: ['You already applied to this role', 'ℹ️'],
+    JOB_UNAVAILABLE:     ['This role is no longer accepting applications', 'ℹ️'],
+    EMAIL_TAKEN:         ['This email is already registered — try logging in instead', '⚠️'],
+    UPLOAD_FAILED:       [null, '⚠️'],
+    FILE_TOO_LARGE:      [null, '⚠️'],
+    UNSUPPORTED_FILE:    [null, '⚠️'],
+    RATE_LIMITED:        [null, '⏳'],
+    CSRF_FAILED:         ['Please refresh the page and try again', '⚠️'],
+    DATABASE_ERROR:      ['Something went wrong — please try again', '⚠️'],
+    SERVER_ERROR:        ['Something went wrong — please try again', '⚠️'],
+    NETWORK:             ['You appear to be offline — check your connection', '📡'],
+  };
+
+  function ApiFailure(code, message, details, status) {
+    this.name = 'ApiFailure';
+    this.code = code; this.message = message;
+    this.details = details; this.status = status;
+  }
+  ApiFailure.prototype = Object.create(Error.prototype);
+
+  function say(err) {
+    var m = TOAST[err && err.code] || [null, '⚠️'];
+    var text = m[0] || (err && err.message) || 'Something went wrong';
+    if (typeof window.toast === 'function') window.toast(text, m[1]);
+    return err;
+  }
+
+  function request(method, path, body, opts) {
+    opts = opts || {};
+    var headers = {};
+    var payload = body;
+
+    if (body !== undefined && body !== null && !(body instanceof FormData)) {
+      headers['content-type'] = 'application/json';
+      payload = JSON.stringify(body);
+    }
+    var token = cookie('tl_csrf');
+    if (token) headers['x-csrf-token'] = token;
+
+    return fetch(API + path, {
+      method: method,
+      headers: headers,
+      body: payload,
+      credentials: 'same-origin',
+    }).then(function (res) {
+      return res.text().then(function (text) {
+        var json = null;
+        try { json = text ? JSON.parse(text) : null; } catch (e) { json = null; }
+        if (!res.ok) {
+          var e = (json && json.error) || {};
+          throw new ApiFailure(e.code || 'SERVER_ERROR',
+            e.message || 'Request failed', e.details, res.status);
+        }
+        return json;
+      });
+    }, function () {
+      // fetch itself rejected — no network, DNS failure, server down
+      throw new ApiFailure('NETWORK', 'Network request failed');
+    });
+  }
+
+  var api = TL.api = {
+    get:  function (p) { return request('GET', p); },
+    post: function (p, b) { return request('POST', p, b); },
+    put:  function (p, b) { return request('PUT', p, b); },
+    del:  function (p) { return request('DELETE', p); },
+    say: say,
+  };
+
+  /* ------------------------------------------------------------------ *
+   * 2. localStorage shim
+   *
+   * The prototype uses 58 localStorage keys. They fall into three groups
+   * (documented in docs/DATA-MAPPING.md §4):
+   *
+   *   entity keys  — real data that now lives in its own table. Writes
+   *                  here are forwarded to the matching API endpoint.
+   *   pref keys    — per-user settings, mirrored to /api/prefs.
+   *   local keys   — transient UI state that is genuinely per-device and
+   *                  deliberately stays in the browser.
+   *
+   * Reads stay synchronous against an in-memory map primed at boot, so
+   * every existing `JSON.parse(localStorage.getItem(...))` call site keeps
+   * working unchanged.
+   * ------------------------------------------------------------------ */
+
+  var mem = Object.create(null);     // key -> string
+  var native = null;
+  try { native = window.localStorage; } catch (e) { native = null; }
+
+  // Genuinely device-local: filter selections and scratch UI state that
+  // would be meaningless on another machine.
+  var LOCAL_ONLY = {
+    tl_ext_src_filter: 1, tl_ext_match_threshold: 1,
+    teamlink_apps_cofilter_v1: 1, teamlink_apps_allco_v1: 1,
+  };
+
+  // Entity keys whose writes are forwarded to a real endpoint.
+  var ENTITY_SYNC = {
+    teamlink_posted_jobs_v1: syncPostedJobs,
+  };
+
+  // Keys the DATABASE now owns. The prototype still writes these as a
+  // mirror of state it already sent to the server (applications, stages,
+  // notifications, sessions). Forwarding them to /api/prefs would store a
+  // stale second copy of data that already has a real table — exactly the
+  // "separate frontend copies" requirement 17 rules out. They are kept in
+  // memory so synchronous reads still work, and dropped on write.
+  var SERVER_OWNED = {
+    teamlink_applications_v1: 1, teamlink_candidate_stage_v1: 1,
+    teamlink_app_snapshots_v1: 1, teamlink_job_base_applicants_v1: 1,
+    teamlink_applied_on_v1: 1, tl_ext_applications: 1,
+    teamlink_registered_candidates_v1: 1, teamlink_candidate_edits_v1: 1,
+    teamlink_qualifications_v1: 1, teamlink_candidate_notifications_v1: 1,
+    teamlink_notification_history_v1: 1, tl_job_portal_state_v1: 1,
+    tl_portal_lifecycle_v1: 1, teamlink_web_companies_v1: 1,
+    // credentials and session state — these must never be in the browser
+    teamlink_session_v1: 1, teamlink_last_hash_v1: 1,
+    teamlink_recruiter_password: 1,
+    // provider secrets (requirement 21) — server-side env vars now
+    teamlink_whatsapp_api_v1: 1, teamlink_sms_api_v1: 1, teamlink_ivr_settings_v1: 1,
+  };
+
+  function isLocalOnly(k) {
+    return LOCAL_ONLY[k] === 1 || k.indexOf('tl_ai_last_qset_') === 0;
+  }
+
+  var prefQueue = Object.create(null);
+  var prefTimer = null;
+
+  function queuePref(key, raw) {
+    prefQueue[key] = raw;
+    if (prefTimer) return;
+    // Coalesced: the prototype writes some keys on every keystroke.
+    prefTimer = setTimeout(function () {
+      prefTimer = null;
+      var batch = prefQueue; prefQueue = Object.create(null);
+      Object.keys(batch).forEach(function (k) {
+        var value;
+        try { value = JSON.parse(batch[k]); } catch (e) { value = batch[k]; }
+        api.put('/prefs/' + encodeURIComponent(k), { value: value })
+          .catch(function () { /* a preference failing to save is not worth a toast */ });
+      });
+    }, 400);
+  }
+
+  var shim = {
+    get length() { return Object.keys(mem).length; },
+    key: function (i) { return Object.keys(mem)[i] || null; },
+    getItem: function (k) { return Object.prototype.hasOwnProperty.call(mem, k) ? mem[k] : null; },
+    setItem: function (k, v) {
+      k = String(k); v = String(v);
+      mem[k] = v;
+      if (isLocalOnly(k)) { try { native && native.setItem(k, v); } catch (e) {} return; }
+      if (!TL.ready) return;                       // boot-time replay, not a user action
+      if (SERVER_OWNED[k] === 1) return;           // the database already has it
+      if (ENTITY_SYNC[k]) { try { ENTITY_SYNC[k](v); } catch (e) {} return; }
+      if (TL.session) queuePref(k, v);
+    },
+    removeItem: function (k) {
+      delete mem[String(k)];
+      if (isLocalOnly(k)) { try { native && native.removeItem(k); } catch (e) {} return; }
+      if (TL.ready && TL.session) api.del('/prefs/' + encodeURIComponent(k)).catch(function () {});
+    },
+    clear: function () { mem = Object.create(null); },
+  };
+
+  function installStorageShim() {
+    // Seed from whatever is already in the real localStorage so nothing
+    // the prototype wrote during parse is lost mid-session.
+    try {
+      if (native) {
+        for (var i = 0; i < native.length; i++) {
+          var k = native.key(i);
+          if (k) mem[k] = native.getItem(k);
+        }
+      }
+    } catch (e) {}
+
+    try {
+      Object.defineProperty(window, 'localStorage', {
+        value: shim, configurable: true, writable: false,
+      });
+      TL.storageShimmed = true;
+    } catch (e) {
+      // Some browsers refuse to redefine it. The app still works — data
+      // just also lands in real localStorage — but say so rather than
+      // pretending the swap happened.
+      TL.storageShimmed = false;
+      console.warn('TeamLink: localStorage could not be replaced; ' +
+                   'preferences will not sync to the server.', e);
+    }
+  }
+
+  /** teamlink_posted_jobs_v1 carries both creates and edits. */
+  function syncPostedJobs(raw) {
+    var list;
+    try { list = JSON.parse(raw); } catch (e) { return; }
+    if (!Array.isArray(list)) return;
+
+    list.forEach(function (j) {
+      if (!j || !j.id || TL.syncingJob === j.id) return;
+      var known = TL.knownJobIds && TL.knownJobIds[j.id];
+      var payload = jobToApi(j);
+      TL.syncingJob = j.id;
+
+      var p = known
+        ? api.put('/jobs/' + encodeURIComponent(j.id), payload)
+        : api.post('/jobs', Object.assign({ id: j.id }, payload));
+
+      p.then(function (res) {
+        TL.knownJobIds[j.id] = true;
+        // adopt the server's view (derived applicants, posted label)
+        var local = DATA.jobById(j.id);
+        if (local && res && res.job) Object.assign(local, res.job);
+      }).catch(say).then(function () { TL.syncingJob = null; });
+    });
+  }
+
+  function jobToApi(j) {
+    return {
+      title: j.title, companyId: j.companyId, location: j.location, mode: j.mode,
+      exp: j.exp, pay: j.pay, type: j.type, postingKind: j.postingKind,
+      department: j.department, education: j.education,
+      easyApply: !!j.easyApply, featured: !!j.featured,
+      salaryMin: j.salaryMin == null ? null : Number(j.salaryMin),
+      salaryMax: j.salaryMax == null ? null : Number(j.salaryMax),
+      skills: j.skills || [], desc: j.desc || '',
+      responsibilities: j.responsibilities || [], requirements: j.requirements || [],
+      status: j.status === 'closed' ? 'closed' : (j.status === 'draft' ? 'draft' : 'open'),
+    };
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 3. Hydration
+   * ------------------------------------------------------------------ */
+
+  /** Refills an array IN PLACE — see the header note about .push patches. */
+  function refill(arr, rows) {
+    if (!Array.isArray(arr)) return;
+    arr.length = 0;
+    if (rows && rows.length) Array.prototype.push.apply(arr, rows);
+  }
+
+  function applyPayload(payload) {
+    var d = payload.data;
+
+    refill(DATA.companies, d.companies);
+    refill(DATA.jobs, d.jobs);
+    refill(DATA.candidates, d.candidates);
+    refill(DATA.applications, d.applications);
+    refill(DATA.interviews, d.interviews);
+    refill(DATA.recruiters, d.recruiters);
+    refill(DATA.clients, d.clients);
+    if (d.admin) DATA.admin = d.admin;
+
+    if (d.stages && d.stages.length) {
+      refill(DATA.stages, d.stages);
+      refill(DATA.kanbanStages, d.stages.filter(function (s) { return s.kanban; }));
+    }
+    if (d.aiSettings && Object.keys(d.aiSettings).length) {
+      Object.assign(DATA.aiSettings, d.aiSettings);
+    }
+
+    // remember the real id behind each candidate's primary application
+    TL.primaryAppId = Object.create(null);
+    d.candidates.forEach(function (c) {
+      if (c.__primaryApplicationId) {
+        TL.primaryAppId[c.id] = c.__primaryApplicationId;
+        // keep it off the object the UI iterates over
+        try { delete c.__primaryApplicationId; } catch (e) {}
+      }
+    });
+
+    TL.knownJobIds = Object.create(null);
+    d.jobs.forEach(function (j) { TL.knownJobIds[j.id] = true; });
+
+    TL.offers = d.offers || [];
+    TL.aiInterviews = d.aiInterviews || [];
+    TL.notifications = d.notifications || [];
+
+    // the session the SERVER says we have — not what localStorage claimed
+    TL.session = payload.session;
+    if (payload.session) {
+      STATE.session = { role: payload.session.role, id: payload.session.id };
+    } else {
+      STATE.session = null;
+    }
+  }
+
+  function loadPrefs() {
+    if (!TL.session) return Promise.resolve();
+    return api.get('/prefs').then(function (res) {
+      var prefs = (res && res.prefs) || {};
+      Object.keys(prefs).forEach(function (k) {
+        try { mem[k] = JSON.stringify(prefs[k]); } catch (e) {}
+      });
+    }).catch(function () { /* a cold prefs table is not an error */ });
+  }
+
+  function hydrate() {
+    // The demo fixtures are fetched alongside the bootstrap, not lazily on
+    // first demo render: pageAIPipeline() dereferences the candidate
+    // immediately, so anything arriving later is already too late.
+    return Promise.all([
+      api.get('/bootstrap').then(function (payload) {
+        applyPayload(payload);
+        return loadPrefs();
+      }),
+      loadDemoFixtures(),
+      loadLoginHints(),
+    ]);
+  }
+  TL.hydrate = hydrate;
+
+  /** Re-reads everything, then repaints. Used after a login/logout. */
+  function refresh() {
+    return hydrate().then(function () {
+      if (typeof window.render === 'function') window.render();
+    });
+  }
+  TL.refresh = refresh;
+
+  /* ------------------------------------------------------------------ *
+   * 4. Boot — hold the first paint until the data is real
+   * ------------------------------------------------------------------ */
+
+  var realRender = window.render;
+  var pendingRender = false;
+
+  window.render = function () {
+    if (!TL.ready) { pendingRender = true; return; }   // suppress the seed-data flash
+    return realRender.apply(this, arguments);
+  };
+
+  installStorageShim();
+
+  function boot() {
+    return hydrate().then(function () {
+      TL.ready = true;
+      if (!location.hash) location.hash = '#/';
+      window.render();
+    }).catch(function (err) {
+      TL.ready = true;      // let the app render rather than hang on a blank page
+      say(err);
+      window.render();
+      console.error('TeamLink: could not load data from the server.', err);
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 5. Authentication — same forms, same markup, real credentials
+   * ------------------------------------------------------------------ */
+
+  // submitLogin(role, ev) is wired to the existing <form onsubmit=...>.
+  // Only the body changes: a comparison against the hardcoded
+  // ROLE_CREDENTIALS object becomes a call to the API.
+  window.submitLogin = function (role, ev) {
+    if (ev && ev.preventDefault) ev.preventDefault();
+    var form = ev && ev.target;
+    var email = form && form.elements.email ? String(form.elements.email.value || '').trim() : '';
+    var password = form && form.elements.password ? String(form.elements.password.value || '') : '';
+
+    var btn = form && form.querySelector('button[type="submit"], .btn-primary');
+    if (btn) { btn.disabled = true; btn.dataset.tlLabel = btn.textContent; btn.textContent = 'Signing in…'; }
+
+    var done = function () {
+      if (btn) { btn.disabled = false; if (btn.dataset.tlLabel) btn.textContent = btn.dataset.tlLabel; }
+    };
+
+    return api.post('/auth/login', { email: email, password: password, role: role })
+      .then(function (res) {
+        return refresh().then(function () {
+          var who = res.session;
+          var name = who.id;
+          try {
+            name = who.role === 'candidate' ? DATA.candidateById(who.id).name
+                 : who.role === 'recruiter' ? DATA.recruiterById(who.id).name
+                 : who.role === 'client'    ? DATA.clientById(who.id).name
+                 : DATA.admin.name;
+          } catch (e) {}
+          if (typeof window.toast === 'function') window.toast('Signed in as ' + name);
+          window.navigate('/' + who.role + '/' +
+            (who.role === 'candidate' ? 'home'
+             : who.role === 'recruiter' ? 'home'
+             : who.role === 'client' ? 'jobs' : 'users'));
+        });
+      })
+      .catch(say)
+      .then(done, done);
+  };
+
+  window.doLogout = function () {
+    return api.post('/auth/logout', {})
+      .catch(function () { /* sign out locally even if the call fails */ })
+      .then(function () {
+        mem = Object.create(null);
+        return hydrate();
+      })
+      .then(function () {
+        STATE.session = null;
+        window.navigate('/');
+        if (typeof window.toast === 'function') window.toast('Signed out');
+      });
+  };
+
+  /**
+   * The "Quick demo login" panel.
+   *
+   * In the prototype each button called loginAs(role, id) and signed you
+   * straight in WITH NO PASSWORD. That is the same hole as submitLogin()
+   * accepting any candidate, and it cannot survive real authentication —
+   * a one-click passwordless sign-in would make every policy behind it
+   * pointless.
+   *
+   * The panel is kept exactly as it looks. Clicking a name now PREFILLS
+   * the email field and focuses the password box, so it stays the
+   * convenience it was meant to be without being a way in.
+   */
+  window.loginAs = function (role, id) {
+    if (TL.session && TL.session.role === role) {
+      return window.navigate('/' + role + '/' +
+        (role === 'candidate' ? 'home' : role === 'recruiter' ? 'home'
+         : role === 'client' ? 'jobs' : 'users'));
+    }
+
+    var hint = (TL.loginHints[role] || []).filter(function (a) { return a.id === id; })[0];
+    var form = document.querySelector('.auth-form');
+
+    if (form && hint) {
+      // Deliberately does NOT fill in the address. Only one staff email is
+      // already printed on this page; auto-filling the rest would publish
+      // addresses that are not otherwise public. The click focuses the
+      // field and names the person, and the user types the credentials.
+      var email = form.elements.email;
+      if (email) email.focus();
+      if (typeof window.toast === 'function') {
+        window.toast('Sign in as ' + hint.name + ' using their email and password', '🔒');
+      }
+      return;
+    }
+
+    window.navigate('/login/' + role);
+    if (typeof window.toast === 'function') {
+      window.toast('Please sign in to continue', '🔒');
+    }
+  };
+
+  /**
+   * demoAccountsFor() read DATA directly, which meant an anonymous visitor
+   * to the candidate login page was shown four real people's names and
+   * email addresses. It now reads a server list that deliberately excludes
+   * candidates — see public_login_hints() in 0002_rls.sql.
+   */
+  TL.loginHints = { candidate: [], recruiter: [], client: [], admin: [] };
+
+  window.demoAccountsFor = function (role) {
+    return (TL.loginHints[role] || []).map(function (a) {
+      return { id: a.id, name: a.name, sub: a.sub };
+    });
+  };
+
+  function loadLoginHints() {
+    return api.get('/login-hints').then(function (h) {
+      TL.loginHints = {
+        candidate: h.candidate || [],
+        recruiter: h.recruiter || [],
+        client:    h.client || [],
+        admin:     h.admin || [],
+      };
+    }).catch(function () { /* the panel renders empty; sign-in still works */ });
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 6. Registration
+   * ------------------------------------------------------------------ */
+
+  var prevRegister = window.submitCandidateRegistration;
+  if (typeof prevRegister === 'function') {
+    window.submitCandidateRegistration = function (ev) {
+      if (ev && ev.preventDefault) ev.preventDefault();
+      if (typeof window.validateRegisterForm === 'function' && !window.validateRegisterForm()) {
+        if (typeof window.toast === 'function') window.toast('Please complete all required fields', '⚠️');
+        return;
+      }
+      var g = function (id) {
+        var el = document.getElementById(id);
+        return el ? String(el.value || '').trim() : '';
+      };
+      var name = g('regName'), email = g('regEmail').toLowerCase();
+      var password = (document.getElementById('regPassword') || {}).value || '';
+      var phone = g('regMobile');
+
+      return api.post('/auth/register', {
+        name: name, email: email, password: password, phone: phone,
+      }).then(function (res) {
+        // Let the prototype's own function build the rich candidate object
+        // from every field on the form, then persist it to the new record.
+        var candidateId = res.candidateId;
+        return refresh().then(function () {
+          var profile = collectRegistrationProfile();
+          if (!profile) return;
+          return api.put('/candidates/' + encodeURIComponent(candidateId), profile)
+            .then(function (r) {
+              var local = DATA.candidateById(candidateId);
+              if (local && r && r.candidate) Object.assign(local, r.candidate);
+            })
+            .catch(function () { /* the account exists; profile detail can be edited later */ });
+        }).then(function () {
+          if (typeof window.toast === 'function') {
+            window.toast('Profile created — welcome to TeamLink!', '🎉');
+          }
+          window.navigate('/candidate/home');
+        });
+      }).catch(say);
+    };
+  }
+
+  /**
+   * Reads the registration form into the candidate shape the API accepts.
+   * Requirement 9: whatever could not be parsed stays editable and is
+   * saved as-is rather than causing the record to be discarded.
+   */
+  function collectRegistrationProfile() {
+    var g = function (id) {
+      var el = document.getElementById(id);
+      return el ? String(el.value || '').trim() : '';
+    };
+    var typeEl = document.querySelector('input[name="regCandidateType"]:checked');
+    var out = {
+      location: g('regLocation'),
+      currentCompany: g('regCompany'),
+      title: g('regDesignation'),
+      candidateType: typeEl ? typeEl.value : undefined,
+    };
+    var exp = Number(g('regTotalExp') || 0);
+    if (exp > 0) { out.expYears = exp; out.exp = exp + ' yrs'; }
+
+    var modes = [].slice.call(
+      document.querySelectorAll('.opt-row input[type="checkbox"]:checked'))
+      .map(function (cb) { return cb.value; });
+    if (modes.length) out.preferredWorkModes = modes;
+
+    Object.keys(out).forEach(function (k) {
+      if (out[k] === '' || out[k] === undefined) delete out[k];
+    });
+    return Object.keys(out).length ? out : null;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 7. Applying
+   * ------------------------------------------------------------------ */
+
+  window.applyToJob = function (jobId, viaEasyApply) {
+    if (!STATE.session || STATE.session.role !== 'candidate') {
+      if (typeof window.toast === 'function') window.toast('Please log in as a candidate to apply');
+      window.navigate('/login/candidate');
+      return;
+    }
+    var cid = STATE.session.id;
+    if (DATA.hasApplication(cid, jobId)) {
+      if (typeof window.toast === 'function') window.toast('You already applied to this role');
+      return;
+    }
+
+    return api.post('/applications', { jobId: jobId, source: 'portal' })
+      .then(function (res) {
+        // reconcile the cache with what the server actually recorded
+        DATA.applications.push(res.application);
+        var job = DATA.jobById(jobId);
+        if (job && typeof res.applicants === 'number') job.applicants = res.applicants;
+        if (res.notification) TL.notifications.unshift(res.notification);
+
+        if (typeof window.toast === 'function') {
+          window.toast(viaEasyApply
+            ? 'Easy Apply submitted using your saved profile & resume — TeamLink AI will screen it next'
+            : 'Application submitted — TeamLink AI will screen your resume next', '📨');
+        }
+        window.render();
+      })
+      .catch(say);
+  };
+
+  /* ------------------------------------------------------------------ *
+   * 8. Pipeline moves
+   * ------------------------------------------------------------------ */
+
+  window.moveApplicationStage = function (appId, newStageId) {
+    var found = typeof window.findAppRecord === 'function' ? window.findAppRecord(appId) : null;
+    if (!found) return;
+
+    // `primary__<candId>` is the prototype's synthetic id for the
+    // application it stored on the candidate row. The database has a real
+    // row for it; TL.primaryAppId holds the mapping (DATA-MAPPING §3.1).
+    var realId = appId.indexOf('primary__') === 0
+      ? TL.primaryAppId[found.candId]
+      : appId;
+
+    if (!realId) {
+      say(new ApiFailure('NOT_FOUND', 'That application could not be found on the server.'));
+      return;
+    }
+
+    var before = found.record.stage;
+    found.record.stage = newStageId;          // optimistic
+    var cand = DATA.candidateById(found.candId);
+    if (typeof window.toast === 'function') {
+      window.toast(cand.name + ' moved to "' + DATA.stageMeta(newStageId).label + '"', '➡️');
+    }
+    window.render();
+
+    return api.put('/applications/' + encodeURIComponent(realId) + '/status',
+      { stage: newStageId })
+      .catch(function (err) {
+        found.record.stage = before;          // roll back — the DB said no
+        say(err);
+        window.render();
+      });
+  };
+
+  /* ------------------------------------------------------------------ *
+   * 9. Resume upload
+   * ------------------------------------------------------------------ */
+
+  TL.uploadResume = function (file, candidateId) {
+    var fd = new FormData();
+    fd.append('resume', file);
+    if (candidateId) fd.append('candidateId', candidateId);
+    return request('POST', '/uploads/resume', fd).then(function (res) {
+      var local = DATA.candidateById(res.candidate.id);
+      if (local) Object.assign(local, res.candidate);
+      return res;
+    });
+  };
+
+  // The prototype parses the file locally to drive its extraction UI.
+  // That flow is left exactly as it is; the bytes are additionally sent to
+  // the server so the resume actually persists (requirement 8).
+  var prevResume = window.handleRegisterResumeFile;
+  if (typeof prevResume === 'function') {
+    window.handleRegisterResumeFile = function (file) {
+      var out = prevResume.apply(this, arguments);
+      if (file && STATE.session && STATE.session.role === 'candidate') {
+        TL.uploadResume(file).catch(say);
+      } else if (file) {
+        TL.pendingResume = file;      // uploaded after the account is created
+      }
+      return out;
+    };
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 10. Notifications
+   * ------------------------------------------------------------------ */
+
+  TL.markNotificationRead = function (id) {
+    return api.put('/notifications/' + encodeURIComponent(id) + '/read', {})
+      .then(function (res) {
+        var n = (TL.notifications || []).filter(function (x) { return x.id === id; })[0];
+        if (n) n.read = true;
+        return res;
+      }).catch(function () {});
+  };
+
+  TL.refreshNotifications = function () {
+    if (!TL.session) return Promise.resolve();
+    return api.get('/notifications').then(function (res) {
+      TL.notifications = res.notifications || [];
+      return res;
+    }).catch(function () {});
+  };
+
+  /* ------------------------------------------------------------------ *
+   * 11. Backend-backed candidate search (requirements 10 & 11)
+   *
+   * Exposed for the Find Candidates screen so filtering happens in SQL
+   * with a LIMIT, instead of pulling every candidate into the browser.
+   * ------------------------------------------------------------------ */
+
+  TL.searchCandidates = function (filters, page) {
+    var qs = [];
+    var add = function (k, v) {
+      if (v === undefined || v === null || v === '' ||
+          (Array.isArray(v) && !v.length)) return;
+      qs.push(encodeURIComponent(k) + '=' + encodeURIComponent(Array.isArray(v) ? v.join(',') : v));
+    };
+    filters = filters || {};
+    Object.keys(filters).forEach(function (k) { add(k, filters[k]); });
+    add('limit', (page && page.limit) || 25);
+    add('offset', (page && page.offset) || 0);
+
+    return api.get('/candidates?' + qs.join('&')).then(function (res) {
+      // merge into the cache so DATA.candidateById() resolves for the
+      // rows just returned, without discarding anything already loaded
+      (res.candidates || []).forEach(function (c) {
+        var existing = DATA.candidateById(c.id);
+        if (existing) Object.assign(existing, c);
+        else DATA.candidates.push(c);
+      });
+      return res;
+    });
+  };
+
+  /* ------------------------------------------------------------------ *
+   * 11b. Demo fixtures for the two PUBLIC demo screens
+   *
+   * /ai-pipeline and /whatsapp-demo sit in the public nav and render
+   * cand5 and cand4 by id. An anonymous visitor cannot see any candidate
+   * now — correctly — so those screens would throw on an undefined
+   * record.
+   *
+   * The fix is NOT to relax the policy. These are marketing simulations,
+   * and they get demo data, which is what they always had. The fixtures
+   * live in a static file and are consulted ONLY as a last-resort
+   * fallback by candidateById(), so they can never reach Find Candidates,
+   * a dashboard total, or anyone's pipeline.
+   * ------------------------------------------------------------------ */
+
+  var demoById = Object.create(null);
+  var demoPromise = null;
+
+  function loadDemoFixtures() {
+    if (demoPromise) return demoPromise;
+    demoPromise = fetch('demo-fixtures.json', { credentials: 'same-origin' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (!j) return;
+        demoList = (j.candidates || []).slice();
+        demoList.forEach(function (c) { demoById[c.id] = c; });
+        if (j.transcripts && typeof DATA.aiInterviewTranscripts === 'object') {
+          Object.keys(j.transcripts).forEach(function (k) {
+            if (!DATA.aiInterviewTranscripts[k]) DATA.aiInterviewTranscripts[k] = j.transcripts[k];
+          });
+        }
+        if (j.resumeBank && DATA.resumeBank) {
+          Object.keys(j.resumeBank).forEach(function (k) {
+            if (!DATA.resumeBank[k]) DATA.resumeBank[k] = j.resumeBank[k];
+          });
+        }
+      })
+      .catch(function () { /* the demo screens degrade; the app does not */ });
+    return demoPromise;
+  }
+  TL.loadDemoFixtures = loadDemoFixtures;
+
+  // Fallback only — a real record always wins.
+  var realCandidateById = DATA.candidateById;
+  DATA.candidateById = function (id) {
+    return realCandidateById(id) || demoById[id];
+  };
+
+  var demoList = [];
+
+  function isDemoRoute() {
+    var h = location.hash || '';
+    return h.indexOf('#/ai-pipeline') === 0 || h.indexOf('#/whatsapp-demo') === 0;
+  }
+
+  /**
+   * The demo screens also render a candidate PICKER built from
+   * DATA.candidates, which is empty for an anonymous visitor — correctly.
+   *
+   * For the duration of a demo-screen render, and ONLY then, the fixtures
+   * stand in. render() is synchronous, so the swap is restored in the same
+   * tick and no other screen can observe it. A signed-in user's real
+   * records are put back untouched.
+   */
+  var renderBeforeDemo = window.render;
+  window.render = function () {
+    if (!isDemoRoute() || !demoList.length) {
+      return renderBeforeDemo.apply(this, arguments);
+    }
+    var saved = DATA.candidates.slice();
+    refill(DATA.candidates, demoList);
+    try {
+      return renderBeforeDemo.apply(this, arguments);
+    } finally {
+      refill(DATA.candidates, saved);
+    }
+  };
+
+
+
+  /* ------------------------------------------------------------------ *
+   * 13. Find Candidates — filtering moves into SQL (requirements 10, 11)
+   *
+   * The prototype filtered `DATA.candidates` in the browser. With a real
+   * database that means shipping every candidate to every recruiter just
+   * to narrow them down, which requirement 11 rules out explicitly.
+   *
+   * The screen already exposes the seams needed to fix this without
+   * touching it:
+   *
+   *   window.getFilteredCandidates(pool)  the documented pool hook that
+   *                                       baseResults() calls (:6502)
+   *   window.fcrSet / fcrToggleFacet      every filter change
+   *   window.fcrSetPage / fcrSetPageSize  paging
+   *
+   * So: the server applies the selective filters and returns a bounded
+   * window of matches; the existing client chain still runs on top, so
+   * saved-search criteria and the local "hide viewed / hide emailed"
+   * refinements keep working exactly as before.
+   * ------------------------------------------------------------------ */
+
+  TL.fcr = {
+    rows: null,        // current server result window, or null before the first query
+    total: 0,          // true match count in the database
+    capped: false,
+    loading: false,
+    window: 200,       // how many matches to pull at once
+    key: '',           // signature of the last query, to avoid refetching
+  };
+
+  /** STATE.fcr -> /api/candidates query string. */
+  function fcrQuery(f) {
+    var p = [];
+    var add = function (k, v) {
+      if (v === undefined || v === null || v === '' ||
+          (Array.isArray(v) && !v.length)) return;
+      p.push(encodeURIComponent(k) + '=' + encodeURIComponent(Array.isArray(v) ? v.join(',') : v));
+    };
+
+    // anyKw and allKw are separate controls in the UI; both narrow the
+    // same text search server-side.
+    var kw = [f.anyKw, f.allKw].filter(Boolean).join(' ').trim();
+    add('q', kw);
+    add('skills', f.skills);
+    add('location', f.locs);
+    add('noticePeriod', f.notice);
+    add('education', [].concat(f.degs || [], f.edus || []));
+    add('industry', f.inds);
+    add('expMin', f.expMin);
+    add('expMax', f.expMax);
+    add('ctcMin', f.salMin);
+    add('ctcMax', f.salMax);
+    add('includeZeroSalary', f.includeZeroSalary === false ? 'false' : 'true');
+    if (f.womenOnly)      add('gender', 'Female');
+    if (f.emailOnly)      add('emailVerified', 'true');
+    if (f.mobileOnly)     add('mobileVerified', 'true');
+    if (f.hideNoResume)   add('hasResume', 'true');
+    if (f.hidePrivate)    add('hidePrivate', 'true');
+    if (f.hideNoComments) add('hasComments', 'true');
+    add('commentTag', f.commentTag);
+    if (f.duration && f.duration !== 'all') add('activeWithinDays', f.duration);
+    add('sort', f.sortBy);
+    add('limit', TL.fcr.window);
+    add('offset', 0);
+    return p.join('&');
+  }
+
+  function onFindScreen() {
+    // The route is 'find-candidates'. '#/recruiter/find' renders nothing —
+    // matching on that prefix would still be true here, but being exact
+    // documents which screen this is actually for.
+    return (location.hash || '').indexOf('#/recruiter/find-candidates') === 0;
+  }
+
+  /**
+   * Fetches a result window if the filters actually changed.
+   * Returns a promise so callers can repaint once it lands.
+   */
+  function fcrFetch(force) {
+    var f = STATE.fcr;
+    if (!f) return Promise.resolve();
+    var qs = fcrQuery(f);
+    if (!force && qs === TL.fcr.key && TL.fcr.rows) return Promise.resolve();
+
+    TL.fcr.key = qs;
+    TL.fcr.loading = true;
+
+    return api.get('/candidates?' + qs).then(function (res) {
+      var rows = res.candidates || [];
+
+      // Re-attach each candidate's pipeline position, exactly as the
+      // bootstrap does, so cand.stage and cand.appliedJobId are present on
+      // the result rows (DATA-MAPPING §3.1).
+      var byId = {};
+      rows.forEach(function (c) { byId[c.id] = c; });
+      (res.applications || []).forEach(function (a) {
+        if (!a.primary) return;
+        var c = byId[a.candidateId];
+        if (c) { c.appliedJobId = a.jobId; c.stage = a.stage; c.matchScore = a.matchScore; }
+      });
+      rows.forEach(function (c) {
+        if (!c.appliedJobId) { c.appliedJobId = null; c.stage = c.stage || 'registered'; }
+      });
+
+      // Merge into the cache so DATA.candidateById() resolves when the
+      // recruiter opens a profile from the results.
+      rows.forEach(function (c) {
+        var existing = DATA.candidates.filter(function (x) { return x.id === c.id; })[0];
+        if (existing) Object.assign(existing, c);
+        else DATA.candidates.push(c);
+      });
+
+      TL.fcr.rows = rows;
+      TL.fcr.total = res.total || rows.length;
+      TL.fcr.capped = TL.fcr.total > rows.length;
+      TL.fcr.loading = false;
+    }).catch(function (err) {
+      TL.fcr.loading = false;
+      TL.fcr.rows = [];
+      say(err);
+    });
+  }
+  TL.fcrFetch = fcrFetch;
+
+  // The pool hook. The existing chain is preserved — prevGFC holds the
+  // five layers of criteria filters the prototype stacks on top of each
+  // other (:9768, :10400, :10672, :13413). It is simply handed the
+  // server's result window instead of the entire candidate table.
+  var prevGFC = window.getFilteredCandidates;
+  window.getFilteredCandidates = function (cands) {
+    if (onFindScreen() && TL.fcr.rows) {
+      return typeof prevGFC === 'function' ? prevGFC(TL.fcr.rows) : TL.fcr.rows;
+    }
+    return typeof prevGFC === 'function' ? prevGFC(cands) : cands;
+  };
+
+  /**
+   * Repaints the results panel after a fetch.
+   *
+   * refreshResults() lives inside the screen's own IIFE and is not
+   * reachable from here, so this re-runs the render path the prototype
+   * already uses, which rebuilds the results from the updated pool.
+   */
+  window.fcrRepaint = function () {
+    if (onFindScreen() && typeof window.render === 'function') window.render();
+  };
+
+  // Every filter change goes through these. Each updates STATE.fcr and
+  // paints immediately (as before), then refetches and repaints.
+  function wrapFcr(name) {
+    var prev = window[name];
+    if (typeof prev !== 'function') return;
+    window[name] = function () {
+      var r = prev.apply(this, arguments);
+      fcrFetch().then(function () { window.fcrRepaint(); });
+      return r;
+    };
+  }
+  ['fcrSet', 'fcrToggleFacet', 'fcrHideReset', 'fcrReset', 'fcrClearAll']
+    .forEach(wrapFcr);
+
+  // Paging and page size are handled client-side within the fetched
+  // window, so they need no round trip and are left alone.
+
+  // The first visit to the screen needs an initial query.
+  var renderBeforeFcr = window.render;
+  window.render = function () {
+    var out = renderBeforeFcr.apply(this, arguments);
+    if (onFindScreen() && !TL.fcr.rows && !TL.fcr.loading) {
+      fcrFetch(true).then(function () { renderBeforeFcr.call(window); });
+    }
+    return out;
+  };
+
+  // Leaving the screen clears the window, so returning re-queries rather
+  // than showing a stale result set.
+  window.addEventListener('hashchange', function () {
+    if (!onFindScreen()) { TL.fcr.rows = null; TL.fcr.key = ''; }
+  });
+
+  /* ------------------------------------------------------------------ *
+   * 14. Interview scheduling
+   *
+   * mjScheduleInterview() pushed straight into DATA.interviews, so a
+   * scheduled interview lived only in that browser tab. It now creates a
+   * real row; the API also moves the application to interview_scheduled
+   * and notifies the candidate in the same transaction, so the three can
+   * never disagree.
+   * ------------------------------------------------------------------ */
+
+  TL.scheduleInterview = function (opts) {
+    return api.post('/interviews', {
+      candidateId: opts.candidateId,
+      jobId: opts.jobId,
+      type: opts.type || 'Technical (Human)',
+      date: opts.date,
+      time: opts.time,
+      mode: opts.mode || 'Video Call',
+      interviewer: opts.interviewer,
+    }).then(function (res) {
+      DATA.interviews.push(res.interview);
+      return res.interview;
+    });
+  };
+
+  var prevSchedule = window.mjScheduleInterview;
+  if (typeof prevSchedule === 'function') {
+    window.mjScheduleInterview = function (appId, jobId) {
+      var date = String((document.getElementById('mjIvDate') || {}).value || '');
+      var time = String((document.getElementById('mjIvTime') || {}).value || '');
+      if (!date || !time) {
+        if (typeof window.toast === 'function') window.toast('Pick an interview date and time', '⚠️');
+        return;
+      }
+      var mode = String((document.getElementById('mjIvMode') || {}).value || 'Video Call');
+
+      var f = typeof window.findAppRecord === 'function' ? window.findAppRecord(appId) : null;
+      var c = f ? DATA.candidateById(f.candId) : null;
+      var j = DATA.jobById(jobId);
+      if (!c || !j) return;
+
+      var who = (typeof window.whoLabel === 'function' && window.whoLabel('recruiter')) || {};
+
+      return TL.scheduleInterview({
+        candidateId: c.id, jobId: j.id, date: date, time: time, mode: mode,
+        interviewer: who.name || undefined,
+      }).then(function () {
+        // The API already moved the stage and raised the notification, so
+        // the local record is updated directly rather than calling
+        // moveApplicationStage() — which would send a second request.
+        if (f && f.record) f.record.stage = 'interview_scheduled';
+        if (typeof window.toast === 'function') {
+          window.toast('Interview scheduled for ' + c.name + '.', '🗓️');
+        }
+        if (typeof window.fcrCloseModal === 'function') window.fcrCloseModal();
+        if (typeof window.render === 'function') window.render();
+      }).catch(say);
+    };
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 15. Disable the prototype's own direct-to-Supabase path
+   *
+   * The file already contains a partial Supabase integration (TL_SUPA /
+   * TL_API, :21156) pointing at project `ohamvhilaljvkjpzaaln`, which
+   * fetches jobs straight from the browser.
+   *
+   * The key there is a PUBLISHABLE one and the code explicitly refuses
+   * service_role keys, so it was not a credential leak. But it is now a
+   * SECOND source of truth for jobs, against a different database — which
+   * is exactly what requirement 17 rules out, and it means the browser
+   * talking to a database directly, which requirement 2 rules out.
+   *
+   * TL_API.configured() gates on TL_SUPA.url and falls back to reading
+   * DATA — which this file fills from our own API. Clearing the url is
+   * therefore all it takes: every TL_API call keeps working and resolves
+   * against the real backend instead.
+   * ------------------------------------------------------------------ */
+
+  if (window.TL_SUPA) {
+    TL.disabledSupabase = {
+      url: window.TL_SUPA.url,
+      table: window.TL_SUPA.table,
+    };
+    window.TL_SUPA.url = '';
+    window.TL_SUPA.anonKey = '';
+    console.info('TeamLink: the prototype direct-Supabase path is disabled; ' +
+                 'jobs now come from the application API.');
+  }
+
+
+  /* ------------------------------------------------------------------ *
+   * 16. AI voice interview — results become ATS data
+   *
+   * The interview itself is the prototype's own (the AIIV module at
+   * :22084): it speaks the questions, listens, transcribes, and scores on
+   * content. None of that is changed here.
+   *
+   * What changes is where the result goes. It used to live in
+   * localStorage, so a score existed only in the tab that produced it —
+   * invisible to the recruiter, the client, and even to the candidate on
+   * their next visit. It is now recorded through the API and read back
+   * from the database by all four roles.
+   *
+   * Two fabricated-score paths are also removed. They produced a number
+   * from `matchScore` plus randomness, with no interview behind it, which
+   * is the one thing the specification forbids outright.
+   * ------------------------------------------------------------------ */
+
+  TL.aiInterviews = [];
+
+  /** Stable fingerprint of a question set, so repeats can be detected. */
+  function questionSetHash(questions) {
+    var s = (questions || []).map(function (q) { return q.q || q.question || ''; }).join('|');
+    var h = 5381;
+    for (var i = 0; i < s.length; i++) { h = ((h * 33) ^ s.charCodeAt(i)) >>> 0; }
+    return 'qs' + h.toString(36) + '-' + (questions || []).length;
+  }
+  TL.questionSetHash = questionSetHash;
+
+  /** Maps the session's report onto the API's shape. */
+  function toApiAnswers(per) {
+    return (per || []).map(function (p, i) {
+      var cat = p.category === 'resume' ? 'resume'
+              : p.category === 'behavioral' ? 'behavioral'
+              : p.category === 'intro' ? 'intro' : 'technical';
+      return {
+        seq: i + 1,
+        category: cat,
+        question: String(p.question || '').slice(0, 2000),
+        answered: !!p.answered,
+        answerSummary: p.answer_summary ? String(p.answer_summary).slice(0, 4000) : undefined,
+        score: Math.max(0, Math.min(100, Number(p.score) || 0)),
+        commScore: p.communication == null ? undefined
+                 : Math.max(0, Math.min(100, Number(p.communication) || 0)),
+        justification: p.justification ? String(p.justification).slice(0, 2000) : undefined,
+      };
+    });
+  }
+
+  TL.recordAiInterview = function (report, extra) {
+    extra = extra || {};
+    var answers = toApiAnswers(report.per_question);
+    if (!answers.length) {
+      return Promise.reject(new ApiFailure('VALIDATION_FAILED',
+        'Refusing to record an interview with no answers.'));
+    }
+    return api.post('/ai-interviews', {
+      candidateId: report.candidate_id,
+      jobId: report.job_id,
+      applicationId: extra.applicationId,
+      mode: extra.mode || 'voice',
+      contentScored: !!report.content_scored,
+      transcript: report.transcript,
+      feedback: extra.feedback,
+      questionSetHash: extra.questionSetHash,
+      startedAt: extra.startedAt,
+      answers: answers,
+    }).then(function (res) {
+      var saved = res.aiInterview;
+      TL.aiInterviews = TL.aiInterviews.filter(function (x) { return x.id !== saved.id; });
+      TL.aiInterviews.unshift(saved);
+
+      // Reflect the SERVER's numbers into the cache, not the browser's.
+      // The two agree, but the database is the one that has to be right.
+      var c = DATA.candidateById(saved.candidateId);
+      if (c) c.aiInterviewScore = saved.overallPercentage;
+      var app = (DATA.applications || []).filter(function (a) {
+        return a.candidateId === saved.candidateId && a.jobId === saved.jobId;
+      }).pop();
+      if (app) {
+        app.aiScore = saved.overallPercentage;
+        if (app.stage === 'applied' || app.stage === 'ai_screening') {
+          app.stage = 'ai_interview_done';
+        }
+      }
+      return saved;
+    });
+  };
+
+  /**
+   * Has this candidate already been given this exact question set?
+   *
+   * The prototype remembered only the LAST set, in localStorage, so
+   * clearing storage or switching machine silently allowed a repeat. The
+   * server remembers every set the candidate has ever been asked.
+   */
+  TL.questionSetUsed = function (candidateId, hash) {
+    return api.get('/ai-interviews/question-set-used?candidateId=' +
+      encodeURIComponent(candidateId) + '&hash=' + encodeURIComponent(hash))
+      .then(function (r) { return !!r.used; })
+      .catch(function () { return false; });   // never block an interview on this
+  };
+
+  // Record the result when the session completes.
+  var prevAiivSubmit = window.aiivSubmit;
+  if (typeof prevAiivSubmit === 'function') {
+    window.aiivSubmit = function () {
+      var out = prevAiivSubmit.apply(this, arguments);
+      try {
+        var appId = TL.__aiivAppId || (window.AIIV && window.AIIV.appId);
+        var rec = (typeof window.recById === 'function' && appId) ? window.recById(appId) : null;
+        var report = rec && rec.aiInterview && rec.aiInterview.report;
+        if (report && report.candidate_id && report.job_id) {
+          TL.recordAiInterview(report, {
+            applicationId: rec.applicationId,
+            feedback: rec.aiInterview.feedback,
+            questionSetHash: questionSetHash(rec.aiInterview.questions),
+            mode: rec.aiInterview.mode || 'voice',
+          }).then(function () {
+            if (typeof window.render === 'function') window.render();
+          }).catch(function (err) {
+            say(err);
+            console.error('TeamLink: the AI interview result could not be saved.', err);
+          });
+        }
+      } catch (e) {
+        console.error('TeamLink: failed to record the AI interview result.', e);
+      }
+      return out;
+    };
+  }
+
+  // aiivStart carries the application id the report needs.
+  var prevAiivStart = window.aiivStart;
+  if (typeof prevAiivStart === 'function') {
+    window.aiivStart = function (appId) {
+      TL.__aiivAppId = appId;
+      TL.__aiivStartedAt = new Date().toISOString();
+      return prevAiivStart.apply(this, arguments);
+    };
+  }
+
+  /* ---- remove the fabricated-score paths -------------------------- *
+   *
+   * simulateAIInterview() (:4189) set
+   *     aiInterviewScore = matchScore + random(-5..+5)
+   * producing a score with no interview behind it at all.
+   *
+   * aiInterviewCard() (:4880) fell back to
+   *     Math.max(55, matchScore - 6)
+   * inventing a number whenever none existed.
+   *
+   * Both are "a score disconnected from what the candidate actually
+   * said". The simulator now refuses and points at the real interview;
+   * the card shows "Not yet interviewed" instead of a fiction. Neither
+   * changes any layout — only what the number is allowed to be.
+   * ----------------------------------------------------------------- */
+
+  window.simulateAIInterview = function (candId) {
+    var c = DATA.candidateById(candId);
+    if (typeof window.toast === 'function') {
+      window.toast((c ? c.name : 'This candidate') +
+        ' has not completed an AI interview — a score can only come from a real session.', 'ℹ️');
+    }
+    return null;
+  };
+
+  var prevAiCard = window.aiInterviewCard;
+  if (typeof prevAiCard === 'function') {
+    window.aiInterviewCard = function (c) {
+      var html = prevAiCard.apply(this, arguments);
+
+      var hasReal = (TL.aiInterviews || []).some(function (x) { return x.candidateId === c.id; })
+        || typeof c.aiInterviewScore === 'number'
+        || !!(DATA.aiInterviewTranscripts && DATA.aiInterviewTranscripts[c.id]);
+      if (hasReal) return html;
+
+      // No interview has happened, so the number in that badge came from
+      // `Math.max(55, matchScore - 6)`. Only the badge TEXT is replaced —
+      // same element, same classes, same styling — because a made-up score
+      // is exactly what the specification forbids.
+      //
+      // This is a deliberate, spec-mandated difference from the prototype,
+      // recorded in docs/INTEGRATION.md rather than slipped in quietly.
+      return String(html).replace(/Score\s+\d+\/100/, 'Not yet interviewed');
+    };
+  }
+
+
+  /* ------------------------------------------------------------------ *
+   * 12. Session expiry
+   *
+   * A cookie can expire while the tab is open. Rather than letting the
+   * next action fail opaquely, notice it once and send the user to the
+   * login screen (requirement 24).
+   * ------------------------------------------------------------------ */
+
+  var expiryHandled = false;
+  TL.onAuthFailure = function (err) {
+    if (expiryHandled) return;
+    if (!err || (err.code !== 'SESSION_EXPIRED' && err.code !== 'UNAUTHENTICATED')) return;
+    expiryHandled = true;
+    STATE.session = null;
+    TL.session = null;
+    window.navigate('/');
+    setTimeout(function () { expiryHandled = false; }, 3000);
+  };
+
+  var baseSay = say;
+  say = function (err) { baseSay(err); TL.onAuthFailure(err); return err; };
+  api.say = say;
+
+  console.info('TeamLink: backend integration active (API ' + API + ')');
+})();

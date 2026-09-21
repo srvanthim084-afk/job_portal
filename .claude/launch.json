@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "baseline-proto",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["--yes", "http-server", "baseline", "-p", "4321", "-c-1", "--silent"],
+      "port": 4321
+    }
+  ]
+}

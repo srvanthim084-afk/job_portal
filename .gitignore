@@ -1,0 +1,21 @@
+# dependencies
+node_modules/
+
+# secrets — never commit a filled-in environment
+.env
+.env.*
+!.env.example
+
+# runtime state: the local database, uploaded resumes, backups, logs
+var/
+api/var/
+*.log
+
+# UI snapshots are DERIVED data — 3.7MB of JSON plus 12MB of PNGs, all
+# regenerated from baseline/prototype.html by:
+#     npm run ui:capture baseline
+ui-snapshots/
+
+# OS noise
+Thumbs.db
+.DS_Store
