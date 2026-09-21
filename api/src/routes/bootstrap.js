@@ -35,36 +35,42 @@ export default function bootstrapRoutes() {
       // One round trip per collection, all inside a single transaction so
       // the snapshot is internally consistent — a job and its application
       // count can never disagree.
-      const [
-        companies, jobs, candidates, applications,
-        interviews, offers, notifications,
-        recruiters, clients, admins, stages, settings, aiInterviews,
-      ] = await Promise.all([
-        c.query(`select * from companies order by name`),
-        // jobs_with_counts supplies the DERIVED applicants count and
-        // posted_days_ago, replacing the drifting counter (§3.2).
-        c.query(`select * from jobs_with_counts order by published_at desc nulls last, id`),
-        c.query(`select * from candidates order by id`),
-        c.query(`select * from applications order by applied_at desc`),
-        c.query(`select * from interviews order by scheduled_date desc nulls last`),
-        c.query(`select * from offers order by extended_at desc`),
-        session
-          ? c.query(`select * from notifications order by created_at desc limit 200`)
-          : { rows: [] },
-        c.query(`select * from recruiters order by name`),
-        c.query(`select * from client_users order by name`),
-        c.query(`select * from admins limit 1`),
-        c.query(`select id, label, kanban from stages order by sort_order`),
-        c.query(`select value from app_settings where key='ai'`),
-        // AI interview aggregates, scoped by RLS: a candidate gets their
-        // own, a recruiter/client their company's, an admin everything.
-        session
-          ? c.query(`select id, application_id, candidate_id, job_id, status,
-                            technical_score, behavioral_score, communication_score,
-                            overall_percentage, content_scored, feedback, completed_at
-                       from ai_interviews order by completed_at desc limit 200`)
-          : { rows: [] },
-      ]);
+      //
+      // Sequential, NOT Promise.all. These share one connection, so
+      // node-postgres queues them either way and there is no concurrency
+      // to win. What Promise.all did add was a failure mode: it fires all
+      // thirteen, and if one errors the transaction aborts, so the twelve
+      // still queued come back "current transaction is aborted"
+      // (SQLSTATE 25P02). Promise.all then rejects with whichever landed
+      // first, which is usually one of the 25P02s — the original error is
+      // lost and the whole payload 500s. Since /api/bootstrap is what
+      // fills the entire UI, that reads to a user as the app being
+      // broken, with nothing in the log naming the real cause.
+      const empty = { rows: [] };
+      const companies   = await c.query(`select * from companies order by name`);
+      // jobs_with_counts supplies the DERIVED applicants count and
+      // posted_days_ago, replacing the drifting counter (§3.2).
+      const jobs        = await c.query(`select * from jobs_with_counts order by published_at desc nulls last, id`);
+      const candidates  = await c.query(`select * from candidates order by id`);
+      const applications= await c.query(`select * from applications order by applied_at desc`);
+      const interviews  = await c.query(`select * from interviews order by scheduled_date desc nulls last`);
+      const offers      = await c.query(`select * from offers order by extended_at desc`);
+      const notifications = session
+        ? await c.query(`select * from notifications order by created_at desc limit 200`)
+        : empty;
+      const recruiters  = await c.query(`select * from recruiters order by name`);
+      const clients     = await c.query(`select * from client_users order by name`);
+      const admins      = await c.query(`select * from admins limit 1`);
+      const stages      = await c.query(`select id, label, kanban from stages order by sort_order`);
+      const settings    = await c.query(`select value from app_settings where key='ai'`);
+      // AI interview aggregates, scoped by RLS: a candidate gets their
+      // own, a recruiter/client their company's, an admin everything.
+      const aiInterviews = session
+        ? await c.query(`select id, application_id, candidate_id, job_id, status,
+                                technical_score, behavioral_score, communication_score,
+                                overall_percentage, content_scored, feedback, completed_at
+                           from ai_interviews order by completed_at desc limit 200`)
+        : empty;
 
       const cands = candidates.rows.map(toCandidate);
       const apps  = applications.rows.map(toApplication);

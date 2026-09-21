@@ -300,6 +300,44 @@ test('requirement 17: the candidate now reads the updated stage', async () => {
   assert.equal(updated.stage, 'shortlisted', 'the two sides disagree — not one source of truth');
 });
 
+test('a stage move WITH a note succeeds, and the note is stored', async () => {
+  // This is the regression that mattered. The note used to be written by
+  //   update application_stage_history set note=$1 ... order by id desc limit 1
+  // which PostgreSQL rejects outright (no ORDER BY/LIMIT on UPDATE). The
+  // failed statement aborted the transaction, so the queries after it came
+  // back 25P02 and the whole move returned DATABASE_ERROR. Every existing
+  // test moved a stage WITHOUT a note, so all 70 passed while a recruiter
+  // adding a comment could not move anyone at all.
+  const apps = await recruiter.get('/api/applications?candidateId=cand1');
+  const target = apps.body.applications.find((a) => a.jobId === 'j11');
+
+  const res = await recruiter.put(`/api/applications/${target.id}/status`,
+    { stage: 'interview_scheduled', note: 'Strong on SQL, scheduling round two.' });
+  assert.equal(res.status, 200, `a move with a note failed: ${JSON.stringify(res.body)}`);
+  assert.equal(res.body.application.stage, 'interview_scheduled');
+
+  const hist = await recruiter.get(`/api/applications/${target.id}/history`);
+  const last = hist.body.history.at(-1);
+  assert.equal(last.to_stage, 'interview_scheduled');
+  assert.equal(last.note, 'Strong on SQL, scheduling round two.',
+    'the note was accepted but never stored');
+});
+
+test('a failed request does not poison the next one', async () => {
+  // A statement that errors aborts its transaction. If that connection goes
+  // back into the pool still inside it, the NEXT request fails with 25P02 in
+  // some unrelated route - which is exactly how this surfaced: bootstrap and
+  // login failing for no reason of their own.
+  const mine = await client.get('/api/applications');
+  const dup = await client.post('/api/applications', { jobId: mine.body.applications[0].jobId });
+  assert.equal(dup.status, 409, 'expected the duplicate to be refused by the database');
+
+  const after = await client.get('/api/bootstrap');
+  assert.equal(after.status, 200,
+    `the connection was poisoned: ${JSON.stringify(after.body)}`);
+  assert.ok(after.body.data.jobs.length > 0, 'bootstrap came back empty after a failed call');
+});
+
 test('recruiter creates a job, edits it, and the Job ID never changes', async () => {
   const created = await recruiter.post('/api/jobs', {
     title: 'Platform Engineer', companyId: 'technova',

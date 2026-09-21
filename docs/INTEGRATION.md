@@ -218,13 +218,112 @@ These are required by the security requirements and cannot be preserved:
 - A recruiter sees their own company's pipeline. An admin still sees
   everything.
 
+## The offline message that was never about being offline
+
+A reported bug: logging in or clicking **Apply Now** showed
+
+> You appear to be offline - check your connection
+
+three or four times over, on a machine with a working connection.
+
+The message was produced by this file. Every `fetch` rejection mapped to
+one code, `NETWORK`, and that one string. A rejection means *no response
+at all*, which has four quite different causes, and only one of them is
+being offline:
+
+| What happened | `navigator.onLine` | What the app said | What it says now |
+|---|---|---|---|
+| Page opened from disk (`file://`) | `true` | you are offline | this page was opened as a file |
+| API not running | `true` | you are offline | cannot reach the TeamLink server |
+| Request timed out | `true` | you are offline | the server took too long |
+| Machine really offline | `false` | you are offline | you appear to be offline |
+
+The actual fault was the first row. `web/index.html` opened by
+double-clicking it has no http origin, so `fetch('/api/bootstrap')`
+resolves to `file:///C:/api/bootstrap` and Chrome refuses the scheme
+before any request leaves the browser. Nothing loads - `DATA.jobs` is 0 -
+and the app blamed the network. The repetition was one toast per failed
+call: bootstrap, then login, then apply.
+
+What changed, all in `web/teamlink-integration.js`:
+
+- **Classification.** `classify()` picks the code from the conditions, and
+  the offline wording is reachable only when `navigator.onLine === false`.
+- **No server to call.** A `file://` page fails the request immediately,
+  with an explanation and a console message naming the fix, instead of
+  attempting a fetch that cannot succeed.
+- **Timeouts.** Requests abort after 20s (`opts.timeout` to override) so a
+  hung server surfaces as a timeout, not a button stuck on "Signing in...".
+- **Status mapping.** A response without one of the API's own error codes -
+  a proxy's 502, a bare 404 - is mapped from its HTTP status: 401/403
+  authentication, 404 not found, 409 conflict, 422 validation, 500 server,
+  502/503 unreachable, 504 timeout.
+- **One failure, one toast.** An identical message inside the toast's own
+  4.2s lifetime is the same event reported twice, and is suppressed.
+- **`TL.diagnose()`** in the console answers "is the backend connected?"
+  with a verdict, the API base, and the last five failed calls. On
+  localhost every failure is already logged with its method, URL, status
+  and response body; `?tlDebug=1` turns that on anywhere.
+
+### Four defects underneath it
+
+Chasing this turned up faults that had nothing to do with the toast.
+
+1. **`GET /api/bootstrap` fired 13 queries with `Promise.all` on one
+   connection.** They share a client, so node-postgres queues them anyway -
+   there was no concurrency to win. What it did add: when one query failed,
+   the transaction aborted and the twelve still queued returned 25P02
+   "current transaction is aborted". `Promise.all` then rejected with
+   whichever landed first, so the log named a symptom and the original
+   error was lost. Now sequential.
+
+2. **A stage note could not be saved.** The API wrote it with
+   `update application_stage_history set note=$1 ... order by id desc limit 1`,
+   which is MySQL syntax; PostgreSQL rejects it outright. The failed
+   statement aborted the transaction, so the rest of the move failed with
+   25P02 and returned `DATABASE_ERROR`. It was wrapped in `.catch(() => {})`
+   commented "history is advisory; never fail the move over it" - the catch
+   is precisely what made the move impossible. Every existing test moved a
+   stage *without* a note, so 70 tests passed over it. The note now travels
+   with the move through `app.stage_note`, written by the trigger that
+   already inserts the history row (migration `0008_stage_note.sql`).
+
+3. **A poisoned connection went back into the pool.** If the rollback in
+   `withUser` also failed, the client was released still inside the aborted
+   transaction, and the *next* request failed with 25P02 somewhere
+   unrelated - which is why login and bootstrap were failing for no reason
+   of their own. Such a connection is now destroyed, not reused.
+
+4. **A fresh checkout came up with the wrong origin.** `api/src/config.js`
+   reads `process.env` once at import time. `tools/dev-server.mjs` set its
+   defaults *after* the seeding step - and seeding imports `auth.js`, which
+   imports `config.js`, on a first run only. So run one had
+   `PUBLIC_ORIGIN=http://localhost:8080` and rejected every POST from the
+   browser with `403 Origin not allowed`, while curl worked (it sends no
+   Origin header) and a restart "fixed" it. The defaults now precede every
+   `api/src` import.
+
+Also fixed: a 401 from any background call used to sign the candidate out
+mid-application. `/auth/me` is now consulted first, and only a session the
+server agrees is gone ends the session. And `localStorage.removeItem` sent
+`DELETE /api/prefs/<key>` for keys the database owns, which 401'd after
+logout; it now mirrors the guards `setItem` already had.
+
 ## Verification
 
 ```
-npm run verify:db     schema 10/10 · rls 22/22 · seed 15/15
-npm run test:api      40/40
-npm run ui:compare baseline integrated
+npm run verify:db         schema 10/10 · rls 29/29 · seed 16/16 · migrate 13/13
+npm run test:api          72/72
+npm run verify:candidate  18/18  register -> login -> apply -> history -> refresh
+npm run verify:interaction 7/7   real clicks on real controls
+npm run verify:search      9/9
+npm run rehearse          24/24  a deployment against an empty database
+npm run ui:compare baseline fixed     76/80 identical, 4 deliberate
 ```
+
+`verify:candidate` is the one that covers the bug above: it walks the whole
+candidate journey, then simulates each way a call can fail and asserts the
+app names the right one.
 
 Run the whole stack locally — Postgres, API and the app — with:
 

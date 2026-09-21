@@ -100,7 +100,7 @@ export async function assertUnprivileged(client) {
  * Pass null for an anonymous caller — the public job board still works,
  * governed by the anon branch of the policies.
  */
-export async function withUser(session, fn) {
+export async function withUser(session, fn, attempt = 0) {
   const client = await getPool().connect();
   try {
     await client.query('begin');
@@ -123,12 +123,42 @@ export async function withUser(session, fn) {
     );
     const out = await fn(client);
     await client.query('commit');
+    client.release();
     return out;
   } catch (err) {
-    try { await client.query('rollback'); } catch { /* connection already gone */ }
+    // A connection whose transaction could not be rolled back is still
+    // INSIDE that aborted transaction. Returning it to the pool hands the
+    // next request a connection where every statement fails with 25P02
+    // "current transaction is aborted" - at some unrelated line, in some
+    // unrelated route, which is why this was so hard to read in the log.
+    //
+    // release(err) destroys the connection instead of reusing it. The pool
+    // opens a fresh one; one request fails instead of every request after it.
+    let destroyed = false;
+    try {
+      await client.query('rollback');
+    } catch (rollbackFailed) {
+      client.release(rollbackFailed);
+      destroyed = true;
+    }
+    if (!destroyed) client.release();
+
+    // 25P02 means the transaction was already aborted when this statement
+    // ran - so the statement that aborted it was NOT one of ours (ours
+    // would have thrown its own error first). Something outside this
+    // transaction ended it, and the report lands on whichever query came
+    // next, in whatever route happened to be running.
+    //
+    // Nothing committed, and no route performs an external side effect
+    // (email, SMS) inside a transaction - those all run after the commit -
+    // so the work can simply be done again on a fresh connection. One
+    // retry: if the cause is really our own SQL, the second attempt fails
+    // with the actual error instead of hiding behind this one.
+    if (err && err.code === '25P02' && attempt === 0) {
+      console.warn('[db] transaction aborted from outside; retrying once');
+      return withUser(session, fn, 1);
+    }
     throw err;
-  } finally {
-    client.release();
   }
 }
 

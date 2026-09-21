@@ -37,6 +37,13 @@ node tools/dev-server.mjs 4323
 Open **http://127.0.0.1:4323**. Data is written to `var/dev-db` and
 survives restarts.
 
+> **Open it from the server, not from the file.** Double-clicking
+> `web/index.html` runs the page on `file://`, where it has no origin to
+> call: `fetch('/api/bootstrap')` becomes `file:///C:/api/bootstrap`, the
+> browser refuses the scheme, and the app loads with no data at all. It
+> will tell you so rather than blaming your connection — but the address
+> bar has to say `http://127.0.0.1:4323`.
+
 Sign in with `TeamLink@2026`: `admin@teamlink.com`,
 `recruiter@teamlink.com`, `client@teamlink.com`,
 `ananya.rao@example.com`.
@@ -65,6 +72,25 @@ npm run verify:stack -- --check     # did the record survive?
 A UI that shows a record it just created proves nothing. These re-read
 from the database.
 
+From the browser, open the console on any page and run:
+
+```js
+TL.diagnose()
+```
+
+It answers in one line — `CONNECTED`, `NOT CONNECTED`, `NOT SERVED` or
+`BROWSER OFFLINE` — and prints the last five failed calls with their
+method, URL, status and response. On localhost every API failure is
+already logged that way as it happens; add `?tlDebug=1` to the URL to get
+the same logging anywhere else.
+
+There is also a visual version at **/status.html**, and the full candidate
+journey can be driven end to end with:
+
+```bash
+npm run verify:candidate      # register -> login -> apply -> history -> refresh
+```
+
 ## Architecture
 
 ```
@@ -85,11 +111,13 @@ prototype keep working untouched. See
 ## Verification
 
 ```bash
-npm run verify:db      # schema 10 · RLS 29 · seed 16 · migrations 13
-npm run test:api       # 63 end-to-end tests against real PostgreSQL
-npm run verify:stack   # 14 live checks
-node tools/verify-interaction.mjs   # clicks real buttons
-node tools/verify-search.mjs        # proves search runs in SQL
+npm run verify:db         # schema 10 · RLS 29 · seed 16 · migrations 13
+npm run test:api          # 72 end-to-end tests against real PostgreSQL
+npm run verify:stack      # 14 live checks
+npm run verify:candidate  # the candidate journey, plus every way a call can fail
+npm run verify:interaction # clicks real buttons
+npm run verify:search     # proves search runs in SQL
+npm run rehearse          # a whole deployment against an empty database
 ```
 
 Nothing is mocked. The API tests run against PostgreSQL over the wire with

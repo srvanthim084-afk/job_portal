@@ -46,6 +46,32 @@ const DEV_DB   = process.env.DEV_DB_DIR || join(ROOT, 'var', 'dev-db');
 const LOAD_SEED = process.env.LOAD_SEED === 'true';
 const DEV_PASSWORD = process.env.DEV_PASSWORD || 'TeamLink@2026';
 
+/* ------------------------------------------------------------------ *
+ * Configuration defaults.
+ *
+ * These MUST be set before anything imports api/src/config.js, because
+ * that module reads process.env once, at import time, and keeps what it
+ * finds. This block used to sit further down, next to the createApp()
+ * import - which was fine until the database needed seeding: that path
+ * imports api/src/auth.js, which pulls in config.js, ON A FIRST RUN ONLY.
+ *
+ * So a fresh checkout came up with PUBLIC_ORIGIN still at its library
+ * default (http://localhost:8080) instead of this port. The origin check
+ * then rejected every POST from the browser with
+ * 403 "Origin not allowed." - login, apply, everything - while the same
+ * commands worked from curl, which sends no Origin header. Restarting the
+ * server "fixed" it, because the second run skips seeding.
+ * ------------------------------------------------------------------ */
+process.env.NODE_ENV = process.env.NODE_ENV || 'development';
+process.env.AUTH_SECRET = process.env.AUTH_SECRET
+  || 'dev-secret-not-for-production-0000000000000000';
+process.env.PUBLIC_ORIGIN = process.env.PUBLIC_ORIGIN || `http://127.0.0.1:${PORT}`;
+process.env.STORAGE_DRIVER = process.env.STORAGE_DRIVER || 'local';
+process.env.STORAGE_LOCAL_DIR = process.env.STORAGE_LOCAL_DIR || join(ROOT, 'var', 'uploads');
+process.env.BCRYPT_ROUNDS = process.env.BCRYPT_ROUNDS || '10';
+process.env.RATE_LIMIT_MAX = process.env.RATE_LIMIT_MAX || '100000';
+process.env.LOGIN_RATE_LIMIT_MAX = process.env.LOGIN_RATE_LIMIT_MAX || '1000';
+
 if (!existsSync(join(WEB, 'index.html'))) {
   console.error('web/index.html is missing — run `node web/build.mjs` first.');
   process.exit(1);
@@ -186,16 +212,6 @@ if (REAL_DB) {
 /* ------------------------------------------------------------------ *
  * the application
  * ------------------------------------------------------------------ */
-process.env.NODE_ENV = process.env.NODE_ENV || 'development';
-process.env.AUTH_SECRET = process.env.AUTH_SECRET
-  || 'dev-secret-not-for-production-0000000000000000';
-process.env.PUBLIC_ORIGIN = process.env.PUBLIC_ORIGIN || `http://127.0.0.1:${PORT}`;
-process.env.STORAGE_DRIVER = process.env.STORAGE_DRIVER || 'local';
-process.env.STORAGE_LOCAL_DIR = process.env.STORAGE_LOCAL_DIR || join(ROOT, 'var', 'uploads');
-process.env.BCRYPT_ROUNDS = process.env.BCRYPT_ROUNDS || '10';
-process.env.RATE_LIMIT_MAX = process.env.RATE_LIMIT_MAX || '100000';
-process.env.LOGIN_RATE_LIMIT_MAX = process.env.LOGIN_RATE_LIMIT_MAX || '1000';
-
 const { createApp } = await import('../api/src/app.js');
 const { getPool, assertUnprivileged, closePool } = await import('../api/src/db.js');
 const { providerStatus } = await import('../api/src/notify/providers.js');

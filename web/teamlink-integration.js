@@ -213,12 +213,20 @@
       browserOnline: navigator.onLine,
       backendConnected: TL.connected,
       signedInAs: TL.session ? TL.session.role + ':' + TL.session.id : null,
-      jobsInCache: (window.DATA && DATA.jobs || []).length,
+      // `const DATA` at prototype.html:898 is a lexical global, so it is
+      // NOT window.DATA - reading it that way reported 0 jobs always.
+      jobsInCache: (typeof DATA !== 'undefined' && DATA.jobs ? DATA.jobs.length : 0),
       recentFailures: TL.failures.slice(-5),
     };
+    var recent = TL.failures[TL.failures.length - 1];
+    var justFailed = recent && (Date.now() - Date.parse(recent.at)) < 15000;
+
     if (NO_ORIGIN) {
       out.verdict = 'NOT SERVED - this page is running from a file, so there is ' +
-        'no server to call. Start the app (npm run dev) and open http://127.0.0.1:4323/.';
+        'no server to call. Start the app (npm run dev) and open the http:// address it prints.';
+    } else if (justFailed && recent.code === 'OFFLINE') {
+      out.verdict = 'BROWSER OFFLINE - the machine has no network. The server is ' +
+        'not the problem; the last call never left the browser.';
     } else if (!TL.connected) {
       out.verdict = 'NOT CONNECTED - the page loaded but /api/bootstrap did not answer. ' +
         'The API is probably not running. See TL.failures for the exact call.';
@@ -306,11 +314,13 @@
     });
   }
 
+  // `opts.timeout` overrides TIMEOUT_MS - a resume upload legitimately
+  // takes longer than a lookup, and a test needs to force the timeout path.
   var api = TL.api = {
-    get:  function (p) { return request('GET', p); },
-    post: function (p, b) { return request('POST', p, b); },
-    put:  function (p, b) { return request('PUT', p, b); },
-    del:  function (p) { return request('DELETE', p); },
+    get:  function (p, o) { return request('GET', p, undefined, o); },
+    post: function (p, b, o) { return request('POST', p, b, o); },
+    put:  function (p, b, o) { return request('PUT', p, b, o); },
+    del:  function (p, o) { return request('DELETE', p, undefined, o); },
     say: say,
   };
 
@@ -606,7 +616,7 @@
           'before it leaves the browser, and no data can load.\n\n' +
           'Start the app and open it over http instead:\n' +
           '    npm run dev\n' +
-          '    http://127.0.0.1:4323/\n\n' +
+          '  then open the address it prints (the one beginning http://).\n\n' +
           'Run TL.diagnose() for the full picture.');
       } else {
         console.error('TeamLink: could not load data from the server (' +

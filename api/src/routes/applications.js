@@ -173,6 +173,17 @@ export default function applicationRoutes() {
         const valid = await c.query(`select id, label from stages where id=$1`, [stage]);
         if (!valid.rowCount) throw badRequest(`"${stage}" is not a valid pipeline stage.`);
 
+        // The note travels with the move, not after it. The trigger on
+        // `applications` writes the history row; it reads this setting and
+        // stores the note on that same INSERT (migration 0008).
+        //
+        // The previous version updated the history row afterwards with a
+        // statement PostgreSQL does not accept (UPDATE ... ORDER BY ...
+        // LIMIT). That aborted the transaction, so every query after it
+        // failed with 25P02 and the move itself 500'd - and the
+        // `.catch(() => {})` around it hid the cause.
+        await c.query(`select set_config('app.stage_note', $1, true)`, [note || '']);
+
         const upd = await c.query(
           `update applications set stage=$1 where id=$2 returning *`, [stage, req.params.id]);
         if (!upd.rowCount) {
@@ -182,13 +193,6 @@ export default function applicationRoutes() {
             : notFound('That application no longer exists.');
         }
         const app = upd.rows[0];
-
-        if (note) {
-          await c.query(
-            `update application_stage_history set note=$1
-              where application_id=$2 order by id desc limit 1`, [note, app.id])
-            .catch(() => {});  // history is advisory; never fail the move over it
-        }
 
         const job = await c.query(
           `select j.title, co.name as company from jobs j
