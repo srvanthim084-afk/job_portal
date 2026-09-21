@@ -855,6 +855,84 @@ test('notify: every channel quotes the SAME expiry and job id', async () => {
     `the SMS quotes a different expiry than the record: "${sent}" vs ${day}`);
 });
 
+test('companies: an admin can create one (a fresh deploy has none)', async () => {
+  const admin = makeClient(`http://127.0.0.1:${API_PORT}`);
+  await admin.post('/api/auth/login', { email: 'a1@test.local', password: 'TestPass123' });
+
+  const res = await admin.post('/api/companies', {
+    name: 'Northwind Systems', industry: 'Logistics Software',
+    hq: 'Pune, India', founded: 2019, size: '50–100 employees',
+    color1: '#0b6e8f', color2: '#3fb4d1',
+  });
+  assert.equal(res.status, 201);
+  assert.equal(res.body.company.id, 'northwind-systems', 'the id was not slugified from the name');
+  assert.equal(res.body.company.name, 'Northwind Systems');
+  assert.equal(res.body.company.color1, '#0b6e8f', 'branding colours must survive — the UI renders them');
+});
+
+test('companies: a job can then be created against it', async () => {
+  const admin = makeClient(`http://127.0.0.1:${API_PORT}`);
+  await admin.post('/api/auth/login', { email: 'a1@test.local', password: 'TestPass123' });
+  const res = await admin.post('/api/jobs', {
+    id: 'NW1', title: 'Platform Engineer', companyId: 'northwind-systems',
+    location: 'Pune', type: 'Full-time', status: 'open',
+  });
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+  assert.equal(res.body.job.companyId, 'northwind-systems');
+});
+
+test('companies: a recruiter CANNOT create or edit one', async () => {
+  const create = await recruiter.post('/api/companies', { name: 'Rogue Corp' });
+  assert.equal(create.status, 403, 'a recruiter created a company');
+  const edit = await recruiter.put('/api/companies/technova', { name: 'Renamed' });
+  assert.equal(edit.status, 403, 'a recruiter renamed a company');
+});
+
+test('companies: invalid input is rejected with field-level detail', async () => {
+  const admin = makeClient(`http://127.0.0.1:${API_PORT}`);
+  await admin.post('/api/auth/login', { email: 'a1@test.local', password: 'TestPass123' });
+
+  const shortName = await admin.post('/api/companies', { name: 'X' });
+  assert.equal(shortName.status, 400);
+  assert.ok(shortName.body.error.details.name);
+
+  const badColour = await admin.post('/api/companies', { name: 'Colour Test', color1: 'not-a-colour' });
+  assert.equal(badColour.status, 400);
+  assert.ok(badColour.body.error.details.color1, 'a non-hex colour was accepted');
+
+  const badId = await admin.post('/api/companies', { name: 'Id Test', id: 'Has Spaces!' });
+  assert.equal(badId.status, 400);
+  assert.ok(badId.body.error.details.id);
+});
+
+test('companies: a duplicate id is refused, not silently overwritten', async () => {
+  const admin = makeClient(`http://127.0.0.1:${API_PORT}`);
+  await admin.post('/api/auth/login', { email: 'a1@test.local', password: 'TestPass123' });
+  const again = await admin.post('/api/companies', { name: 'Northwind Systems' });
+  assert.equal(again.status, 400);
+  assert.match(JSON.stringify(again.body), /already exists/i);
+});
+
+test('companies: editing keeps the id, because jobs reference it', async () => {
+  const admin = makeClient(`http://127.0.0.1:${API_PORT}`);
+  await admin.post('/api/auth/login', { email: 'a1@test.local', password: 'TestPass123' });
+  const res = await admin.put('/api/companies/northwind-systems', { name: 'Northwind Systems Ltd' });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.company.id, 'northwind-systems', 'the company id changed on edit');
+  assert.equal(res.body.company.name, 'Northwind Systems Ltd');
+
+  // the job still resolves
+  const job = await admin.get('/api/jobs/NW1');
+  assert.equal(job.body.job.companyId, 'northwind-systems');
+});
+
+test('companies: the public job board can read them', async () => {
+  const anon = makeClient(`http://127.0.0.1:${API_PORT}`);
+  const res = await anon.get('/api/companies');
+  assert.equal(res.status, 200);
+  assert.ok(res.body.companies.length > 0, 'the public board cannot read company names');
+});
+
 test('shutdown', async () => {
   await new Promise((r) => server.close(r));
   await closePool();
