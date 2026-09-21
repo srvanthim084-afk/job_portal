@@ -189,9 +189,18 @@ try {
     return r.body.session.role;
   });
 
-  await check('CREATE a company', async () => {
+  await check('CREATE a company (nothing exists yet on a fresh deploy)', async () => {
+    const r = await call('POST', '/api/companies', {
+      name: 'Rehearsal Technologies', industry: 'Software',
+      hq: 'Bengaluru, India', color1: '#0b6e8f', color2: '#3fb4d1',
+    });
+    if (r.status !== 201) throw new Error(`${r.status} ${JSON.stringify(r.body)}`);
+    return r.body.company.id;
+  });
+
+  await check('CREATE a job for that company', async () => {
     const r = await call('POST', '/api/jobs', {
-      id: 'REH1', title: 'Rehearsal Engineer', companyId: null,
+      id: 'REH1', title: 'Rehearsal Engineer', companyId: 'rehearsal-technologies',
       location: 'Bengaluru', type: 'Full-time', status: 'open',
     });
     if (r.status !== 201) throw new Error(`${r.status} ${JSON.stringify(r.body)}`);
@@ -205,13 +214,17 @@ try {
   });
 
   await check('UPDATE persists and keeps the id', async () => {
-    await call('PUT', '/api/jobs/REH1', { title: 'Rehearsal Engineer II', companyId: null });
+    await call('PUT', '/api/jobs/REH1', { title: 'Rehearsal Engineer II', companyId: 'rehearsal-technologies' });
     const b = await call('GET', '/api/jobs/REH1');
     if (b.body.job.title !== 'Rehearsal Engineer II') throw new Error('the edit did not persist');
     if (b.body.job.id !== 'REH1') throw new Error('the id changed');
   });
 
   await check('DELETE removes it', async () => {
+    // Confirm it EXISTS first — otherwise this passes vacuously when an
+    // earlier step failed, which is exactly what happened on the first run.
+    const before = await call('GET', '/api/jobs/REH1');
+    if (before.status !== 200) throw new Error('nothing to delete — an earlier step failed');
     const d = await call('DELETE', '/api/jobs/REH1');
     const g = await call('GET', '/api/jobs/REH1');
     if (d.status !== 200 || g.status === 200) throw new Error('the record survived deletion');
@@ -243,10 +256,11 @@ try {
   /* ---------------------------------------------------------------- */
   step(7, 'Data survives a restart');
   await call('POST', '/api/auth/login', { email: ADMIN_EMAIL, password: ADMIN_PASSWORD });
-  await call('POST', '/api/jobs', {
-    id: 'REH_PERSIST', title: 'Survives a restart', companyId: null,
+  const made = await call('POST', '/api/jobs', {
+    id: 'REH_PERSIST', title: 'Survives a restart', companyId: 'rehearsal-technologies',
     location: 'Bengaluru', type: 'Full-time', status: 'open',
   });
+  if (made.status !== 201) no(`could not write the persistence marker: ${JSON.stringify(made.body)}`);
   await db.exec('checkpoint');
 
   await new Promise((r) => api.close(r)); api = null;

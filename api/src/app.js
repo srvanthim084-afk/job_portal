@@ -17,6 +17,7 @@ import { attachSession, csrfProtection, issueCsrfToken } from './auth.js';
 import bootstrapRoutes from './routes/bootstrap.js';
 import authRoutes from './routes/auth.js';
 import jobRoutes from './routes/jobs.js';
+import companyRoutes from './routes/companies.js';
 import candidateRoutes from './routes/candidates.js';
 import applicationRoutes from './routes/applications.js';
 import miscRoutes from './routes/misc.js';
@@ -137,6 +138,7 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
 
   app.use('/api', bootstrapRoutes());
   app.use('/api', authRoutes());
+  app.use('/api', companyRoutes());
   app.use('/api', jobRoutes());
   app.use('/api', candidateRoutes());
   app.use('/api', applicationRoutes());
