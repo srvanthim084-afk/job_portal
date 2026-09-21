@@ -44,7 +44,42 @@
 (function () {
   'use strict';
 
-  var API = window.TL_API_BASE || '/api';
+  /**
+   * Where the API lives.
+   *
+   * Served by the API itself - the normal case - this stays '/api', a
+   * relative path that follows whatever domain serves the app, so the same
+   * build works on localhost and in production without a rebuild.
+   *
+   * The standalone export is different: it is opened from a plain static
+   * server on some other port, so it has to be told. In order:
+   *
+   *   window.TL_API_BASE   an explicit base, e.g. 'https://jobs.example.com/api'
+   *   window.TL_API_PORT   just the API's port on THIS hostname
+   *   ?api=<base>          the same thing from the address bar, no rebuild
+   *
+   * TL_API_PORT is built from `location.hostname` rather than a fixed host
+   * on purpose. Session cookies are SameSite=Lax, which ignores the port but
+   * not the host: a page on localhost:5183 calling 127.0.0.1:4323 is
+   * cross-site and the cookie would be dropped, so you would sign in and
+   * immediately appear signed out. Same hostname, any port, works.
+   */
+  var API = (function () {
+    var q = /[?&]api=([^&]+)/.exec(location.search);
+    if (q) return decodeURIComponent(q[1]).replace(/\/+$/, '');
+    if (window.TL_API_BASE) return String(window.TL_API_BASE).replace(/\/+$/, '');
+    if (window.TL_API_PORT) {
+      return location.protocol + '//' + location.hostname + ':' + window.TL_API_PORT + '/api';
+    }
+    return '/api';
+  })();
+
+  // A cookie only travels cross-origin with 'include', and 'include' on a
+  // same-origin request is equivalent - but 'same-origin' is kept for the
+  // normal case so nothing about the usual deployment changes.
+  var CREDENTIALS = /^https?:\/\//.test(API) &&
+    API.indexOf(location.origin + '/') !== 0 ? 'include' : 'same-origin';
+
   var TL = (window.TL = window.TL || {});
 
   TL.ready = false;        // the app may paint (true even if loading failed)
@@ -210,6 +245,7 @@
       pageOrigin: location.origin === 'null' ? location.href : location.origin,
       protocol: location.protocol,
       apiBase: API,
+      apiCredentials: CREDENTIALS,
       browserOnline: navigator.onLine,
       backendConnected: TL.connected,
       signedInAs: TL.session ? TL.session.role + ':' + TL.session.id : null,
@@ -272,7 +308,7 @@
       method: method,
       headers: headers,
       body: payload,
-      credentials: 'same-origin',
+      credentials: CREDENTIALS,
       cache: 'no-store',
     };
 
@@ -597,15 +633,36 @@
 
   installStorageShim();
 
+  /**
+   * Makes DATA and STATE reachable as window.DATA / window.STATE.
+   *
+   * `const DATA = {}` (prototype.html:898) and `const STATE` are lexical
+   * globals: reachable by bare name from any script on the page, but NOT
+   * properties of window. That trips up anything reaching for them through
+   * window - console one-liners, a devtools snippet, and TL.diagnose(),
+   * which reported "0 jobs" for exactly this reason until a test caught it.
+   *
+   * These are references to the same objects, not copies, so window.DATA.jobs
+   * and DATA.jobs are the same array and neither can drift from the other.
+   */
+  function publishGlobals() {
+    try {
+      if (typeof DATA !== 'undefined') window.DATA = DATA;
+      if (typeof STATE !== 'undefined') window.STATE = STATE;
+    } catch (e) { /* nothing depends on this succeeding */ }
+  }
+
   function boot() {
     return hydrate().then(function () {
       TL.ready = true;
       TL.connected = true;
+      publishGlobals();
       if (!location.hash) location.hash = '#/';
       window.render();
     }).catch(function (err) {
       TL.ready = true;      // let the app render rather than hang on a blank page
       TL.connected = false;
+      publishGlobals();     // diagnosing a failure needs them more, not less
       say(err);
       window.render();
       // Requirement 9: the console must name the fault, not repeat the toast.
