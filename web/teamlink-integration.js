@@ -52,7 +52,45 @@
 
   /* ------------------------------------------------------------------ *
    * 1. Transport
+   *
+   * Every call the UI makes goes through request(). What it SAYS when a
+   * call fails matters as much as the call itself.
+   *
+   * The first version of this file mapped every fetch rejection to one
+   * message - "You appear to be offline - check your connection" - and
+   * that is wrong in the two cases that actually happen, both of which
+   * leave the connection perfectly healthy:
+   *
+   *   file://   web/index.html opened by double-clicking it. The page has
+   *             no http origin, so fetch('/api/bootstrap') resolves to
+   *             file:///C:/api/bootstrap and the browser refuses the
+   *             scheme outright. There is no server to reach, and the app
+   *             is empty: DATA.jobs is 0.
+   *   API down  the page loaded from the server but the API is not
+   *             answering (not started, crashed, nginx down, wrong port).
+   *
+   * In both, navigator.onLine is true. Telling the user to check their
+   * connection sends them to fix something that is not broken, and the
+   * message repeated once per failed call - boot, then login, then apply -
+   * which is the stack of identical toasts in the bug report.
+   *
+   * Failures are now classified, the offline wording is used ONLY when
+   * navigator.onLine is false, and identical toasts are collapsed.
    * ------------------------------------------------------------------ */
+
+  // No http origin means there is no API to call, and no retry will fix it.
+  var NO_ORIGIN = location.protocol === 'file:';
+
+  // A request that never settles hangs the button forever. 20s is far past
+  // any real response and well before a user assumes the app is dead.
+  var TIMEOUT_MS = 20000;
+
+  // Requirement 8: the failing endpoint, method, status and body have to be
+  // identifiable. On by default on localhost; ?tlDebug=1 turns it on anywhere.
+  TL.debug = /[?&]tlDebug=1/.test(location.search) ||
+    /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+
+  TL.failures = [];   // the last 20 failed calls, for TL.diagnose()
 
   function cookie(name) {
     var m = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
@@ -81,7 +119,26 @@
     CSRF_FAILED:         ['Please refresh the page and try again', '⚠️'],
     DATABASE_ERROR:      ['Something went wrong — please try again', '⚠️'],
     SERVER_ERROR:        ['Something went wrong — please try again', '⚠️'],
-    NETWORK:             ['You appear to be offline — check your connection', '📡'],
+    CONFLICT:            [null, 'ℹ️'],
+
+    // Transport failures. These are four different faults and they are
+    // deliberately worded differently - see the note above.
+    OFFLINE:         ['You appear to be offline — check your connection', '📡'],
+    NOT_SERVED:      ['This page was opened as a file — open it from the TeamLink server instead', '🔌'],
+    API_UNREACHABLE: ['Cannot reach the TeamLink server — the API is not responding', '🔌'],
+    TIMEOUT:         ['The server took too long to respond — please try again', '⏳'],
+  };
+
+  /**
+   * When the response carries no error code of its own (a proxy's 502 page,
+   * a bare 404), the HTTP status still says what happened. Requirement 7.
+   */
+  var BY_STATUS = {
+    400: 'VALIDATION_FAILED', 401: 'UNAUTHENTICATED', 403: 'FORBIDDEN',
+    404: 'NOT_FOUND', 408: 'TIMEOUT', 409: 'CONFLICT', 413: 'FILE_TOO_LARGE',
+    415: 'UNSUPPORTED_FILE', 422: 'VALIDATION_FAILED', 429: 'RATE_LIMITED',
+    500: 'SERVER_ERROR', 502: 'API_UNREACHABLE', 503: 'API_UNREACHABLE',
+    504: 'TIMEOUT',
   };
 
   function ApiFailure(code, message, details, status) {
@@ -91,44 +148,159 @@
   }
   ApiFailure.prototype = Object.create(Error.prototype);
 
+  /**
+   * One failure, one toast.
+   *
+   * A single broken connection produces several failed calls in a row
+   * (bootstrap, then login, then apply). Each used to raise its own toast,
+   * so the same sentence stacked three or four deep. The prototype's
+   * toast() dismisses after 4.2s, so an identical message repeated inside
+   * that window is the same event being reported twice.
+   */
+  var lastSaid = { text: null, at: 0 };
+
   function say(err) {
     var m = TOAST[err && err.code] || [null, '⚠️'];
     var text = m[0] || (err && err.message) || 'Something went wrong';
+    var now = Date.now();
+    if (text === lastSaid.text && now - lastSaid.at < 4200) return err;
+    lastSaid = { text: text, at: now };
     if (typeof window.toast === 'function') window.toast(text, m[1]);
     return err;
   }
+
+  /**
+   * Why did fetch reject? It only ever reports "Failed to fetch", so the
+   * answer comes from the surrounding conditions rather than the error.
+   */
+  function classify(err) {
+    if (navigator.onLine === false) return 'OFFLINE';      // the ONLY offline case
+    if (NO_ORIGIN) return 'NOT_SERVED';
+    if (err && err.name === 'AbortError') return 'TIMEOUT';
+    return 'API_UNREACHABLE';     // API down, DNS, TLS, or a CORS rejection
+  }
+
+  /** Requirement 8/9: say exactly which call failed, and how. */
+  function record(method, path, status, code, detail, ms) {
+    var entry = {
+      at: new Date().toISOString(), method: method, url: API + path,
+      status: status || 0, code: code, detail: detail, ms: ms,
+    };
+    TL.failures.push(entry);
+    if (TL.failures.length > 20) TL.failures.shift();
+    if (!TL.debug) return entry;
+    console.groupCollapsed('%cTeamLink API%c ' + method + ' ' + API + path +
+      ' -> ' + (status || 'no response') + ' ' + code,
+      'background:#b3261e;color:#fff;padding:2px 6px;border-radius:3px', '');
+    console.log('status  :', status || '(the request never reached a server)');
+    console.log('code    :', code);
+    console.log('response:', detail);
+    console.log('took    :', ms + 'ms');
+    console.groupEnd();
+    return entry;
+  }
+
+  /**
+   * A one-line answer to "is the backend connected?", for the console.
+   * Requirement 9 - look here instead of guessing from a toast.
+   */
+  TL.diagnose = function () {
+    var out = {
+      pageOrigin: location.origin === 'null' ? location.href : location.origin,
+      protocol: location.protocol,
+      apiBase: API,
+      browserOnline: navigator.onLine,
+      dataLoaded: TL.ready,
+      signedInAs: TL.session ? TL.session.role + ':' + TL.session.id : null,
+      jobsInCache: (window.DATA && DATA.jobs || []).length,
+      recentFailures: TL.failures.slice(-5),
+    };
+    if (NO_ORIGIN) {
+      out.verdict = 'NOT SERVED - this page is running from a file, so there is ' +
+        'no server to call. Start the app (npm run dev) and open http://127.0.0.1:4323/.';
+    } else if (!TL.ready) {
+      out.verdict = 'NOT CONNECTED - the page loaded but /api/bootstrap has not succeeded.';
+    } else {
+      out.verdict = 'CONNECTED - data came from ' + API + '.';
+    }
+    console.log(out.verdict);
+    if (console.table) console.table(out.recentFailures);
+    return out;
+  };
 
   function request(method, path, body, opts) {
     opts = opts || {};
     var headers = {};
     var payload = body;
+    var started = Date.now();
 
+    // There is no server behind a file:// page. Failing here rather than
+    // in fetch keeps the error honest and costs nothing.
+    if (NO_ORIGIN) {
+      var noSrv = new ApiFailure('NOT_SERVED',
+        'This page is running from a file, so it cannot reach the TeamLink API.');
+      record(method, path, 0, 'NOT_SERVED',
+        'location.protocol is "file:" - open the app from the server instead', 0);
+      return Promise.reject(noSrv);
+    }
+
+    // FormData sets its own multipart boundary; setting content-type by
+    // hand would corrupt the upload.
     if (body !== undefined && body !== null && !(body instanceof FormData)) {
       headers['content-type'] = 'application/json';
       payload = JSON.stringify(body);
     }
+    // Double-submit CSRF: the cookie is readable, so the same value is
+    // echoed in a header a cross-site page cannot set.
     var token = cookie('tl_csrf');
     if (token) headers['x-csrf-token'] = token;
 
-    return fetch(API + path, {
+    // `credentials: same-origin` is what carries the httpOnly session
+    // cookie. The session lives in that cookie, not in localStorage, so
+    // it survives a refresh without the page holding a token it could leak.
+    var init = {
       method: method,
       headers: headers,
       body: payload,
       credentials: 'same-origin',
-    }).then(function (res) {
+      cache: 'no-store',
+    };
+
+    // Bound the wait, so a hung server surfaces as a timeout instead of a
+    // button that never re-enables.
+    var ctl = null, timer = null;
+    if (typeof AbortController === 'function') {
+      ctl = new AbortController();
+      init.signal = ctl.signal;
+      timer = setTimeout(function () { ctl.abort(); }, opts.timeout || TIMEOUT_MS);
+    }
+    var settled = function () { if (timer) clearTimeout(timer); };
+
+    return fetch(API + path, init).then(function (res) {
       return res.text().then(function (text) {
+        settled();
         var json = null;
         try { json = text ? JSON.parse(text) : null; } catch (e) { json = null; }
         if (!res.ok) {
           var e = (json && json.error) || {};
-          throw new ApiFailure(e.code || 'SERVER_ERROR',
-            e.message || 'Request failed', e.details, res.status);
+          // The API always sends a code. A proxy or a static 404 page does
+          // not, so fall back to what the status itself means.
+          var code = e.code || BY_STATUS[res.status] || 'SERVER_ERROR';
+          record(method, path, res.status, code,
+            json || (text || '').slice(0, 400), Date.now() - started);
+          throw new ApiFailure(code, e.message || 'Request failed',
+            e.details, res.status);
         }
         return json;
       });
-    }, function () {
-      // fetch itself rejected — no network, DNS failure, server down
-      throw new ApiFailure('NETWORK', 'Network request failed');
+    }, function (err) {
+      // fetch rejected: nothing came back at all. Which of the four
+      // possible reasons it is decides what the user is told.
+      settled();
+      var code = classify(err);
+      record(method, path, 0, code,
+        (err && err.message) || String(err), Date.now() - started);
+      throw new ApiFailure(code, TOAST[code][0]);
     });
   }
 
