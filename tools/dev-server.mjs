@@ -195,9 +195,26 @@ if (REAL_DB) {
   if (need.rows[0].n === 0) {
     const { hashPassword } = await import('../api/src/auth.js');
     const hash = await hashPassword(DEV_PASSWORD);
+
+    // The seed comes from the prototype, which has no BDE - the role did not
+    // exist there. One is created here so there is somebody to sign in as,
+    // attached to a real company so the company-scoped policies have
+    // something to act on. In production a BDE is created by an
+    // administrator through POST /api/bdes, like any other staff account.
+    const anyBde = await db.query(`select count(*)::int n from bde_users`)
+      .catch(() => ({ rows: [{ n: 0 }] }));
+    if (anyBde.rows[0].n === 0) {
+      const co = await db.query(`select id from companies order by name limit 1`);
+      await db.query(
+        `insert into bde_users (id, name, email, company_id, title, initials)
+         values ('bde1', 'Priya Nair', 'bde@teamlink.com', $1,
+                 'Business Development Executive', 'PN')`,
+        [co.rows[0] ? co.rows[0].id : null]);
+    }
+
     for (const [table, role] of [
       ['admins', 'admin'], ['recruiters', 'recruiter'],
-      ['client_users', 'client'], ['candidates', 'candidate'],
+      ['client_users', 'client'], ['bde_users', 'bde'], ['candidates', 'candidate'],
     ]) {
       const { rows } = await db.query(
         `select id, email from ${table} where user_id is null order by id`);

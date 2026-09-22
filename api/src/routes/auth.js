@@ -20,7 +20,7 @@ import { toCandidate, toPerson } from '../shapes.js';
 const loginSchema = z.object({
   email: z.string().trim().min(3).max(254).email('Please enter a valid email address.'),
   password: z.string().min(1, 'Please enter your password.').max(200),
-  role: z.enum(['candidate', 'recruiter', 'client', 'admin']).optional(),
+  role: z.enum(['candidate', 'recruiter', 'client', 'admin', 'bde']).optional(),
 });
 
 const registerSchema = z.object({
@@ -124,7 +124,10 @@ export default function authRoutes() {
         const { rows } = await c.query(`select * from candidates where id=$1`, [profileId]);
         return rows[0] ? toCandidate(rows[0]) : null;
       }
-      const table = role === 'recruiter' ? 'recruiters' : role === 'client' ? 'client_users' : 'admins';
+      const table = role === 'recruiter' ? 'recruiters'
+                  : role === 'client'    ? 'client_users'
+                  : role === 'bde'       ? 'bde_users'
+                  : 'admins';
       const { rows } = await c.query(`select * from ${table} where id=$1`, [profileId]);
       return rows[0] ? toPerson(rows[0]) : null;
     });

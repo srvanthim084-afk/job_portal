@@ -593,6 +593,11 @@
     refill(DATA.interviews, d.interviews);
     refill(DATA.recruiters, d.recruiters);
     refill(DATA.clients, d.clients);
+    // BDEs are new in this system - the prototype has no DATA.bdes array to
+    // refill, so it is created on first hydrate and then kept in place like
+    // every other collection.
+    if (!DATA.bdes) DATA.bdes = [];
+    refill(DATA.bdes, d.bdes || []);
     if (d.admin) DATA.admin = d.admin;
 
     if (d.stages && d.stages.length) {
@@ -773,7 +778,8 @@
           window.navigate('/' + who.role + '/' +
             (who.role === 'candidate' ? 'home'
              : who.role === 'recruiter' ? 'home'
-             : who.role === 'client' ? 'jobs' : 'users'));
+             : who.role === 'client' ? 'jobs'
+             : who.role === 'bde' ? 'candidates' : 'users'));
         });
       })
       .catch(say)
@@ -849,7 +855,7 @@
    * email addresses. It now reads a server list that deliberately excludes
    * candidates — see public_login_hints() in 0002_rls.sql.
    */
-  TL.loginHints = { candidate: [], recruiter: [], client: [], admin: [] };
+  TL.loginHints = { candidate: [], recruiter: [], client: [], bde: [], admin: [] };
 
   window.demoAccountsFor = function (role) {
     return (TL.loginHints[role] || []).map(function (a) {
@@ -863,6 +869,7 @@
         candidate: h.candidate || [],
         recruiter: h.recruiter || [],
         client:    h.client || [],
+        bde:       h.bde || [],
         admin:     h.admin || [],
       };
     }).catch(function () { /* the panel renders empty; sign-in still works */ });
@@ -907,7 +914,13 @@
       if (email && email.value) { try { pw.focus(); } catch (e) {} }
     }
 
-    var box = document.querySelector('.auth-form .demo-box');
+    // There are TWO .demo-box elements on a login page: the credentials
+    // panel and the Quick demo login panel. Roles with no entry in
+    // ROLE_CREDENTIALS (bde) have no credentials panel at all, so picking
+    // the first one blanked their demo account list instead. Match on what
+    // the box actually contains.
+    var box = [].slice.call(document.querySelectorAll('.auth-form .demo-box'))
+      .filter(function (el) { return /password\s*:/i.test(el.textContent || ''); })[0];
     if (box && !box.dataset.tlFixed) {
       box.dataset.tlFixed = '1';
       var email = document.querySelector('.auth-form input[name="email"]');
@@ -1322,6 +1335,198 @@
       return prevSyncNow.apply(this, arguments);
     };
   }
+
+  /* ------------------------------------------------------------------ *
+   * 7d. The BDE role
+   *
+   * A BDE (Business Development Executive) sources candidates and pushes
+   * their records into the agency's ATS, which is a separate product.
+   *
+   * NO NEW SCREENS ARE BUILT HERE, and none are needed. The prototype
+   * renders a role's login page from ROLE_META[role] and its sidebar from
+   * NAV_CONFIG[role] - both plain objects - and pageRecruiterDash(section)
+   * renders every pipeline screen from the signed-in profile. So a BDE gets
+   * the existing recruiter screens by adding data, not markup:
+   *
+   *   ROLE_META.bde      the login page renders itself
+   *   NAV_CONFIG.bde     the sidebar renders itself
+   *   ROLE_RAIL/TAG      the same accents the other roles use
+   *   #/bde/*            routed into the screens that already exist
+   *
+   * What differs is not the page but the DATA: every query a BDE makes is
+   * filtered by the policies in 0010, so they see the pool and the AI
+   * interview scores, and cannot edit a candidate or move a pipeline stage.
+   * ------------------------------------------------------------------ */
+
+  if (typeof ROLE_META === 'object' && ROLE_META && !ROLE_META.bde) {
+    ROLE_META.bde = {
+      label: 'BDE',
+      chipBg: 'rgba(122,162,247,.20)',
+      chipColor: '#a9c1ff',
+      title: 'Source candidates and push them to your ATS',
+      blurb: 'Search the talent pool, review AI interview scores, and send complete candidate records to the ATS your agency runs on.',
+      points: [
+        'Full candidate record — profile, resume and AI interview scores',
+        'One-click export to your ATS, with every push recorded',
+        'Read-only on candidates: sourcing, not pipeline management',
+      ],
+    };
+  }
+
+  if (typeof NAV_CONFIG === 'object' && NAV_CONFIG && !NAV_CONFIG.bde) {
+    // The same section names pageRecruiterDash already understands.
+    NAV_CONFIG.bde = [
+      ['candidates', 'Candidates', '🧑‍🤝‍🧑'],
+      ['find-candidates', 'Find Candidates', '🔎'],
+      ['applications', 'Applications', '📬'],
+      ['jobs', 'Jobs', '💼'],
+    ];
+  }
+  if (typeof ROLE_RAIL === 'object' && ROLE_RAIL) ROLE_RAIL.bde = 'var(--ai-500)';
+  if (typeof ROLE_TAGCOLOR === 'object' && ROLE_TAGCOLOR) {
+    ROLE_TAGCOLOR.bde = { bg: 'rgba(122,162,247,.22)', c: '#a9c1ff' };
+  }
+
+  /**
+   * pageRecruiterDash() opens with DATA.recruiterById(STATE.session.id) and
+   * derives the whole screen from it. A BDE is not in that table, so the
+   * lookup is extended to fall back to their profile - the object has the
+   * same shape (id, name, email, companyId), which is all the renderer uses.
+   *
+   * This is a read-through, not a copy: a BDE is never inserted into
+   * DATA.recruiters, so nothing else in the app mistakes one for a recruiter.
+   */
+  if (window.DATA || typeof DATA !== 'undefined') {
+    var prevRecruiterById = DATA.recruiterById;
+    DATA.recruiterById = function (id) {
+      var found = prevRecruiterById ? prevRecruiterById.call(DATA, id) : null;
+      if (found) return found;
+      var list = DATA.bdes || [];
+      for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+      return found;
+    };
+    DATA.bdeById = function (id) {
+      var list = DATA.bdes || [];
+      for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+      return null;
+    };
+  }
+
+  /**
+   * #/bde/<section> -> the existing recruiter screens.
+   *
+   * The router is a chain of `else if (p0 === ...)` inside render(), which
+   * cannot be extended without editing it. Rewriting the hash would change
+   * what the address bar says and break the sidebar's active state, so the
+   * hash is left alone and the render is delegated instead: when the route
+   * is a BDE one, pageRecruiterDash is called for the same section.
+   */
+  /**
+   * dashShell(role, ...) builds the whole frame - sidebar, rail colour, role
+   * chip - from NAV_CONFIG[role] and ROLE_RAIL[role], and its nav links are
+   * `#/<role>/<section>`. pageRecruiterDash() ends with
+   * dashShell('recruiter', ...).
+   *
+   * So a BDE viewing those screens only needs the role swapped at that one
+   * call: the sidebar then comes from NAV_CONFIG.bde and its links point at
+   * #/bde/..., instead of sending them to recruiter routes they cannot open.
+   */
+  /* whoLabel() ends in `return DATA.admin`, so a BDE would appear in the
+     sidebar as the administrator. */
+  var realWhoLabel = window.whoLabel;
+  if (typeof realWhoLabel === 'function') {
+    window.whoLabel = function (role) {
+      if (role === 'bde') {
+        return DATA.bdeById(STATE.session && STATE.session.id) || realWhoLabel.apply(this, arguments);
+      }
+      return realWhoLabel.apply(this, arguments);
+    };
+  }
+
+  var realDashShell = window.dashShell;
+  if (typeof realDashShell === 'function') {
+    window.dashShell = function (role, section, titleHtml, crumb, contentHtml) {
+      if (role === 'recruiter' && STATE.session && STATE.session.role === 'bde') {
+        return realDashShell.call(this, 'bde', section, titleHtml,
+          String(crumb == null ? '' : crumb).replace(/^Recruiter/, 'BDE'), contentHtml);
+      }
+      return realDashShell.apply(this, arguments);
+    };
+  }
+
+  /**
+   * #/bde/<section> renders the existing screens.
+   *
+   * render()'s router is a chain of `else if (p0 === ...)` that cannot be
+   * extended without editing it, and rewriting the hash to #/recruiter/...
+   * would both lie in the address bar and break the sidebar's active state.
+   * So the hash is left alone and the render is delegated.
+   */
+  var realRenderForBde = window.render;
+  window.render = function () {
+    var parts = String(location.hash || '').replace(/^#\/?/, '').split('/').filter(Boolean);
+    if (parts[0] !== 'bde') return realRenderForBde.apply(this, arguments);
+
+    if (!STATE.session || STATE.session.role !== 'bde') {
+      window.navigate('/login/bde');
+      return;
+    }
+    try {
+      var html = window.pageRecruiterDash(parts[1] || 'candidates', {});
+      document.getElementById('app').innerHTML = html;
+      window.scrollTo(0, 0);
+      if (typeof window.afterRender === 'function') window.afterRender();
+    } catch (err) {
+      // Never leave a blank screen.
+      console.error('TeamLink: the BDE screen could not be rendered', err);
+      return realRenderForBde.apply(this, arguments);
+    }
+  };
+
+  /* ---- pushing a candidate to the ATS ------------------------------- *
+   *
+   * Exposed on TL rather than wired to a new button, because there is no
+   * BDE-specific control in the prototype to wire it to and adding one
+   * would be a UI change. The export is available from the console and
+   * from the API; the screen for it is a separate, deliberate piece of
+   * work.
+   * ------------------------------------------------------------------ */
+  TL.ats = {
+    /** What this candidate looks like to the ATS, without sending anything. */
+    preview: function (candidateId, applicationId) {
+      var q = applicationId ? '?applicationId=' + encodeURIComponent(applicationId) : '';
+      return api.get('/ats/payload/' + encodeURIComponent(candidateId) + q)
+        .then(function (r) { return r.payload; });
+    },
+
+    destinations: function () {
+      return api.get('/ats/destinations').then(function (r) { return r.destinations; });
+    },
+
+    /** Sends, records the attempt, and reports what actually happened. */
+    push: function (candidateId, opts) {
+      opts = opts || {};
+      return api.post('/ats/push', {
+        candidateId: candidateId,
+        applicationId: opts.applicationId || null,
+        destination: opts.destination || 'download',
+      }).then(function (res) {
+        if (typeof window.toast === 'function') {
+          window.toast(res.status === 'delivered'
+            ? 'Candidate record sent — export ' + res.exportId
+            : res.status === 'not_configured'
+              ? 'No ATS is configured — the record was recorded but not sent'
+              : 'The ATS refused the record: ' + (res.detail || 'unknown reason'),
+            res.status === 'delivered' ? '📤' : '⚠️');
+        }
+        return res;
+      }).catch(function (err) { say(err); throw err; });
+    },
+
+    history: function () {
+      return api.get('/ats/exports').then(function (r) { return r.exports; });
+    },
+  };
 
   /* ------------------------------------------------------------------ *
    * 8. Pipeline moves

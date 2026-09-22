@@ -19,6 +19,7 @@ import authRoutes from './routes/auth.js';
 import jobRoutes from './routes/jobs.js';
 import companyRoutes from './routes/companies.js';
 import resumeRoutes from './routes/resume.js';
+import bdeRoutes from './routes/bdes.js';
 import candidateRoutes from './routes/candidates.js';
 import applicationRoutes from './routes/applications.js';
 import miscRoutes from './routes/misc.js';
@@ -141,6 +142,7 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', authRoutes());
   app.use('/api', companyRoutes());
   app.use('/api', resumeRoutes());
+  app.use('/api', bdeRoutes());
   app.use('/api', jobRoutes());
   app.use('/api', candidateRoutes());
   app.use('/api', applicationRoutes());

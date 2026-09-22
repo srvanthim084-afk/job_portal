@@ -60,6 +60,10 @@ export default function bootstrapRoutes() {
         : empty;
       const recruiters  = await c.query(`select * from recruiters order by name`);
       const clients     = await c.query(`select * from client_users order by name`);
+      // A BDE reads the pool and pushes records out to the agency's ATS; the
+      // pipeline screens they reuse look their profile up by id, the same way
+      // they do for a recruiter.
+      const bdes        = await c.query(`select * from bde_users order by name`);
       const admins      = await c.query(`select * from admins limit 1`);
       const stages      = await c.query(`select id, label, kanban from stages order by sort_order`);
       const settings    = await c.query(`select value from app_settings where key='ai'`);
@@ -90,6 +94,7 @@ export default function bootstrapRoutes() {
         notifications: notifications.rows.map(toNotification),
         recruiters:  recruiters.rows.map(toPerson),
         clients:     clients.rows.map(toPerson),
+        bdes:        bdes.rows.map(toPerson),
         admin:       admins.rows[0] ? toPerson(admins.rows[0]) : null,
         stages:      stages.rows.map((s) => ({ id: s.id, label: s.label, kanban: s.kanban })),
         aiSettings:  settings.rows[0] ? settings.rows[0].value : {},
@@ -137,7 +142,7 @@ export default function bootstrapRoutes() {
    */
   r.get('/login-hints', wrap(async (req, res) => {
     if (process.env.SHOW_LOGIN_HINTS === 'false') {
-      return res.json({ candidate: [], recruiter: [], client: [], admin: [] });
+      return res.json({ candidate: [], recruiter: [], client: [], bde: [], admin: [] });
     }
     // RLS hides staff from anonymous callers, so this goes through the one
     // SECURITY DEFINER function written for it (0002_rls.sql). The policy
@@ -154,6 +159,7 @@ export default function bootstrapRoutes() {
       candidate: [],                                   // deliberately empty — see above
       recruiter: pick('recruiter'),
       client:    pick('client'),
+      bde:       pick('bde'),
       admin:     pick('admin'),
     });
   }));
