@@ -531,6 +531,8 @@ npm run verify:interview  15/15  the blueprint, the deadline, the five scores
 npm run verify:deadline   15/15  two days, reminded, expired
 npm run verify:matching   21/21  the alert rule, and the alert path
 npm run check:mail               does the mailbox accept us at all
+npm run mail:inbox               a real local SMTP server + an inbox to read
+                                 it at http://localhost:2580
 npm run rehearse          24/24  a deployment against an empty database
 npm run ui:compare baseline clean     58/80 identical, 22 explained below
 ```

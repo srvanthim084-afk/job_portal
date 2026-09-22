@@ -36,6 +36,7 @@
     "verify:notifications": "node tools/verify-notifications.mjs",
     "verify:easy-apply": "node tools/verify-easy-apply.mjs",
     "mail:sink": "node tools/mail-sink.mjs",
+    "mail:inbox": "node tools/mail-inbox.mjs",
     "verify:source": "node tools/verify-source.mjs",
     "verify:deadline": "node tools/verify-deadline.mjs",
     "check:mail": "node tools/check-mail.mjs",
