@@ -37,6 +37,7 @@
     "verify:easy-apply": "node tools/verify-easy-apply.mjs",
     "mail:sink": "node tools/mail-sink.mjs",
     "mail:inbox": "node tools/mail-inbox.mjs",
+    "mail:journey": "node tools/send-to-candidate.mjs",
     "verify:source": "node tools/verify-source.mjs",
     "verify:deadline": "node tools/verify-deadline.mjs",
     "check:mail": "node tools/check-mail.mjs",

@@ -14,6 +14,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { withUser } from '../db.js';
+import { toRupees } from '../money.js';
 import { wrap, badRequest, notFound, forbidden } from '../errors.js';
 import { requireAuth, requireRole } from '../auth.js';
 import { dispatchEvent } from '../notify/events.js';
@@ -174,6 +175,16 @@ export default function miscRoutes() {
     const { applicationId, ctc, joiningDate, notes } = req.body || {};
     if (!applicationId) throw badRequest('An application is required to extend an offer.');
 
+    // "18,00,000" is how the offer is written on the screen, and `ctc` is a
+    // numeric column: handed over unchanged it fails with `invalid input
+    // syntax for type numeric` and the recruiter is shown a 500 for typing
+    // a number the normal way.
+    const hasCtc = ctc !== undefined && ctc !== null && String(ctc).trim() !== '';
+    const ctcValue = hasCtc ? toRupees(ctc) : null;
+    if (hasCtc && ctcValue === null) {
+      throw badRequest('That CTC could not be read. Try "18,00,000" or "18 LPA".');
+    }
+
     const row = await withUser(req.session, async (c) => {
       const app = await c.query(`select * from applications where id=$1`, [applicationId]);
       if (!app.rowCount) throw notFound('That application no longer exists.');
@@ -183,7 +194,7 @@ export default function miscRoutes() {
         `insert into offers (id, application_id, candidate_id, job_id, ctc, joining_date, notes, extended_by)
          values ($1,$2,$3,$4,$5,$6,$7,$8) returning *`,
         [newId('off'), a.id, a.candidate_id, a.job_id,
-         ctc ?? null, joiningDate || null, notes || null,
+         ctcValue, joiningDate || null, notes || null,
          req.session.role === 'recruiter' ? req.session.profileId : null]);
 
       await c.query(`update applications set stage='offer_extended' where id=$1`, [a.id]);
@@ -193,7 +204,7 @@ export default function miscRoutes() {
          'Congratulations — an offer has been extended for your application.',
          a.job_id, a.id, a.candidate_id]);
 
-      return { row: rows[0], applicationId: a.id, ctc, joiningDate };
+      return { row: rows[0], applicationId: a.id, ctc: ctcValue, joiningDate };
     });
 
     const notify = await dispatchEvent(req.session, 'OFFER_EXTENDED', {

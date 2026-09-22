@@ -14,6 +14,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { config } from '../config.js';
 import { withUser } from '../db.js';
+import { toRupees } from '../money.js';
 import { wrap, badRequest, notFound, forbidden, ApiError, CODES } from '../errors.js';
 import { requireAuth, requireRole } from '../auth.js';
 import { storeResume, getStorage, ALLOWED_EXT } from '../storage.js';
@@ -42,26 +43,6 @@ const upload = multer({
  * account ends up with its skills rather than "0 skills detected" beside a
  * resume that plainly lists them.
  */
-/**
- * "28 LPA" -> 2800000, "12,00,000" -> 1200000, "₹18L" -> 1800000.
- *
- * Returns null when there is no number in it, so a line like
- * "Negotiable" stores nothing rather than a zero that would then be
- * filtered on as if the candidate had asked for it.
- */
-function toRupees(raw) {
-  const text = String(raw || '').toLowerCase().replace(/[,\s₹]/g, '');
-  const m = /(\d+(?:\.\d+)?)/.exec(text);
-  if (!m) return null;
-  const n = Number(m[1]);
-  if (!Number.isFinite(n) || n <= 0) return null;
-  if (/lpa|lakh|lac|\dl|l$/.test(text)) return Math.round(n * 100000);
-  if (/cr|crore/.test(text)) return Math.round(n * 10000000);
-  // A bare small number in a salary field means lakhs in this market.
-  if (n < 1000) return Math.round(n * 100000);
-  return Math.round(n);
-}
-
 async function applyExtractedFields(c, candidateId, fields) {
   if (!fields || !Object.keys(fields).length) return 0;
 
