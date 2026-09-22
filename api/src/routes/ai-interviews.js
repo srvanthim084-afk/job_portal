@@ -18,13 +18,20 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { withUser } from '../db.js';
-import { wrap, badRequest, notFound, forbidden } from '../errors.js';
+import { wrap, badRequest, notFound, forbidden, ApiError } from '../errors.js';
 import { requireAuth } from '../auth.js';
-import { planInterview, followUp, evaluate, interviewEngine } from '../ai/interview.js';
+import { planInterview, followUp, evaluate, interviewEngine, BLUEPRINT_TOTAL }
+  from '../ai/interview.js';
 import { toJob, toCandidate } from '../shapes.js';
 import { dispatchEvent } from '../notify/events.js';
 
 const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
+
+/**
+ * An AI interview must be completed within two days of being scheduled.
+ * Configurable, because a client with a slower process will ask.
+ */
+const DEADLINE_HOURS = Number(process.env.AI_INTERVIEW_DEADLINE_HOURS || 48);
 
 const answerSchema = z.object({
   seq: z.number().int().min(1).max(50),
@@ -71,6 +78,13 @@ const toAi = (r) => ({
   behavioralScore: r.behavioral_score == null ? null : Number(r.behavioral_score),
   communicationScore: r.communication_score == null ? null : Number(r.communication_score),
   overallPercentage: r.overall_percentage == null ? null : Number(r.overall_percentage),
+  // Scored separately: knowing the job's stack and being able to speak to
+  // your own resume are different things, and a recruiter wants both.
+  jdRelevance: r.jd_relevance == null ? null : Number(r.jd_relevance),
+  resumeRelevance: r.resume_relevance == null ? null : Number(r.resume_relevance),
+  startedAt: r.started_at ? new Date(r.started_at).toISOString() : undefined,
+  expiresAt: r.expires_at ? new Date(r.expires_at).toISOString() : undefined,
+  durationSeconds: r.duration_seconds == null ? null : Number(r.duration_seconds),
   questionsAsked: r.questions_asked,
   questionsAnswered: r.questions_answered,
   // Surfaced deliberately: when the browser could not transcribe, the score
@@ -122,11 +136,13 @@ export default function aiInterviewRoutes() {
       byInterview.get(a.ai_interview_id).push({
         seq: a.seq,
         category: a.category,
+        section: a.section || undefined,
         question: a.question,
         answered: a.answered,
         answerSummary: a.answer_summary || undefined,
         score: Number(a.score),
         commScore: a.comm_score == null ? null : Number(a.comm_score),
+        detail: a.detail || undefined,
         ...(isCandidate ? {} : { justification: a.justification || undefined }),
       });
     }
@@ -175,7 +191,7 @@ export default function aiInterviewRoutes() {
     const b = parse(z.object({
       applicationId: z.string().trim().min(1).max(64).optional(),
       jobId: z.string().trim().min(1).max(64).optional(),
-      count: z.number().int().min(4).max(15).optional(),
+      count: z.number().int().min(4).max(30).optional(),
     }), req.body);
 
     if (req.session.role !== 'candidate') {
@@ -204,7 +220,9 @@ export default function aiInterviewRoutes() {
       const questions = await planInterview({
         job: toJob(job),
         candidate: cand ? toCandidate(cand) : null,
-        count: b.count || 8,
+        // The blueprint: 2 introduction, 5 from the job description,
+        // 5 from the resume, 3 behavioural.
+        count: b.count || BLUEPRINT_TOTAL,
       });
 
       const id = newId('aiv');
@@ -213,14 +231,18 @@ export default function aiInterviewRoutes() {
       // no write access to ai_interviews, and should not - that is where
       // the scores live. The function checks the application is theirs.
       await c.query(
-        `select ai_interview_start($1,$2,$3,$4,$5,$6::jsonb)`,
+        `select ai_interview_start($1,$2,$3,$4,$5,$6::jsonb,$7)`,
         [id, app.id, req.session.profileId, app.job_id, hashOf(questions),
          JSON.stringify(questions.map((q) => ({
-           seq: q.seq, category: q.category, question: q.question,
+           seq: q.seq, category: q.category, section: q.section || null,
+           question: q.question,
            meta: JSON.stringify({ expects: q.expects || [], source: q.source || null }),
-         })))]);
+         }))),
+         DEADLINE_HOURS]);
 
-      return { id, app, job, questions };
+      const row = (await c.query(
+        `select expires_at, started_at from ai_interviews where id=$1`, [id])).rows[0];
+      return { id, app, job, questions, row };
     });
 
     res.status(201).json({
@@ -229,6 +251,12 @@ export default function aiInterviewRoutes() {
       jobId: out.job.id,
       jobTitle: out.job.title,
       engine: interviewEngine(),
+      // The candidate has two days. Both ends are sent so the screen can
+      // show a deadline rather than a countdown it invented.
+      startedAt: out.row ? out.row.started_at : null,
+      expiresAt: out.row ? out.row.expires_at : null,
+      deadlineHours: DEADLINE_HOURS,
+      blueprint: { intro: 2, jd: 5, resume: 5, behavioral: 3, total: out.questions.length },
       questions: out.questions,
     });
   }));
@@ -253,6 +281,14 @@ export default function aiInterviewRoutes() {
         `select * from ai_interviews where id=$1 and candidate_id=$2`,
         [req.params.id, req.session.profileId])).rows[0];
       if (!iv) throw notFound('That interview could not be found.');
+      // Two days, and the database is the clock. An interview left open
+      // past its deadline is expired, not merely late.
+      if (iv.status === 'in_progress' && iv.expires_at && new Date(iv.expires_at) < new Date()) {
+        await c.query(`select ai_interview_expire_overdue()`);
+        throw new ApiError(410, 'INTERVIEW_EXPIRED',
+          'This interview has passed its deadline and can no longer be completed. ' +
+          'Please contact the recruiter if you need it reopened.');
+      }
       if (iv.status !== 'in_progress') throw badRequest('That interview is already finished.');
 
       const row = (await c.query(
@@ -323,11 +359,17 @@ export default function aiInterviewRoutes() {
     if (loaded.iv.status === 'completed') {
       return res.json({ alreadyFinished: true, aiInterviewId: loaded.iv.id });
     }
+    if (loaded.iv.status === 'expired' ||
+        (loaded.iv.expires_at && new Date(loaded.iv.expires_at) < new Date())) {
+      await withUser(req.session, (c) => c.query(`select ai_interview_expire_overdue()`));
+      throw new ApiError(410, 'INTERVIEW_EXPIRED',
+        'This interview has passed its deadline and can no longer be submitted.');
+    }
 
     const graded = await evaluate({
       job: toJob(loaded.job),
       answers: loaded.rows.map((r) => ({
-        seq: r.seq, category: r.category, question: r.question,
+        seq: r.seq, category: r.category, section: r.section, question: r.question,
         answered: r.answered, transcript: r.answer_summary || '',
         expects: metaOf(r).expects,
       })),
@@ -337,7 +379,7 @@ export default function aiInterviewRoutes() {
       // Every number here was computed by evaluate() from the stored
       // transcripts. Nothing the browser sent reaches this call.
       await c.query(
-        `select ai_interview_finish($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,
+        `select ai_interview_finish($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12)`,
         [loaded.iv.id, req.session.profileId,
          graded.technical, graded.behavioral, graded.communication, graded.overall,
          graded.contentScored, graded.feedback,
@@ -346,7 +388,10 @@ export default function aiInterviewRoutes() {
            seq: p.seq, score: p.score,
            commScore: p.commScore == null ? '' : p.commScore,
            justification: p.justification || null,
-         })))]);
+           detail: p.detail || null,
+         }))),
+         graded.jdRelevance == null ? null : graded.jdRelevance,
+         graded.resumeRelevance == null ? null : graded.resumeRelevance]);
 
       // In-app too. The portal's notification feed is where a candidate
       // looks first, and an interview that finishes silently there reads

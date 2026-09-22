@@ -904,9 +904,16 @@ test('notify: a configured provider that accepts the message reports "sent"', as
 
   // the provider really was called, with the real content
   assert.ok(mockProvider.received.length > before, 'the provider was never contacted');
-  const sent = mockProvider.received.at(-1).body;
+
+  // Applying now sends TWO messages - the interview invitation and the
+  // AI interview's two-day deadline - so this looks for the invitation
+  // rather than assuming it was the last thing sent.
+  const sent = mockProvider.received
+    .slice(before)
+    .map((r) => r.body)
+    .find((b) => String(b.message || '').includes('/#/interview/'));
+  assert.ok(sent, 'no SMS carried the interview URL');
   assert.ok(/interview/i.test(sent.message), 'the SMS body has no interview link');
-  assert.ok(sent.message.includes('/#/interview/'), 'the SMS carries no interview URL');
 
   // and the provider's message id was stored for audit
   const apps = await recruiter.get('/api/applications?candidateId=cand8');
@@ -924,7 +931,11 @@ test('notify: every channel quotes the SAME expiry and job id', async () => {
 
   // the SMS body the provider actually received must quote the same
   // expiry the application record holds
-  const sent = mockProvider.received.at(-1).body.message;
+  const sent = mockProvider.received
+    .map((r) => String(r.body.message || ''))
+    .filter((m) => m.includes('/#/interview/'))
+    .at(-1);
+  assert.ok(sent, 'no SMS carried the interview URL');
   const expiry = new Date(st.body.interview_expiry);
   const day = expiry.toLocaleString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
   assert.ok(sent.includes(day),

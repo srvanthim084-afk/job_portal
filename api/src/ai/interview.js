@@ -135,7 +135,29 @@ const trimLead = (s) => clean(s)
  *          `source` says where the question came from, so a recruiter
  *          reading the transcript can see it was tied to the role.
  */
-export async function planInterview({ job, candidate, count = 8 }) {
+/**
+ * The shape of every interview.
+ *
+ * Fixed on purpose. "About eight questions, mostly technical" cannot be
+ * compared between two candidates, and cannot be scored per section: JD
+ * relevance and resume relevance are different signals - a candidate can
+ * know the stack the job needs and be vague about their own project - and
+ * separating them needs a known number of questions from each source.
+ *
+ * `category` stays within the four values the database and the prototype
+ * already use; `section` records which part of the blueprint produced the
+ * question.
+ */
+export const BLUEPRINT = [
+  { section: 'intro',      category: 'intro',      count: 2 },
+  { section: 'jd',         category: 'technical',  count: 5 },
+  { section: 'resume',     category: 'resume',     count: 5 },
+  { section: 'behavioral', category: 'behavioral', count: 3 },
+];
+
+export const BLUEPRINT_TOTAL = BLUEPRINT.reduce((t, b) => t + b.count, 0);   // 15
+
+export async function planInterview({ job, candidate, count = BLUEPRINT_TOTAL }) {
   if (aiConfigured()) {
     try {
       const planned = await planWithModel({ job, candidate, count });
@@ -232,16 +254,12 @@ async function planWithModel({ job, candidate, count }) {
  * different interviews - which is the part of the specification that
  * matters most here.
  */
-export function planFromJob({ job, candidate, count = 8 }) {
+export function planFromJob({ job, candidate, count = BLUEPRINT_TOTAL }) {
   const topics = jobTopics(job);
-  const skills = (job.skills || []).slice();
+  const jobSkills = (job.skills || []).slice();
   const candSkills = ((candidate?.technicalSkills?.length
     ? candidate.technicalSkills : candidate?.skills) || []).slice();
 
-  // Which of the job's required skills the resume actually evidences, and
-  // which it does not. Both are worth asking about, for opposite reasons:
-  // one to test a claim, the other to probe a gap.
-  const lower = (a) => a.map((x) => String(x).toLowerCase());
   const resumeBlob = [
     candSkills.join(' '), candidate?.summary, candidate?.education,
     (candidate?.previousCompanies || []).join(' '), candidate?.title,
@@ -249,110 +267,214 @@ export function planFromJob({ job, candidate, count = 8 }) {
     (candidate?.projects || []).map((p) => (typeof p === 'string' ? p : JSON.stringify(p))).join(' '),
   ].filter(Boolean).join(' ').toLowerCase();
 
-  const evidenced = skills.filter((s) => resumeBlob.includes(String(s).toLowerCase()));
-  const gaps = skills.filter((s) => !resumeBlob.includes(String(s).toLowerCase()));
+  const evidenced = jobSkills.filter((x) => resumeBlob.includes(String(x).toLowerCase()));
+  const gaps = jobSkills.filter((x) => !resumeBlob.includes(String(x).toLowerCase()));
 
-  const qs = [];
-  const add = (category, question, expects, source) => {
-    if (qs.length >= count) return;
-    qs.push({
-      seq: qs.length + 1,
-      category,
-      question: clean(question).slice(0, 600),
-      expects: (expects || []).map((x) => String(x).toLowerCase()),
-      source: source || null,
-    });
-  };
+  /* ---- the four sections, each filled from its own source ------------- */
 
-  add('intro',
-    `Please introduce yourself and tell me why you are a good fit for the ${job.title} role` +
-      `${job.location ? ` in ${job.location}` : ''}.`,
-    ['experience', 'role', 'fit', 'background'], `the ${job.title} posting`);
+  // 2 · introduction — the candidate in their own words
+  const intro = [
+    {
+      // Names the role on purpose: the candidate should hear which
+      // interview this is, and every interview must be about ONE job.
+      question: `Thanks for joining the interview for the ${job.title} role. ` +
+                'Please introduce yourself and tell me about your professional background.',
+      expects: ['experience', 'background', 'role', 'years'],
+      source: `introduction: ${job.title}`,
+    },
+    {
+      question: 'Please walk me through your resume — your education, your experience, ' +
+                'the projects you have worked on and your key skills.',
+      expects: ['education', 'project', 'skill', 'experience'],
+      source: 'introduction',
+    },
+  ];
 
-  if (candidate?.currentCompany || candidate?.title) {
-    add('resume',
-      `You are currently ${candidate.title || 'working'}` +
-        `${candidate.currentCompany ? ` at ${candidate.currentCompany}` : ''}. ` +
-        'Walk me through one project there, what you specifically owned, and how it turned out.',
-      ['project', 'owned', 'result', 'built'], "the candidate's own profile");
-  }
-
-  // A named project from the resume. Asking about something specific on the
-  // document is the difference between an interview and a questionnaire.
-  const project = (candidate?.projects || [])
-    .map((p) => (typeof p === 'string' ? p : (p?.name || p?.title || '')))
-    .map((x) => clean(x)).filter((x) => x.length > 3)[0];
-  if (project) {
-    add('resume',
-      `Your resume lists "${project}". What was your specific part in it, and ` +
-      `what would you do differently now?`,
-      ['built', 'owned', 'design', 'result', 'differently'],
-      `resume: project "${project}"`);
-  }
-
-  // Where the resume DOES back a required skill, test the claim against this
-  // role rather than asking in the abstract.
-  for (const skill of evidenced) {
-    if (qs.length >= count - 3) break;
-    add('technical',
-      `This role needs ${skill}, and your resume shows it` +
-        `${candidate?.currentCompany ? ` at ${candidate.currentCompany}` : ''}. ` +
-        'Take me through the hardest problem you solved with it.',
-      [String(skill).toLowerCase(), 'problem', 'solved', 'approach'],
-      `resume \u00d7 required skill: ${skill}`);
-  }
-
-  // A requirement the resume does not evidence. Asked plainly, because it
-  // is the thing a recruiter most wants to know and the candidate most
-  // deserves a chance to answer.
-  for (const skill of gaps) {
-    if (qs.length >= count - 2) break;
-    if (qs.some((q) => q.question.toLowerCase().includes(String(skill).toLowerCase()))) continue;
-    add('technical',
-      `The role asks for ${skill}, which I could not find on your resume. ` +
-      'What is your experience with it?',
-      [String(skill).toLowerCase(), 'experience', 'used', 'learn'],
-      `gap: ${skill} required but not evidenced on the resume`);
-  }
-
-  // One question per requirement, quoting it. This is what makes the
-  // interview specific to the role.
+  // 5 · from the job description — never about technology the role does not mention
+  const jd = [];
   for (const t of topics) {
-    if (qs.length >= count - 2) break;
+    if (jd.length >= 5) break;
     const subject = trimLead(t.text);
     if (!subject) continue;
-    // Quoted rather than folded into the sentence: a responsibility is
-    // written as an imperative ("Own the component library"), which reads
-    // badly after "This role involves".
-    const question = t.kind === 'responsibility'
-      ? `One responsibility of this role is: "${subject}". Tell me about a time you did exactly that, and how you approached it.`
-      : `The role asks for ${lowerFirst(subject)}. Describe your experience with that, with a concrete example.`;
-    add('technical', question, keywordsOf(subject), `${t.kind}: ${t.text}`);
+    jd.push({
+      question: t.kind === 'responsibility'
+        ? `One responsibility of this role is: "${subject}". Tell me about a time you did exactly that, and how you approached it.`
+        : `The role asks for ${lowerFirst(subject)}. Describe your experience with that, with a concrete example.`,
+      expects: keywordsOf(subject),
+      source: `${t.kind}: ${t.text}`,
+    });
+  }
+  // A requirement the resume does not evidence is the most useful question
+  // a recruiter can have asked, so gaps fill the remaining JD slots first.
+  for (const skill of gaps) {
+    if (jd.length >= 5) break;
+    if (jd.some((q) => q.question.toLowerCase().includes(String(skill).toLowerCase()))) continue;
+    jd.push({
+      question: `The role asks for ${skill}, which I could not find on your resume. ` +
+                'What is your experience with it?',
+      expects: [String(skill).toLowerCase(), 'experience', 'used', 'learn'],
+      source: `gap: ${skill} required but not evidenced on the resume`,
+    });
+  }
+  for (const skill of jobSkills) {
+    if (jd.length >= 5) break;
+    if (jd.some((q) => q.question.toLowerCase().includes(String(skill).toLowerCase()))) continue;
+    jd.push({
+      question: `How would you use ${skill} in this role, and where have you used it before?`,
+      expects: [String(skill).toLowerCase(), 'project', 'example'],
+      source: `required skill: ${skill}`,
+    });
   }
 
-  // Anything still unfilled, from the candidate's own stack.
-  for (const s of candSkills) {
-    if (qs.length >= count - 2) break;
-    if (qs.some((q) => q.question.toLowerCase().includes(String(s).toLowerCase()))) continue;
-    add('technical',
-      `How have you used ${s} in production? Walk me through a specific problem it solved for you.`,
-      [String(s).toLowerCase(), 'production', 'problem', 'example'],
-      `resume: skill ${s}`);
+  // 5 · from the resume — about what the candidate actually wrote
+  const resume = [];
+  const projects = (candidate?.projects || [])
+    .map((p) => (typeof p === 'string' ? p : (p?.name || p?.title || '')))
+    .map((x) => clean(x)).filter((x) => x.length > 3);
+
+  for (const project of projects) {
+    if (resume.length >= 3) break;
+    resume.push({
+      question: `You mentioned "${project}" on your resume. Can you explain your role in that project?`,
+      expects: ['built', 'owned', 'designed', 'responsible'],
+      source: `resume: project "${project}"`,
+    });
+    if (resume.length < 5) {
+      resume.push({
+        question: `What was the hardest problem you hit while building "${project}", and how did you solve it?`,
+        expects: ['problem', 'solved', 'approach', 'fix'],
+        source: `resume: project "${project}"`,
+      });
+    }
+  }
+  if (candidate?.currentCompany || candidate?.title) {
+    if (resume.length < 5) {
+      resume.push({
+        question: `You are ${candidate.title || 'working'}` +
+                  `${candidate.currentCompany ? ` at ${candidate.currentCompany}` : ''}. ` +
+                  'What do you own day to day, and what has been your biggest contribution there?',
+        expects: ['own', 'built', 'result', 'responsible'],
+        source: "resume: current role",
+      });
+    }
+  }
+  for (const skill of evidenced.concat(candSkills)) {
+    if (resume.length >= 5) break;
+    if (resume.some((q) => q.question.toLowerCase().includes(String(skill).toLowerCase()))) continue;
+    resume.push({
+      question: `Your resume lists ${skill}. Walk me through where you used it and what you built with it.`,
+      expects: [String(skill).toLowerCase(), 'used', 'built', 'project'],
+      source: `resume: skill ${skill}`,
+    });
+  }
+  if (candidate?.education && resume.length < 5) {
+    resume.push({
+      question: 'Tell me about your education and how it prepared you for this kind of work.',
+      expects: ['degree', 'studied', 'learn', 'applied'],
+      source: 'resume: education',
+    });
   }
 
-  add('behavioral',
-    'Tell me about a time you disagreed with a colleague about a technical decision. What did you do?',
-    ['listen', 'data', 'disagree', 'resolve', 'outcome'], 'standard behavioural');
-  add('behavioral',
-    'Describe a deadline you were at risk of missing. How did you handle it?',
-    ['priorit', 'communicat', 'plan', 'deliver', 'trade-off'], 'standard behavioural');
+  // 3 · behavioural
+  const behavioral = [
+    { question: 'Tell me about a difficult problem you faced at work or in a project, and how you solved it.',
+      expects: ['problem', 'approach', 'solved', 'result'], source: 'behavioural' },
+    { question: 'Tell me about a time you had to work with someone whose approach was different from yours.',
+      expects: ['listen', 'perspective', 'agree', 'outcome'], source: 'behavioural' },
+    { question: 'Describe a time you had to learn something new quickly. How did you handle it?',
+      expects: ['learn', 'quickly', 'applied', 'result'], source: 'behavioural' },
+  ];
 
-  return qs.slice(0, count);
+  /* ---- every section must reach its count ----------------------------- */
+  /*
+   * A thin resume or a job posted with two lines of description would
+   * otherwise produce a 10-question interview, and two candidates for the
+   * same role could be asked a different NUMBER of questions - which makes
+   * the scores incomparable, which is the whole reason the blueprint
+   * exists.
+   *
+   * So a short section is topped up from a fallback that is still about
+   * the right thing, and the source says plainly that the resume or the
+   * job description did not carry enough detail. Nothing here invents a
+   * project or a skill the candidate never claimed.
+   */
+  const RESUME_FALLBACK = [
+    { question: 'Walk me through the most substantial piece of work on your resume — ' +
+                'what was it, and what was your part in it?',
+      expects: ['built', 'owned', 'role', 'project'],
+      source: 'resume: no project named on the resume' },
+    { question: 'Which of the skills on your resume are you strongest in, and where did you use it?',
+      expects: ['skill', 'used', 'project', 'built'],
+      source: 'resume: skills not itemised on the resume' },
+    { question: 'Tell me about your education and how it prepared you for this kind of work.',
+      expects: ['degree', 'studied', 'learn', 'applied'],
+      source: 'resume: education not detailed on the resume' },
+    { question: 'What have you spent most of your time on in your current or most recent role?',
+      expects: ['day', 'own', 'responsible', 'work'],
+      source: 'resume: no current role on the resume' },
+    { question: 'What is something you built or contributed to that you are proud of, and why?',
+      expects: ['built', 'proud', 'result', 'impact'],
+      source: 'resume: not enough detail on the resume' },
+  ];
+
+  const JD_FALLBACK = [
+    { question: `What do you understand this ${job.title} role to involve, ` +
+                'and which part of it are you strongest at?',
+      expects: ['role', 'experience', 'strong'],
+      source: 'requirement: the job description is brief' },
+    { question: `What experience do you have that is closest to this ${job.title} role?`,
+      expects: ['experience', 'similar', 'role'],
+      source: 'requirement: the job description is brief' },
+    { question: 'Which tools and technologies do you work with day to day?',
+      expects: ['tool', 'used', 'work'],
+      source: 'required skill: none listed on the job' },
+    { question: 'How do you decide an approach when a task can be done more than one way?',
+      expects: ['approach', 'trade', 'decide', 'why'],
+      source: 'responsibility: the job description is brief' },
+    { question: 'What would you want to know about this role before you started?',
+      expects: ['question', 'team', 'expect', 'scope'],
+      source: 'requirement: the job description is brief' },
+  ];
+
+  const BEHAVIORAL_FALLBACK = [
+    { question: 'Tell me about a time you made a mistake at work. What did you do about it?',
+      expects: ['mistake', 'fixed', 'learn', 'told'], source: 'behavioural' },
+    { question: 'Describe a time you had to deliver under a tight deadline.',
+      expects: ['deadline', 'priorit', 'delivered', 'result'], source: 'behavioural' },
+  ];
+
+  const topUp = (pool, spare, want) => {
+    for (const q of spare) {
+      if (pool.length >= want) break;
+      if (pool.some((x) => x.question === q.question)) continue;
+      pool.push(q);
+    }
+    return pool;
+  };
+  topUp(jd, JD_FALLBACK, 5);
+  topUp(resume, RESUME_FALLBACK, 5);
+  topUp(behavioral, BEHAVIORAL_FALLBACK, 3);
+
+  /* ---- assemble, in blueprint order ----------------------------------- */
+  const pools = { intro, jd, resume, behavioral };
+  const out = [];
+  for (const part of BLUEPRINT) {
+    const pool = pools[part.section];
+    for (let i = 0; i < part.count && i < pool.length; i++) {
+      out.push({
+        seq: out.length + 1,
+        category: part.category,
+        section: part.section,
+        question: clean(pool[i].question).slice(0, 600),
+        expects: (pool[i].expects || []).map((x) => String(x).toLowerCase()),
+        source: pool[i].source || null,
+      });
+      if (out.length >= count) return out;
+    }
+  }
+  return out;
 }
 
-/* Lowercasing the first letter reads naturally mid-sentence, except when
-   the word is a proper noun or an acronym - "TypeScript" became
-   "typeScript". A capital anywhere after the first letter means leave it. */
 const lowerFirst = (s) => {
   if (!s) return s;
   const first = s.split(/\s+/)[0] || '';
@@ -444,11 +566,12 @@ export async function evaluate({ job, answers }) {
   if (!given.length) {
     return {
       perQuestion: (answers || []).map((a) => ({
-        seq: a.seq, category: a.category, question: a.question,
+        seq: a.seq, category: a.category, section: a.section, question: a.question,
         answered: false, score: 0, commScore: 0,
         justification: 'No spoken response — scored 0.',
       })),
       technical: 0, behavioral: 0, communication: 0, overall: 0,
+      jdRelevance: 0, resumeRelevance: 0,
       contentScored: false,
       engine: 'none',
       feedback: 'No questions were answered, so there is nothing to assess.',
@@ -491,11 +614,12 @@ async function gradeWithModel({ job, answers }) {
     const g = bySeq.get(a.seq);
     const answered = !!(a.answered && clean(a.transcript));
     if (!answered) {
-      return { seq: a.seq, category: a.category, question: a.question, answered: false,
-        score: 0, commScore: 0, justification: 'No spoken response — scored 0.' };
+      return { seq: a.seq, category: a.category, section: a.section, question: a.question,
+        answered: false, score: 0, commScore: 0,
+        justification: 'No spoken response — scored 0.' };
     }
     return {
-      seq: a.seq, category: a.category, question: a.question, answered: true,
+      seq: a.seq, category: a.category, section: a.section, question: a.question, answered: true,
       score: clamp(g?.score),
       commScore: clamp(g?.commScore),
       justification: clean(g?.justification || '').slice(0, 600)
@@ -516,8 +640,9 @@ function gradeByCoverage({ answers }) {
   const perQuestion = answers.map((a) => {
     const text = clean(a.transcript).toLowerCase();
     if (!a.answered || !text) {
-      return { seq: a.seq, category: a.category, question: a.question, answered: false,
-        score: 0, commScore: 0, justification: 'No spoken response — scored 0.' };
+      return { seq: a.seq, category: a.category, section: a.section, question: a.question,
+        answered: false, score: 0, commScore: 0,
+        justification: 'No spoken response — scored 0.' };
     }
     const words = text.split(/\s+/).filter(Boolean);
     const expects = (a.expects || []).map((x) => String(x).toLowerCase());
@@ -527,9 +652,11 @@ function gradeByCoverage({ answers }) {
     const comm = clampNum(35 + Math.min(1, words.length / 45) * 55 + (/[.,]/.test(text) ? 5 : 0));
 
     if (!onTopic) {
-      return { seq: a.seq, category: a.category, question: a.question, answered: true,
-        score: Math.min(24, 8 + words.length), commScore: comm,
-        justification: 'Off topic — the answer did not address what was asked.' };
+      return { seq: a.seq, category: a.category, section: a.section, question: a.question,
+        answered: true, score: Math.min(24, 8 + words.length), commScore: comm,
+        justification: 'Off topic — the answer did not address what was asked.',
+        detail: { technicalRelevance: 1, completeness: 1, accuracy: 2,
+                  communication: Math.round(comm / 10) } };
     }
     const coverage = expects.length ? hits.length / expects.length : (words.length > 8 ? 0.5 : 0.25);
     const depth = Math.min(1, words.length / 50);
@@ -537,8 +664,15 @@ function gradeByCoverage({ answers }) {
     const missed = expects.filter((k) => !hits.includes(k));
 
     return {
-      seq: a.seq, category: a.category, question: a.question, answered: true,
+      seq: a.seq, category: a.category, section: a.section, question: a.question, answered: true,
       score, commScore: comm,
+      // The per-answer breakdown the report shows, out of 10.
+      detail: {
+        technicalRelevance: Math.round(coverage * 10),
+        completeness: Math.round(depth * 10),
+        accuracy: Math.round((coverage * 0.7 + depth * 0.3) * 10),
+        communication: Math.round(comm / 10),
+      },
       justification:
         `Covered ${hits.length}/${expects.length || '?'} expected points` +
         (hits.length ? ` (${hits.slice(0, 4).join(', ')})` : '') +
@@ -551,19 +685,35 @@ function gradeByCoverage({ answers }) {
     feedback: null };
 }
 
+/**
+ * Five scores, because they answer different questions.
+ *
+ * JD relevance and resume relevance are deliberately separate. A candidate
+ * can know the stack the job asks for and be vague about the project on
+ * their own resume - or the reverse - and averaging those into one
+ * "technical" number throws away the most useful thing the interview
+ * found. The blueprint guarantees five questions from each source, so both
+ * are computed from a known sample rather than from whatever happened to
+ * get asked.
+ */
 function aggregate(per) {
-  const avg = (cats) => {
-    const xs = per.filter((p) => cats.includes(p.category));
-    return xs.length ? Math.round(xs.reduce((t, p) => t + p.score, 0) / xs.length) : 0;
-  };
+  const mean = (xs) => (xs.length
+    ? Math.round(xs.reduce((t, p) => t + Number(p.score), 0) / xs.length) : 0);
+  const bySection = (name) => mean(per.filter((p) => p.section === name));
+  const byCategory = (cats) => mean(per.filter((p) => cats.includes(p.category)));
+  const sectioned = per.some((p) => p.section);
   const comms = per.filter((p) => p.commScore != null);
+
   return {
-    technical: avg(['technical', 'resume']),
-    behavioral: avg(['behavioral', 'intro']),
+    technical: sectioned
+      ? mean(per.filter((p) => p.section === 'jd' || p.section === 'resume'))
+      : byCategory(['technical', 'resume']),
+    jdRelevance: bySection('jd'),
+    resumeRelevance: bySection('resume'),
+    behavioral: sectioned ? bySection('behavioral') : byCategory(['behavioral', 'intro']),
     communication: comms.length
       ? Math.round(comms.reduce((t, p) => t + Number(p.commScore), 0) / comms.length) : 0,
-    overall: per.length
-      ? Math.round(per.reduce((t, p) => t + p.score, 0) / per.length) : 0,
+    overall: mean(per),
   };
 }
 

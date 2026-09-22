@@ -3,8 +3,13 @@
  *
  * What this holds to:
  *
+ *   - the interview is the blueprint and nothing else: 2 introduction,
+ *     5 from the job description, 5 from the resume, 3 behavioural = 15
  *   - the questions come from THIS job's description, so two roles do not
  *     get the same interview
+ *   - the resume questions are about what the candidate actually wrote
+ *   - it must be completed within two days, and the deadline is stored
+ *     rather than assumed
  *   - the interview is linked to the candidate, the application and the job
  *   - follow-ups react to what was actually said
  *   - silence scores zero, and an interview with nothing said has no score
@@ -65,8 +70,11 @@ await check('a candidate applies, so there is something to interview for', async
   must(applicationId, 'no application was created');
 });
 
+let started;
+
 await check('the interview is planned from the job description', async () => {
-  const start = await api('post', '/ai-interviews/session', { applicationId, count: 6 });
+  started = await api('post', '/ai-interviews/session', { applicationId });
+  const start = started;
   interviewId = start.interviewId;
   questions = start.questions;
 
@@ -85,6 +93,43 @@ await check('the interview is planned from the job description', async () => {
     `the opening question does not mention the role: "${questions[0].question}"`);
 });
 
+await check('the interview is exactly the blueprint: 2 intro, 5 JD, 5 resume, 3 behavioural', async () => {
+  must(questions.length === 15, `${questions.length} questions were planned, not 15`);
+
+  const count = (name) => questions.filter((q) => q.section === name).length;
+  const shape = { intro: count('intro'), jd: count('jd'),
+                  resume: count('resume'), behavioral: count('behavioral') };
+  must(shape.intro === 2 && shape.jd === 5 && shape.resume === 5 && shape.behavioral === 3,
+    `the blueprint was not followed: ${JSON.stringify(shape)}`);
+
+  // Blueprint ORDER, not just blueprint counts: introduction first,
+  // behavioural last, so the interview does not open cold.
+  const order = questions.map((q) => q.section);
+  must(order.join(',') === [
+    'intro', 'intro',
+    'jd', 'jd', 'jd', 'jd', 'jd',
+    'resume', 'resume', 'resume', 'resume', 'resume',
+    'behavioral', 'behavioral', 'behavioral',
+  ].join(','), `the sections are out of order: ${order.join(',')}`);
+
+  // Every question must say where it came from — a question with no
+  // source is a question the AI invented.
+  must(questions.every((q) => q.source), 'a question had no source');
+  must(questions.filter((q) => q.section === 'jd')
+        .every((q) => /requirement|responsibility|skill|gap/i.test(q.source)),
+    'a JD question was not traced to the job description');
+  must(questions.filter((q) => q.section === 'resume')
+        .every((q) => /^resume:/.test(q.source)),
+    'a resume question was not traced to the resume');
+});
+
+await check('the interview must be completed within two days', async () => {
+  must(started.expiresAt, 'no deadline was returned');
+  const hours = (new Date(started.expiresAt) - new Date(started.startedAt)) / 3600000;
+  must(Math.abs(hours - 48) < 1, `the deadline is ${hours.toFixed(1)}h from the start, not 48h`);
+  must(new Date(started.expiresAt) > new Date(), 'the interview was born expired');
+});
+
 await check('a different job produces a different interview', async () => {
   // Apply to a second job and plan again; the technical questions must differ.
   const otherId = await page.evaluate((first) => {
@@ -95,13 +140,51 @@ await check('a different job produces a different interview', async () => {
 
   const app2 = await api('post', '/applications', { jobId: otherId, source: 'portal' });
   const s2 = await api('post', '/ai-interviews/session',
-    { applicationId: app2.application.id, count: 6 });
+    { applicationId: app2.application.id });
 
   const techA = questions.filter((q) => q.category === 'technical').map((q) => q.question);
   const techB = s2.questions.filter((q) => q.category === 'technical').map((q) => q.question);
   const shared = techA.filter((q) => techB.includes(q));
   must(shared.length === 0,
     `both roles were asked the same technical question: ${JSON.stringify(shared[0])}`);
+});
+
+await check('the interview SCREEN asks the server questions, not the browser ones', async () => {
+  // generateQuestions() in the prototype builds ten questions by shuffling
+  // templates. The screen must end up with the server's fifteen instead,
+  // otherwise the blueprint exists only in the API.
+  const seen = await page.evaluate(async (appId) => {
+    if (typeof window.aiivStart !== 'function') return { skipped: 'no interview module' };
+
+    // This application was created through the API rather than by
+    // clicking Apply, so re-read the data and give the browser the
+    // record it would have had.
+    await window.TL.refresh();
+    window.TL.ensureLocalRecords();
+    const found = window.TL.aiivRec(appId);
+    if (!found || !found.rec) return { skipped: 'no local record' };
+
+    window.aiivStart(found.rec.applicationId);
+    await new Promise((r) => setTimeout(r, 1800));      // let the plan arrive
+    await window.aiivBeginQuestions();
+    await new Promise((r) => setTimeout(r, 400));
+
+    const qs = (found.rec.aiInterview && found.rec.aiInterview.questions) || [];
+    return {
+      count: qs.length,
+      sections: qs.map((q) => q.section),
+      first: qs.length ? qs[0].q : '',
+      sourced: qs.filter((q) => q.source).length,
+      deadline: found.rec.aiInterview && found.rec.aiInterview.deadline,
+    };
+  }, applicationId);
+
+  must(!seen.skipped, `the screen could not be driven: ${seen.skipped}`);
+  must(seen.count === 15, `the screen has ${seen.count} questions, not 15`);
+  must(seen.sections.filter((x) => x === 'resume').length === 5,
+    `the screen has ${seen.sections.filter((x) => x === 'resume').length} resume questions`);
+  must(seen.sourced === 15, `${15 - seen.sourced} screen questions have no source`);
+  must(seen.deadline, 'the screen shows no deadline');
 });
 
 /* ------------------------------------------------------------------ *
@@ -156,6 +239,24 @@ await check('the server grades what was said, and only what was said', async () 
 
   const answered = per.filter((p) => p.answered);
   must(answered.some((p) => p.score > 0), 'every answered question scored zero');
+});
+
+await check('five scores, each computed from its own section', async () => {
+  const iv = finished.aiInterview;
+  for (const k of ['technicalScore', 'behavioralScore', 'communicationScore',
+                   'jdRelevance', 'resumeRelevance', 'overallPercentage']) {
+    const v = Number(iv[k]);
+    must(Number.isFinite(v) && v >= 0 && v <= 100, `${k} is ${iv[k]}`);
+  }
+
+  const mean = (rows) => (rows.length
+    ? Math.round(rows.reduce((t, p) => t + p.score, 0) / rows.length) : 0);
+  const per = finished.perQuestion;
+
+  must(Number(iv.jdRelevance) === mean(per.filter((p) => p.section === 'jd')),
+    'JD relevance is not the mean of the JD answers');
+  must(Number(iv.resumeRelevance) === mean(per.filter((p) => p.section === 'resume')),
+    'resume relevance is not the mean of the resume answers');
 });
 
 await check('the score is not a round number pulled from nowhere', async () => {

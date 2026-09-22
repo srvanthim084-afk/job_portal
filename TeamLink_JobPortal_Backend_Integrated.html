@@ -24618,6 +24618,15 @@ table.data td .tl-af b{white-space:normal}
   /** Re-reads everything, then repaints. Used after a login/logout. */
   function refresh() {
     return hydrate().then(function () {
+      // The application records, the interview and its deadline all come
+      // from the database - not from whatever this browser happens to
+      // have in localStorage.
+      try {
+        if (TL.ensureLocalRecords) TL.ensureLocalRecords();
+        if (TL.syncInterviewDeadlines) TL.syncInterviewDeadlines();
+      } catch (e) {
+        console.error('TeamLink: could not rebuild the local application records.', e);
+      }
       if (typeof window.render === 'function') window.render();
     });
   }
@@ -25322,7 +25331,33 @@ table.data td .tl-af b{white-space:normal}
         if (job && typeof res.applicants === 'number') job.applicants = res.applicants;
         if (res.notification) TL.notifications.unshift(res.notification);
 
-        if (typeof window.toast === 'function') {
+        // The prototype's post-apply finalizer, which this override used
+        // to skip.
+        //
+        // Skipping it looked harmless - it only builds a local record -
+        // but that record is what the whole post-apply experience hangs
+        // off: the confirmation screen, the "AI Interview required"
+        // notification, the due-date chip, and the ATTEND AI INTERVIEW
+        // button. Without it the candidate applied, saw a toast, and had
+        // no way to reach the interview at all.
+        //
+        // It runs with the database's facts: the server's application id
+        // is carried on the row it reads, and the deadline is overwritten
+        // with the server's immediately below.
+        var ranFinalizer = false;
+        try {
+          if (typeof window.__afterApply === 'function') {
+            var c = DATA.candidateById(cid);
+            var j = DATA.jobById(jobId);
+            window.__afterApply(res.application.id, jobId, cid, c, j, viaEasyApply);
+            ranFinalizer = true;
+            if (TL.syncInterviewDeadlines) TL.syncInterviewDeadlines();
+          }
+        } catch (e) {
+          console.error('TeamLink: the post-apply record could not be created.', e);
+        }
+
+        if (typeof window.toast === 'function' && (viaEasyApply || !ranFinalizer)) {
           window.toast(viaEasyApply
             ? 'Easy Apply submitted using your saved profile & resume — TeamLink AI will screen it next'
             : 'Application submitted — TeamLink AI will screen your resume next', '📨');
@@ -26777,11 +26812,24 @@ table.data td .tl-af b{white-space:normal}
       var out = prevAiivSubmit.apply(this, arguments);
       try {
         var appId = TL.__aiivAppId || (window.AIIV && window.AIIV.appId);
-        var rec = (typeof window.recById === 'function' && appId) ? window.recById(appId) : null;
+        var found = TL.aiivRec(appId);
+        var rec = found && found.rec;
         var report = rec && rec.aiInterview && rec.aiInterview.report;
+
+        // When the interview was planned by the server - which is the
+        // normal path - the transcripts go back to the session that asked
+        // the questions, and the SERVER grades them. The browser's own
+        // numbers are then replaced by the ones the database stores,
+        // because those are the ones the recruiter will see.
+        var ses = TL.__aiivSession;
+        if (ses && ses.appId === appId && rec) {
+          TL.submitAiSession(rec, ses);
+          return out;
+        }
+
         if (report && report.candidate_id && report.job_id) {
           TL.recordAiInterview(report, {
-            applicationId: rec.applicationId,
+            applicationId: found.applicationId,
             feedback: rec.aiInterview.feedback,
             questionSetHash: questionSetHash(rec.aiInterview.questions),
             mode: rec.aiInterview.mode || 'voice',
@@ -26855,6 +26903,335 @@ table.data td .tl-af b{white-space:normal}
     };
   }
 
+
+  /* ------------------------------------------------------------------ *
+   * 16b. The interview is a blueprint, not a shuffle
+   *
+   * generateQuestions() (:22126) built the interview in the browser:
+   *
+   *     2 from an intro pool + 5 from TECH_TEMPLATES applied to a shuffled
+   *     skill list + 3 from BEHAV_POOL, reshuffled until the signature
+   *     differed from the last one in localStorage
+   *
+   * That is ten questions drawn at random from templates. It cannot ask
+   * about the project on the candidate's resume, it cannot ask about a
+   * requirement of the job the resume does not evidence, and because the
+   * mix is random, two candidates for the same role are not comparable.
+   *
+   * The questions now come from the server, which plans them from the
+   * resume and the job description to a fixed blueprint:
+   *
+   *     2 introduction - 5 job description - 5 resume - 3 behavioural = 15
+   *
+   * The interview screen, the voice, the timer, the camera and the
+   * transcription are all still the prototype's. Only the SOURCE of the
+   * questions and the destination of the answers change.
+   * ------------------------------------------------------------------ */
+
+  /**
+   * The interview record behind a screen's application id.
+   *
+   * recById() (:22013) is local to the prototype's module, so
+   * `window.recById` is undefined and every guard written against it
+   * silently did nothing. The two ids are also different things:
+   *
+   *     rec.applicationId   'APP-7F3K2'  shown to people, generated here
+   *     application.id      'app_7f3k2'  the database row
+   *
+   * __lcRecFor(candidateId, jobId) IS exposed, and DATA.applications
+   * carries both ids, so the record and the database row can both be
+   * found from either one.
+   */
+  TL.aiivRec = function (appId) {
+    if (!appId) return null;
+    var app = (DATA.applications || []).filter(function (a) {
+      return a.applicationId === appId || a.id === appId;
+    }).pop();
+    if (!app) return null;
+
+    var rec = (typeof window.__lcRecFor === 'function')
+      ? window.__lcRecFor(app.candidateId, app.jobId) : null;
+    return { rec: rec, app: app, applicationId: app.id };
+  };
+
+  /**
+   * Show the deadline the DATABASE holds.
+   *
+   * The screens that mention it - "complete your AI Interview within 2
+   * days (by ...)", the Deadline field on the interview card, the due
+   * chip on the dashboard - all read rec.aiInterview.deadline, which the
+   * prototype computed in the browser as applied + 2 days. That is the
+   * right rule and the wrong source: it drifts from what the server will
+   * actually enforce, and a candidate who is told the wrong hour has been
+   * misled by us.
+   *
+   * No layout changes. The same field, filled from the database.
+   */
+  TL.syncInterviewDeadlines = function () {
+    (DATA.applications || []).forEach(function (a) {
+      if (!a.aiInterviewDueAt || typeof window.__lcRecFor !== 'function') return;
+      var rec = window.__lcRecFor(a.candidateId, a.jobId);
+      if (rec && rec.aiInterview) rec.aiInterview.deadline = a.aiInterviewDueAt;
+    });
+  };
+
+  /**
+   * Rebuild the local application records from the database.
+   *
+   * Those records live in localStorage, which means they exist only in
+   * the browser that created them. A candidate who applied on their
+   * phone and opened the portal on a laptop had no application record
+   * there — and therefore no AI interview to attend, no deadline, and no
+   * confirmation, while the database held all three.
+   *
+   * Nothing is invented here. Every field comes from the application,
+   * the job and the interview rows the server returned; a record that
+   * already exists is left alone apart from the facts the server owns.
+   */
+  TL.ensureLocalRecords = function () {
+    if (!STATE.session || STATE.session.role !== 'candidate') return;
+
+    // Force the store to load from localStorage first. __LC is created
+    // lazily by the prototype's own LC(), and building it here instead
+    // would throw away whatever this browser had already saved -
+    // __lcRecFor is a harmless way to make the prototype do it.
+    if (!window.__LC && typeof window.__lcRecFor === 'function') {
+      try { window.__lcRecFor('', ''); } catch (e) {}
+    }
+    if (!window.__LC || !window.__LC.apps) return;      // module not loaded
+
+    var mine = (DATA.applications || []).filter(function (a) {
+      return a.candidateId === STATE.session.id;
+    });
+
+    mine.forEach(function (a) {
+      var key = a.candidateId + '|' + a.jobId;
+      var rec = window.__LC.apps[key];
+      var job = DATA.jobById(a.jobId) || {};
+      var cand = DATA.candidateById(a.candidateId) || {};
+      var iv = (TL.aiInterviews || []).filter(function (x) {
+        return x.applicationId === a.id;
+      }).pop();
+
+      if (!rec) {
+        rec = window.__LC.apps[key] = {
+          applicationId: a.applicationId || a.id,
+          key: key,
+          candidateId: a.candidateId,
+          jobId: a.jobId,
+          jobTitle: job.title || '(job)',
+          company: (DATA.companyById && job.companyId
+            ? (DATA.companyById(job.companyId) || {}).name : '') || 'TeamLink client',
+          source: a.source || 'Job Portal',
+          appliedISO: a.appliedAt || new Date().toISOString(),
+          email: cand.email || '',
+          phone: cand.phone || '',
+          resumeScore: cand.resumeScore != null ? cand.resumeScore : a.matchScore,
+          matchScore: a.matchScore != null ? a.matchScore : cand.matchScore,
+          aiInterview: {
+            required: true,
+            status: 'pending',
+            createdAt: a.appliedAt || new Date().toISOString(),
+            deadline: a.aiInterviewDueAt || null,
+            startedAt: null, completedAt: null, score: null, feedback: '', answers: [],
+          },
+          // Empty rather than fabricated: this browser did not witness
+          // the earlier messages, and the delivery log on the server is
+          // the record of what was actually sent.
+          comms: [], commKeys: {}, timeline: [],
+          stage: a.stage || 'applied',
+        };
+      }
+
+      // Facts the server owns, whether the record is new or not.
+      if (a.applicationId) rec.applicationId = a.applicationId;
+      if (a.aiInterviewDueAt) rec.aiInterview.deadline = a.aiInterviewDueAt;
+      if (a.stage) rec.stage = a.stage;
+
+      if (iv && iv.status === 'completed') {
+        rec.aiInterview.status = 'completed';
+        rec.aiInterview.completedAt = iv.completedAt || rec.aiInterview.completedAt;
+        rec.aiInterview.score = iv.overallPercentage;
+        rec.aiInterview.technical = iv.technicalScore;
+        rec.aiInterview.behavioral = iv.behavioralScore;
+        rec.aiInterview.communication = iv.communicationScore;
+        rec.aiInterview.jdRelevance = iv.jdRelevance;
+        rec.aiInterview.resumeRelevance = iv.resumeRelevance;
+        if (iv.feedback) rec.aiInterview.feedback = iv.feedback;
+      } else if (iv && iv.status === 'expired') {
+        rec.aiInterview.status = 'expired';
+      }
+
+      // The screens read the interview off the application too.
+      a.aiInterview = rec.aiInterview;
+      if (!a.applicationId) a.applicationId = rec.applicationId;
+    });
+  };
+
+  /** The server's question, in the shape the interview screen expects. */
+  function toProtoQuestion(q) {
+    var expects = (q.expects || []).map(function (x) { return String(x).toLowerCase(); });
+    return {
+      cat: q.category,          // intro | technical | resume | behavioral
+      q: q.question,
+      exp: expects,             // what a good answer mentions
+      topic: expects,           // what "on topic" means for this question
+      section: q.section,       // which part of the blueprint asked it
+      seq: q.seq,
+      source: q.source,         // the JD line or resume entry behind it
+    };
+  }
+
+  /**
+   * Plan the interview on the server, once per attempt.
+   *
+   * Started as soon as the candidate opens the interview (the camera
+   * check), so the questions are already in hand by the time they press
+   * start and nothing has to wait on the network mid-session.
+   */
+  TL.planAiSession = function (appId) {
+    var found = TL.aiivRec(appId);
+    if (!found || !found.applicationId) return Promise.resolve(null);
+
+    var p = api.post('/ai-interviews/session', { applicationId: found.applicationId })
+      .then(function (r) {
+        var ses = {
+          appId: appId,
+          interviewId: r.interviewId,
+          expiresAt: r.expiresAt,
+          startedAt: r.startedAt,
+          deadlineHours: r.deadlineHours,
+          questions: (r.questions || []).map(toProtoQuestion),
+        };
+        TL.__aiivSession = ses;
+        return ses;
+      })
+      .catch(function (err) {
+        // Never strand the candidate on a blank screen: the prototype's
+        // own generator still works, and the result is still recorded.
+        console.error('TeamLink: the interview could not be planned on the server.', err);
+        TL.__aiivSession = null;
+        return null;
+      });
+
+    TL.__aiivPlan = p;
+    return p;
+  };
+
+  /** Send the transcripts to the session that asked the questions. */
+  TL.submitAiSession = function (rec, ses) {
+    var qs = (rec.aiInterview && rec.aiInterview.questions) || [];
+    var answers = (rec.aiInterview && rec.aiInterview.answers) || [];
+
+    // One at a time and in order: the server records each answer against
+    // the question it belongs to, and a failure part-way must not leave
+    // answers attributed to the wrong question.
+    var chain = Promise.resolve();
+    qs.forEach(function (q, i) {
+      var a = answers[i] || {};
+      chain = chain.then(function () {
+        return api.post('/ai-interviews/' + encodeURIComponent(ses.interviewId) + '/answer', {
+          seq: q.seq || (i + 1),
+          transcript: String(a.transcript || '').slice(0, 20000),
+          answered: !!a.answered,
+          voicedMs: Math.max(0, Math.round(a.voicedMs || 0)),
+        }).catch(function (err) {
+          if (err && err.code === 'INTERVIEW_EXPIRED') throw err;
+          console.error('TeamLink: an answer could not be recorded.', err);
+        });
+      });
+    });
+
+    return chain
+      .then(function () {
+        return api.post('/ai-interviews/' + encodeURIComponent(ses.interviewId) + '/finish', {});
+      })
+      .then(function (res) {
+        var saved = res && res.aiInterview;
+        if (!saved) return null;
+
+        TL.aiInterviews = (TL.aiInterviews || []).filter(function (x) { return x.id !== saved.id; });
+        TL.aiInterviews.unshift(saved);
+
+        // The screen was showing the browser's arithmetic. Replace it with
+        // the database's, so the candidate and the recruiter read the same
+        // number from the same place.
+        var ai = rec.aiInterview || (rec.aiInterview = {});
+        ai.score = saved.overallPercentage;
+        ai.technical = saved.technicalScore;
+        ai.behavioral = saved.behavioralScore;
+        ai.communication = saved.communicationScore;
+        ai.jdRelevance = saved.jdRelevance;
+        ai.resumeRelevance = saved.resumeRelevance;
+        ai.serverId = saved.id;
+        rec.interviewScore = saved.overallPercentage;
+
+        var c = DATA.candidateById(saved.candidateId);
+        if (c) c.aiInterviewScore = saved.overallPercentage;
+        var app = (DATA.applications || []).filter(function (x) {
+          return x.candidateId === saved.candidateId && x.jobId === saved.jobId;
+        }).pop();
+        if (app) {
+          app.aiScore = saved.overallPercentage;
+          app.interviewScore = saved.overallPercentage;
+          if (app.stage === 'applied' || app.stage === 'ai_screening') app.stage = 'ai_interview_done';
+        }
+
+        TL.__aiivSession = null;
+        if (typeof window.render === 'function') window.render();
+        return saved;
+      })
+      .catch(function (err) {
+        say(err);
+        console.error('TeamLink: the AI interview result could not be saved.', err);
+        return null;
+      });
+  };
+
+  // Plan as soon as the interview is opened.
+  var prevStartForPlan = window.aiivStart;
+  if (typeof prevStartForPlan === 'function') {
+    window.aiivStart = function (appId) {
+      TL.__aiivSession = null;
+      var out = prevStartForPlan.apply(this, arguments);
+      try { TL.planAiSession(appId); } catch (e) {
+        console.error('TeamLink: the interview could not be planned.', e);
+      }
+      return out;
+    };
+  }
+
+  // Ask the server's questions, not the browser's.
+  var prevBeginQuestions = window.aiivBeginQuestions;
+  if (typeof prevBeginQuestions === 'function') {
+    window.aiivBeginQuestions = function () {
+      var self = this, args = arguments;
+      var appId = TL.__aiivAppId || (window.AIIV && window.AIIV.appId);
+      var plan = TL.__aiivPlan || TL.planAiSession(appId);
+
+      return Promise.resolve(plan).then(function (ses) {
+        // The prototype's own start: it sets the phase, renders, and
+        // schedules the first question 60ms later. It also regenerates the
+        // question list, so the server's set is put back immediately
+        // afterwards - before anything reads it.
+        var out = prevBeginQuestions.apply(self, args);
+
+        if (ses && ses.questions && ses.questions.length) {
+          var found = TL.aiivRec(ses.appId);
+          var rec = found && found.rec;
+          if (rec && rec.aiInterview) {
+            rec.aiInterview.questions = ses.questions.slice();
+            rec.aiInterview.expiresAt = ses.expiresAt;
+            // The deadline the server will actually enforce.
+            if (ses.expiresAt) rec.aiInterview.deadline = ses.expiresAt;
+            try { if (typeof window.persist === 'function') window.persist(); } catch (e) {}
+            if (typeof window.render === 'function') window.render();
+          }
+        }
+        return out;
+      });
+    };
+  }
 
   /* ------------------------------------------------------------------ *
    * 12. Session expiry

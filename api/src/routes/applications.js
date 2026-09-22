@@ -179,7 +179,32 @@ export default function applicationRoutes() {
       notify = { error: 'dispatch_failed' };
     }
 
-    res.status(201).json({ ...out, notify });
+    // ---- the AI interview and its two-day window ----------------------
+    //
+    // The clock starts here, not when the candidate happens to open the
+    // interview screen, so this message is the one that states the
+    // deadline. It is marked sent so the sweep never repeats it.
+    let aiInvite = null;
+    try {
+      const due = await withUser(req.session, async (c) => {
+        const row = (await c.query(
+          `select ai_interview_due_at from applications where id=$1`, [out.application.id])).rows[0];
+        return row ? row.ai_interview_due_at : null;
+      });
+      aiInvite = await dispatchEvent(req.session, 'AI_INTERVIEW_INVITED', {
+        applicationId: out.application.id,
+        candidateId: out.application.candidateId,
+        jobId: out.application.jobId,
+        dueAt: due,
+      });
+      await withUser(req.session, (c) =>
+        c.query(`select ai_interview_reminder_sent($1,'invited')`, [out.application.id]));
+    } catch (err) {
+      console.error('[notify] the AI interview invitation failed:', err.message);
+      aiInvite = { error: 'dispatch_failed' };
+    }
+
+    res.status(201).json({ ...out, notify, aiInterview: aiInvite });
   }));
 
   /**

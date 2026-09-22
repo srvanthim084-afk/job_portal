@@ -309,6 +309,118 @@ server agrees is gone ends the session. And `localStorage.removeItem` sent
 `DELETE /api/prefs/<key>` for keys the database owns, which 401'd after
 logout; it now mirrors the guards `setItem` already had.
 
+## The AI interview: a blueprint, not a shuffle
+
+The prototype built the interview in the browser. `generateQuestions()`
+took two questions from an intro pool, five from `TECH_TEMPLATES` applied
+to a shuffled skill list, and three from `BEHAV_POOL`, reshuffling until
+the signature differed from the last one in `localStorage`. Ten questions,
+drawn at random from templates, with no access to the resume and no link
+to the job beyond a skill name.
+
+Three things follow from that, and all three matter to a recruiter:
+
+* it cannot ask about a project on the candidate's resume;
+* it cannot ask about a requirement of the job the resume does **not**
+  evidence, which is the single most useful question in a screen;
+* because the mix is random, two candidates for the same role are not
+  comparable — which is what a score is for.
+
+### The shape
+
+Fixed, and the same for everyone:
+
+```
+    2 introduction  ·  5 job description  ·  5 resume  ·  3 behavioural  =  15
+```
+
+`api/src/ai/interview.js` builds four pools and assembles them in that
+order. Each question records where it came from, and that source is
+carried to the recruiter's view:
+
+```
+requirement: 5+ years building REST APIs at scale
+gap: GraphQL required but not evidenced on the resume
+resume: project "Employee Management System"
+```
+
+A section that the data cannot fill — a two-line job description, a bare
+profile — is topped up from a fallback that is still about the right
+thing, and says so in the source (`resume: no project named on the
+resume`). It is never padded to fifteen with questions about nothing, and
+it is never short: a different NUMBER of questions would make two scores
+incomparable, which is the failure the blueprint exists to prevent.
+
+### The five scores
+
+`technical`, `behavioral` and `communication` already existed.
+`jdRelevance` and `resumeRelevance` are new and are deliberately **not**
+averaged together: a candidate can know the stack the job asks for and be
+vague about their own project, or the reverse, and that difference is the
+most useful thing the interview finds. The blueprint guarantees five
+questions behind each number.
+
+Each answer also carries a breakdown — technical relevance,
+completeness, accuracy, communication, each out of ten — stored as
+`ai_interview_answers.detail`.
+
+### Two days, from the invitation
+
+The deadline is a property of the **application**, not of the interview
+row:
+
+```sql
+applications.ai_interview_due_at  default now() + interval '48 hours'
+```
+
+An interview that starts inherits it, so opening the screen on day two
+does not buy two more days. This matters because the case the reminders
+exist for — a candidate who never opens the interview at all — has no
+interview row to hang a deadline on.
+
+Four messages, each sent at most once, recorded in
+`ai_interview_reminders` so a re-run of the sweep cannot repeat one:
+
+| kind | when | channels |
+|---|---|---|
+| `invited` | the application is confirmed | email, SMS, WhatsApp, IVR |
+| `reminder` | 24 hours left | all four |
+| `final` | 2 hours left | all four |
+| `expired` | the window closed unused | all four |
+
+`ai_interview_due_queue()` answers what is owed right now, most urgent
+first, and skips anybody who has already completed the interview.
+`api/src/notify/interview-deadline.js` sweeps it every fifteen minutes
+inside the API process; `ai_interview_expire_overdue()` also runs on read,
+so an expired interview reports itself even if the sweep is not running.
+
+### The screen was unreachable
+
+Found while wiring this, and worth recording on its own.
+
+`applyToJob` was overridden during the integration and — reasonably —
+stopped calling the prototype's `__afterApply()` finalizer, which only
+built a record in `localStorage`. But that record is what the entire
+post-apply experience hangs off: the confirmation screen, the "AI
+Interview required" notification, the due-date chip, and the **Attend AI
+Interview** button. Without it a candidate applied, saw a toast, and had
+no way to reach the interview at all.
+
+The finalizer is called again, with the database's application id, and its
+deadline is immediately overwritten with the server's. Two further
+consequences are handled:
+
+* `recById()` is local to the prototype's module, so `window.recById` is
+  `undefined` and every guard written against it silently did nothing —
+  including the one that was supposed to record the interview result.
+  `TL.aiivRec()` resolves the record through `__lcRecFor`, which **is**
+  exposed, and maps between the two application ids
+  (`APP-2026-000123` on screen, `app_7f3k2` in the database).
+* those records live in `localStorage`, so a candidate who applied on
+  their phone had nothing on their laptop. `TL.ensureLocalRecords()`
+  rebuilds them from the database on every refresh, inventing nothing:
+  every field comes from the application, the job or the interview row.
+
 ## Verification
 
 ```
@@ -317,9 +429,42 @@ npm run test:api          72/72
 npm run verify:candidate  18/18  register -> login -> apply -> history -> refresh
 npm run verify:interaction 7/7   real clicks on real controls
 npm run verify:search      9/9
+npm run verify:interview  15/15  the blueprint, the deadline, the five scores
+npm run verify:deadline   15/15  two days, reminded, expired
 npm run rehearse          24/24  a deployment against an empty database
-npm run ui:compare baseline fixed     76/80 identical, 4 deliberate
+npm run ui:compare baseline clean     58/80 identical, 22 explained below
 ```
+
+### Reading the UI comparison
+
+Capture the comparison build against a **clean, seeded database on its own
+port**, or the numbers are meaningless:
+
+```
+rm -rf var/fidelity-db
+LOAD_SEED=true DEV_DB_DIR=$PWD/var/fidelity-db PG_PORT=5436 node tools/dev-server.mjs 4325
+TL_URL=http://localhost:4325/ npm run ui:capture clean
+npm run ui:compare baseline clean
+```
+
+A development database that has had the verifiers run against it holds
+hundreds of extra candidates and applications, and the recruiter screens
+then differ by thousands of nodes — which is data volume, not design, but
+the harness cannot tell the difference and reports LAYOUT changed for
+every list in the product. Without `LOAD_SEED=true` the demo profiles have
+no logins and the capture cannot sign in at all.
+
+Every difference in the current comparison is deliberate and requested:
+
+| screens | difference | why |
+|---|---|---|
+| 16 · every `candidate-*` page, both widths | the header loses `★ Recommended` | asked for: "remove recommended jobs from candidate portal" |
+| 2 · `register` | password hint reads "At least 8 characters, with a letter and a number" | the prototype promised 6; the server requires 8 with a letter and a digit, and a form that lies about the rule fails after submission |
+| 2 · `login-candidate` | the hard-coded demo credential panel is gone | a real password cannot be printed on the login screen |
+| 2 · `client-candidates` | fewer rows | RLS scopes a client to their own company's candidates |
+
+Node counts are identical on `register` (246 → 246) and the layout hash is
+unchanged on `candidate-*`: only the nav list and one placeholder differ.
 
 `verify:candidate` is the one that covers the bug above: it walks the whole
 candidate journey, then simulates each way a call can fail and asserts the

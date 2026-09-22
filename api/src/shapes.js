@@ -178,6 +178,11 @@ export function toApplication(r) {
           : r.applied_on).slice(0, 10)
       : undefined,
     appliedAt: r.applied_at ? new Date(r.applied_at).toISOString() : undefined,
+    // When the AI interview window closes. Two days from the invitation,
+    // set by the database, so the screen states a deadline rather than
+    // counting down from whenever the tab happened to open.
+    aiInterviewDueAt: r.ai_interview_due_at
+      ? new Date(r.ai_interview_due_at).toISOString() : undefined,
     resumeFile: nz(r.resume_path),
     primary: !!r.is_primary,
   };

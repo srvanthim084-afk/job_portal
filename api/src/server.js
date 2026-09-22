@@ -17,6 +17,7 @@ import { existsSync } from 'node:fs';
 import { config, assertConfig } from './config.js';
 import { createApp } from './app.js';
 import { getPool, assertUnprivileged, closePool } from './db.js';
+import { startDeadlineSweep } from './notify/interview-deadline.js';
 
 async function main() {
   assertConfig();
@@ -44,8 +45,14 @@ async function main() {
     console.log(`  static   ${serveStatic || '(none — API only)'}`);
   });
 
+  // Reminders for AI interviews that are running out of time, and an
+  // expiry notice for those that ran out. Idempotent: each message is
+  // recorded and never sent twice.
+  const stopSweep = startDeadlineSweep();
+
   const shutdown = async (signal) => {
     console.log(`\n${signal} received, shutting down`);
+    stopSweep();
     server.close(async () => { await closePool(); process.exit(0); });
     // don't hang forever on a stuck connection
     setTimeout(() => process.exit(1), 10_000).unref();

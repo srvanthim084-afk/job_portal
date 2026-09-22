@@ -138,6 +138,11 @@ const SUBJECTS = {
   AI_INTERVIEW_COMPLETED: (c) => `Your AI interview for ${c.jobTitle} is complete`,
   AI_SCORE_AVAILABLE:     (c) => `Your interview result for ${c.jobTitle}`,
   OFFER_EXTENDED:         (c) => `An offer for ${c.jobTitle}`,
+
+  AI_INTERVIEW_INVITED:   (c) => `Your AI interview for ${c.jobTitle} — due ${human(c.dueAt)}`,
+  AI_INTERVIEW_REMINDER:  (c) => `Reminder: your AI interview for ${c.jobTitle} closes tomorrow`,
+  AI_INTERVIEW_FINAL:     (c) => `Last chance: your AI interview for ${c.jobTitle} closes in 2 hours`,
+  AI_INTERVIEW_EXPIRED:   (c) => `Your AI interview window for ${c.jobTitle} has closed`,
 };
 
 const BODIES = {
@@ -166,6 +171,35 @@ const BODIES = {
     `${c.company} has extended an offer for ${c.jobTitle}.`
     + (c.ctc ? `\n\nOffered CTC: ${c.ctc}` : '')
     + (c.joiningDate ? `\nProposed joining date: ${human(c.joiningDate)}` : ''),
+
+  /* ---- the AI interview and its two-day window -------------------- *
+   *
+   * Every one of these states the deadline in full. "Complete it soon"
+   * is not a deadline, and a candidate who reads the reminder on the
+   * train needs the date, not a countdown they have to compute.
+   * ------------------------------------------------------------------ */
+
+  AI_INTERVIEW_INVITED: (c) =>
+    `Your application for ${c.jobTitle} at ${c.company} includes a short AI interview: `
+    + '15 questions about your background, this role and your resume, taken in your browser.'
+    + `\n\nIt must be completed by ${human(c.dueAt)} — two days from now. `
+    + 'You can take it at any time before then, and it takes about 20 minutes.',
+
+  AI_INTERVIEW_REMINDER: (c) =>
+    `You have not yet taken the AI interview for ${c.jobTitle} at ${c.company}.`
+    + `\n\nThe window closes ${human(c.dueAt)} — about 24 hours from now. `
+    + 'After that the application cannot move forward.',
+
+  AI_INTERVIEW_FINAL: (c) =>
+    `Final reminder: the AI interview for ${c.jobTitle} at ${c.company} closes `
+    + `${human(c.dueAt)}, in about two hours.`
+    + '\n\nIf you have started it, please finish it before then.',
+
+  AI_INTERVIEW_EXPIRED: (c) =>
+    `The window to take the AI interview for ${c.jobTitle} at ${c.company} closed `
+    + `${human(c.dueAt)}, and the interview was not completed.`
+    + '\n\nIf something prevented you from taking it, reply to this message and '
+    + 'the team can reopen it.',
 };
 
 export function buildEventMessages(event, c) {
