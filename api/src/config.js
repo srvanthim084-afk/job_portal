@@ -45,6 +45,19 @@ export const config = {
   // Outbound providers. All optional: an unconfigured channel reports
   // 'not_configured' rather than pretending to have delivered anything.
   emailApiKey: process.env.EMAIL_API_KEY || '',
+
+  // SMTP. Most company mailboxes are SMTP, not an HTTP API - a host, a
+  // port, a mailbox and its password. When a host is set, SMTP is used and
+  // EMAIL_API_KEY is ignored.
+  smtpHost: process.env.EMAIL_SMTP_HOST || '',
+  smtpPort: int(process.env.EMAIL_SMTP_PORT, 465),
+  // Port 465 is implicit TLS; 587 is STARTTLS, which nodemailer negotiates
+  // when `secure` is false.
+  smtpSecure: process.env.EMAIL_SMTP_SECURE
+    ? process.env.EMAIL_SMTP_SECURE === 'true'
+    : int(process.env.EMAIL_SMTP_PORT, 465) === 465,
+  smtpUser: process.env.EMAIL_SMTP_USER || '',
+  smtpPass: process.env.EMAIL_SMTP_PASS || '',
   emailApiUrl: process.env.EMAIL_API_URL || 'https://api.resend.com/emails',
   emailFrom: process.env.EMAIL_FROM || '',
 

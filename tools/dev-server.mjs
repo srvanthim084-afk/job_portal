@@ -47,6 +47,27 @@ const LOAD_SEED = process.env.LOAD_SEED === 'true';
 const DEV_PASSWORD = process.env.DEV_PASSWORD || 'TeamLink@2026';
 
 /* ------------------------------------------------------------------ *
+ * .env
+ *
+ * Nothing read this file before, so settings written into it - the SMTP
+ * mailbox, provider keys - were silently ignored and every channel kept
+ * reporting `not_configured`. Docker compose loads it via env_file in
+ * production; locally nothing did.
+ *
+ * Real environment variables still win: loadEnvFile does not overwrite a
+ * variable that is already set, so `EMAIL_SMTP_PASS=... npm run dev` beats
+ * the file, as it should.
+ * ------------------------------------------------------------------ */
+try {
+  const envFile = resolve(ROOT, '.env');
+  if (existsSync(envFile) && typeof process.loadEnvFile === 'function') {
+    process.loadEnvFile(envFile);
+  }
+} catch (err) {
+  console.warn('could not read .env:', err.message);
+}
+
+/* ------------------------------------------------------------------ *
  * Configuration defaults.
  *
  * These MUST be set before anything imports api/src/config.js, because

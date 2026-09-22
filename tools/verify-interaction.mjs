@@ -130,13 +130,36 @@ await check('a candidate can apply by clicking Apply', async () => {
   await page.click('.auth-form button[type="submit"]');
   await page.waitForTimeout(2500);
 
-  const target = await page.evaluate(() => {
+  let target = await page.evaluate(() => {
     const mine = new Set(DATA.applications.map((a) => a.jobId));
     const me = DATA.candidateById(STATE.session.id);
     if (me && me.appliedJobId) mine.add(me.appliedJobId);
     const j = DATA.openJobs().find((x) => !mine.has(x.id));
     return j ? j.id : null;
   });
+  // Over many runs this candidate applies to every seeded job, and the
+  // check then fails for lack of a target rather than for a real fault.
+  // Post a job for it instead of depending on a finite pool.
+  if (!target) {
+    const admin = await browser.newContext();
+    const ap = await admin.newPage();
+    try {
+      await ap.goto(BASE, { waitUntil: 'load' });
+      await ap.waitForFunction(() => window.TL && window.TL.ready === true, { timeout: 20000 });
+      const made = await ap.evaluate(([pw]) =>
+        window.TL.api.post('/auth/login', { email: 'admin@teamlink.com', password: pw, role: 'admin' })
+          .then(() => window.TL.api.post('/jobs', {
+            title: `Interaction check ${Date.now()}`,
+            companyId: (DATA.companies[0] || {}).id,
+            location: 'Remote', type: 'Full-time', status: 'open',
+            skills: ['Testing'], desc: 'Created by verify-interaction because every seeded job was already applied to.',
+          })).then((r) => r.job.id, (e) => 'ERR ' + e.code), [PASSWORD]);
+      if (String(made).startsWith('ERR')) throw new Error(`could not post a job to apply to: ${made}`);
+      target = made;
+      await page.evaluate(() => window.TL.refresh());
+      await page.waitForTimeout(800);
+    } finally { await admin.close(); }
+  }
   if (!target) throw new Error('no unapplied job to test with');
 
   const before = await page.evaluate(() => DATA.applications.length);

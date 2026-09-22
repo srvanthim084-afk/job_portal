@@ -48,14 +48,78 @@ async function postJson(url, { headers = {}, body, timeoutMs = 8000 }) {
 /* ------------------------------------------------------------------ *
  * Email
  * ------------------------------------------------------------------ */
+/**
+ * SMTP, lazily.
+ *
+ * nodemailer is only loaded when SMTP is actually configured, so an
+ * installation using the HTTP path (or none at all) does not pay for it.
+ * The transport is reused across sends - opening a TLS connection per
+ * message is slow and some hosts rate-limit it.
+ */
+let smtpTransport = null;
+async function getSmtp() {
+  if (smtpTransport) return smtpTransport;
+  const { default: nodemailer } = await import('nodemailer');
+  smtpTransport = nodemailer.createTransport({
+    host: config.smtpHost,
+    port: config.smtpPort,
+    secure: config.smtpSecure,
+    auth: config.smtpUser ? { user: config.smtpUser, pass: config.smtpPass } : undefined,
+    // A hung mail server must not hold a request open.
+    connectionTimeout: 15_000,
+    greetingTimeout: 10_000,
+    socketTimeout: 20_000,
+  });
+  return smtpTransport;
+}
+
+/** Exposed so a "send test email" action can prove the settings before use. */
+export async function verifySmtp() {
+  if (!config.smtpHost) return { ok: false, error: 'EMAIL_SMTP_HOST is not set' };
+  try {
+    const t = await getSmtp();
+    await t.verify();
+    return { ok: true, host: config.smtpHost, port: config.smtpPort, secure: config.smtpSecure };
+  } catch (err) {
+    smtpTransport = null;          // a failed transport must not be cached
+    return { ok: false, error: err.message };
+  }
+}
+
 export const emailProvider = {
   channel: 'email',
-  configured: () => !!(config.emailApiKey && config.emailFrom),
+  // Either transport counts as configured; SMTP takes precedence.
+  configured: () => !!(config.emailFrom &&
+    ((config.smtpHost && config.smtpUser && config.smtpPass) || config.emailApiKey)),
+
   async send({ to, subject, html, text }) {
     if (!this.configured()) {
-      return NOT_CONFIGURED('email', 'EMAIL_API_KEY / EMAIL_FROM are not set');
+      return NOT_CONFIGURED('email',
+        config.smtpHost
+          ? 'EMAIL_SMTP_USER / EMAIL_SMTP_PASS are not set'
+          : 'EMAIL_SMTP_HOST or EMAIL_API_KEY is not set');
     }
     if (!to) return { status: 'failed', provider: 'email', error: 'no email address' };
+
+    if (config.smtpHost) {
+      try {
+        const t = await getSmtp();
+        const info = await t.sendMail({
+          from: config.emailFrom, to, subject, html, text,
+        });
+        // `accepted` is the server's own list. An empty one means the
+        // message was handed over but not accepted for this recipient,
+        // which is a failure however encouraging the absence of an error is.
+        if (!info.accepted || !info.accepted.length) {
+          return { status: 'failed', provider: 'email',
+                   error: `the server did not accept ${to}` };
+        }
+        return { status: 'sent', provider: 'email', ref: info.messageId || null };
+      } catch (err) {
+        smtpTransport = null;
+        return { status: 'failed', provider: 'email', error: err.message };
+      }
+    }
 
     try {
       // Resend-compatible; EMAIL_API_URL retargets it at any provider with

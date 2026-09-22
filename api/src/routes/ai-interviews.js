@@ -20,6 +20,8 @@ import { z } from 'zod';
 import { withUser } from '../db.js';
 import { wrap, badRequest, notFound, forbidden } from '../errors.js';
 import { requireAuth } from '../auth.js';
+import { planInterview, followUp, evaluate, interviewEngine } from '../ai/interview.js';
+import { toJob, toCandidate } from '../shapes.js';
 
 const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
 
@@ -143,6 +145,219 @@ export default function aiInterviewRoutes() {
    * the interview is the candidate, and a candidate must not hold write
    * permission on a scoring table.
    */
+  /**
+   * GET /api/ai-interviews/engine
+   *
+   * Says plainly whether a model is behind the interview or not, so the
+   * screen can stop claiming one when there is none.
+   */
+  r.get('/ai-interviews/engine', (_req, res) => res.json(interviewEngine()));
+
+  /* ------------------------------------------------------------------ *
+   * conducting the interview
+   *
+   * The browser speaks and listens - that part must be in the page. What
+   * to ask, what to ask NEXT, and what the answers were worth are decided
+   * here, because a candidate should not be able to choose their own
+   * questions or compute their own score.
+   * ------------------------------------------------------------------ */
+
+  /**
+   * POST /api/ai-interviews/session — begin, and get the questions.
+   *
+   * The questions are planned from THIS job's description, so two roles
+   * produce two different interviews (api/src/ai/interview.js). The plan is
+   * stored against the interview row, which is what makes the follow-ups
+   * and the grading afterwards possible.
+   */
+  r.post('/ai-interviews/session', requireAuth(), wrap(async (req, res) => {
+    const b = parse(z.object({
+      applicationId: z.string().trim().min(1).max(64).optional(),
+      jobId: z.string().trim().min(1).max(64).optional(),
+      count: z.number().int().min(4).max(15).optional(),
+    }), req.body);
+
+    if (req.session.role !== 'candidate') {
+      throw forbidden('Only a candidate can sit an interview.');
+    }
+
+    const out = await withUser(req.session, async (c) => {
+      // The interview belongs to an APPLICATION. Without one there is
+      // nothing for a score to attach to, and the requirement is explicit
+      // that interview, candidate, application and job stay linked.
+      const app = b.applicationId
+        ? (await c.query(`select * from applications where id=$1 and candidate_id=$2`,
+            [b.applicationId, req.session.profileId])).rows[0]
+        : (await c.query(
+            `select * from applications where candidate_id=$1 ${b.jobId ? 'and job_id=$2' : ''}
+              order by applied_at desc limit 1`,
+            b.jobId ? [req.session.profileId, b.jobId] : [req.session.profileId])).rows[0];
+
+      if (!app) throw badRequest('You have no application to interview for.');
+
+      const job = (await c.query(`select * from jobs where id=$1`, [app.job_id])).rows[0];
+      if (!job) throw notFound('That job no longer exists.');
+      const cand = (await c.query(`select * from candidates where id=$1`,
+        [req.session.profileId])).rows[0];
+
+      const questions = await planInterview({
+        job: toJob(job),
+        candidate: cand ? toCandidate(cand) : null,
+        count: b.count || 8,
+      });
+
+      const id = newId('aiv');
+
+      // Through the definer function, not a direct insert: a candidate has
+      // no write access to ai_interviews, and should not - that is where
+      // the scores live. The function checks the application is theirs.
+      await c.query(
+        `select ai_interview_start($1,$2,$3,$4,$5,$6::jsonb)`,
+        [id, app.id, req.session.profileId, app.job_id, hashOf(questions),
+         JSON.stringify(questions.map((q) => ({
+           seq: q.seq, category: q.category, question: q.question,
+           meta: JSON.stringify({ expects: q.expects || [], source: q.source || null }),
+         })))]);
+
+      return { id, app, job, questions };
+    });
+
+    res.status(201).json({
+      interviewId: out.id,
+      applicationId: out.app.id,
+      jobId: out.job.id,
+      jobTitle: out.job.title,
+      engine: interviewEngine(),
+      questions: out.questions,
+    });
+  }));
+
+  /**
+   * POST /api/ai-interviews/:id/answer — record one answer, get what comes next.
+   *
+   * The follow-up is generated from what the candidate actually said. A
+   * thorough answer gets none, which is the point: it is a reaction, not a
+   * scripted extra question.
+   */
+  r.post('/ai-interviews/:id/answer', requireAuth(), wrap(async (req, res) => {
+    const b = parse(z.object({
+      seq: z.number().int().min(1).max(50),
+      transcript: z.string().max(20_000).optional().default(''),
+      answered: z.boolean().optional(),
+      voicedMs: z.number().int().min(0).max(3_600_000).optional(),
+    }), req.body);
+
+    const out = await withUser(req.session, async (c) => {
+      const iv = (await c.query(
+        `select * from ai_interviews where id=$1 and candidate_id=$2`,
+        [req.params.id, req.session.profileId])).rows[0];
+      if (!iv) throw notFound('That interview could not be found.');
+      if (iv.status !== 'in_progress') throw badRequest('That interview is already finished.');
+
+      const row = (await c.query(
+        `select * from ai_interview_answers where ai_interview_id=$1 and seq=$2`,
+        [req.params.id, b.seq])).rows[0];
+      if (!row) throw notFound('That question is not part of this interview.');
+
+      const said = String(b.transcript || '').trim();
+      const answered = b.answered !== undefined ? !!b.answered : !!said;
+
+      // Only the transcript is stored. The SCORE is computed at the end,
+      // over the whole interview, so one answer cannot be graded out of
+      // context and a client cannot post a score of its own.
+      await c.query(`select ai_interview_answer($1,$2,$3,$4,$5)`,
+        [req.params.id, req.session.profileId, b.seq, answered,
+         said.slice(0, 4000) || null]);
+
+      const job = (await c.query(`select * from jobs where id=$1`, [iv.job_id])).rows[0];
+      const meta = metaOf(row);
+      const next = (await c.query(
+        `select seq, category, question from ai_interview_answers
+          where ai_interview_id=$1 and seq > $2 order by seq limit 1`,
+        [req.params.id, b.seq])).rows[0] || null;
+
+      return { iv, job, meta, next, said, answered, row };
+    });
+
+    // Outside the transaction: this may call a model, and an open
+    // transaction must never wait on a third party.
+    let follow = null;
+    if (out.answered && out.said) {
+      follow = await followUp({
+        question: { question: out.row.question, expects: out.meta.expects },
+        answer: out.said,
+        job: toJob(out.job),
+      }).catch(() => null);
+    }
+
+    res.json({
+      recorded: { seq: req.body.seq, answered: out.answered, chars: out.said.length },
+      followUp: follow,
+      next: out.next ? { seq: out.next.seq, category: out.next.category, question: out.next.question } : null,
+      remaining: out.next ? 1 : 0,
+    });
+  }));
+
+  /**
+   * POST /api/ai-interviews/:id/finish — grade what was actually said.
+   *
+   * Called only when the candidate has been through the questions. The
+   * scores come from the stored transcripts, not from anything the browser
+   * sends, and the aggregates are recomputed from the per-question rows.
+   */
+  r.post('/ai-interviews/:id/finish', requireAuth(), wrap(async (req, res) => {
+    const loaded = await withUser(req.session, async (c) => {
+      const iv = (await c.query(
+        `select * from ai_interviews where id=$1 and candidate_id=$2`,
+        [req.params.id, req.session.profileId])).rows[0];
+      if (!iv) throw notFound('That interview could not be found.');
+
+      const rows = (await c.query(
+        `select * from ai_interview_answers where ai_interview_id=$1 order by seq`,
+        [req.params.id])).rows;
+      const job = (await c.query(`select * from jobs where id=$1`, [iv.job_id])).rows[0];
+      return { iv, rows, job };
+    });
+
+    if (loaded.iv.status === 'completed') {
+      return res.json({ alreadyFinished: true, aiInterviewId: loaded.iv.id });
+    }
+
+    const graded = await evaluate({
+      job: toJob(loaded.job),
+      answers: loaded.rows.map((r) => ({
+        seq: r.seq, category: r.category, question: r.question,
+        answered: r.answered, transcript: r.answer_summary || '',
+        expects: metaOf(r).expects,
+      })),
+    });
+
+    const saved = await withUser(req.session, async (c) => {
+      // Every number here was computed by evaluate() from the stored
+      // transcripts. Nothing the browser sent reaches this call.
+      await c.query(
+        `select ai_interview_finish($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,
+        [loaded.iv.id, req.session.profileId,
+         graded.technical, graded.behavioral, graded.communication, graded.overall,
+         graded.contentScored, graded.feedback,
+         loaded.rows.map((r) => `Q: ${r.question}\nA: ${r.answer_summary || '[no response]'}`).join('\n\n'),
+         JSON.stringify(graded.perQuestion.map((p) => ({
+           seq: p.seq, score: p.score,
+           commScore: p.commScore == null ? '' : p.commScore,
+           justification: p.justification || null,
+         })))]);
+
+      const row = (await c.query(`select * from ai_interviews where id=$1`, [loaded.iv.id])).rows[0];
+      return row;
+    });
+
+    res.json({
+      aiInterview: toAi(saved),
+      engine: graded.engine,
+      perQuestion: graded.perQuestion,
+    });
+  }));
+
   r.post('/ai-interviews', requireAuth(), wrap(async (req, res) => {
     const b = parse(recordSchema, req.body);
 
@@ -225,4 +440,22 @@ export default function aiInterviewRoutes() {
   }));
 
   return r;
+}
+
+/** Per-question planning data rides in `justification` until grading fills it. */
+function metaOf(row) {
+  try {
+    const v = JSON.parse(row.justification || '{}');
+    return v && typeof v === 'object' && Array.isArray(v.expects)
+      ? { expects: v.expects, source: v.source || null }
+      : { expects: [], source: null };
+  } catch { return { expects: [], source: null }; }
+}
+
+/** Stable fingerprint, so the same set is never put to the same candidate twice. */
+function hashOf(questions) {
+  const s = questions.map((q) => q.question).join('|');
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+  return `qs${h.toString(36)}-${questions.length}`;
 }
