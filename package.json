@@ -22,7 +22,7 @@
     "migrate:status": "node tools/migrate.mjs --status",
     "verify:search": "node tools/verify-search.mjs",
     "verify:interaction": "node tools/verify-interaction.mjs",
-    "verify:live": "npm run verify:interaction && npm run verify:search && npm run verify:candidate && npm run verify:resume && npm run verify:interview && npm run verify:notifications && npm run verify:easy-apply && npm run verify:source && npm run verify:deadline && npm run verify:matching && npm run verify:calling && npm run verify:calling-ui",
+    "verify:live": "npm run verify:interaction && npm run verify:search && npm run verify:candidate && npm run verify:resume && npm run verify:interview && npm run verify:notifications && npm run verify:easy-apply && npm run verify:source && npm run verify:deadline && npm run verify:matching && npm run verify:calling && npm run verify:calling-ui && npm run verify:spreadsheet",
     "verify:stack": "node tools/verify-stack.mjs",
     "watch": "node tools/watch.mjs",
     "watch:push": "node tools/watch.mjs --push",
@@ -43,7 +43,8 @@
     "check:mail": "node tools/check-mail.mjs",
     "verify:matching": "node tools/verify-matching.mjs",
     "verify:calling": "node tools/verify-ai-calling.mjs",
-    "verify:calling-ui": "node tools/verify-calling-ui.mjs"
+    "verify:calling-ui": "node tools/verify-calling-ui.mjs",
+    "verify:spreadsheet": "node tools/verify-spreadsheet.mjs"
   },
   "dependencies": {
     "playwright": "^1.63.0"

@@ -24003,6 +24003,10 @@ table.data td .tl-af b{white-space:normal}
 
   var TL = (window.TL = window.TL || {});
 
+  // The resolved API base, for the few things that need a URL rather than
+  // the api.get/post wrappers - a file download, a multipart upload.
+  TL.apiBase = API;
+
   TL.ready = false;        // the app may paint (true even if loading failed)
   TL.connected = false;    // /api/bootstrap actually answered - a different question
   TL.primaryAppId = Object.create(null);   // candidateId -> real application id
@@ -27296,6 +27300,70 @@ table.data td .tl-af b{white-space:normal}
     return ids.map(function (id) { return DATA.candidateById(id); }).filter(Boolean);
   }
 
+  /**
+   * Everything the current filters matched - across every page.
+   *
+   * Ticking 200 candidates ten at a time is not a workflow, and the point
+   * of a filter is that it has already chosen who to call. The prototype
+   * keeps the refined result set in its own closure, so this re-runs the
+   * same predicates against DATA.candidates: skills, location, experience,
+   * notice period and the keyword box, in the order the sidebar applies
+   * them.
+   */
+  function callingFiltered() {
+    var f = (STATE && STATE.fcr) || {};
+    var all = (DATA.candidates || []).slice();
+
+    var skills = (f.skills || []).map(function (x) { return String(x).toLowerCase(); });
+    var locs = (f.locs || []).map(function (x) { return String(x).toLowerCase(); });
+    var notice = (f.notices || []).map(function (x) { return String(x).toLowerCase(); });
+    var expMin = f.expMin === '' || f.expMin == null ? null : Number(f.expMin);
+    var expMax = f.expMax === '' || f.expMax == null ? null : Number(f.expMax);
+    var q = String(f.q || '').trim().toLowerCase();
+
+    return all.filter(function (c) {
+      var mine = ((c.technicalSkills && c.technicalSkills.length ? c.technicalSkills : c.skills) || [])
+        .map(function (x) { return String(x).toLowerCase(); });
+      if (skills.length && !skills.every(function (s) {
+        return mine.some(function (m) { return m.indexOf(s) >= 0; });
+      })) return false;
+
+      if (locs.length) {
+        var where = (String(c.location || '') + ' ' + String(c.preferredLocation || '')).toLowerCase();
+        if (!locs.some(function (l) { return where.indexOf(l) >= 0; })) return false;
+      }
+
+      if (expMin != null || expMax != null) {
+        var yrs = Number(c.expYears != null ? c.expYears : parseFloat(String(c.exp || '')));
+        if (!isFinite(yrs)) return false;
+        if (expMin != null && yrs < expMin) return false;
+        if (expMax != null && yrs > expMax) return false;
+      }
+
+      if (notice.length) {
+        var np = String(c.noticePeriod || '').toLowerCase();
+        if (!notice.some(function (n) { return np.indexOf(n) >= 0; })) return false;
+      }
+
+      if (q) {
+        var blob = [c.name, c.title, c.currentCompany, c.location, c.education,
+          (c.skills || []).join(' '), (c.technicalSkills || []).join(' ')]
+          .filter(Boolean).join(' ').toLowerCase();
+        if (blob.indexOf(q) < 0) return false;
+      }
+      return true;
+    });
+  }
+
+  /** Who a calling action applies to: the ticked rows, else the filter. */
+  function callingTargets() {
+    var sel = callingSelection();
+    return sel.length ? { list: sel, from: 'selection' }
+                      : { list: callingFiltered(), from: 'filter' };
+  }
+  TL.calling = TL.calling || {};
+  TL.callingTargets = callingTargets;
+
   /** Requirements this recruiter can call for. */
   function callableJobs() {
     return (DATA.jobs || []).filter(function (j) {
@@ -27334,15 +27402,20 @@ table.data td .tl-af b{white-space:normal}
    * rather than pressing a button and wondering.
    */
   window.fcrIvrModal = function () {
-    var sel = callingSelection();
+    var target = callingTargets();
+    var sel = target.list;
     if (!sel.length) {
-      if (typeof window.toast === 'function') window.toast('Select at least one candidate', 'ℹ️');
+      if (typeof window.toast === 'function') {
+        window.toast('No candidates match the current filters', 'ℹ️');
+      }
       return;
     }
+    var fromFilter = target.from === 'filter';
     var jobs = callableJobs();
 
     window.fcrModal(
-      '<div class="fcr-modal-head"><h3>AI Calling — ' + sel.length + ' selected</h3>' +
+      '<div class="fcr-modal-head"><h3>AI Calling — ' + sel.length +
+      (fromFilter ? ' matched by your filters' : ' selected') + '</h3>' +
       '<button class="btn btn-ghost btn-sm" onclick="fcrCloseModal()">✕</button></div>' +
       '<div class="fcr-modal-body" id="tlCallBody">' +
       '<div class="req-note">Loading the calling agent…</div></div>');
@@ -27387,7 +27460,13 @@ table.data td .tl-af b{white-space:normal}
         '<div class="fgroup"><label>Call objective (optional)</label>' +
         '<input id="tlCallObjective" placeholder="Confirm interest and availability"></div>' +
 
-        '<div style="margin-top:10px">' + sel.map(function (c) {
+        (fromFilter && sel.length > 8
+          ? '<div class="req-note" style="margin-top:12px">Nothing is ticked, so this applies to ' +
+            'all <b>' + sel.length + '</b> candidates your filters matched. ' +
+            'Tick individual rows to call only those.</div>'
+          : '') +
+
+        '<div style="margin-top:10px">' + sel.slice(0, 8).map(function (c) {
           var dnc = c.doNotContact;
           return '<div class="fcr-modal-row"><span><b>' + esc(c.name) + '</b> ' +
             '<span style="color:var(--text-soft)">· ' + esc(c.phone || 'no number') + '</span></span>' +
@@ -27400,12 +27479,18 @@ table.data td .tl-af b{white-space:normal}
                   'onclick="TL.calling.start(\'' + esc(c.id) + '\')">📞 Call now</button></span>'
                 : '<span class="badge badge-neutral">No mobile number</span>') +
           '</div>';
-        }).join('') + '</div>' +
+        }).join('') +
+        (sel.length > 8
+          ? '<div style="font-size:12.5px;color:var(--text-soft);padding:6px 0">' +
+            '…and ' + (sel.length - 8) + ' more</div>'
+          : '') + '</div>' +
 
         '<div id="tlCallOut" style="margin-top:12px"></div>' +
 
         '<div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">' +
-          '<button class="btn btn-primary" onclick="TL.calling.campaign()">🤖 Start AI Calling Campaign (' + sel.length + ')</button>' +
+          '<button class="btn btn-primary" onclick="TL.calling.campaign()">🤖 Call all ' + sel.length +
+            (fromFilter ? ' filtered' : ' selected') + '</button>' +
+          '<button class="btn btn-ghost" onclick="TL.calling.exportExcel()">📗 Export calls to Excel</button>' +
           '<button class="btn btn-ghost" onclick="TL.calling.dashboard()">📊 Calling dashboard</button>' +
           '<button class="btn btn-ghost" onclick="fcrCloseModal()">Close</button>' +
         '</div>';
@@ -27552,9 +27637,9 @@ table.data td .tl-af b{white-space:normal}
       .catch(function (err) { say(err); });
   };
 
-  /** Call everybody who is selected, for one requirement. */
+  /** Call everybody the filters matched, or everybody ticked. */
   TL.calling.campaign = function () {
-    var sel = callingSelection();
+    var sel = callingTargets().list;
     var v = callFormValues();
     if (!v.jobId) {
       callOut('<div class="req-note">Choose a requirement first — a calling campaign is always about one role.</div>');
@@ -27663,6 +27748,57 @@ table.data td .tl-af b{white-space:normal}
     TL.calling.refreshLog(callId).catch(function (err) { say(err); });
   };
 
+  /**
+   * The call results, as a real workbook.
+   *
+   * Built on the server: a CSV written in the browser is not an Excel
+   * file, and Excel turns a column of Indian mobile numbers into
+   * scientific notation the moment it opens one.
+   */
+  TL.calling.exportExcel = function (params) {
+    var q = params || '';
+    var v = (typeof callFormValues === 'function') ? callFormValues() : {};
+    if (!q && v.jobId) q = 'jobId=' + encodeURIComponent(v.jobId);
+    TL.downloadFile('/ai-calling/export' + (q ? '?' + q : ''), 'the call results');
+  };
+
+  /**
+   * Download a file from the API, with the session cookie attached.
+   *
+   * A plain <a href> to /api/... does carry cookies, but it cannot report
+   * a 403 or a 404 - the browser simply navigates away and the recruiter
+   * sees a blank tab. Fetching it means an error can be shown.
+   */
+  TL.downloadFile = function (path, what) {
+    var url = (TL.apiBase || '/api') + path;
+    return fetch(url, { credentials: CREDENTIALS })
+      .then(function (res) {
+        if (!res.ok) {
+          return res.json().catch(function () { return {}; }).then(function (j) {
+            throw new ApiFailure((j.error && j.error.code) || 'DOWNLOAD_FAILED',
+              (j.error && j.error.message) || 'That file could not be produced.');
+          });
+        }
+        var name = 'TeamLink.xlsx';
+        var cd = res.headers.get('content-disposition') || '';
+        var m = /filename="([^"]+)"/.exec(cd);
+        if (m) name = m[1];
+        return res.blob().then(function (blob) {
+          var a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = name;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(function () { URL.revokeObjectURL(a.href); }, 4000);
+          if (typeof window.toast === 'function') {
+            window.toast('Downloaded ' + name, '📗');
+          }
+        });
+      })
+      .catch(function (err) { say(err); });
+  };
+
   TL.calling.callbackDone = function (id) {
     api.post('/ai-calling/callbacks/' + encodeURIComponent(id) + '/done', {})
       .then(function () { TL.calling.dashboard(); })
@@ -27687,6 +27823,123 @@ table.data td .tl-af b{white-space:normal}
       .catch(function (err) {
         var el = document.getElementById('tlCallHist');
         if (el) el.innerHTML = '<div class="req-note">' + esc(err.message || 'Unavailable.') + '</div>';
+      });
+  };
+
+  /**
+   * Export the candidate list as a real workbook.
+   *
+   * The screen's own export wrote a CSV, which Excel opens but mangles:
+   * a phone number becomes 9.19E+11 and "Bengaluru, Karnataka" splits
+   * across two columns. This asks the server for an .xlsx instead, and
+   * carries the AI call outcome for each candidate with it.
+   */
+  var prevExportExcel = window.fcrExportExcel;
+  window.fcrExportExcel = function () {
+    var target = callingTargets();
+    if (!target.list.length) {
+      if (typeof window.toast === 'function') window.toast('Nothing to export', 'ℹ️');
+      return;
+    }
+    var ids = target.list.map(function (c) { return c.id; });
+    // A URL has a practical length limit; past it, fall back to the
+    // prototype's own CSV rather than producing a broken request.
+    if (ids.join(',').length > 6000) {
+      if (typeof prevExportExcel === 'function') return prevExportExcel.apply(this, arguments);
+    }
+    return TL.downloadFile('/candidates/export?ids=' + encodeURIComponent(ids.join(',')),
+      'the candidate list');
+  };
+
+  /**
+   * Import accepts a real Excel file, not only CSV.
+   *
+   * The modal took .csv or pasted rows, so anybody working from the
+   * .xlsx a client or a job board sent had to open Excel, Save As CSV,
+   * and hope the commas inside "Bengaluru, Karnataka" survived. The file
+   * is now read on the SERVER, which can parse both properly and match
+   * columns by their headers in any order.
+   */
+  var prevImportModal = window.fcrImportModal;
+  window.fcrImportModal = function () {
+    window.fcrModal(
+      '<div class="fcr-modal-head"><h3>Import Candidates</h3>' +
+      '<button class="btn btn-ghost btn-sm" onclick="fcrCloseModal()">✕</button></div>' +
+      '<div class="fcr-modal-body">' +
+      '<div class="req-note">Upload an <b>Excel workbook (.xlsx)</b> or a <b>CSV</b>. ' +
+      'Columns are matched by their headings, in any order — Name, Phone, Email, ' +
+      'Skills, Location, Designation, Company, Experience, Current CTC, Expected CTC, ' +
+      'Notice period, Education. Only <b>Name</b>, and an email or a phone number, are ' +
+      'required. Somebody already in the database is updated rather than duplicated.</div>' +
+
+      '<div class="fgroup" style="margin-top:14px"><label>Excel or CSV file</label>' +
+      '<input type="file" id="tlImportFile" accept=".xlsx,.csv,text/csv,' +
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></div>' +
+
+      '<div class="fgroup"><label>…or paste CSV rows</label>' +
+      '<textarea id="tlImportText" rows="5" style="width:100%;padding:10px 12px;' +
+      'border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);' +
+      'font-size:13px;font-family:inherit;resize:vertical" ' +
+      'placeholder="Name, Phone, Email, Skills, Location&#10;' +
+      'Ravi Kumar, +91 90000 11111, ravi@example.com, Java; SQL, Chennai"></textarea></div>' +
+
+      '<div id="tlImportOut"></div>' +
+      '<div style="display:flex;gap:8px;margin-top:12px">' +
+      '<button class="btn btn-primary" id="tlImportBtn" onclick="TL.importCandidates()">Import</button>' +
+      '<button class="btn btn-ghost" onclick="fcrCloseModal()">Cancel</button></div>' +
+      '</div>');
+  };
+
+  TL.importCandidates = function () {
+    var fileEl = document.getElementById('tlImportFile');
+    var textEl = document.getElementById('tlImportText');
+    var btn = document.getElementById('tlImportBtn');
+    var file = fileEl && fileEl.files && fileEl.files[0];
+    var text = textEl ? String(textEl.value || '').trim() : '';
+
+    if (!file && !text) {
+      document.getElementById('tlImportOut').innerHTML =
+        '<div class="req-note">Choose a file or paste some rows first.</div>';
+      return;
+    }
+    if (btn) { btn.disabled = true; btn.textContent = 'Importing…'; }
+
+    // Through the api wrapper, not a raw fetch: it attaches the CSRF
+    // token and leaves FormData's own multipart boundary alone.
+    var body;
+    if (file) {
+      body = new FormData();
+      body.append('file', file, file.name);
+    } else {
+      body = { text: text };
+    }
+
+    api.post('/candidates/import', body)
+      .then(function (r) {
+        if (btn) { btn.disabled = false; btn.textContent = 'Import'; }
+        var d = r.detail || {};
+        document.getElementById('tlImportOut').innerHTML =
+          '<div class="req-note" style="background:var(--ok-100);color:var(--ok-600)">' +
+          '<b>' + r.imported + ' imported</b>' +
+          (r.updated ? ', ' + r.updated + ' existing candidate' + (r.updated === 1 ? '' : 's') + ' updated' : '') +
+          (r.skipped ? ', ' + r.skipped + ' skipped' : '') +
+          ' (read as ' + esc(r.format) + ')' +
+          ((d.skipped || []).length
+            ? '<div style="margin-top:6px;font-size:12.5px">' +
+              d.skipped.slice(0, 8).map(function (x) {
+                return 'row ' + x.line + (x.name ? ' (' + esc(x.name) + ')' : '') + ': ' + esc(x.reason);
+              }).join('<br>') + '</div>'
+            : '') +
+          '</div>';
+        if (typeof window.toast === 'function') {
+          window.toast(r.imported + ' candidate' + (r.imported === 1 ? '' : 's') + ' imported', '⬆️');
+        }
+        return refresh();
+      })
+      .catch(function (err) {
+        if (btn) { btn.disabled = false; btn.textContent = 'Import'; }
+        document.getElementById('tlImportOut').innerHTML =
+          '<div class="req-note">' + esc(err.message || 'The import failed.') + '</div>';
       });
   };
 

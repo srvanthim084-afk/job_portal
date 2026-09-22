@@ -26,6 +26,7 @@ import miscRoutes from './routes/misc.js';
 import uploadRoutes from './routes/uploads.js';
 import aiInterviewRoutes from './routes/ai-interviews.js';
 import aiCallingRoutes from './routes/ai-calling.js';
+import spreadsheetRoutes from './routes/spreadsheet.js';
 
 export function createApp({ serveStatic = null, logger = console } = {}) {
   const app = express();
@@ -155,6 +156,9 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', resumeRoutes());
   app.use('/api', bdeRoutes());
   app.use('/api', jobRoutes());
+  // Before candidateRoutes: /candidates/export must not be read as
+  // /candidates/:id, which answers "that candidate could not be found".
+  app.use('/api', spreadsheetRoutes());
   app.use('/api', candidateRoutes());
   app.use('/api', applicationRoutes());
   app.use('/api', miscRoutes());
