@@ -42,9 +42,28 @@ const SIGNATURES = [
   // Legacy .doc is an OLE2 compound file
   { ext: 'doc',  mime: 'application/msword',
     test: (b) => b.length > 8 && b.toString('hex', 0, 8) === 'd0cf11e0a1b11ae1' },
+
+  // Plain text has no signature, so it is identified by exclusion: no NUL
+  // bytes and almost no control characters. Listed LAST so a real binary
+  // format always wins. The upload button has always offered TXT; the
+  // validator did not accept it, so a text resume failed with a type error.
+  { ext: 'txt',  mime: 'text/plain', test: looksLikeText },
 ];
 
-export const ALLOWED_EXT = ['pdf', 'doc', 'docx'];
+function looksLikeText(b) {
+  const sample = b.subarray(0, Math.min(b.length, 4096));
+  if (!sample.length) return false;
+  if (sample[0] === 0xef && sample[1] === 0xbb && sample[2] === 0xbf) return true;
+  if ((sample[0] === 0xff && sample[1] === 0xfe) || (sample[0] === 0xfe && sample[1] === 0xff)) return true;
+  let control = 0;
+  for (const byte of sample) {
+    if (byte === 0) return false;
+    if (byte < 0x09 || (byte > 0x0d && byte < 0x20)) control++;
+  }
+  return control / sample.length < 0.02;
+}
+
+export const ALLOWED_EXT = ['pdf', 'doc', 'docx', 'txt'];
 
 export function validateResume(buffer, originalName) {
   if (!buffer || !buffer.length) {

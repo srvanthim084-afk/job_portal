@@ -24942,6 +24942,38 @@ table.data td .tl-af b{white-space:normal}
             })
             .catch(function () { /* the account exists; profile detail can be edited later */ });
         }).then(function () {
+          /* ------------------------------------------------------------ *
+           * The resume the candidate uploaded on this form.
+           *
+           * It was parsed to fill the fields, and then dropped. The file
+           * was stashed on TL.pendingResume with the comment "uploaded
+           * after the account is created" - and nothing ever read it, so
+           * the bytes never reached the server and candidates.resume_file
+           * stayed null.
+           *
+           * The visible consequence was elsewhere entirely: Easy Apply
+           * checks `c.resumeFile` (prototype.html:12963) and told a
+           * candidate who had just uploaded a resume that they had none.
+           *
+           * Uploading it here is the whole fix. It cannot happen earlier:
+           * /uploads/resume requires a session, and during registration
+           * there isn't one yet.
+           * ------------------------------------------------------------ */
+          var pending = TL.pendingResume;
+          if (!pending) return;
+          TL.pendingResume = null;
+          return TL.uploadResume(pending, candidateId)
+            .then(function () { return refresh(); })
+            .catch(function (err) {
+              // The account exists and the profile is saved; only the file
+              // failed. Say so plainly instead of failing the registration.
+              if (typeof window.toast === 'function') {
+                window.toast('Your account was created, but the resume could not be saved — ' +
+                             'please upload it again from your profile.', '\u26a0\ufe0f');
+              }
+              if (TL.debug) console.error('TeamLink: resume upload after registration failed', err);
+            });
+        }).then(function () {
           if (typeof window.toast === 'function') {
             window.toast('Profile created — welcome to TeamLink!', '🎉');
           }
