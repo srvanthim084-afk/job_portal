@@ -16,6 +16,7 @@ import { z } from 'zod';
 import { withUser } from '../db.js';
 import { wrap, badRequest, notFound, forbidden } from '../errors.js';
 import { requireAuth, requireRole } from '../auth.js';
+import { dispatchEvent } from '../notify/events.js';
 import { toNotification, toInterview, toOffer } from '../shapes.js';
 
 const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
@@ -121,10 +122,20 @@ export default function miscRoutes() {
            (b.date ? ` on ${b.date}${b.time ? ' at ' + b.time : ''}.` : '.'),
            b.jobId, app.rows[0]?.id || null, b.candidateId]);
 
-        return rows[0];
+        return { row: rows[0], applicationId: app.rows[0]?.id || null };
       });
 
-      res.status(201).json({ interview: toInterview(row) });
+      // Same channels as every other event, after the commit.
+      const notify = row.applicationId
+        ? await dispatchEvent(req.session, 'INTERVIEW_SCHEDULED', {
+            applicationId: row.applicationId,
+            scheduledAt: b.date ? `${b.date}${b.time ? ' ' + b.time : ''}` : null,
+            mode: b.mode || null,
+            interviewer: b.interviewer || null,
+          })
+        : null;
+
+      res.status(201).json({ interview: toInterview(row.row), notify });
     }));
 
   r.put('/interviews/:id', requireAuth(), requireRole('recruiter', 'client', 'admin'),
@@ -182,10 +193,16 @@ export default function miscRoutes() {
          'Congratulations — an offer has been extended for your application.',
          a.job_id, a.id, a.candidate_id]);
 
-      return rows[0];
+      return { row: rows[0], applicationId: a.id, ctc, joiningDate };
     });
 
-    res.status(201).json({ offer: toOffer(row) });
+    const notify = await dispatchEvent(req.session, 'OFFER_EXTENDED', {
+      applicationId: row.applicationId,
+      ctc: row.ctc ?? null,
+      joiningDate: row.joiningDate || null,
+    });
+
+    res.status(201).json({ offer: toOffer(row.row), notify });
   }));
 
   r.put('/offers/:id', requireAuth(), wrap(async (req, res) => {

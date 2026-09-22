@@ -121,3 +121,80 @@ export function buildMessages({
     email: { subject: `Your interview for ${jobTitle} at ${company}`, text, html },
   };
 }
+
+/* ------------------------------------------------------------------ *
+ * Every other event a candidate hears about
+ *
+ * One place, so the three channels cannot drift: an SMS that says
+ * "shortlisted" and an email that says "under review" is worse than
+ * sending nothing. Each message names the job, the job id and the
+ * application id, because "your application" is useless to somebody who
+ * applied to six roles.
+ * ------------------------------------------------------------------ */
+
+const SUBJECTS = {
+  STAGE_CHANGED:          (c) => `Update on your application for ${c.jobTitle}`,
+  INTERVIEW_SCHEDULED:    (c) => `Interview scheduled — ${c.jobTitle}`,
+  AI_INTERVIEW_COMPLETED: (c) => `Your AI interview for ${c.jobTitle} is complete`,
+  AI_SCORE_AVAILABLE:     (c) => `Your interview result for ${c.jobTitle}`,
+  OFFER_EXTENDED:         (c) => `An offer for ${c.jobTitle}`,
+};
+
+const BODIES = {
+  STAGE_CHANGED: (c) =>
+    `Your application for ${c.jobTitle} at ${c.company} has moved to "${c.stageLabel || c.stage}".`
+    + (c.note ? `\n\nNote from the team: ${c.note}` : ''),
+
+  INTERVIEW_SCHEDULED: (c) =>
+    `Your interview for ${c.jobTitle} at ${c.company} is scheduled for `
+    + `${human(c.scheduledAt) || 'a time the team will confirm'}`
+    + (c.mode ? ` (${c.mode})` : '') + '.'
+    + (c.interviewer ? `\n\nYou will be meeting ${c.interviewer}.` : ''),
+
+  AI_INTERVIEW_COMPLETED: (c) =>
+    `Your AI interview for ${c.jobTitle} at ${c.company} has been completed successfully `
+    + `and submitted for review. You answered ${c.questionsAnswered ?? 'all'} of `
+    + `${c.questionsAsked ?? 'the'} questions.`,
+
+  AI_SCORE_AVAILABLE: (c) =>
+    `Your AI interview for ${c.jobTitle} has been assessed. `
+    + `Overall score: ${c.overall}%`
+    + (c.technical != null ? ` (technical ${c.technical}%, communication ${c.communication}%)` : '')
+    + '.\n\nYou can see the full breakdown on your applications page.',
+
+  OFFER_EXTENDED: (c) =>
+    `${c.company} has extended an offer for ${c.jobTitle}.`
+    + (c.ctc ? `\n\nOffered CTC: ${c.ctc}` : '')
+    + (c.joiningDate ? `\nProposed joining date: ${human(c.joiningDate)}` : ''),
+};
+
+export function buildEventMessages(event, c) {
+  const subject = SUBJECTS[event];
+  const body = BODIES[event];
+  if (!subject || !body) return null;
+
+  const text = body(c);
+  const ref = `Job ID: ${c.jobId} · Application ID: ${c.applicationId}`;
+
+  return {
+    email: {
+      subject: subject(c),
+      text: `Hi ${c.candidateName},\n\n${text}\n\n${ref}\n\n${c.portalUrl}\n\n— TeamLink`,
+      html:
+        `<p>Hi ${esc(c.candidateName)},</p>` +
+        `<p>${esc(text).replace(/\n/g, '<br>')}</p>` +
+        `<p style="color:#666;font-size:13px">${esc(ref)}</p>` +
+        `<p><a href="${esc(c.portalUrl)}">View your applications</a></p>` +
+        `<p>— TeamLink</p>`,
+    },
+    // Kept short on purpose: an SMS that runs to three segments costs three
+    // times as much and is read no more carefully.
+    sms: `TeamLink: ${text.split('\n')[0]} (Job ${c.jobId}). ${c.portalUrl}`.slice(0, 320),
+    // Spoken aloud: no link, no ids, and the candidate's name first so
+    // they know the call is for them.
+    ivr: `Hello ${c.candidateName}. This is a call from TeamLink. `
+         + `${text.split('\n')[0]} `
+         + 'Please check your TeamLink applications page for details. Thank you.',
+    whatsapp: `*TeamLink*\n\nHi ${c.candidateName},\n\n${text}\n\n${ref}\n${c.portalUrl}`,
+  };
+}

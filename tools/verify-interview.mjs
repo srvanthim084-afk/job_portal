@@ -50,7 +50,14 @@ await check('a candidate applies, so there is something to interview for', async
 
   await page.evaluate(() => window.TL.refresh());
   await page.waitForTimeout(600);
-  jobId = await page.evaluate(() => (DATA.jobs.find((j) => j.status === 'open') || {}).id);
+  // A job the RECRUITER can manage, so the visibility check later is about
+  // the score being shared and not about which company owns the job.
+  jobId = await page.evaluate(() => {
+    const rec = DATA.recruiters.find((r) => r.email === 'recruiter@teamlink.com');
+    const j = DATA.jobs.find((x) => x.status === 'open' && x.companyId === (rec || {}).companyId)
+           || DATA.jobs.find((x) => x.status === 'open');
+    return j ? j.id : null;
+  });
   must(jobId, 'there is no open job to apply to');
 
   const app = await api('post', '/applications', { jobId, source: 'portal' });

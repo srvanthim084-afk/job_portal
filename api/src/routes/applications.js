@@ -17,6 +17,7 @@ import { wrap, badRequest, notFound, forbidden, ApiError, CODES } from '../error
 import { requireAuth, requireRole } from '../auth.js';
 import { toApplication, toNotification } from '../shapes.js';
 import { dispatchInterviewNotifications } from '../notify/dispatch.js';
+import { dispatchEvent } from '../notify/events.js';
 
 const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
 
@@ -207,10 +208,21 @@ export default function applicationRoutes() {
            app.job_id, app.id, app.candidate_id,
            JSON.stringify({ stage, label })]);
 
-        return toApplication(app);
+        return { application: toApplication(app), label };
       });
 
-      res.json({ application: out });
+      // The stage move now reaches the candidate on every channel they
+      // have, not only in the portal. Out of band and after the commit: a
+      // stage change is a database fact, and an SMS gateway has no
+      // business rolling it back.
+      const notify = await dispatchEvent(req.session, 'STAGE_CHANGED', {
+        applicationId: req.params.id,
+        stage: out.application.stage,
+        stageLabel: out.label,
+        note: note || null,
+      });
+
+      res.json({ application: out.application, notify });
     }));
 
   /**

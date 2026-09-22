@@ -534,13 +534,44 @@
   }
 
   /** teamlink_posted_jobs_v1 carries both creates and edits. */
+  /**
+   * Was this job changed, or is it just the server's own copy read back?
+   *
+   * The prototype rebuilds teamlink_posted_jobs_v1 from DATA on load, so
+   * the list contains every job it considers "posted" - including ones
+   * that arrived from the API and were never edited. Syncing those sent a
+   * PUT for each one, which a candidate or a signed-out visitor is
+   * correctly refused: a stream of 401s and 403s for jobs nobody touched.
+   */
+  function jobUnchanged(j) {
+    var server = TL.serverJobs && TL.serverJobs[j.id];
+    if (!server) return false;                 // never seen from the server
+    var now = jobToApi(j);
+    for (var k in now) {
+      if (!Object.prototype.hasOwnProperty.call(now, k)) continue;
+      var a = now[k], b = server[k];
+      if (Array.isArray(a) || Array.isArray(b)) {
+        if (JSON.stringify(a || []) !== JSON.stringify(b || [])) return false;
+      } else if (String(a == null ? '' : a) !== String(b == null ? '' : b)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   function syncPostedJobs(raw) {
     var list;
     try { list = JSON.parse(raw); } catch (e) { return; }
     if (!Array.isArray(list)) return;
 
+    // Only somebody who may post a job can be writing one. Without this the
+    // list is replayed for every visitor, and the API rightly refuses.
+    var role = TL.session && TL.session.role;
+    if (role !== 'recruiter' && role !== 'admin') return;
+
     list.forEach(function (j) {
       if (!j || !j.id || TL.syncingJob === j.id) return;
+      if (jobUnchanged(j)) return;             // nothing to write
       var known = TL.knownJobIds && TL.knownJobIds[j.id];
       var payload = jobToApi(j);
       TL.syncingJob = j.id;
@@ -588,6 +619,10 @@
 
     refill(DATA.companies, d.companies);
     refill(DATA.jobs, d.jobs);
+    // The server's own view of every job, kept so syncPostedJobs can tell
+    // an edit from a read-back.
+    TL.serverJobs = Object.create(null);
+    (d.jobs || []).forEach(function (j) { TL.serverJobs[j.id] = jobToApi(j); });
     refill(DATA.candidates, d.candidates);
     refill(DATA.applications, d.applications);
     refill(DATA.interviews, d.interviews);
@@ -991,7 +1026,12 @@
           }
           window.navigate('/candidate/home');
         });
-      }).catch(say);
+      }).catch(function (err) {
+        // A field problem names itself; anything else falls back to the
+        // normal toast.
+        if (!showFieldErrors(err)) say(err);
+        if (typeof window.validateRegisterForm === 'function') window.validateRegisterForm();
+      });
     };
   }
 
@@ -1025,6 +1065,112 @@
     });
     return Object.keys(out).length ? out : null;
   }
+
+  /* ------------------------------------------------------------------ *
+   * 6b. Registration: say WHICH field, and agree with the server
+   *
+   * Reported as "uploading a resume breaks Create account". The resume was
+   * not the cause. Two faults combined to make it look like one:
+   *
+   * 1. THE RULES DISAGREED. validateRegisterForm() accepts a password of
+   *    six characters (prototype.html:2470, and the field's own hint says
+   *    "At least 6 characters"). The server requires EIGHT, with at least
+   *    one letter and one digit. So a password like "Sravanthi" passes the
+   *    form, enables the button, and is then refused.
+   *
+   * 2. THE REASON WAS DISCARDED. The API answers with the field and the
+   *    reason - {"password":"Password must contain at least one letter and
+   *    one number."} - but say() shows only the generic sentence, so the
+   *    candidate sees "Please check the highlighted fields and try again."
+   *    with nothing highlighted and no idea which field. Having just
+   *    uploaded a resume, the obvious conclusion is that the resume did it.
+   *
+   * Neither is fixed by relaxing anything: the client now applies the
+   * SAME rule as the server, states it, and when the server does reject
+   * something the actual message is shown against the actual field.
+   * ------------------------------------------------------------------ */
+
+  /** Exactly the server's rule (registerSchema in api/src/routes/auth.js). */
+  function passwordProblem(pw) {
+    var p = String(pw || '');
+    if (p.length < 8) return 'Password must be at least 8 characters.';
+    if (!/[A-Za-z]/.test(p) || !/\d/.test(p)) {
+      return 'Password must contain at least one letter and one number.';
+    }
+    return null;
+  }
+
+  var prevValidateRegister = window.validateRegisterForm;
+  if (typeof prevValidateRegister === 'function') {
+    window.validateRegisterForm = function () {
+      var ok = prevValidateRegister.apply(this, arguments);
+
+      var el = document.getElementById('regPassword');
+      if (!el) return ok;
+      var problem = passwordProblem(el.value);
+
+      // The field's own error line and placeholder state a rule that is not
+      // the rule. Correcting the sentence is the fix; the element, its
+      // classes and its position are untouched.
+      var err = document.getElementById('regPasswordErr');
+      if (err) {
+        err.textContent = problem || 'Password must be at least 8 characters, with a letter and a number.';
+        err.classList.toggle('show', !!(el.value && problem));
+      }
+      if (el.placeholder === 'At least 6 characters') {
+        el.placeholder = 'At least 8 characters, with a letter and a number';
+      }
+
+      if (problem) {
+        var btn = document.getElementById('regSubmitBtn');
+        if (btn) { btn.disabled = true; btn.setAttribute('aria-disabled', 'true'); }
+        return false;
+      }
+      return ok;
+    };
+  }
+
+  /**
+   * Which input a server-side field name belongs to, so a rejection can
+   * point at something the candidate can see.
+   */
+  var FIELD_INPUT = {
+    name: 'regName', email: 'regEmail', password: 'regPassword', phone: 'regMobile',
+  };
+
+  /**
+   * Shows the server's own per-field messages.
+   *
+   * VALIDATION_FAILED carries `details`; without this they are dropped and
+   * every field problem reads identically.
+   */
+  function showFieldErrors(err) {
+    var details = err && err.details;
+    if (!details || typeof details !== 'object') return false;
+
+    var names = Object.keys(details);
+    if (!names.length) return false;
+
+    var first = null;
+    names.forEach(function (field) {
+      var id = FIELD_INPUT[field];
+      var el = id && document.getElementById(id);
+      if (el) {
+        var errEl = document.getElementById(id + 'Err');
+        if (errEl) { errEl.textContent = details[field]; errEl.classList.add('show'); }
+        if (!first) { first = el; }
+      }
+    });
+
+    if (first && typeof first.focus === 'function') { try { first.focus(); } catch (e) {} }
+
+    if (typeof window.toast === 'function') {
+      // The reason, not the fact that there is one.
+      window.toast(names.map(function (f) { return details[f]; }).join(' '), '⚠️');
+    }
+    return true;
+  }
+  TL.showFieldErrors = showFieldErrors;
 
   /* ------------------------------------------------------------------ *
    * 7. Applying

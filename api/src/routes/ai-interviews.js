@@ -22,6 +22,7 @@ import { wrap, badRequest, notFound, forbidden } from '../errors.js';
 import { requireAuth } from '../auth.js';
 import { planInterview, followUp, evaluate, interviewEngine } from '../ai/interview.js';
 import { toJob, toCandidate } from '../shapes.js';
+import { dispatchEvent } from '../notify/events.js';
 
 const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
 
@@ -347,14 +348,49 @@ export default function aiInterviewRoutes() {
            justification: p.justification || null,
          })))]);
 
+      // In-app too. The portal's notification feed is where a candidate
+      // looks first, and an interview that finishes silently there reads
+      // as one that did not go through.
+      const job = await c.query(`select title from jobs where id=$1`, [loaded.iv.job_id]);
+      const title = job.rows[0]?.title || 'your application';
+      await c.query(
+        `select notify_create($1,$2,'candidate','AI_INTERVIEW_COMPLETED',$3,$4,$5,$6,$7,null,$8)`,
+        [newId('ntf'), req.session.profileId, 'AI Interview Completed',
+         `Your AI interview for ${title} has been completed and submitted for review.`,
+         loaded.iv.job_id, loaded.iv.application_id, req.session.profileId,
+         JSON.stringify({ aiInterviewId: loaded.iv.id })]);
+      await c.query(
+        `select notify_create($1,$2,'candidate','AI_SCORE_AVAILABLE',$3,$4,$5,$6,$7,null,$8)`,
+        [newId('ntf'), req.session.profileId, 'AI Interview Result',
+         `Your AI interview for ${title} scored ${graded.overall}% overall.`,
+         loaded.iv.job_id, loaded.iv.application_id, req.session.profileId,
+         JSON.stringify({ aiInterviewId: loaded.iv.id, overall: graded.overall })]);
+
       const row = (await c.query(`select * from ai_interviews where id=$1`, [loaded.iv.id])).rows[0];
       return row;
+    });
+
+    // Two events, because they answer different questions for the
+    // candidate: "did my interview go through" and "what did I get". The
+    // interview finishing was previously silent on every channel including
+    // the portal, so a candidate who completed one heard nothing at all.
+    const completed = await dispatchEvent(req.session, 'AI_INTERVIEW_COMPLETED', {
+      applicationId: saved.application_id,
+      questionsAsked: saved.questions_asked,
+      questionsAnswered: saved.questions_answered,
+    });
+    const scored = await dispatchEvent(req.session, 'AI_SCORE_AVAILABLE', {
+      applicationId: saved.application_id,
+      overall: Math.round(Number(saved.overall_percentage || 0)),
+      technical: Math.round(Number(saved.technical_score || 0)),
+      communication: Math.round(Number(saved.communication_score || 0)),
     });
 
     res.json({
       aiInterview: toAi(saved),
       engine: graded.engine,
       perQuestion: graded.perQuestion,
+      notify: { completed, scored },
     });
   }));
 

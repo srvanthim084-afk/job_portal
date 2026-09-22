@@ -169,6 +169,65 @@ export const smsProvider = {
 };
 
 /* ------------------------------------------------------------------ *
+ * IVR — an automated call
+ *
+ * An automated call, placed at every stage alongside the written
+ * channels, because a candidate who does not read email still answers
+ * their phone.
+ *
+ * The text sent here is SPOKEN, so it is the short form - the same string
+ * the SMS carries. Nothing is abbreviated for a screen, and no link is
+ * read out, because neither survives being said aloud.
+ *
+ * Providers differ in how they take the message (some want TwiML, some
+ * want plain text and a voice id). This posts the generic shape and the
+ * mapping to a specific vendor belongs in one place: here.
+ * ------------------------------------------------------------------ */
+export const ivrProvider = {
+  channel: 'ivr',
+  configured: () => !!(config.ivrApiKey && config.ivrApiUrl),
+  async send({ to, text }) {
+    if (!this.configured()) {
+      return NOT_CONFIGURED('ivr', 'IVR_API_KEY / IVR_API_URL are not set');
+    }
+    if (!to) return { status: 'skipped_no_address', provider: 'ivr', error: 'no phone number' };
+
+    try {
+      const res = await postJson(config.ivrApiUrl, {
+        headers: { authorization: `Bearer ${config.ivrApiKey}` },
+        body: {
+          to,
+          from: config.ivrFrom || undefined,
+          language: config.ivrLanguage,
+          // Spoken, not displayed.
+          message: speakable(text),
+        },
+      });
+      if (!res.ok) {
+        return { status: 'failed', provider: 'ivr',
+                 error: `HTTP ${res.status}: ${String(res.text).slice(0, 300)}` };
+      }
+      return { status: 'sent', provider: 'ivr',
+               ref: res.json?.callId || res.json?.id || null };
+    } catch (err) {
+      return { status: 'failed', provider: 'ivr', error: err.message };
+    }
+  },
+};
+
+/**
+ * A URL read aloud is noise, and an id read aloud is worse. Strip what
+ * cannot be spoken and leave the sentence.
+ */
+function speakable(text) {
+  return String(text || '')
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/\s*\([^)]*\)\s*/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+/* ------------------------------------------------------------------ *
  * WhatsApp
  * ------------------------------------------------------------------ */
 export const whatsappProvider = {
@@ -256,6 +315,7 @@ export const providers = {
   naukri: naukriProvider,
   sms: smsProvider,
   whatsapp: whatsappProvider,
+  ivr: ivrProvider,
   email: emailProvider,
 };
 

@@ -61,6 +61,15 @@ export const config = {
   emailApiUrl: process.env.EMAIL_API_URL || 'https://api.resend.com/emails',
   emailFrom: process.env.EMAIL_FROM || '',
 
+  // IVR. An automated call placed to the candidate at each stage,
+  // alongside the written channels. IVR_FROM is the number the call
+  // appears to come from. 'ivr' is the channel name notification_deliveries
+  // already allows (0006), and what the prototype called it.
+  ivrApiKey: process.env.IVR_API_KEY || '',
+  ivrApiUrl: process.env.IVR_API_URL || '',
+  ivrFrom: process.env.IVR_FROM || '',
+  ivrLanguage: process.env.IVR_LANGUAGE || 'en-IN',
+
   smsApiKey: process.env.SMS_API_KEY || '',
   smsApiUrl: process.env.SMS_API_URL || '',
   smsSenderId: process.env.SMS_SENDER_ID || '',

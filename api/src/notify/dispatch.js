@@ -77,6 +77,9 @@ export async function dispatchInterviewNotifications(session, {
     { channel: 'naukri',   applicable: source === 'naukri' },
     { channel: 'sms',      applicable: true },
     { channel: 'whatsapp', applicable: true },
+    // An automated call as well, so a candidate who reads nothing still
+    // hears that their application landed.
+    { channel: 'ivr',      applicable: true },
     { channel: 'email',    applicable: true },
   ];
 
@@ -99,6 +102,7 @@ export async function dispatchInterviewNotifications(session, {
         html: messages.email.html,
         text: p.channel === 'sms' ? messages.sms
             : p.channel === 'whatsapp' ? messages.whatsapp
+            : p.channel === 'ivr' ? (messages.ivr || messages.sms)
             : messages.email.text,
         payload: {
           // The documented Naukri payload. Same identifiers as every other
