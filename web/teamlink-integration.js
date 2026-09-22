@@ -3769,6 +3769,47 @@
       });
   };
 
+  /**
+   * Say what the button now does.
+   *
+   * The toolbar button still reads "IVR", which described a press-1
+   * phone menu that no longer exists - and left the calling agent
+   * effectively unfindable, because nobody looks for a conversation
+   * under "IVR". Only the LABEL changes: same button, same position,
+   * same classes, same handler.
+   *
+   * Done after render rather than in the markup because the toolbar is
+   * built inside the prototype's own closure, which has no seam to
+   * override.
+   */
+  function relabelCallingButton() {
+    var buttons = document.querySelectorAll('.fcr-toolbar button');
+    for (var i = 0; i < buttons.length; i++) {
+      var b = buttons[i];
+      var handler = b.getAttribute('onclick') || '';
+      if (handler.indexOf('fcrIvrModal') < 0) continue;
+      if (b.dataset && b.dataset.tlCalling === '1') continue;
+      b.textContent = '🤖 AI Call';
+      b.title = 'Call the selected candidates with the AI recruitment agent';
+      if (b.dataset) b.dataset.tlCalling = '1';
+    }
+  }
+
+  var realRenderForCalling = window.render;
+  window.render = function () {
+    var out = realRenderForCalling.apply(this, arguments);
+    try { relabelCallingButton(); } catch (e) { /* never break a render */ }
+    return out;
+  };
+
+  // The results list repaints itself without a full render, so catch that
+  // too - otherwise the label reverts the first time a filter is touched.
+  document.addEventListener('click', function () {
+    setTimeout(function () {
+      try { relabelCallingButton(); } catch (e) {}
+    }, 60);
+  }, true);
+
   /* ---- the old browser-side IVR path is removed ------------------- *
    *
    * fcrStartIvrCall() POSTed from the browser to whatever URL was typed
