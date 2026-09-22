@@ -1927,6 +1927,89 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * 9c. The Resume page should not claim things that are not true
+   *
+   * prototype.html:3864 renders the resume panel unconditionally, so a
+   * candidate who has never uploaded anything is still shown:
+   *
+   *   - a "Parsed" badge and "Uploaded - parsed automatically by TeamLink AI"
+   *   - "Parse confidence 92%"
+   *   - "Detected experience / skills / education" with nothing behind them
+   *
+   * and an empty heading where the filename would be.
+   *
+   * The 92% is not a measurement either way. It is
+   * DATA.aiSettings.resumeParseConfidence - the CONFIDENCE FLOOR an
+   * administrator sets on the AI Settings screen, printed as though it
+   * were this document's score. Nothing measures a per-resume confidence,
+   * so the honest thing is not to state one.
+   *
+   * This adjusts the rendered panel after paint. The layout, the classes
+   * and the tiles stay exactly where they are; what changes is what the
+   * text asserts.
+   * ------------------------------------------------------------------ */
+
+  function honestResumePanel() {
+    if (!/^#\/candidate\/resume\b/.test(String(location.hash || ''))) return;
+
+    var app = document.getElementById('app');
+    if (!app) return;
+    var head = app.querySelector('.panel .panel-head');
+    if (!head || head.dataset.tlHonest) return;
+
+    var me = null;
+    try {
+      me = STATE.session && typeof DATA !== 'undefined' ? DATA.candidateById(STATE.session.id) : null;
+    } catch (e) { return; }
+    if (!me) return;
+
+    var heading = head.querySelector('h2');
+    // The filename is the only reliable signal that a resume exists.
+    if (!String(me.resumeFile || '').trim()) {
+      if (!heading || !/resume/i.test(heading.textContent || '')) {
+        // Only touch the resume panel, never some other panel that happens
+        // to be first on a future version of this page.
+        if (!head.textContent || !/parsed|uploaded/i.test(head.textContent)) return;
+      }
+      head.dataset.tlHonest = '1';
+
+      if (heading) heading.textContent = 'No resume uploaded yet';
+      var desc = head.querySelector('.desc');
+      if (desc) desc.textContent = 'Upload one and TeamLink will read it to fill your profile';
+      var badge = head.querySelector('.badge');
+      if (badge) { badge.textContent = 'Not uploaded'; badge.className = 'badge'; }
+
+      // "Detected ..." tiles describe a parse that never happened.
+      var body = head.parentElement && head.parentElement.querySelector('.panel-body');
+      if (body) {
+        [].slice.call(body.querySelectorAll('.kv .item')).forEach(function (item) {
+          var v = item.querySelector('.v');
+          if (v) v.textContent = '—';
+        });
+      }
+    } else {
+      head.dataset.tlHonest = '1';
+    }
+
+    // Either way: nothing measures a per-resume parse confidence, so the
+    // tile is removed rather than filled with an administrator's setting.
+    var panel = head.parentElement;
+    var tiles = panel ? panel.querySelectorAll('.kv .item') : [];
+    [].slice.call(tiles).forEach(function (item) {
+      var k = item.querySelector('.k');
+      if (k && /parse confidence/i.test(k.textContent || '')) item.remove();
+    });
+  }
+
+  var prevAfterRenderResume = window.afterRender;
+  window.afterRender = function () {
+    var out = typeof prevAfterRenderResume === 'function'
+      ? prevAfterRenderResume.apply(this, arguments) : undefined;
+    try { honestResumePanel(); } catch (e) { /* never break a render */ }
+    return out;
+  };
+
+  /* ------------------------------------------------------------------ *
    * 10. Notifications
    * ------------------------------------------------------------------ */
 
