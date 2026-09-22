@@ -86,6 +86,20 @@ export async function verifySmtp() {
   }
 }
 
+/**
+ * The From header, with a display name when one is configured.
+ *
+ * Quoted, because a name containing a comma or a full stop is otherwise
+ * parsed as a second address and the message is rejected by the server
+ * rather than delivered oddly.
+ */
+function fromHeader() {
+  const addr = config.emailFrom;
+  if (!config.emailFromName) return addr;
+  const name = String(config.emailFromName).replace(/["\\]/g, '');
+  return `"${name}" <${addr}>`;
+}
+
 export const emailProvider = {
   channel: 'email',
   // Either transport counts as configured; SMTP takes precedence.
@@ -105,7 +119,7 @@ export const emailProvider = {
       try {
         const t = await getSmtp();
         const info = await t.sendMail({
-          from: config.emailFrom, to, subject, html, text,
+          from: fromHeader(), to, subject, html, text,
         });
         // `accepted` is the server's own list. An empty one means the
         // message was handed over but not accepted for this recipient,
@@ -126,7 +140,7 @@ export const emailProvider = {
       // the same shape without a code change.
       const res = await postJson(config.emailApiUrl, {
         headers: { authorization: `Bearer ${config.emailApiKey}` },
-        body: { from: config.emailFrom, to: [to], subject, html, text },
+        body: { from: fromHeader(), to: [to], subject, html, text },
       });
       if (!res.ok) {
         return { status: 'failed', provider: 'email',

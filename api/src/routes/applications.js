@@ -37,6 +37,10 @@ const SOURCE_ALIASES = {
   monster: 'monster', glassdoor: 'glassdoor', instahyre: 'instahyre',
   referral: 'referral', recruiter: 'recruiter',
   teamlink: 'teamlink', portal: 'teamlink', direct: 'teamlink', website: 'teamlink',
+  // An alert we sent is its own source. Folding it into "teamlink" would
+  // make it impossible to say whether the alerts produce applications,
+  // which is the only measure of whether they are worth sending.
+  job_alert: 'job_alert', 'job alert': 'job_alert', alert: 'job_alert',
 };
 
 function normaliseSource(raw) {
@@ -177,6 +181,20 @@ export default function applicationRoutes() {
       // delivery rows (or their absence) are visible on the record.
       console.error('[notify] interview notification dispatch failed:', err.message);
       notify = { error: 'dispatch_failed' };
+    }
+
+    // ---- close the loop on the alert that brought them --------------
+    //
+    // Keyed on job and candidate rather than on the alert id, so an
+    // application still counts even if they came back through search a
+    // week later: the question "did the alert produce applications" is
+    // about the candidate, not about the click.
+    try {
+      await withUser(req.session, (c) => c.query(
+        `select job_match_applied($1,$2,$3)`,
+        [out.application.jobId, out.application.candidateId, out.application.id]));
+    } catch (err) {
+      console.error('[alerts] could not mark the match applied:', err.message);
     }
 
     // ---- the AI interview and its two-day window ----------------------

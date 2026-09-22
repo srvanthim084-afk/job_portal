@@ -60,6 +60,10 @@ export const config = {
   smtpPass: process.env.EMAIL_SMTP_PASS || '',
   emailApiUrl: process.env.EMAIL_API_URL || 'https://api.resend.com/emails',
   emailFrom: process.env.EMAIL_FROM || '',
+  // What the recipient sees in their inbox instead of a bare address.
+  // "TeamLink Job Portal <jobs@...>" is read as a company; the address on
+  // its own is read as a robot, and treated accordingly.
+  emailFromName: process.env.EMAIL_FROM_NAME || '',
 
   // IVR. An automated call placed to the candidate at each stage,
   // alongside the written channels. IVR_FROM is the number the call

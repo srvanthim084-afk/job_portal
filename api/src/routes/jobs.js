@@ -12,7 +12,8 @@ import { z } from 'zod';
 import { withUser } from '../db.js';
 import { wrap, badRequest, notFound, forbidden, ApiError, CODES } from '../errors.js';
 import { requireAuth, requireRole } from '../auth.js';
-import { toJob } from '../shapes.js';
+import { toJob, toJobMatch } from '../shapes.js';
+import { runJobAlertsInBackground } from '../notify/job-alerts.js';
 
 const strArr = z.array(z.string().trim().max(200)).max(60).optional();
 
@@ -130,7 +131,14 @@ export default function jobRoutes() {
       return rows[0];
     });
 
-    res.status(201).json({ job: toJob(job) });
+    // A published requirement is matched against every candidate profile
+    // and the ones that clear the bar are alerted. In the background: the
+    // recruiter asked to save a job, not to wait on five thousand
+    // profiles and three messages each.
+    const alerts = job.status === 'open' && !job.paused && !job.archived;
+    if (alerts) runJobAlertsInBackground(id);
+
+    res.status(201).json({ job: toJob(job), alerting: alerts });
   }));
 
   /** Edit. Updates in place — never inserts, never changes the id. */
@@ -180,7 +188,60 @@ export default function jobRoutes() {
       const { rows } = await c.query(`select * from jobs_with_counts where id=$1`, [req.params.id]);
       return rows[0];
     });
-    res.json({ job: toJob(job) });
+
+    // Publishing is the moment the job becomes real to candidates, so it
+    // is the moment the alerts go out. Unpublishing sends nothing, and a
+    // second publish re-runs the matching but will not message anybody
+    // who was already told about this job.
+    if (publish) runJobAlertsInBackground(req.params.id);
+
+    res.json({ job: toJob(job), alerting: publish });
+  }));
+
+  /**
+   * GET /api/job-matches?jobId=&candidateId=
+   *
+   * The ATS record the alerts produce: who was matched, what they scored,
+   * which skills matched, what was sent on each channel, whether they
+   * clicked and whether they applied. RLS decides who may read a row.
+   */
+  r.get('/job-matches', requireAuth(), wrap(async (req, res) => {
+    const { jobId, candidateId, notifiedOnly } = req.query;
+
+    const rows = await withUser(req.session, async (c) => {
+      const where = [], vals = [];
+      if (jobId)       { vals.push(jobId);       where.push(`m.job_id=$${vals.length}`); }
+      if (candidateId) { vals.push(candidateId); where.push(`m.candidate_id=$${vals.length}`); }
+      if (notifiedOnly === 'true') where.push('m.notified');
+      const clause = where.length ? `where ${where.join(' and ')}` : '';
+
+      return (await c.query(
+        `select m.*, c.name as candidate_name, c.email as candidate_email,
+                c.phone as candidate_phone, j.title as job_title
+           from job_matches m
+           join candidates c on c.id = m.candidate_id
+           join jobs j       on j.id = m.job_id
+           ${clause}
+          order by m.score desc, m.matched_at desc
+          limit 500`, vals)).rows;
+    });
+
+    res.json({ jobMatches: rows.map(toJobMatch) });
+  }));
+
+  /**
+   * POST /api/job-matches/:id/clicked
+   *
+   * The candidate opened the job from the alert. Unauthenticated on
+   * purpose: the click happens when they follow the link from their
+   * email, which is before they log in, and the id is the only thing it
+   * can act on - it records a timestamp and reveals nothing.
+   */
+  r.post('/job-matches/:id/clicked', wrap(async (req, res) => {
+    await withUser({ userId: '', role: 'anon' },
+      (c) => c.query(`select job_match_clicked($1)`, [req.params.id]))
+      .catch((err) => { console.error('[alerts] click not recorded:', err.message); });
+    res.json({ ok: true });
   }));
 
   r.delete('/jobs/:id', requireAuth(), requireRole('admin'), wrap(async (req, res) => {

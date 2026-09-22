@@ -309,6 +309,104 @@ server agrees is gone ends the session. And `localStorage.removeItem` sent
 `DELETE /api/prefs/<key>` for keys the database owns, which 401'd after
 logout; it now mirrors the guards `setItem` already had.
 
+## Job alerts: reaching the candidates we already have
+
+Publishing a requirement used to be silent. It appeared on the board and
+waited to be found, while every candidate already in the database — the
+ones acquisition was paid for — heard nothing, and the recruiter's only
+option was to search the list and message people one at a time.
+
+Publishing now scores every profile against the job and messages the ones
+that fit, on email, SMS and WhatsApp.
+
+### One keyword is not a match
+
+This is the rule the whole feature turns on, and the reason it is not
+`skills && location`. A candidate with "Java" on their profile must not
+be messaged about every Java job: do that for a month and the audience
+learns to delete anything from us, at which point the feature is worth
+less than nothing.
+
+`api/src/ai/match.js` applies four hard gates BEFORE the score is
+consulted:
+
+| gate | rule |
+|---|---|
+| skills | at least half the job's named skills, never fewer than two |
+| experience | not more than two years outside the band the job asks for |
+| location | the job's city, their preferred city, or a remote role |
+| role | the job title has to be recognisable in their title or preferred role |
+
+A profile that passes all four is then scored out of 100 — skills 40,
+experience 20, role 15, location 15, education 5, preferences 5 — and
+only those above the threshold (65 by default, `JOB_MATCH_THRESHOLD`) are
+contacted.
+
+What that rejects, from the verifier:
+
+* a frontend developer whose profile happens to list Java — *1 of 3 skills*
+* the same skills in Chennai, for an office role in Hyderabad
+* a fresher, for a 3–5 year role; and twelve years, for the same role
+* a DevOps engineer with Java, Spring Boot and SQL — a different kind of
+  role, however well the keywords line up
+
+What it accepts: 5.5 years against a 3–5 band (a judgement a recruiter
+would make), a Chennai candidate for a REMOTE role, and `Spring-Boot`
+written where the job said `SpringBoot`.
+
+### Every decision is recorded, including the ones to stay silent
+
+`job_matches` holds a row for every candidate scored — not just the ones
+contacted — because "why was this person not told about this job" is a
+question the ATS has to be able to answer, and it cannot answer it from
+rows that were never written. Each row carries the score, the threshold
+it was judged against, the skills that matched, a per-dimension
+breakdown, and a reason in plain words.
+
+`job_match_deliveries` holds one row per channel attempt, and a trigger
+rolls the latest outcome up into the three status columns the ATS grid
+shows. `notified` means a message actually left — not that we tried —
+so an unconfigured channel cannot make the report claim contacts that
+never happened.
+
+### The loop closes
+
+The alert links straight to the job, carrying the match id:
+
+```
+https://.../?alert=jm_abc123#/job/j_xyz
+```
+
+Opening it records the click before the candidate has logged in, because
+that is when they follow a link from their email. Applying records the
+application against the match, and the source is kept as `job_alert`
+rather than folded into "TeamLink Portal" — otherwise the only question
+that matters, *did the alerts produce applications*, cannot be answered.
+
+The whole path, end to end:
+
+```
+requirement published -> every profile scored -> matches alerted
+  -> candidate opens the job (click recorded) -> applies (source: job_alert)
+  -> confirmation -> AI interview -> AI score -> recruiter review
+```
+
+### What it deliberately will not do
+
+* alert on a draft, paused or archived job — checked at send time, not
+  only at publish time;
+* message the same candidate about the same job twice, even if the job is
+  re-published;
+* message somebody who has already applied;
+* send WhatsApp to a candidate who has not opted in;
+* hold up the response to "save job" — matching runs in the background, and
+  a failure there never fails the publish.
+
+Verified by `npm run verify:matching`: eleven checks on the rule itself
+with profiles built to isolate each gate, and ten through HTTP against
+the running server, including a real alert delivered to a real SMTP
+server.
+
 ## The AI interview: a blueprint, not a shuffle
 
 The prototype built the interview in the browser. `generateQuestions()`
@@ -431,6 +529,8 @@ npm run verify:interaction 7/7   real clicks on real controls
 npm run verify:search      9/9
 npm run verify:interview  15/15  the blueprint, the deadline, the five scores
 npm run verify:deadline   15/15  two days, reminded, expired
+npm run verify:matching   21/21  the alert rule, and the alert path
+npm run check:mail               does the mailbox accept us at all
 npm run rehearse          24/24  a deployment against an empty database
 npm run ui:compare baseline clean     58/80 identical, 22 explained below
 ```

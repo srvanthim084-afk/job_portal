@@ -1297,6 +1297,8 @@
     monster: 'monster', glassdoor: 'glassdoor', instahyre: 'instahyre',
     referral: 'referral', recruiter: 'recruiter', teamlink: 'teamlink',
     portal: 'teamlink', direct: 'teamlink',
+    // An alert we sent is its own source, not "the portal".
+    job_alert: 'job_alert', 'job alert': 'job_alert',
   };
 
   /** naukri.com, in.linkedin.com, www.indeed.co.in -> the source name. */
@@ -1321,6 +1323,26 @@
   }
 
   /**
+   * Tell the server the alert was opened.
+   *
+   * Sent once per arrival and never retried: a click is worth recording,
+   * and it is not worth interrupting somebody's job hunt over. It runs
+   * before login on purpose - the candidate follows the link from their
+   * email, which is where they are least likely to be signed in.
+   */
+  function recordAlertClick(matchId) {
+    if (!matchId) return;
+    try {
+      var key = 'tl_alert_clicked_' + matchId;
+      if (sessionStorage.getItem(key)) return;
+      sessionStorage.setItem(key, '1');
+    } catch (e) { /* private mode: at worst the click is recorded twice */ }
+
+    api.post('/job-matches/' + encodeURIComponent(matchId) + '/clicked', {})
+      .catch(function () { /* never surface this to the candidate */ });
+  }
+
+  /**
    * Reads the source from the URL, remembers it, and returns it.
    *
    * An explicit parameter always beats the referrer: a board that tags its
@@ -1336,6 +1358,18 @@
 
     var found = m ? normaliseSource(decodeURIComponent(m[1])) : null;
     var how = found ? 'link' : null;
+
+    // A job alert we sent. Recorded as the source in its own right,
+    // because "did the alerts produce applications" is the only question
+    // that says whether the feature is worth running - and an alert
+    // filed under "TeamLink Portal" cannot answer it.
+    var alert = /[?&]alert=([^&#]+)/i.exec(q) || /[?&]alert=([^&#]+)/i.exec(hash);
+    if (alert) {
+      found = 'job_alert';
+      how = 'alert';
+      TL.alertId = decodeURIComponent(alert[1]);
+      recordAlertClick(TL.alertId);
+    }
 
     if (!found) {
       // No tag: fall back to who sent them, but only for a board we know.

@@ -143,6 +143,8 @@ const SUBJECTS = {
   AI_INTERVIEW_REMINDER:  (c) => `Reminder: your AI interview for ${c.jobTitle} closes tomorrow`,
   AI_INTERVIEW_FINAL:     (c) => `Last chance: your AI interview for ${c.jobTitle} closes in 2 hours`,
   AI_INTERVIEW_EXPIRED:   (c) => `Your AI interview window for ${c.jobTitle} has closed`,
+
+  JOB_MATCH_ALERT:        (c) => `A ${c.jobTitle} role matching your profile`,
 };
 
 const BODIES = {
@@ -195,6 +197,23 @@ const BODIES = {
     + `${human(c.dueAt)}, in about two hours.`
     + '\n\nIf you have started it, please finish it before then.',
 
+  /* ---- a new requirement that matches this profile ---------------- *
+   *
+   * Says WHY they were contacted, with the skills that matched. An alert
+   * that cannot explain itself reads like spam, and the first thing a
+   * candidate does with spam is stop reading everything we send.
+   * ------------------------------------------------------------------ */
+  JOB_MATCH_ALERT: (c) =>
+    `A new ${c.jobTitle} opportunity at ${c.company} matches your profile.`
+    + `\n\nRole: ${c.jobTitle}`
+    + (c.location ? `\nLocation: ${c.location}` : '')
+    + (c.expLabel ? `\nExperience: ${c.expLabel}` : '')
+    + (c.payLabel ? `\nCompensation: ${c.payLabel}` : '')
+    + (c.matchedSkills && c.matchedSkills.length
+        ? `\n\nWe matched you on: ${c.matchedSkills.join(', ')}.` : '')
+    + '\n\nIf it interests you, open it and apply — your saved profile and '
+    + 'resume are used, so it takes one click.',
+
   AI_INTERVIEW_EXPIRED: (c) =>
     `The window to take the AI interview for ${c.jobTitle} at ${c.company} closed `
     + `${human(c.dueAt)}, and the interview was not completed.`
@@ -208,7 +227,11 @@ export function buildEventMessages(event, c) {
   if (!subject || !body) return null;
 
   const text = body(c);
-  const ref = `Job ID: ${c.jobId} · Application ID: ${c.applicationId}`;
+  // An alert has no application yet, and pointing it at "your
+  // applications" would be pointing at an empty page.
+  const ref = c.applicationId
+    ? `Job ID: ${c.jobId} · Application ID: ${c.applicationId}`
+    : `Job ID: ${c.jobId}`;
 
   return {
     email: {
@@ -218,12 +241,14 @@ export function buildEventMessages(event, c) {
         `<p>Hi ${esc(c.candidateName)},</p>` +
         `<p>${esc(text).replace(/\n/g, '<br>')}</p>` +
         `<p style="color:#666;font-size:13px">${esc(ref)}</p>` +
-        `<p><a href="${esc(c.portalUrl)}">View your applications</a></p>` +
+        `<p><a href="${esc(c.portalUrl)}">${esc(c.linkLabel || 'View your applications')}</a></p>` +
         `<p>— TeamLink</p>`,
     },
     // Kept short on purpose: an SMS that runs to three segments costs three
     // times as much and is read no more carefully.
-    sms: `TeamLink: ${text.split('\n')[0]} (Job ${c.jobId}). ${c.portalUrl}`.slice(0, 320),
+    sms: (c.smsLead
+      ? `TeamLink: ${c.smsLead} ${c.portalUrl}`
+      : `TeamLink: ${text.split('\n')[0]} (Job ${c.jobId}). ${c.portalUrl}`).slice(0, 320),
     // Spoken aloud: no link, no ids, and the candidate's name first so
     // they know the call is for them.
     ivr: `Hello ${c.candidateName}. This is a call from TeamLink. `

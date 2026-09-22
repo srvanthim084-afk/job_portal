@@ -188,6 +188,47 @@ export function toApplication(r) {
   };
 }
 
+/**
+ * One job alert, as the ATS needs to read it.
+ *
+ * Everything the specification asks to be kept for every notification:
+ * the candidate, the job, the score, the skills that matched, when, on
+ * which channels, what each channel reported, whether they clicked and
+ * whether they applied.
+ */
+export function toJobMatch(r) {
+  return {
+    id: r.id,
+    jobId: r.job_id,
+    jobTitle: nz(r.job_title),
+    candidateId: r.candidate_id,
+    candidateName: nz(r.candidate_name),
+    candidateEmail: nz(r.candidate_email),
+    candidatePhone: nz(r.candidate_phone),
+
+    score: r.score == null ? null : Number(r.score),
+    threshold: r.threshold == null ? null : Number(r.threshold),
+    matchedSkills: arr(r.matched_skills),
+    reason: nz(r.reason),
+    breakdown: r.breakdown || undefined,
+    matchedAt: r.matched_at ? new Date(r.matched_at).toISOString() : undefined,
+
+    notified: !!r.notified,
+    notifiedAt: r.notified_at ? new Date(r.notified_at).toISOString() : undefined,
+    channels: {
+      email:    nz(r.email_status),
+      sms:      nz(r.sms_status),
+      whatsapp: nz(r.whatsapp_status),
+    },
+
+    clicked: !!r.clicked_at,
+    clickedAt: r.clicked_at ? new Date(r.clicked_at).toISOString() : undefined,
+    applied: !!r.applied_at,
+    appliedAt: r.applied_at ? new Date(r.applied_at).toISOString() : undefined,
+    applicationId: nz(r.application_id),
+  };
+}
+
 export function toInterview(r) {
   return {
     id: r.id,
