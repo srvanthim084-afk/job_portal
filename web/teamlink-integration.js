@@ -1828,6 +1828,105 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * 9b. Replacing the resume from the profile
+   *
+   * handleResumeFileSelected() (prototype.html:3662) runs the profile
+   * page's "Upload resume" button. Two things were wrong with it once
+   * there was a real backend:
+   *
+   *   THE FILE WENT NOWHERE. Like the registration upload before it, the
+   *   bytes were never sent, so candidates.resume_file kept pointing at
+   *   the OLD resume - or at nothing. A candidate who replaced their CV
+   *   went on applying with the previous one.
+   *
+   *   THE EXTRACTION WAS NOT AN EXTRACTION. It called
+   *   buildResumeExtraction(cand, file.name), which assembles the "parsed"
+   *   fields from the candidate record that is already on screen. Upload a
+   *   blank file and it reports your existing details back to you as
+   *   freshly extracted. The file name was the only thing that came from
+   *   the file.
+   *
+   * Both now go through the same server path registration uses: the file
+   * is read by api/src/resume/, its real fields fill the review form, and
+   * the bytes are stored against the candidate. The review screen, its
+   * progress steps and its confirm flow are untouched.
+   * ------------------------------------------------------------------ */
+
+  /** Server field names -> the keys the review form expects. */
+  function toReviewDraft(fields, fileName) {
+    var join = function (v) { return Array.isArray(v) ? v.join(', ') : (v || ''); };
+    return {
+      fileName: fileName,
+      name: fields.name || '',
+      email: fields.email || '',
+      phone: fields.phone || '',
+      location: fields.location || '',
+      title: fields.title || '',
+      currentCompany: fields.currentCompany || '',
+      previousCompanies: join(fields.previousCompanies),
+      exp: fields.expYears != null ? String(fields.expYears) + ' yrs' : '',
+      noticePeriod: fields.noticePeriod || '',
+      ctc: fields.currentSalary || '',
+      expectedCtc: fields.expectedSalary || '',
+      education: fields.education || '',
+      skills: join(fields.skills),
+      technicalSkills: join(fields.skills),
+      certifications: join(fields.certifications),
+      languages: join(fields.languages),
+      linkedin: fields.linkedin || '',
+      github: fields.github || '',
+      portfolio: '',
+      summary: fields.summary || '',
+      projects: join(fields.projects),
+    };
+  }
+
+  var prevProfileResume = window.handleResumeFileSelected;
+  if (typeof prevProfileResume === 'function') {
+    window.handleResumeFileSelected = function (file) {
+      var cand = typeof window.currentCandidate === 'function' ? window.currentCandidate() : null;
+      if (!cand || !file) return;
+
+      // The prototype's own progress screen, unchanged.
+      STATE.resumeReview = { status: 'extracting', fileName: file.name, progress: 0 };
+      window.render();
+
+      var fd = new FormData();
+      fd.append('resume', file);
+
+      return request('POST', '/resume/extract', fd, { timeout: 60000 })
+        .then(function (res) {
+          // Store the file itself, so Easy Apply and the recruiter see the
+          // NEW resume rather than the one it replaced.
+          return TL.uploadResume(file, cand.id).then(function () { return res; });
+        })
+        .then(function (res) {
+          return refresh().then(function () { return res; });
+        })
+        .then(function (res) {
+          var draft = toReviewDraft(res.fields || {}, file.name);
+          var extracted = new Set(Object.keys(draft).filter(function (k) {
+            return k !== 'fileName' && String(draft[k]).trim() !== '';
+          }));
+          STATE.resumeReview = { status: 'review', fileName: file.name, draft: draft, aiExtracted: extracted };
+          if (typeof window.toast === 'function') {
+            window.toast('Resume parsed — review your auto-filled profile below', '🤖');
+          }
+          window.render();
+        })
+        .catch(function (err) {
+          // Back to the page, with the reason. Never the fabricated draft.
+          STATE.resumeReview = null;
+          window.render();
+          if (typeof window.toast === 'function') {
+            window.toast(resumeMessage(err), '⚠️');
+          }
+          if (TL.debug) console.error('TeamLink: profile resume upload failed', err);
+        });
+    };
+  }
+
+  /* ------------------------------------------------------------------ *
    * 10. Notifications
    * ------------------------------------------------------------------ */
 

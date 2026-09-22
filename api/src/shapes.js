@@ -90,7 +90,9 @@ export function toCandidate(r) {
     gender: nz(r.gender),
     title: nz(r.title),
 
-    exp: nz(r.exp),
+    // Strings, not undefined - the Resume page prints these directly, and
+    // a candidate with neither showed the word "undefined" on screen.
+    exp: r.exp == null ? '' : r.exp,
     ctc: nz(r.ctc),
     expectedCtc: numOrU(r.expected_ctc),
     noticePeriod: nz(r.notice_period),
@@ -104,7 +106,15 @@ export function toCandidate(r) {
 
     skills: arr(r.skills),
     technicalSkills: arr(r.technical_skills),
-    education: nz(r.education),
+    // A STRING, always - never undefined.
+    //
+    // prototype.html:3870 does `cand.education.split(',')` on the Resume
+    // page. Every seeded candidate has an education line, so it never
+    // failed; a newly registered one does not, and the whole page threw
+    // and rendered the router's "Something needs a fresh click" fallback.
+    // Field names here are a compatibility contract with the prototype,
+    // and so are the TYPES.
+    education: r.education == null ? '' : r.education,
     summary: nz(r.summary),
     certifications: arr(r.certifications),
     languages: arr(r.languages),
@@ -113,7 +123,7 @@ export function toCandidate(r) {
     github: nz(r.github),
     portfolio: nz(r.portfolio),
 
-    resumeFile: nz(r.resume_file),
+    resumeFile: r.resume_file == null ? '' : r.resume_file,
 
     aiInterviewScore: numOrU(r.ai_interview_score),
     qualified: r.qualified === null ? undefined : r.qualified,

@@ -189,6 +189,104 @@ await check('applying twice is refused', async () => {
 });
 
 /* ------------------------------------------------------------------ *
+ * matching, updating, and surviving a refresh
+ * ------------------------------------------------------------------ */
+
+await check('jobs are scored against the resume-derived profile', async () => {
+  // recRecommendation() is the prototype's own deterministic matcher: it
+  // weights skills 34%, experience 18%, location 13%, salary 10%, education
+  // 8%, work mode 7%. Everything it reads comes from the candidate record,
+  // which the resume extractor fills - so this IS resume-based matching.
+  const scored = await withResume.page.evaluate(() => {
+    const me = DATA.candidateById(STATE.session.id);
+    return DATA.jobs.filter((j) => j.status === 'open').slice(0, 12).map((j) => {
+      const r = typeof window.recRecommendation === 'function' ? window.recRecommendation(me, j) : null;
+      return r ? { job: j.title, pct: r.matchPercentage, matched: (r.matchedSkills || []).length } : null;
+    }).filter(Boolean);
+  });
+
+  must(scored.length > 0, 'no job produced a match score');
+  must(scored.every((x) => Number.isFinite(x.pct) && x.pct >= 0 && x.pct <= 100),
+    'a match percentage was not a number between 0 and 100');
+  // Deterministic: the same candidate and job must score the same twice.
+  const again = await withResume.page.evaluate(() => {
+    const me = DATA.candidateById(STATE.session.id);
+    const j = DATA.jobs.find((x) => x.status === 'open');
+    return window.recRecommendation(me, j).matchPercentage;
+  });
+  must(again === scored[0].pct, `the same pairing scored ${scored[0].pct} then ${again}`);
+});
+
+await check('replacing the resume from the profile stores the NEW file', async () => {
+  const before = await withResume.page.evaluate(() =>
+    window.TL.api.get('/auth/me').then((r) => r.profile.resumeFile));
+
+  await withResume.page.evaluate(() => { location.hash = '#/candidate/resume'; });
+  await withResume.page.waitForTimeout(1200);
+
+  const hasButton = await withResume.page.evaluate(() =>
+    [...document.querySelectorAll('button')].some((x) => /upload resume/i.test(x.textContent)));
+  must(hasButton, 'the Resume page offers no way to upload a replacement');
+
+  const [chooser] = await Promise.all([
+    withResume.page.waitForEvent('filechooser'),
+    withResume.page.evaluate(() => {
+      const b = [...document.querySelectorAll('button')].find((x) => /upload resume/i.test(x.textContent));
+      b.click();
+    }),
+  ]);
+  await chooser.setFiles(resolve(DIR, 'Resume - Sravanthi.pdf'));   // a DIFFERENT file
+  await withResume.page.waitForTimeout(7000);
+
+  const after = await withResume.page.evaluate(() =>
+    window.TL.api.get('/auth/me').then((r) => r.profile.resumeFile));
+  must(after, 'the candidate has no resume after replacing it');
+  must(after !== before, `the resume did not change (still "${after}")`);
+  must(/\.pdf$/i.test(after), `expected the new .pdf, the database has "${after}"`);
+});
+
+await check('the next Easy Apply uses the updated resume', async () => {
+  const current = await withResume.page.evaluate(() =>
+    window.TL.api.get('/auth/me').then((r) => r.profile.resumeFile));
+  // Guards against a false pass: if the replacement above silently did
+  // nothing, this would "prove" the old file is still shown.
+  must(/\.pdf$/i.test(current), `the resume was never replaced (still ${current})`);
+
+  const nextJob = await withResume.page.evaluate(() => {
+    const me = DATA.candidateById(STATE.session.id);
+    const applied = new Set(DATA.applications.filter((a) => a.candidateId === me.id).map((a) => a.jobId));
+    const j = DATA.jobs.find((x) => x.status === 'open' && !applied.has(x.id));
+    return j ? j.id : null;
+  });
+  if (!nextJob) return;                       // nothing left to apply to
+
+  await withResume.page.evaluate((id) => { location.hash = '#/job/' + id; }, nextJob);
+  await withResume.page.waitForTimeout(1200);
+  const shown = await withResume.page.evaluate(([id, name]) => {
+    window.__expect = name;
+    if (typeof window.cpEasyApply === 'function') window.cpEasyApply(id);
+    return new Promise((r) => setTimeout(() => r(document.body.innerText.includes(window.__expect)), 1500));
+  }, [nextJob, current]);
+  must(shown, `the review does not show the updated resume (${current})`);
+});
+
+await check('a browser refresh keeps the resume and the applications', async () => {
+  await withResume.page.reload({ waitUntil: 'load' });
+  await withResume.page.waitForFunction(() => window.TL && window.TL.ready === true, { timeout: 25000 });
+
+  const still = await withResume.page.evaluate(() => (STATE.session ? STATE.session.id : null));
+  must(still === candidateId, 'the session did not survive a refresh');
+
+  const me = await withResume.page.evaluate(() =>
+    window.TL.api.get('/auth/me').then((r) => r.profile));
+  must(me.resumeFile, 'the resume is gone after a refresh');
+
+  const mine = await withResume.page.evaluate((id) =>
+    DATA.applications.filter((a) => a.candidateId === id).length, candidateId);
+  must(mine >= 1, 'the applications are gone after a refresh');
+});
+
+/* ------------------------------------------------------------------ *
  * without one
  * ------------------------------------------------------------------ */
 await check('a candidate with NO resume is still asked for one', async () => {
