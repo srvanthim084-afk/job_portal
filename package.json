@@ -22,14 +22,16 @@
     "migrate:status": "node tools/migrate.mjs --status",
     "verify:search": "node tools/verify-search.mjs",
     "verify:interaction": "node tools/verify-interaction.mjs",
-    "verify:live": "npm run verify:interaction && npm run verify:search && npm run verify:candidate",
+    "verify:live": "npm run verify:interaction && npm run verify:search && npm run verify:candidate && npm run verify:resume",
     "verify:stack": "node tools/verify-stack.mjs",
     "watch": "node tools/watch.mjs",
     "watch:push": "node tools/watch.mjs --push",
     "sync": "node tools/sync.mjs",
     "rehearse": "node tools/rehearse.mjs",
     "verify:candidate": "node tools/verify-candidate-flow.mjs",
-    "export:single": "node tools/export-single-file.mjs"
+    "export:single": "node tools/export-single-file.mjs",
+    "verify:resume": "node tools/verify-resume.mjs",
+    "test:resumes": "node tools/make-test-resumes.mjs"
   },
   "dependencies": {
     "playwright": "^1.63.0"

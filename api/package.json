@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "TeamLink Job Portal API \u2014 serves the existing prototype UI from Postgres",
+  "description": "TeamLink Job Portal API — serves the existing prototype UI from Postgres",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
@@ -19,7 +19,9 @@
     "express": "^4.21.2",
     "express-rate-limit": "^7.4.1",
     "helmet": "^8.0.0",
+    "mammoth": "^1.12.3",
     "multer": "^2.4.0",
+    "pdf-parse": "^2.4.5",
     "pg": "^8.13.1",
     "zod": "^3.24.1"
   },

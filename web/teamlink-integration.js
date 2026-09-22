@@ -1002,6 +1002,259 @@
   };
 
   /* ------------------------------------------------------------------ *
+   * 7b. Resume reading
+   *
+   * The prototype read resumes in the browser, lazy-loading mammoth and
+   * pdf.js from cdnjs. The API's Content-Security-Policy does not allow
+   * that origin, so both were refused, and every DOCX and PDF produced the
+   * same sentence: "Something went wrong reading this file". The console
+   * said `Refused to load ... violates the following Content Security
+   * Policy directive`, but nothing surfaced it.
+   *
+   * Extraction now happens on the server (api/src/resume/), which is also
+   * where .doc can actually be parsed and where an AI key can live. The
+   * SCREEN IS UNCHANGED: the same button, the same status line, the same
+   * "AI Extracted" tags, the same paste-text fallback. Only the source of
+   * the text and the fields is different.
+   *
+   * Requirement 7 needed no work here - applyExtractedField() already
+   * refuses to overwrite a field the candidate typed, offering
+   * `AI found "X" - click to use` instead. That behaviour is reused as-is.
+   * ------------------------------------------------------------------ */
+
+  /** Server field names -> the shape parseResumeText() already returns. */
+  function toPrototypeShape(f) {
+    return {
+      name: f.name || '',
+      email: f.email || '',
+      phone: f.phone || '',
+      location: f.location || '',
+      qualification: f.qualification || '',
+      currentCompany: f.currentCompany || '',
+      jobTitle: f.title || '',
+      dob: f.dob || '',
+      noticePeriod: f.noticePeriod || '',
+      expYears: f.expYears == null ? null : f.expYears,
+      skills: f.skills || [],
+      certifications: f.certifications || [],
+      previousCompanies: f.previousCompanies || [],
+      languages: f.languages || [],
+      linkedin: f.linkedin || '',
+      github: f.github || '',
+      portfolio: f.portfolio || '',
+    };
+  }
+
+  /**
+   * The prototype's own parser stays in place for anything that calls it
+   * directly; when the server has just returned fields for this exact text,
+   * those are used instead. Wrapping here means applyRegisterResumeExtraction
+   * - and therefore all of the highlighting, the AI tags and the
+   * do-not-overwrite rule - runs completely unchanged.
+   */
+  var prevParseResumeText = window.parseResumeText;
+  if (typeof prevParseResumeText === 'function') {
+    window.parseResumeText = function (text) {
+      if (TL.lastExtract && TL.lastExtract.text === text && TL.lastExtract.fields) {
+        return toPrototypeShape(TL.lastExtract.fields);
+      }
+      return prevParseResumeText.apply(this, arguments);
+    };
+  }
+
+  /** Requirement 9: one message per failure, naming what actually happened. */
+  var RESUME_MESSAGE = {
+    RESUME_UNSUPPORTED_TYPE: null,      // the server's own wording is specific
+    RESUME_DOCX_FAILED:      null,
+    RESUME_PDF_FAILED:       null,
+    RESUME_DOC_FAILED:       null,
+    RESUME_NO_TEXT:          null,
+    FILE_TOO_LARGE:          null,
+    RATE_LIMITED:            'Too many uploads in a row — please wait a minute and try again.',
+    OFFLINE:        'You appear to be offline — your resume could not be uploaded.',
+    NOT_SERVED:     'This page was opened as a file, so the resume cannot be uploaded. Open it from the TeamLink server.',
+    API_UNREACHABLE:'Could not reach the server to read your resume. Please try again in a moment.',
+    TIMEOUT:        'Reading your resume took too long. Please try again, or paste the text below.',
+  };
+
+  function resumeMessage(err) {
+    var code = err && err.code;
+    if (RESUME_MESSAGE[code]) return RESUME_MESSAGE[code];
+    // The server's message for a parse failure already says what to do
+    // about it ("open it in Word and save it as .docx"), so it is shown
+    // rather than replaced.
+    if (err && err.message) return err.message;
+    return 'Your resume could not be read. Please try a different file, or paste the text below.';
+  }
+
+  var prevHandleResume = window.handleRegisterResumeFile;
+  if (typeof prevHandleResume === 'function') {
+    window.handleRegisterResumeFile = function (file) {
+      var setStatus = window.setResumeStatus || function () {};
+      var nameEl = document.getElementById('regFileName');
+
+      if (!/\.(pdf|docx?|txt)$/i.test(file.name)) {
+        setStatus('error', '"' + file.name +
+          '" isn\'t a supported format — please upload a PDF, DOC, DOCX or TXT resume.');
+        return;
+      }
+      if (nameEl) nameEl.textContent = '📎 ' + file.name;
+      setStatus('loading', 'Reading and analyzing your resume…');
+
+      // Keep the actual bytes with the in-memory record, exactly as before,
+      // so the submission carries the file and not just its name.
+      if (typeof window.captureRegisterResumeFile === 'function') {
+        window.captureRegisterResumeFile(file);
+      }
+
+      var fd = new FormData();
+      fd.append('resume', file);
+
+      // A large PDF takes longer than an ordinary request.
+      return request('POST', '/resume/extract', fd, { timeout: 60000 })
+        .then(function (res) {
+          TL.lastExtract = res;          // read by the parseResumeText wrap
+
+          var ta = document.getElementById('regResumeText');
+          if (ta) ta.value = res.text;   // the paste-text fallback keeps the text
+
+          var count = typeof window.applyRegisterResumeExtraction === 'function'
+            ? window.applyRegisterResumeExtraction(res.text) : 0;
+
+          // Two inputs the prototype's own extractor never filled, because
+          // its parser did not look for them.
+          if (typeof window.applyExtractedField === 'function') {
+            if (res.fields.preferredLocation) {
+              window.applyExtractedField('regPrefLocation', 'regPrefLocationAiTag',
+                res.fields.preferredLocation);
+            }
+            if (res.fields.expectedSalary) {
+              window.applyExtractedField('regExpSalary', 'regExpSalaryAiTag',
+                res.fields.expectedSalary);
+            }
+          }
+
+          // Carry everything the form has no input for onto the record, the
+          // way the prototype already does for its own extras.
+          STATE.regResumeExtras = Object.assign({}, STATE.regResumeExtras, {
+            certifications: res.fields.certifications || [],
+            previousCompanies: res.fields.previousCompanies || [],
+            linkedin: res.fields.linkedin || '',
+            github: res.fields.github || '',
+            dob: res.fields.dob || '',
+            languages: res.fields.languages || [],
+            summary: res.fields.summary || '',
+            projects: res.fields.projects || [],
+            employmentHistory: res.fields.employmentHistory || [],
+            education: res.fields.education || '',
+            currentSalary: res.fields.currentSalary || '',
+            relevantExpYears: res.fields.relevantExpYears == null ? null : res.fields.relevantExpYears,
+            resumeText: res.text,
+          });
+
+          if (count > 0) {
+            setStatus('success', 'Resume analyzed successfully — ' + count +
+              ' field' + (count === 1 ? '' : 's') +
+              ' detected. Review the highlighted fields below.');
+          } else {
+            setStatus('warn', 'We read your resume (' + res.chars +
+              ' characters) but couldn\'t confidently detect any details — ' +
+              'please fill the form in manually.');
+          }
+        })
+        .catch(function (err) {
+          // The text is gone but the FILE is not: it is still attached, and
+          // the paste box below is still there. Requirement 10.
+          setStatus('error', resumeMessage(err));
+          if (TL.debug) console.error('TeamLink: resume extraction failed', err);
+        })
+        .then(function () {
+          if (typeof window.validateRegisterForm === 'function') window.validateRegisterForm();
+        });
+    };
+  }
+
+  /** The "Analyze with AI" button under the paste box, server-side too. */
+  var prevAnalyze = window.analyzeRegisterResumeText;
+  if (typeof prevAnalyze === 'function') {
+    window.analyzeRegisterResumeText = function () {
+      var el = document.getElementById('regResumeText');
+      var text = el ? el.value : '';
+      var setStatus = window.setResumeStatus || function () {};
+      if (!text.trim()) {
+        if (typeof window.toast === 'function') window.toast('Paste some resume text first, then click Analyze');
+        return;
+      }
+      setStatus('loading', 'Analyzing your pasted resume text…');
+      return api.post('/resume/parse', { text: text })
+        .then(function (res) {
+          TL.lastExtract = { text: res.text, fields: res.fields };
+          var count = typeof window.applyRegisterResumeExtraction === 'function'
+            ? window.applyRegisterResumeExtraction(res.text) : 0;
+          if (count > 0) {
+            setStatus('success', 'Resume analyzed successfully — ' + count +
+              ' field' + (count === 1 ? '' : 's') + ' detected. Review the highlighted fields below.');
+          } else {
+            setStatus('warn', "Couldn't detect much from that text — try pasting more of your resume, or fill the fields in manually.");
+          }
+        })
+        .catch(function (err) {
+          // The pasted text is untouched; only the analysis failed.
+          setStatus('error', resumeMessage(err));
+        });
+    };
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 7c. Do not repaint a form somebody is filling in
+   *
+   * prototype.html:18022 polls localStorage every three seconds, and when
+   * the signature of the watched keys changes it calls tlSyncNow(), which
+   * ends with render(). That exists so a change made in another tab shows
+   * up in this one.
+   *
+   * On the registration screen it destroys work. render() rebuilds #app
+   * from DATA, and the registration form lives entirely in the DOM until
+   * it is submitted - so the repaint blanked every field, the resume text
+   * and the status line about a second after a resume was read. The
+   * extraction had worked; 14 fields had been filled; they were simply
+   * wiped, which looked exactly like extraction failing.
+   *
+   * The sync itself is still useful, so only the REPAINT is deferred, and
+   * only while there is unsaved input on screen. The import still runs, so
+   * DATA stays current; the next navigation renders it.
+   * ------------------------------------------------------------------ */
+
+  /** Anything typed, extracted or picked that a render would discard. */
+  function hasUnsavedInput() {
+    var form = document.getElementById('regName') || document.getElementById('regEmail');
+    if (!form) return false;                      // not on the registration screen
+    var ids = ['regName', 'regEmail', 'regMobile', 'regLocation', 'regSkills',
+               'regTotalExp', 'regCompany', 'regDesignation', 'regPrefLocation',
+               'regExpSalary', 'regResumeText', 'regPassword'];
+    for (var i = 0; i < ids.length; i++) {
+      var el = document.getElementById(ids[i]);
+      if (el && String(el.value || '').trim()) return true;
+    }
+    return false;
+  }
+
+  var prevSyncNow = window.tlSyncNow;
+  if (typeof prevSyncNow === 'function') {
+    window.tlSyncNow = function (force) {
+      if (!force && hasUnsavedInput()) {
+        // Let the import happen without the repaint: render is stubbed for
+        // the duration of this one call, then restored.
+        var realRender = window.render;
+        window.render = function () {};
+        try { return prevSyncNow.apply(this, arguments); }
+        finally { window.render = realRender; }
+      }
+      return prevSyncNow.apply(this, arguments);
+    };
+  }
+
+  /* ------------------------------------------------------------------ *
    * 8. Pipeline moves
    * ------------------------------------------------------------------ */
 
