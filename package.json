@@ -34,7 +34,8 @@
     "test:resumes": "node tools/make-test-resumes.mjs",
     "verify:interview": "node tools/verify-interview.mjs",
     "verify:notifications": "node tools/verify-notifications.mjs",
-    "verify:easy-apply": "node tools/verify-easy-apply.mjs"
+    "verify:easy-apply": "node tools/verify-easy-apply.mjs",
+    "mail:sink": "node tools/mail-sink.mjs"
   },
   "dependencies": {
     "playwright": "^1.63.0"
@@ -43,6 +44,7 @@
     "@electric-sql/pglite": "^0.5.8",
     "@electric-sql/pglite-socket": "^0.2.11",
     "js-yaml": "^5.4.2",
-    "pg": "^8.23.0"
+    "pg": "^8.23.0",
+    "smtp-server": "^3.19.13"
   }
 }

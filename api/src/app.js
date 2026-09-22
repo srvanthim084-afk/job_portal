@@ -129,7 +129,17 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use(csrfProtection());
 
   app.get('/api/health', wrap(async (_req, res) => {
-    res.json({ ok: true, env: config.env, time: new Date().toISOString() });
+    // `providers` says which notification channels have credentials - the
+    // same line the server prints at boot, and no credential appears in it.
+    // Without it there is no way to check, from outside, whether a channel
+    // reporting "sent" could possibly have sent anything.
+    const { providerStatus } = await import('./notify/providers.js');
+    res.json({
+      ok: true,
+      env: config.env,
+      time: new Date().toISOString(),
+      providers: providerStatus(),
+    });
   }));
 
   // lets a freshly-loaded page obtain a CSRF token before its first write
