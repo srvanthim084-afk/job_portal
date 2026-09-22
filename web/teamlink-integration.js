@@ -1927,85 +1927,302 @@
   }
 
   /* ------------------------------------------------------------------ *
-   * 9c. The Resume page should not claim things that are not true
+   * 9c. The Resume page: the document first, then what was read from it
    *
-   * prototype.html:3864 renders the resume panel unconditionally, so a
-   * candidate who has never uploaded anything is still shown:
+   * The page is not rebuilt. It already has the right bones - a summary
+   * panel, an "AI-extracted skills" panel of .skill-tag chips, and an
+   * "Extracted profile details" panel - so this fills them with what the
+   * parser actually found and adds the parts that were missing, using the
+   * page's own classes. No new colours, fonts or spacing.
    *
-   *   - a "Parsed" badge and "Uploaded - parsed automatically by TeamLink AI"
-   *   - "Parse confidence 92%"
-   *   - "Detected experience / skills / education" with nothing behind them
+   * What changes:
    *
-   * and an empty heading where the filename would be.
-   *
-   * The 92% is not a measurement either way. It is
-   * DATA.aiSettings.resumeParseConfidence - the CONFIDENCE FLOOR an
-   * administrator sets on the AI Settings screen, printed as though it
-   * were this document's score. Nothing measures a per-resume confidence,
-   * so the honest thing is not to state one.
-   *
-   * This adjusts the rendered panel after paint. The layout, the classes
-   * and the tiles stay exactly where they are; what changes is what the
-   * text asserts.
+   *   - the summary states the real upload time, parse status, and a
+   *     confidence COMPUTED from this file (0013), not an administrator's
+   *     global setting
+   *   - a candidate with no resume is told so, instead of being shown a
+   *     "Parsed" badge over three empty tiles
+   *   - a failed parse says so, and offers the two things worth doing
+   *   - the actions a candidate expects - view, download, replace, re-parse
+   *   - the preferences the portal collected at registration (work mode,
+   *     expected salary, notice period) appear where they can be checked
+   *   - LinkedIn, Naukri and Indeed can be pasted in and are saved
    * ------------------------------------------------------------------ */
 
-  function honestResumePanel() {
-    if (!/^#\/candidate\/resume\b/.test(String(location.hash || ''))) return;
+  var esc = function (v) {
+    return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  };
+  var dash = function (v) {
+    if (Array.isArray(v)) return v.length ? v.join(', ') : '—';
+    return String(v == null ? '' : v).trim() || '—';
+  };
+  var when = function (iso) {
+    if (!iso) return '—';
+    try {
+      var d = new Date(iso);
+      return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) +
+             ' · ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    } catch (e) { return String(iso); }
+  };
 
+  /** One `.kv .item` tile, in the page's own markup. */
+  function tile(label, value, size) {
+    return '<div class="item"><div class="k">' + esc(label) + '</div>' +
+           '<div class="v" style="font-size:' + (size || '13px') +
+           ';word-break:break-word">' + esc(value) + '</div></div>';
+  }
+
+  function resumeSummaryHtml(me) {
+    var p = me.resumeParse || {};
+    var status = !me.resumeFile ? 'Not uploaded'
+               : p.error ? 'Could not be read'
+               : p.parsedAt ? 'Parsed' : 'Stored';
+
+    var tiles = [
+      tile('Uploaded', when(me.resumeUploadedAt), '12.5px'),
+      tile('Parse status', status, '12.5px'),
+    ];
+    // Only stated when it was measured. An unparsed file has no score.
+    if (p.confidence != null) {
+      tiles.push(tile('Parse confidence', p.confidence + '%', '13px'));
+      tiles.push(tile('Fields detected', String(p.fieldsDetected == null ? '—' : p.fieldsDetected), '13px'));
+    }
+    tiles.push(tile('Total experience', dash(me.exp)));
+    tiles.push(tile('Highest education', dash(String(me.education || '').split(',')[0]), '12.5px'));
+    tiles.push(tile('Current job title', dash(me.title)));
+    tiles.push(tile('Current company', dash(me.currentCompany)));
+    tiles.push(tile('Skills', ((me.skills || []).length) + ' detected'));
+
+    return '<div class="kv">' + tiles.join('') + '</div>';
+  }
+
+  function resumeActionsHtml(me) {
+    if (!me.resumeFile) {
+      return '<div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">' +
+             '<button class="btn btn-primary btn-sm" onclick="triggerResumeUpload()">📄 Upload resume</button></div>';
+    }
+    return '<div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">' +
+      '<button class="btn btn-ghost btn-sm" onclick="TL.resume.view()">👁 View resume</button>' +
+      '<button class="btn btn-ghost btn-sm" onclick="TL.resume.download()">⬇ Download</button>' +
+      '<button class="btn btn-ghost btn-sm" onclick="TL.resume.reparse()">↺ Re-parse with AI</button>' +
+      '<button class="btn btn-primary btn-sm" onclick="TL.resume.replace()">📄 Replace resume</button>' +
+      '<button class="btn btn-ghost btn-sm" onclick="navigate(\'/candidate/profile\')">✎ Edit profile</button>' +
+      '</div>';
+  }
+
+  function parseFailureHtml(p) {
+    return '<div class="req-note" style="margin-top:12px">' +
+      'We couldn’t extract all details from this resume. ' + esc(p.error || '') +
+      '<div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap">' +
+      '<button class="btn btn-ghost btn-sm" onclick="TL.resume.reparse()">Try again</button>' +
+      '<button class="btn btn-primary btn-sm" onclick="TL.resume.replace()">Upload another resume</button>' +
+      '</div></div>';
+  }
+
+  /** 2800000 -> "28 LPA (₹28,00,000)" - the way it is actually spoken here. */
+  function money(v) {
+    var n = Number(v);
+    if (!isFinite(n) || n <= 0) return '—';
+    var lakhs = n / 100000;
+    var pretty = n.toLocaleString('en-IN');
+    return (lakhs >= 1 ? (Math.round(lakhs * 10) / 10) + ' LPA (₹' + pretty + ')'
+                       : '₹' + pretty);
+  }
+
+  /** What the portal asked for at registration, where it can be checked. */
+  function preferencesHtml(me) {
+    var modes = (me.preferredWorkModes || []);
+    return '<div class="panel"><div class="panel-head"><h2>Work preferences</h2>' +
+      '<div class="desc">Collected when you registered — recruiters match on these</div></div>' +
+      '<div class="panel-body"><div class="kv">' +
+      tile('Work mode', modes.length ? modes.join(', ') : '—', '12.5px') +
+      tile('Expected salary', money(me.expectedCtc), '12.5px') +
+      tile('Current salary', money(me.ctc), '12.5px') +
+      tile('Notice period', dash(me.noticePeriod), '12.5px') +
+      tile('Preferred location', dash(me.preferredLocation), '12.5px') +
+      tile('Current location', dash(me.location), '12.5px') +
+      '</div>' +
+      '<div style="margin-top:12px"><button class="btn btn-ghost btn-sm" ' +
+      'onclick="navigate(\'/candidate/profile\')">✎ Edit these</button></div>' +
+      '</div></div>';
+  }
+
+  /** Profile links, including the two this market actually uses. */
+  function linksHtml(me) {
+    var row = function (id, label, placeholder, value) {
+      return '<div class="fgroup"><label>' + esc(label) + '</label>' +
+        '<input id="' + id + '" type="url" placeholder="' + esc(placeholder) + '" value="' +
+        esc(value || '') + '" style="width:100%"></div>';
+    };
+    return '<div class="panel"><div class="panel-head"><h2>Profile links</h2>' +
+      '<div class="desc">Paste your profile URLs — recruiters open these alongside your resume</div></div>' +
+      '<div class="panel-body">' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px">' +
+      row('tlLinkLinkedin', 'LinkedIn', 'https://linkedin.com/in/your-name', me.linkedin) +
+      row('tlLinkNaukri', 'Naukri', 'https://www.naukri.com/mnjuser/profile', me.naukri) +
+      row('tlLinkIndeed', 'Indeed', 'https://profile.indeed.com/...', me.indeed) +
+      row('tlLinkGithub', 'GitHub', 'https://github.com/you', me.github) +
+      '</div>' +
+      '<div style="margin-top:12px"><button class="btn btn-primary btn-sm" ' +
+      'onclick="TL.resume.saveLinks()">Save links</button></div>' +
+      '</div></div>';
+  }
+
+  function currentCandidateRecord() {
+    try {
+      if (!STATE.session || STATE.session.role !== 'candidate') return null;
+      return DATA.candidateById(STATE.session.id) || null;
+    } catch (e) { return null; }
+  }
+
+  function enhanceResumePage() {
+    if (!/^#\/candidate\/resume\b/.test(String(location.hash || ''))) return;
     var app = document.getElementById('app');
     if (!app) return;
-    var head = app.querySelector('.panel .panel-head');
-    if (!head || head.dataset.tlHonest) return;
 
-    var me = null;
-    try {
-      me = STATE.session && typeof DATA !== 'undefined' ? DATA.candidateById(STATE.session.id) : null;
-    } catch (e) { return; }
+    var panel = app.querySelector('.panel');
+    var head = panel && panel.querySelector('.panel-head');
+    var body = panel && panel.querySelector('.panel-body');
+    if (!head || !body || head.dataset.tlResume) return;
+    // Only the resume panel: it is the one that talks about parsing.
+    if (!/parsed|uploaded/i.test(head.textContent || '')) return;
+
+    var me = currentCandidateRecord();
     if (!me) return;
+    head.dataset.tlResume = '1';
 
+    var p = me.resumeParse || {};
     var heading = head.querySelector('h2');
-    // The filename is the only reliable signal that a resume exists.
+    var desc = head.querySelector('.desc');
+    var badge = head.querySelector('.badge');
+
     if (!String(me.resumeFile || '').trim()) {
-      if (!heading || !/resume/i.test(heading.textContent || '')) {
-        // Only touch the resume panel, never some other panel that happens
-        // to be first on a future version of this page.
-        if (!head.textContent || !/parsed|uploaded/i.test(head.textContent)) return;
-      }
-      head.dataset.tlHonest = '1';
-
       if (heading) heading.textContent = 'No resume uploaded yet';
-      var desc = head.querySelector('.desc');
       if (desc) desc.textContent = 'Upload one and TeamLink will read it to fill your profile';
-      var badge = head.querySelector('.badge');
       if (badge) { badge.textContent = 'Not uploaded'; badge.className = 'badge'; }
-
-      // "Detected ..." tiles describe a parse that never happened.
-      var body = head.parentElement && head.parentElement.querySelector('.panel-body');
-      if (body) {
-        [].slice.call(body.querySelectorAll('.kv .item')).forEach(function (item) {
-          var v = item.querySelector('.v');
-          if (v) v.textContent = '—';
-        });
-      }
     } else {
-      head.dataset.tlHonest = '1';
+      if (heading) heading.textContent = me.resumeFile;
+      if (desc) {
+        desc.textContent = p.error
+          ? 'Uploaded · could not be read'
+          : 'Uploaded · parsed automatically by TeamLink AI';
+      }
+      if (badge) {
+        badge.textContent = p.error ? 'Not parsed' : 'Parsed';
+        badge.className = p.error ? 'badge' : 'badge badge-ok';
+      }
     }
 
-    // Either way: nothing measures a per-resume parse confidence, so the
-    // tile is removed rather than filled with an administrator's setting.
-    var panel = head.parentElement;
-    var tiles = panel ? panel.querySelectorAll('.kv .item') : [];
-    [].slice.call(tiles).forEach(function (item) {
-      var k = item.querySelector('.k');
-      if (k && /parse confidence/i.test(k.textContent || '')) item.remove();
-    });
+    body.innerHTML = resumeSummaryHtml(me) +
+      (p.error ? parseFailureHtml(p) : '') +
+      resumeActionsHtml(me);
+
+    // The preferences and links belong beside the resume, not on another
+    // screen: they are the rest of what a recruiter screens on.
+    var host = panel.parentElement;
+    if (host && !host.querySelector('[data-tl-prefs]')) {
+      var wrap = document.createElement('div');
+      wrap.setAttribute('data-tl-prefs', '1');
+      wrap.innerHTML = preferencesHtml(me) + linksHtml(me);
+      host.appendChild(wrap);
+    }
   }
+
+  /* ---- the actions -------------------------------------------------- */
+  TL.resume = {
+    /** Opens the file itself. The endpoint re-checks access server-side. */
+    view: function () {
+      var me = currentCandidateRecord();
+      if (!me) return;
+      window.open('/api/candidates/' + encodeURIComponent(me.id) + '/resume', '_blank', 'noopener');
+    },
+
+    download: function () {
+      var me = currentCandidateRecord();
+      if (!me) return;
+      var a = document.createElement('a');
+      a.href = '/api/candidates/' + encodeURIComponent(me.id) + '/resume?download=1';
+      a.download = me.resumeFile || 'resume';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    },
+
+    /** Replacing is destructive, so it is confirmed first. */
+    replace: function () {
+      var me = currentCandidateRecord();
+      if (me && me.resumeFile) {
+        var ok = window.confirm(
+          'Replace "' + me.resumeFile + '"?\n\n' +
+          'The new resume will be parsed and your profile details refreshed. ' +
+          'Applications you have already submitted keep the resume they were sent with.');
+        if (!ok) return;
+      }
+      if (typeof window.triggerResumeUpload === 'function') window.triggerResumeUpload();
+    },
+
+    /**
+     * Re-reads the file already on record.
+     *
+     * The prototype's reparseResume() re-ran its simulated extraction over
+     * the profile that was already on screen, so it could never discover
+     * anything new. This asks the server to read the stored file again.
+     */
+    reparse: function () {
+      var me = currentCandidateRecord();
+      if (!me || !me.resumeFile) {
+        if (typeof window.toast === 'function') window.toast('There is no resume on file to re-parse');
+        return;
+      }
+      if (typeof window.toast === 'function') window.toast('Re-reading your resume…', '⏳');
+      return api.post('/candidates/' + encodeURIComponent(me.id) + '/resume/reparse', {})
+        .then(function () { return refresh(); })
+        .then(function () {
+          var r = currentCandidateRecord();
+          var p = (r && r.resumeParse) || {};
+          if (typeof window.toast === 'function') {
+            window.toast(p.error
+              ? 'Still could not read that file — try uploading another'
+              : 'Resume re-parsed — ' + (p.fieldsDetected || 0) + ' fields detected',
+              p.error ? '⚠️' : '✅');
+          }
+          window.render();
+        })
+        .catch(say);
+    },
+
+    saveLinks: function () {
+      var me = currentCandidateRecord();
+      if (!me) return;
+      var val = function (id) {
+        var el = document.getElementById(id);
+        return el ? String(el.value || '').trim() : '';
+      };
+      return api.put('/candidates/' + encodeURIComponent(me.id), {
+        linkedin: val('tlLinkLinkedin'),
+        naukri: val('tlLinkNaukri'),
+        indeed: val('tlLinkIndeed'),
+        github: val('tlLinkGithub'),
+      }).then(function (r) {
+        if (r && r.candidate) Object.assign(me, r.candidate);
+        if (typeof window.toast === 'function') window.toast('Profile links saved', '✅');
+      }).catch(say);
+    },
+  };
+
+  // The prototype's own re-parse button re-ran a simulation; point it at
+  // the real one so both routes do the same thing.
+  window.reparseResume = function () { return TL.resume.reparse(); };
 
   var prevAfterRenderResume = window.afterRender;
   window.afterRender = function () {
     var out = typeof prevAfterRenderResume === 'function'
       ? prevAfterRenderResume.apply(this, arguments) : undefined;
-    try { honestResumePanel(); } catch (e) { /* never break a render */ }
+    try { enhanceResumePage(); } catch (e) {
+      if (TL.debug) console.error('TeamLink: resume page enhancement failed', e);
+    }
     return out;
   };
 

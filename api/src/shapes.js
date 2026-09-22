@@ -124,6 +124,19 @@ export function toCandidate(r) {
     portfolio: nz(r.portfolio),
 
     resumeFile: r.resume_file == null ? '' : r.resume_file,
+    resumeUploadedAt: nz(r.resume_uploaded_at),
+    // What the parser actually managed with THIS file (0013). The page
+    // reports these instead of asserting a confidence nothing measured.
+    resumeParse: r.resume_parsed_at || r.resume_parse_error ? {
+      parsedAt: nz(r.resume_parsed_at),
+      parser: nz(r.resume_parser),
+      chars: numOrU(r.resume_chars),
+      fieldsDetected: numOrU(r.resume_fields_detected),
+      confidence: numOrU(r.resume_parse_confidence),
+      error: nz(r.resume_parse_error),
+    } : undefined,
+    naukri: nz(r.naukri),
+    indeed: nz(r.indeed),
 
     aiInterviewScore: numOrU(r.ai_interview_score),
     qualified: r.qualified === null ? undefined : r.qualified,

@@ -215,6 +215,10 @@ export default function candidateRoutes() {
       linkedin: z.string().max(300).optional(),
       github: z.string().max(300).optional(),
       portfolio: z.string().max(300).optional(),
+      // Where candidates in this market actually are, and what a recruiter
+      // asks for by name (0013).
+      naukri: z.string().max(300).optional(),
+      indeed: z.string().max(300).optional(),
       skills: z.array(z.string().max(120)).max(100).optional(),
       technicalSkills: z.array(z.string().max(120)).max(100).optional(),
       certifications: z.array(z.string().max(200)).max(60).optional(),
@@ -239,6 +243,7 @@ export default function candidateRoutes() {
       careerGoal: 'career_goal', preferredRole: 'preferred_role',
       preferredLocation: 'preferred_location', candidateType: 'candidate_type',
       gender: 'gender', linkedin: 'linkedin', github: 'github', portfolio: 'portfolio',
+      naukri: 'naukri', indeed: 'indeed',
       skills: 'skills', technicalSkills: 'technical_skills',
       certifications: 'certifications', languages: 'languages',
       preferredWorkModes: 'preferred_work_modes',

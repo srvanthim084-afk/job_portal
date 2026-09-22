@@ -296,6 +296,37 @@ function findDob(text) {
  * @returns an object whose keys are ONLY the fields the resume actually
  *          stated. A missing key means "not found", never "empty".
  */
+/**
+ * How much of a resume we actually got, 0-100.
+ *
+ * NOT a model's opinion and not a setting. It is computed from three
+ * things this parse can demonstrate:
+ *
+ *   identity   did we find the name, email and phone - the fields without
+ *              which the record is not usable at all (weight 40)
+ *   substance  did we find the things a recruiter screens on: skills,
+ *              experience, current role, education (weight 40)
+ *   text       did the file yield enough text to have been read properly
+ *              at all (weight 20)
+ *
+ * A scanned PDF that yields 60 characters and one email scores low, which
+ * is the point: the number has to be able to say "this went badly".
+ */
+export function parseConfidence({ fields, chars }) {
+  const has = (k) => {
+    const v = fields[k];
+    return Array.isArray(v) ? v.length > 0 : v !== undefined && v !== null && String(v).trim() !== '';
+  };
+
+  const identity = ['name', 'email', 'phone'].filter(has).length / 3;
+  const substance = ['skills', 'expYears', 'title', 'currentCompany', 'education', 'summary']
+    .filter(has).length / 6;
+  // 1200 characters is about one page of a real resume.
+  const text = Math.min(1, (Number(chars) || 0) / 1200);
+
+  return Math.round((identity * 40) + (substance * 40) + (text * 20));
+}
+
 export function extractFields(text) {
   const t = String(text || '');
   if (!t.trim()) return { fields: {}, found: 0 };

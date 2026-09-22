@@ -225,13 +225,19 @@ await check('replacing the resume from the profile stores the NEW file', async (
   await withResume.page.waitForTimeout(1200);
 
   const hasButton = await withResume.page.evaluate(() =>
-    [...document.querySelectorAll('button')].some((x) => /upload resume/i.test(x.textContent)));
+    [...document.querySelectorAll('button')].some((x) => /replace resume|upload resume/i.test(x.textContent)));
   must(hasButton, 'the Resume page offers no way to upload a replacement');
+
+  // Replacing is confirmed first, deliberately - it discards the resume
+  // future applications will use.
+  let asked = false;
+  withResume.page.once('dialog', (d) => { asked = true; d.accept(); });
 
   const [chooser] = await Promise.all([
     withResume.page.waitForEvent('filechooser'),
     withResume.page.evaluate(() => {
-      const b = [...document.querySelectorAll('button')].find((x) => /upload resume/i.test(x.textContent));
+      const b = [...document.querySelectorAll('button')]
+        .find((x) => /replace resume|upload resume/i.test(x.textContent));
       b.click();
     }),
   ]);
@@ -240,6 +246,7 @@ await check('replacing the resume from the profile stores the NEW file', async (
 
   const after = await withResume.page.evaluate(() =>
     window.TL.api.get('/auth/me').then((r) => r.profile.resumeFile));
+  must(asked, 'replacing a resume did not ask for confirmation first');
   must(after, 'the candidate has no resume after replacing it');
   must(after !== before, `the resume did not change (still "${after}")`);
   must(/\.pdf$/i.test(after), `expected the new .pdf, the database has "${after}"`);
