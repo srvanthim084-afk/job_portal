@@ -34,7 +34,7 @@ LOAD_SEED=true node tools/dev-server.mjs 4323
 node tools/dev-server.mjs 4323
 ```
 
-Open **http://127.0.0.1:4323**. Data is written to `var/dev-db` and
+Open **http://localhost:4323**. Data is written to `var/dev-db` and
 survives restarts.
 
 > **Open it from the server, not from the file.** Double-clicking
@@ -42,7 +42,7 @@ survives restarts.
 > call: `fetch('/api/bootstrap')` becomes `file:///C:/api/bootstrap`, the
 > browser refuses the scheme, and the app loads with no data at all. It
 > will tell you so rather than blaming your connection — but the address
-> bar has to say `http://127.0.0.1:4323`.
+> bar has to say `http://localhost:4323`.
 
 Sign in with `TeamLink@2026`: `admin@teamlink.com`,
 `recruiter@teamlink.com`, `client@teamlink.com`,

@@ -65,7 +65,12 @@ const DEV_PASSWORD = process.env.DEV_PASSWORD || 'TeamLink@2026';
 process.env.NODE_ENV = process.env.NODE_ENV || 'development';
 process.env.AUTH_SECRET = process.env.AUTH_SECRET
   || 'dev-secret-not-for-production-0000000000000000';
-process.env.PUBLIC_ORIGIN = process.env.PUBLIC_ORIGIN || `http://127.0.0.1:${PORT}`;
+// localhost, not 127.0.0.1. They are the same machine but NOT the same
+// site to a browser: a session cookie set on one is not sent to the
+// other, so a page served from localhost talking to an API on the IP
+// signs you in and then behaves as though you never did. Naming one of
+// them everywhere is what keeps that from happening by accident.
+process.env.PUBLIC_ORIGIN = process.env.PUBLIC_ORIGIN || `http://localhost:${PORT}`;
 process.env.STORAGE_DRIVER = process.env.STORAGE_DRIVER || 'local';
 process.env.STORAGE_LOCAL_DIR = process.env.STORAGE_LOCAL_DIR || join(ROOT, 'var', 'uploads');
 process.env.BCRYPT_ROUNDS = process.env.BCRYPT_ROUNDS || '10';
@@ -222,7 +227,7 @@ try { dbUser = await assertUnprivileged(c); } finally { c.release(); }
 
 const app = createApp({ serveStatic: WEB });
 const server = app.listen(PORT, () => {
-  console.log(`\nTeamLink: http://127.0.0.1:${PORT}/`);
+  console.log(`\nTeamLink: http://localhost:${PORT}/`);
   console.log(`  database : ${describeDb}`);
   console.log(`  db role  : ${dbUser} (unprivileged — RLS enforced)`);
   console.log(`  storage  : ${process.env.STORAGE_LOCAL_DIR}`);
