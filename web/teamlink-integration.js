@@ -1258,6 +1258,116 @@
   };
 
   /* ------------------------------------------------------------------ *
+   * 6d. Where the candidate came from
+   *
+   * A requirement is posted to Naukri, LinkedIn, Indeed, Shine and the
+   * portal. Every one of those "Apply Now" buttons lands the candidate
+   * here - so by the time an application is created, the only record of
+   * which board sent them is whatever we captured on arrival.
+   *
+   * Nothing captured it. applyToJob() sent `source: 'portal'` for
+   * everyone, so the ATS said TeamLink for every application and
+   * source-wise reporting was meaningless.
+   *
+   * THE SOURCE MUST SURVIVE THE JOURNEY, which is not a single page load:
+   *
+   *     naukri.com -> /?src=naukri -> login or register -> job -> apply
+   *
+   * It is therefore captured on arrival and kept in sessionStorage, which
+   * is per-tab and survives the navigations in between without following
+   * the candidate around forever. localStorage would be wrong: a Naukri
+   * visit in March should not label an application made from the portal
+   * in June.
+   * ------------------------------------------------------------------ */
+
+  var SOURCE_KEY = 'tl_arrival_source';
+
+  /** The sources the ATS reports on. Anything else is recorded as-is. */
+  var KNOWN_SOURCES = {
+    naukri: 'naukri', linkedin: 'linkedin', indeed: 'indeed', shine: 'shine',
+    monster: 'monster', glassdoor: 'glassdoor', instahyre: 'instahyre',
+    referral: 'referral', recruiter: 'recruiter', teamlink: 'teamlink',
+    portal: 'teamlink', direct: 'teamlink',
+  };
+
+  /** naukri.com, in.linkedin.com, www.indeed.co.in -> the source name. */
+  function sourceFromHost(host) {
+    var h = String(host || '').toLowerCase();
+    if (!h) return null;
+    var names = Object.keys(KNOWN_SOURCES);
+    for (var i = 0; i < names.length; i++) {
+      if (h.indexOf(names[i]) >= 0) return KNOWN_SOURCES[names[i]];
+    }
+    return null;
+  }
+
+  function normaliseSource(raw) {
+    var v = String(raw || '').trim().toLowerCase();
+    if (!v) return null;
+    if (KNOWN_SOURCES[v]) return KNOWN_SOURCES[v];
+    // "Naukri.com", "LinkedIn Jobs" and a bare hostname all arrive here.
+    var byHost = sourceFromHost(v);
+    if (byHost) return byHost;
+    return v.replace(/[^a-z0-9_-]+/g, '-').slice(0, 40) || null;
+  }
+
+  /**
+   * Reads the source from the URL, remembers it, and returns it.
+   *
+   * An explicit parameter always beats the referrer: a board that tags its
+   * links is telling us something definite, while a referrer is a guess
+   * that breaks the moment somebody uses a link shortener.
+   */
+  function captureSource() {
+    var q = location.search || '';
+    var hash = String(location.hash || '');
+    // Boards use different names, and some put it after the hash.
+    var m = /[?&](?:src|source|utm_source|ref)=([^&]+)/i.exec(q) ||
+            /[?&](?:src|source|utm_source|ref)=([^&]+)/i.exec(hash);
+
+    var found = m ? normaliseSource(decodeURIComponent(m[1])) : null;
+    var how = found ? 'link' : null;
+
+    if (!found) {
+      // No tag: fall back to who sent them, but only for a board we know.
+      try {
+        if (document.referrer) {
+          var ref = new URL(document.referrer);
+          if (ref.host !== location.host) {
+            found = sourceFromHost(ref.host);
+            if (found) how = 'referrer';
+          }
+        }
+      } catch (e) { /* an opaque or malformed referrer tells us nothing */ }
+    }
+
+    if (found) {
+      try {
+        sessionStorage.setItem(SOURCE_KEY, JSON.stringify({
+          source: found, how: how, at: new Date().toISOString(),
+        }));
+      } catch (e) { /* private mode: it stays in memory for this page */ }
+      TL.arrival = { source: found, how: how };
+      return found;
+    }
+
+    try {
+      var kept = JSON.parse(sessionStorage.getItem(SOURCE_KEY) || 'null');
+      if (kept && kept.source) { TL.arrival = kept; return kept.source; }
+    } catch (e) { /* nothing kept */ }
+
+    return TL.arrival ? TL.arrival.source : null;
+  }
+
+  /** What an application should record. Never null - unknown means direct. */
+  TL.applicationSource = function () {
+    return captureSource() || 'teamlink';
+  };
+
+  // Captured at load, before any navigation can drop the query string.
+  captureSource();
+
+  /* ------------------------------------------------------------------ *
    * 7. Applying
    * ------------------------------------------------------------------ */
 
@@ -1281,7 +1391,9 @@
 
     var done = function () { delete applying[jobId]; };
 
-    applying[jobId] = api.post('/applications', { jobId: jobId, source: 'portal' })
+    // The board that sent them, not the page they happen to be on.
+    applying[jobId] = api.post('/applications',
+        { jobId: jobId, source: TL.applicationSource() })
       .then(function (res) {
         // reconcile the cache with what the server actually recorded
         DATA.applications.push(res.application);

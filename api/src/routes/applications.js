@@ -31,6 +31,25 @@ const parse = (schema, body) => {
   return out.data;
 };
 
+/** The source names the ATS reports on; anything else is kept, tidied. */
+const SOURCE_ALIASES = {
+  naukri: 'naukri', linkedin: 'linkedin', indeed: 'indeed', shine: 'shine',
+  monster: 'monster', glassdoor: 'glassdoor', instahyre: 'instahyre',
+  referral: 'referral', recruiter: 'recruiter',
+  teamlink: 'teamlink', portal: 'teamlink', direct: 'teamlink', website: 'teamlink',
+};
+
+function normaliseSource(raw) {
+  const v = String(raw || '').trim().toLowerCase();
+  if (!v) return 'teamlink';
+  if (SOURCE_ALIASES[v]) return SOURCE_ALIASES[v];
+  // "naukri.com", "LinkedIn Jobs", "in.indeed.com" all mean one board.
+  for (const key of Object.keys(SOURCE_ALIASES)) {
+    if (v.includes(key)) return SOURCE_ALIASES[key];
+  }
+  return v.replace(/[^a-z0-9_-]+/g, '-').slice(0, 40) || 'teamlink';
+}
+
 export default function applicationRoutes() {
   const r = Router();
 
@@ -65,7 +84,11 @@ export default function applicationRoutes() {
     const body = parse(z.object({
       jobId: z.string().trim().min(1).max(64),
       candidateId: z.string().trim().max(64).optional(),
-      source: z.string().trim().max(80).optional(),
+      // Normalised, because it is reported on. The browser is untrusted:
+      // without this, "Naukri.com", "naukri" and "NAUKRI" become three
+      // rows in a source-wise report of the same board.
+      source: z.string().trim().max(80).optional()
+        .transform((v) => (v === undefined ? undefined : normaliseSource(v))),
       resumePath: z.string().trim().max(400).optional(),
       matchScore: z.number().min(0).max(100).optional(),
     }), req.body);

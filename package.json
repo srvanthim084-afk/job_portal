@@ -22,7 +22,7 @@
     "migrate:status": "node tools/migrate.mjs --status",
     "verify:search": "node tools/verify-search.mjs",
     "verify:interaction": "node tools/verify-interaction.mjs",
-    "verify:live": "npm run verify:interaction && npm run verify:search && npm run verify:candidate && npm run verify:resume && npm run verify:interview && npm run verify:notifications && npm run verify:easy-apply",
+    "verify:live": "npm run verify:interaction && npm run verify:search && npm run verify:candidate && npm run verify:resume && npm run verify:interview && npm run verify:notifications && npm run verify:easy-apply && npm run verify:source",
     "verify:stack": "node tools/verify-stack.mjs",
     "watch": "node tools/watch.mjs",
     "watch:push": "node tools/watch.mjs --push",
@@ -35,7 +35,8 @@
     "verify:interview": "node tools/verify-interview.mjs",
     "verify:notifications": "node tools/verify-notifications.mjs",
     "verify:easy-apply": "node tools/verify-easy-apply.mjs",
-    "mail:sink": "node tools/mail-sink.mjs"
+    "mail:sink": "node tools/mail-sink.mjs",
+    "verify:source": "node tools/verify-source.mjs"
   },
   "dependencies": {
     "playwright": "^1.63.0"

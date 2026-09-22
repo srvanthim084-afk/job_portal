@@ -763,7 +763,10 @@ test('notify: applying triggers all applicable channels at once', async () => {
   assert.ok(n, 'no notification record returned');
   assert.equal(n.candidate_id, 'cand6');
   assert.equal(n.job_id, 'j5');
-  assert.equal(n.source, 'website');
+  // 'website', 'portal' and 'direct' all mean the same origin and are
+  // collapsed into one name, so a source-wise report does not split the
+  // portal across three rows.
+  assert.equal(n.source, 'teamlink');
   assert.ok(n.interview_expiry, 'no interview expiry was issued');
 
   // Naukri must NOT be attempted for a website application.
