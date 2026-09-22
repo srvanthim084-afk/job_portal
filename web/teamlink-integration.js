@@ -418,6 +418,45 @@
     return LOCAL_ONLY[k] === 1 || k.indexOf('tl_ai_last_qset_') === 0;
   }
 
+  /**
+   * Keys that hold BOTH settings and credentials.
+   *
+   * teamlink_notification_settings_v1 carries the EmailJS serviceId,
+   * templateId and publicKey alongside ordinary preferences - per-type
+   * message templates, lastVerifiedAt. Its three siblings
+   * (teamlink_whatsapp_api_v1, teamlink_sms_api_v1, teamlink_ivr_settings_v1)
+   * are in SERVER_OWNED and dropped; this one was missed, so typing EmailJS
+   * credentials into Notification Settings sent them to /api/prefs, where
+   * they were stored in user_prefs and handed back to the browser on every
+   * load. Requirement 21 puts email API keys in server-side environment
+   * variables, not in a preferences table.
+   *
+   * Dropping the whole key would also discard the templates, which are not
+   * secrets and which a user reasonably expects to keep. So the credential
+   * fields are stripped and the rest syncs as before.
+   */
+  var STRIP_SECRETS = {
+    teamlink_notification_settings_v1: ['serviceId', 'templateId', 'publicKey',
+                                        'accessToken', 'privateKey'],
+  };
+
+  function withoutSecrets(k, raw) {
+    var fields = STRIP_SECRETS[k];
+    if (!fields) return raw;
+    var v;
+    try { v = JSON.parse(raw); } catch (e) { return null; }   // unparseable: send nothing
+    if (!v || typeof v !== 'object') return raw;
+    var removed = false;
+    fields.forEach(function (f) {
+      if (v[f] !== undefined && v[f] !== '') { delete v[f]; removed = true; }
+    });
+    if (removed && TL.debug) {
+      console.info('TeamLink: stripped provider credentials from "' + k +
+                   '" before syncing - they belong in server environment variables.');
+    }
+    return Object.keys(v).length ? JSON.stringify(v) : null;
+  }
+
   var prefQueue = Object.create(null);
   var prefTimer = null;
 
@@ -448,7 +487,11 @@
       if (!TL.ready) return;                       // boot-time replay, not a user action
       if (SERVER_OWNED[k] === 1) return;           // the database already has it
       if (ENTITY_SYNC[k]) { try { ENTITY_SYNC[k](v); } catch (e) {} return; }
-      if (TL.session) queuePref(k, v);
+      if (!TL.session) return;
+      // The value stays complete in memory, so the screen still shows what
+      // was typed; only what LEAVES the browser is stripped.
+      var safe = withoutSecrets(k, v);
+      if (safe !== null) queuePref(k, safe);
     },
     removeItem: function (k) {
       k = String(k);
