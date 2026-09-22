@@ -24790,6 +24790,75 @@ table.data td .tl-af b{white-space:normal}
   }
 
   /* ------------------------------------------------------------------ *
+   * 5b. The login page must not hand out a password that cannot work
+   *
+   * prototype.html:1328 defines ROLE_CREDENTIALS with a password per role
+   * ("Admin@123", "Recruiter@123", "Client@123"). pageLogin() PREFILLS the
+   * password box with it and prints it in a "Login credentials" panel.
+   *
+   * Those were the whole authentication system when the prototype checked
+   * credentials in JavaScript. They are not passwords any more: accounts
+   * live in the users table with bcrypt hashes, and the real password is
+   * whatever was set when the database was seeded. So the page filled the
+   * box with a value that could only ever be rejected, the user pressed
+   * "Sign in as Administrator", and got "Incorrect email or password" -
+   * which was correct, and completely misleading.
+   *
+   * The fix is not to reveal the real password (it must not be in the UI at
+   * all) and not to weaken the check. The page simply stops asserting a
+   * password it cannot honour: the box is cleared, and the panel says where
+   * credentials come from instead of stating one.
+   *
+   * The panel keeps its position, its classes and its styling. Only the
+   * sentence inside it changes, because the sentence is the bug.
+   * ------------------------------------------------------------------ */
+
+  // Exactly the values prototype.html ships. A password box is cleared only
+  // when it still holds one of these - never when it holds something typed.
+  var STALE_DEMO_PASSWORDS = { 'Admin@123': 1, 'Recruiter@123': 1, 'Client@123': 1, 'demo1234': 1 };
+
+  function repairLoginPage() {
+    if (location.hash.indexOf('#/login/') !== 0) return;
+
+    var pw = document.querySelector('.auth-form input[name="password"]');
+    if (pw && STALE_DEMO_PASSWORDS[pw.value]) {
+      pw.value = '';
+      // Put the cursor where the person now has to type.
+      var email = document.querySelector('.auth-form input[name="email"]');
+      if (email && email.value) { try { pw.focus(); } catch (e) {} }
+    }
+
+    var box = document.querySelector('.auth-form .demo-box');
+    if (box && !box.dataset.tlFixed) {
+      box.dataset.tlFixed = '1';
+      var email = document.querySelector('.auth-form input[name="email"]');
+      var addr = email && email.value ? email.value : 'your account email';
+      // Same element, same classes, same place on the page.
+      box.innerHTML =
+        '<p>Signing in</p><div style="font-size:12.5px;line-height:1.8">' +
+        '<b>Email:</b> <span class="mono">' + escapeHtml(addr) + '</span><br>' +
+        'Use the password issued for this environment. Passwords are never ' +
+        'shown on this page.</div>';
+    }
+  }
+
+  function escapeHtml(v) {
+    return String(v).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  // afterRender() is the prototype's own post-paint hook, so this runs on
+  // every navigation to a login screen without touching any renderer.
+  var prevAfterRender = window.afterRender;
+  window.afterRender = function () {
+    var out = typeof prevAfterRender === 'function'
+      ? prevAfterRender.apply(this, arguments) : undefined;
+    try { repairLoginPage(); } catch (e) { /* never break a render */ }
+    return out;
+  };
+
+  /* ------------------------------------------------------------------ *
    * 6. Registration
    * ------------------------------------------------------------------ */
 
