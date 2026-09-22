@@ -1173,6 +1173,59 @@
   TL.showFieldErrors = showFieldErrors;
 
   /* ------------------------------------------------------------------ *
+   * 6c. Recommended Jobs, removed from the candidate portal
+   *
+   * Asked for directly. There are THREE ways in, and leaving any of them
+   * would put the screen back in front of a candidate:
+   *
+   *   1. the sidebar item          NAV_CONFIG.candidate -> 'recommended'
+   *   2. the top tab               cpShell() appends "★ Recommended"
+   *   3. the "View all" link       on the candidate home page
+   *
+   * The route itself is also closed, so a bookmark or a typed URL lands
+   * somewhere sensible instead of on a page that is no longer offered.
+   *
+   * Nothing is deleted from the prototype: the page and its code remain,
+   * unreferenced, so this is one small change to undo if it is wanted back.
+   * ------------------------------------------------------------------ */
+
+  if (typeof NAV_CONFIG === 'object' && NAV_CONFIG && Array.isArray(NAV_CONFIG.candidate)) {
+    NAV_CONFIG.candidate = NAV_CONFIG.candidate.filter(function (item) {
+      return item && item[0] !== 'recommended';
+    });
+  }
+
+  // The top tab is appended by cpShell, which the prototype already wraps
+  // once itself; wrapping it again is the established pattern here.
+  var prevCpShell = window.cpShell;
+  if (typeof prevCpShell === 'function') {
+    window.cpShell = function () {
+      var html = prevCpShell.apply(this, arguments);
+      return String(html)
+        // the tab, however its `on` class happens to be set
+        .replace(/<a[^>]*onclick="tlNavGo\('#\/candidate\/recommended'\)"[^>]*>[\s\S]*?<\/a>/g, '')
+        // the "View all" link beside "Recommended for you" on the home page
+        .replace(/<a[^>]*href="#\/candidate\/recommended"[^>]*>[\s\S]*?<\/a>/g, '');
+    };
+  }
+
+  /**
+   * And close the route.
+   *
+   * render() is already wrapped for the BDE screens; this adds one more
+   * case in front of it. A candidate who still has the link goes to their
+   * job search, which is what Recommended was a filtered view of.
+   */
+  var realRenderForRecommended = window.render;
+  window.render = function () {
+    if (/^#\/candidate\/recommended\b/.test(String(location.hash || ''))) {
+      window.navigate('/candidate/search');
+      return;
+    }
+    return realRenderForRecommended.apply(this, arguments);
+  };
+
+  /* ------------------------------------------------------------------ *
    * 7. Applying
    * ------------------------------------------------------------------ */
 
