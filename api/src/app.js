@@ -25,6 +25,7 @@ import applicationRoutes from './routes/applications.js';
 import miscRoutes from './routes/misc.js';
 import uploadRoutes from './routes/uploads.js';
 import aiInterviewRoutes from './routes/ai-interviews.js';
+import aiCallingRoutes from './routes/ai-calling.js';
 
 export function createApp({ serveStatic = null, logger = console } = {}) {
   const app = express();
@@ -159,6 +160,7 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', miscRoutes());
   app.use('/api', uploadRoutes());
   app.use('/api', aiInterviewRoutes());
+  app.use('/api', aiCallingRoutes());
 
   app.use('/api', (_req, _res, next) =>
     next(new ApiError(404, CODES.NOT_FOUND, 'That endpoint does not exist.')));

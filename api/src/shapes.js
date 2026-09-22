@@ -145,6 +145,10 @@ export function toCandidate(r) {
     mobileVerified: !!r.mobile_verified,
     smsVerified: !!r.sms_verified,
     whatsappOptIn: !!r.whatsapp_opt_in,
+    // Asked not to be called. Carried to the screen so the button is not
+    // offered in the first place, rather than refused after the click.
+    doNotContact: !!r.do_not_contact,
+    preferredLanguage: nz(r.preferred_language),
 
     daysSilent: numOrU(r.days_silent),
     followUpSent: !!r.follow_up_sent,

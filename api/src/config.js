@@ -69,6 +69,44 @@ export const config = {
   // alongside the written channels. IVR_FROM is the number the call
   // appears to come from. 'ivr' is the channel name notification_deliveries
   // already allows (0006), and what the prototype called it.
+  /* ---- the AI calling agent ------------------------------------- *
+   *
+   * A conversation on the phone, not the one-way IVR announcement above.
+   * Every value is read from the environment: nothing here has a default
+   * that would place a real call, and no key is ever sent to the browser.
+   *
+   * With no provider configured the agent runs on the `local` driver -
+   * the real conversation engine, the real database writes and the real
+   * ATS updates, with HTTP standing in for the carrier's audio. Adding
+   * credentials is the only change needed to make the calls real.
+   * ---------------------------------------------------------------- */
+  telephony: {
+    provider: process.env.TELEPHONY_PROVIDER || 'local',   // local | twilio | exotel
+    accountSid: process.env.TELEPHONY_ACCOUNT_SID || '',
+    authToken:  process.env.TELEPHONY_AUTH_TOKEN || '',
+    fromNumber: process.env.TELEPHONY_FROM_NUMBER || '',
+    ringTimeout: int(process.env.TELEPHONY_RING_TIMEOUT, 30),
+    // Twilio signs a webhook over the PUBLIC url. Behind a proxy the
+    // request's own host is the internal one, and the signature will not
+    // match unless the public base is stated here.
+    publicWebhookBase: process.env.TELEPHONY_PUBLIC_BASE || '',
+    webhookSecret: process.env.TELEPHONY_WEBHOOK_SECRET || '',
+    exotelSid:   process.env.EXOTEL_SID || '',
+    exotelKey:   process.env.EXOTEL_API_KEY || '',
+    exotelToken: process.env.EXOTEL_API_TOKEN || '',
+    // How many calls one campaign may have in flight at once.
+    concurrency: int(process.env.AI_CALL_CONCURRENCY, 3),
+  },
+  stt: {
+    apiUrl: process.env.STT_API_URL || '',
+    apiKey: process.env.STT_API_KEY || '',
+  },
+  tts: {
+    apiUrl: process.env.TTS_API_URL || '',
+    apiKey: process.env.TTS_API_KEY || '',
+    voice:  process.env.TTS_VOICE || '',
+  },
+
   ivrApiKey: process.env.IVR_API_KEY || '',
   ivrApiUrl: process.env.IVR_API_URL || '',
   ivrFrom: process.env.IVR_FROM || '',

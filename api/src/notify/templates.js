@@ -145,6 +145,7 @@ const SUBJECTS = {
   AI_INTERVIEW_EXPIRED:   (c) => `Your AI interview window for ${c.jobTitle} has closed`,
 
   JOB_MATCH_ALERT:        (c) => `A ${c.jobTitle} role matching your profile`,
+  AI_CALL_COMPLETED:      (c) => `AI call completed - ${c.candidateName}, ${c.jobTitle}`,
 };
 
 const BODIES = {
@@ -196,6 +197,21 @@ const BODIES = {
     `Final reminder: the AI interview for ${c.jobTitle} at ${c.company} closes `
     + `${human(c.dueAt)}, in about two hours.`
     + '\n\nIf you have started it, please finish it before then.',
+
+  /* ---- what the AI calling agent found ---------------------------- *
+   *
+   * This one is addressed to the RECRUITER, not the candidate: it is the
+   * hand-off at the end of a call, and it leads with the thing they have
+   * to do rather than with the summary.
+   * ------------------------------------------------------------------ */
+  AI_CALL_COMPLETED: (c) =>
+    `AI call completed for ${c.candidateName} - ${c.jobTitle}.`
+    + (c.recruiterAction ? `
+
+Action needed: ${c.recruiterAction}.` : '')
+    + `
+
+${c.summary || ''}`,
 
   /* ---- a new requirement that matches this profile ---------------- *
    *

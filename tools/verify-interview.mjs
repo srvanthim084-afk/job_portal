@@ -135,8 +135,16 @@ await check('the interview must be completed within two days', async () => {
 
 await check('a different job produces a different interview', async () => {
   // Apply to a second job and plan again; the technical questions must differ.
+  // A DIFFERENT requirement, not merely a different row. Two postings
+  // that ask for the same skills should share questions - that is the
+  // planner working - so comparing clones proves nothing.
   const otherId = await page.evaluate((first) => {
-    const j = DATA.jobs.find((x) => x.status === 'open' && x.id !== first);
+    const a = DATA.jobById(first) || {};
+    const mine = new Set((a.skills || []).map((s) => String(s).toLowerCase()));
+    const differs = (j) => (j.skills || []).filter((s) => mine.has(String(s).toLowerCase())).length
+      < Math.max(1, Math.ceil((j.skills || []).length / 2));
+    const j = DATA.jobs.find((x) => x.status === 'open' && x.id !== first && differs(x))
+           || DATA.jobs.find((x) => x.status === 'open' && x.id !== first);
     return j ? j.id : null;
   }, jobId);
   if (!otherId) return;                       // only one open job seeded

@@ -309,6 +309,104 @@ server agrees is gone ends the session. And `localStorage.removeItem` sent
 `DELETE /api/prefs/<key>` for keys the database owns, which 401'd after
 logout; it now mirrors the guards `setItem` already had.
 
+## The AI calling agent
+
+Find Candidates already had a 📞 IVR button. Behind it was a
+press-1-for-yes phone menu, POSTed **from the browser** to whatever URL a
+recruiter had typed into a settings box and kept in `localStorage`. Three
+things were wrong with that, and only one of them was the phone menu: the
+endpoint was configured per browser so no two recruiters agreed on it, and
+the call never touched this application — no record, no RBAC check, no
+do-not-contact check, no ATS update.
+
+The same button now holds a conversation.
+
+### The thing that makes it not an IVR
+
+Before dialling, `plan()` reads the candidate record that already exists
+and works out what it must NOT ask. Asking somebody whose resume is open
+in front of you for their name is the fastest way to be hung up on, so the
+name, the current company, the designation, the experience, the education,
+the location and the skills are all marked *known* — stated at most, never
+asked. What is left is what the call is for:
+
+| asked | only when |
+|---|---|
+| a required skill | the resume does not evidence it |
+| location | the job's city differs from theirs, and the role is not remote |
+| work mode | the role is hybrid or onsite |
+| expected CTC | it is missing, or the profile is more than 45 days old |
+| notice period | same |
+
+A shortlisted candidate hears "your profile has been shortlisted"; nobody
+ever hears "you are selected" unless the ATS actually says so.
+
+### Interrupts, not steps
+
+There is no "question 3 of 7". Every candidate turn is classified first,
+and an urgent intent short-circuits the machine from any state:
+
+* **busy** → stop screening, take a callback time ("call me tomorrow
+  evening after 6" is parsed in all three languages) and end
+* **angry** → apologise once, offer to stop, never argue; a second angry
+  turn closes the call
+* **"don't call me again"** → `do_not_contact` on the candidate, and the
+  queue function then refuses to dial them ever again
+* **"can I speak to a recruiter"** → a recruiter callback with their
+  question attached
+* **silence** → "are you still there?", then "no problem", then a callback
+* **bad audio** → twice politely, then hand off to a recruiter
+* **wrong number** → apologise, flag the number, end
+
+A question at any point is answered from the job record — or, if the
+answer is not in the data, with "I'll have our recruiter confirm that".
+There is no third branch, so the agent cannot invent a client name, a
+salary or an interview date.
+
+### Three languages, switched mid-call
+
+Detection runs on **every** turn, not once. Script is decisive; romanised
+speech is scored on function words, because "React Developer" is identical
+in all three and carries no signal. A borrowed noun — "notice period",
+"salary", "location" — counts towards *code switching* but not towards
+*which language*, which is what makes "Haan main interested hoon but
+notice period 60 days hai" come out as Hinglish rather than English.
+
+"Telugu lo matladandi" is obeyed as an instruction, not sampled as Telugu.
+
+### Providers
+
+```
+TelephonyProvider → STT → conversation engine → TTS → TelephonyProvider
+```
+
+`local` | `twilio` | `exotel`, chosen by `TELEPHONY_PROVIDER`. With none
+configured the agent runs on the local driver: the real engine, the real
+database, the real ATS update, no audio — so the whole workflow is
+demonstrable and testable before anybody buys telephony minutes, and the
+modal says so rather than pretending.
+
+Webhooks verify the provider's signature (Twilio's HMAC over the public
+URL and the sorted body; Exotel's shared secret). An unverified webhook is
+refused and logged.
+
+### What reaches the ATS
+
+No new candidate or job tables. The call writes back into the records that
+already exist: expected CTC, notice period and preferred language onto the
+candidate; a stage note and a notification onto the application. The
+application's STAGE moves only for outcomes where the rule is unambiguous,
+and only forward out of a screening stage — a call must not drag somebody
+back out of an interview they have already had.
+
+`ai_call_sessions`, `ai_call_turns`, `ai_call_events`, `ai_call_campaigns`,
+`ai_call_callbacks`, `ai_call_settings` and `ai_call_consents` are new;
+everything else is reused.
+
+Verified by `npm run verify:calling` (25 conversations, including every
+one of the awkward ones above) and `npm run verify:calling-ui` (the
+recruiter's screen, driven for real).
+
 ## Job alerts: reaching the candidates we already have
 
 Publishing a requirement used to be silent. It appeared on the board and
@@ -530,6 +628,8 @@ npm run verify:search      9/9
 npm run verify:interview  15/15  the blueprint, the deadline, the five scores
 npm run verify:deadline   15/15  two days, reminded, expired
 npm run verify:matching   21/21  the alert rule, and the alert path
+npm run verify:calling    36/36  the conversation, and the whole path
+npm run verify:calling-ui  9/9   the recruiter's screen, driven for real
 npm run check:mail               does the mailbox accept us at all
 npm run mail:inbox               a real local SMTP server + an inbox to read
                                  it at http://localhost:2580

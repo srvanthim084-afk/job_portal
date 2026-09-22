@@ -27268,6 +27268,445 @@ table.data td .tl-af b{white-space:normal}
   }
 
   /* ------------------------------------------------------------------ *
+   * 17. The AI calling agent, in Find Candidates
+   *
+   * The recruiter screen already had a 📞 IVR button, and what sat behind
+   * it was a press-1-for-yes menu that POSTed from the BROWSER to an
+   * arbitrary endpoint the recruiter typed into a box, with the URL kept
+   * in localStorage. Three things wrong with that: the candidate got a
+   * phone tree rather than a conversation, the endpoint was configured
+   * per browser so no two recruiters agreed on it, and the call bypassed
+   * the server entirely - no record, no RBAC, no ATS update.
+   *
+   * The same button now starts a real conversation through our own API.
+   * Carrier credentials stay on the server, every call is recorded
+   * against the candidate and the requirement, and the result lands in
+   * the ATS by itself.
+   *
+   * THE SCREEN IS UNCHANGED: same toolbar, same button, same modal
+   * chrome, same classes. Only what happens when it is pressed is
+   * different.
+   * ------------------------------------------------------------------ */
+
+  TL.calling = {};
+
+  /** The candidates ticked in the results list. */
+  function callingSelection() {
+    var ids = Object.keys((STATE.fcr && STATE.fcr.selection) || {});
+    return ids.map(function (id) { return DATA.candidateById(id); }).filter(Boolean);
+  }
+
+  /** Requirements this recruiter can call for. */
+  function callableJobs() {
+    return (DATA.jobs || []).filter(function (j) {
+      return j.status === 'open' && !j.paused && !j.archived;
+    });
+  }
+
+  function esc(v) {
+    return String(v === undefined || v === null ? '' : v)
+      .replace(/[&<>"]/g, function (c) {
+        return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c];
+      });
+  }
+
+  var CALL_STATUS_LABEL = {
+    queued: 'Queued', dialing: 'Dialing', ringing: 'Ringing', in_progress: 'On call',
+    completed: 'Completed', no_answer: 'No answer', busy: 'Busy', failed: 'Failed',
+    cancelled: 'Cancelled', wrong_number: 'Wrong number', voicemail: 'Voicemail',
+  };
+  var OUTCOME_LABEL = {
+    interested: 'Interested', not_interested: 'Not interested', not_looking: 'Not looking',
+    callback_requested: 'Callback requested', recruiter_callback: 'Recruiter callback',
+    do_not_contact: 'Do not contact', salary_mismatch: 'Salary mismatch',
+    location_mismatch: 'Location mismatch', notice_period_mismatch: 'Notice period',
+    already_joined: 'Already joined', wrong_number: 'Wrong number',
+    no_response: 'No response', busy: 'Busy', technical_failure: 'Technical failure',
+    call_completed: 'Completed', language_issue: 'Language issue',
+  };
+  var LANG_LABEL = { en: 'English', hi: 'Hindi', te: 'Telugu' };
+
+  /**
+   * The AI calling modal, in place of the old IVR one.
+   *
+   * Opens with the agent's status so a recruiter can see immediately
+   * whether calls will actually be placed or run on the local driver -
+   * rather than pressing a button and wondering.
+   */
+  window.fcrIvrModal = function () {
+    var sel = callingSelection();
+    if (!sel.length) {
+      if (typeof window.toast === 'function') window.toast('Select at least one candidate', 'ℹ️');
+      return;
+    }
+    var jobs = callableJobs();
+
+    window.fcrModal(
+      '<div class="fcr-modal-head"><h3>AI Calling — ' + sel.length + ' selected</h3>' +
+      '<button class="btn btn-ghost btn-sm" onclick="fcrCloseModal()">✕</button></div>' +
+      '<div class="fcr-modal-body" id="tlCallBody">' +
+      '<div class="req-note">Loading the calling agent…</div></div>');
+
+    api.get('/ai-calling/status').then(function (st) {
+      var body = document.getElementById('tlCallBody');
+      if (!body) return;
+      var t = st.telephony || {};
+      var live = t.active !== 'local';
+
+      body.innerHTML =
+        '<div class="req-note" style="' + (live ? '' : 'background:var(--warn-100);color:var(--warn-600)') + '">' +
+          (live
+            ? '📞 Calls are placed through <b>' + esc(t.active) + '</b>. The agent speaks ' +
+              'English, Hindi and Telugu, detects which one the candidate is comfortable in, ' +
+              'and updates the ATS when the call ends.'
+            : '<b>No telephony provider is configured</b>, so calls run on the local driver: ' +
+              'the real conversation, the real ATS update, no audio. Set ' +
+              '<code>TELEPHONY_PROVIDER</code> and its credentials on the server to place ' +
+              'real calls' +
+              (t.missing && t.missing.length ? ' (missing: ' + esc(t.missing.join(', ')) + ')' : '') +
+              '.') +
+        '</div>' +
+
+        '<div class="fgroup" style="margin-top:14px"><label>Requirement</label>' +
+        '<select id="tlCallJob">' +
+          '<option value="">— no specific requirement —</option>' +
+          jobs.map(function (j) {
+            return '<option value="' + esc(j.id) + '">' + esc(j.title) +
+                   (j.location ? ' · ' + esc(j.location) : '') + '</option>';
+          }).join('') +
+        '</select></div>' +
+
+        '<div class="fgroup"><label>Language</label>' +
+        '<select id="tlCallLang">' +
+          '<option value="auto">Auto detect (recommended)</option>' +
+          '<option value="en">English</option>' +
+          '<option value="hi">Hindi</option>' +
+          '<option value="te">Telugu</option>' +
+        '</select></div>' +
+
+        '<div class="fgroup"><label>Call objective (optional)</label>' +
+        '<input id="tlCallObjective" placeholder="Confirm interest and availability"></div>' +
+
+        '<div style="margin-top:10px">' + sel.map(function (c) {
+          var dnc = c.doNotContact;
+          return '<div class="fcr-modal-row"><span><b>' + esc(c.name) + '</b> ' +
+            '<span style="color:var(--text-soft)">· ' + esc(c.phone || 'no number') + '</span></span>' +
+            (dnc
+              ? '<span class="badge badge-bad">Do not contact</span>'
+              : c.phone
+                ? '<span style="display:flex;gap:6px">' +
+                  '<button class="btn btn-ghost btn-sm" onclick="TL.calling.preview(\'' + esc(c.id) + '\')">What will it ask?</button>' +
+                  '<button class="btn btn-primary btn-sm" id="tlCallBtn_' + esc(c.id) + '" ' +
+                  'onclick="TL.calling.start(\'' + esc(c.id) + '\')">📞 Call now</button></span>'
+                : '<span class="badge badge-neutral">No mobile number</span>') +
+          '</div>';
+        }).join('') + '</div>' +
+
+        '<div id="tlCallOut" style="margin-top:12px"></div>' +
+
+        '<div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">' +
+          '<button class="btn btn-primary" onclick="TL.calling.campaign()">🤖 Start AI Calling Campaign (' + sel.length + ')</button>' +
+          '<button class="btn btn-ghost" onclick="TL.calling.dashboard()">📊 Calling dashboard</button>' +
+          '<button class="btn btn-ghost" onclick="fcrCloseModal()">Close</button>' +
+        '</div>';
+    }).catch(function (err) {
+      var body = document.getElementById('tlCallBody');
+      if (body) body.innerHTML = '<div class="req-note">' + esc(err.message || 'The calling agent is unavailable.') + '</div>';
+    });
+  };
+
+  function callFormValues() {
+    var job = (document.getElementById('tlCallJob') || {}).value || '';
+    var lang = (document.getElementById('tlCallLang') || {}).value || 'auto';
+    var obj = ((document.getElementById('tlCallObjective') || {}).value || '').trim();
+    return { jobId: job || undefined, language: lang, objective: obj || undefined };
+  }
+
+  function callOut(html) {
+    var el = document.getElementById('tlCallOut');
+    if (el) el.innerHTML = html;
+  }
+
+  /**
+   * What the agent would ask, before anybody is called.
+   *
+   * The single most common worry about an automated call is that it will
+   * ask the candidate something the ATS already knows. This shows the
+   * answer up front: what it knows, and what it will actually ask.
+   */
+  TL.calling.preview = function (candidateId) {
+    var v = callFormValues();
+    api.get('/ai-calling/plan?candidateId=' + encodeURIComponent(candidateId) +
+            (v.jobId ? '&jobId=' + encodeURIComponent(v.jobId) : ''))
+      .then(function (r) {
+        var p = r.plan || {};
+        callOut(
+          '<div class="panel" style="padding:12px">' +
+          '<div style="font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:var(--text-soft)">Call objective</div>' +
+          '<div style="font-size:13px;margin:4px 0 10px">' + esc(p.objective) + '</div>' +
+          '<div style="font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:var(--text-soft)">Already known — will not be asked</div>' +
+          '<div style="font-size:12.5px;color:var(--text-soft);margin:4px 0 10px">' +
+            (p.known || []).map(esc).join(' · ') + '</div>' +
+          '<div style="font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:var(--text-soft)">Will ask</div>' +
+          '<ul style="margin:6px 0 0 18px;font-size:13px">' +
+            (p.needed || []).map(function (n) { return '<li>' + esc(n) + '</li>'; }).join('') +
+          '</ul></div>');
+      })
+      .catch(function (err) { say(err); });
+  };
+
+  /** Call one candidate now. */
+  TL.calling.start = function (candidateId) {
+    var v = callFormValues();
+    var btn = document.getElementById('tlCallBtn_' + candidateId);
+    if (btn) { btn.disabled = true; btn.textContent = 'Calling…'; }
+
+    api.post('/ai-calling/call', {
+      candidateId: candidateId,
+      jobId: v.jobId,
+      language: v.language,
+      objective: v.objective,
+    }).then(function (r) {
+      if (btn) btn.textContent = '✓ Call started';
+      var local = r.call.provider === 'local';
+      callOut(
+        '<div class="req-note" style="background:var(--ok-100);color:var(--ok-600)">' +
+        'Call started. The agent opened with: “' + esc(r.say) + '”' +
+        (local
+          ? '<br><br>No carrier is configured, so this call runs locally. ' +
+            '<button class="btn btn-ghost btn-sm" onclick="TL.calling.console(\'' + esc(r.call.id) + '\')">Open the conversation</button>'
+          : '') +
+        '</div>');
+      if (typeof window.toast === 'function') window.toast('AI call started', '📞');
+    }).catch(function (err) {
+      if (btn) { btn.disabled = false; btn.textContent = '📞 Call now'; }
+      callOut('<div class="req-note">' + esc(err.message || 'The call could not be started.') + '</div>');
+    });
+  };
+
+  /**
+   * The local conversation console.
+   *
+   * With no carrier configured the call has no audio, so the turns are
+   * typed. Everything else is real — the same engine, the same database,
+   * the same ATS update — which makes this the way to try the agent
+   * before buying telephony minutes.
+   */
+  TL.calling.console = function (callId) {
+    window.fcrModal(
+      '<div class="fcr-modal-head"><h3>AI call — local conversation</h3>' +
+      '<button class="btn btn-ghost btn-sm" onclick="fcrCloseModal()">✕</button></div>' +
+      '<div class="fcr-modal-body">' +
+      '<div id="tlCallLog" style="max-height:320px;overflow:auto;font-size:13px;line-height:1.55"></div>' +
+      '<div style="display:flex;gap:8px;margin-top:12px">' +
+        '<input id="tlCallSay" placeholder="Type what the candidate says…" style="flex:1" ' +
+        'onkeydown="if(event.key===\'Enter\'){TL.calling.send(\'' + esc(callId) + '\')}">' +
+        '<button class="btn btn-primary btn-sm" onclick="TL.calling.send(\'' + esc(callId) + '\')">Send</button>' +
+        '<button class="btn btn-ghost btn-sm" onclick="TL.calling.send(\'' + esc(callId) + '\', true)">Silence</button>' +
+      '</div>' +
+      '<div style="margin-top:10px"><button class="btn btn-ghost btn-sm" onclick="TL.calling.end(\'' + esc(callId) + '\')">End call</button></div>' +
+      '</div>');
+    TL.calling.refreshLog(callId);
+  };
+
+  TL.calling.refreshLog = function (callId) {
+    return api.get('/ai-calling/calls/' + encodeURIComponent(callId)).then(function (r) {
+      var el = document.getElementById('tlCallLog');
+      if (!el) return r;
+      el.innerHTML = (r.transcript || []).map(function (t) {
+        var agent = t.speaker === 'agent';
+        return '<div style="margin:6px 0"><b style="color:' +
+          (agent ? 'var(--brand-600)' : 'var(--text)') + '">' +
+          (agent ? 'Agent' : 'Candidate') + ':</b> ' + esc(t.text) +
+          (t.intent ? ' <span class="badge badge-neutral" style="font-size:9px">' + esc(t.intent) + '</span>' : '') +
+          '</div>';
+      }).join('');
+      el.scrollTop = el.scrollHeight;
+      if (r.call && r.call.summary) {
+        el.innerHTML += '<div class="req-note" style="margin-top:10px">' + esc(r.call.summary) + '</div>';
+      }
+      return r;
+    });
+  };
+
+  TL.calling.send = function (callId, silence) {
+    var input = document.getElementById('tlCallSay');
+    var text = silence ? '' : ((input || {}).value || '').trim();
+    if (!silence && !text) return;
+    if (input) input.value = '';
+    api.post('/ai-calling/calls/' + encodeURIComponent(callId) + '/say', { text: text })
+      .then(function () { return TL.calling.refreshLog(callId); })
+      .then(function () { if (typeof window.render === 'function') window.render(); })
+      .catch(function (err) { say(err); });
+  };
+
+  TL.calling.end = function (callId) {
+    api.post('/ai-calling/calls/' + encodeURIComponent(callId) + '/end', {})
+      .then(function () {
+        return TL.calling.refreshLog(callId);
+      })
+      .then(function () {
+        if (typeof window.toast === 'function') window.toast('Call ended and recorded', '📞');
+        return refresh();
+      })
+      .catch(function (err) { say(err); });
+  };
+
+  /** Call everybody who is selected, for one requirement. */
+  TL.calling.campaign = function () {
+    var sel = callingSelection();
+    var v = callFormValues();
+    if (!v.jobId) {
+      callOut('<div class="req-note">Choose a requirement first — a calling campaign is always about one role.</div>');
+      return;
+    }
+    callOut('<div class="req-note">Queueing…</div>');
+
+    api.post('/ai-calling/campaign', {
+      jobId: v.jobId,
+      candidateIds: sel.map(function (c) { return c.id; }),
+      languageMode: v.language,
+      objective: v.objective,
+    }).then(function (r) {
+      callOut(
+        '<div class="req-note" style="background:var(--ok-100);color:var(--ok-600)">' +
+        '<b>' + r.campaign.queued + ' call' + (r.campaign.queued === 1 ? '' : 's') + ' queued.</b>' +
+        (r.skipped.length
+          ? '<br>' + r.skipped.length + ' skipped: ' +
+            r.skipped.map(function (x) {
+              var c = DATA.candidateById(x.candidateId);
+              return esc((c ? c.name : x.candidateId) + ' (' + x.reason + ')');
+            }).join(', ')
+          : '') +
+        '</div>');
+      if (typeof window.toast === 'function') {
+        window.toast(r.campaign.queued + ' AI calls queued', '🤖');
+      }
+    }).catch(function (err) {
+      callOut('<div class="req-note">' + esc(err.message || 'The campaign could not be started.') + '</div>');
+    });
+  };
+
+  /** The calling dashboard, in the same modal chrome. */
+  TL.calling.dashboard = function () {
+    window.fcrModal(
+      '<div class="fcr-modal-head"><h3>AI Calling</h3>' +
+      '<button class="btn btn-ghost btn-sm" onclick="fcrCloseModal()">✕</button></div>' +
+      '<div class="fcr-modal-body" id="tlCallDash"><div class="req-note">Loading…</div></div>');
+
+    Promise.all([api.get('/ai-calling/dashboard'), api.get('/ai-calling/calls?limit=25')])
+      .then(function (out) {
+        var d = out[0], calls = out[1].calls || [];
+        var t = d.totals || {};
+        var el = document.getElementById('tlCallDash');
+        if (!el) return;
+
+        var tile = function (k, v) {
+          return '<div class="item"><div class="k">' + esc(k) + '</div><div class="v">' + (v || 0) + '</div></div>';
+        };
+
+        el.innerHTML =
+          '<div class="kv" style="grid-template-columns:repeat(4,1fr)">' +
+            tile('Total calls', t.total) + tile('Connected', t.connected) +
+            tile('No answer', t.no_answer) + tile('Interested', t.interested) +
+          '</div>' +
+          '<div class="kv" style="grid-template-columns:repeat(4,1fr);margin-top:8px">' +
+            tile('Not interested', t.not_interested) + tile('Callbacks', t.callbacks) +
+            tile('Recruiter callbacks', t.recruiter_callbacks) + tile('Do not contact', t.do_not_contact) +
+          '</div>' +
+
+          (d.callbacks && d.callbacks.length
+            ? '<div style="margin-top:14px"><div style="font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:var(--text-soft);margin-bottom:6px">Pending callbacks</div>' +
+              d.callbacks.map(function (cb) {
+                return '<div class="fcr-modal-row"><span><b>' + esc(cb.candidateName) + '</b>' +
+                  (cb.jobTitle ? ' <span style="color:var(--text-soft)">· ' + esc(cb.jobTitle) + '</span>' : '') +
+                  '<div style="font-size:12px;color:var(--text-soft)">' +
+                  (cb.kind === 'recruiter' ? 'Wants a recruiter' : 'Callback') +
+                  (cb.requestedFor ? ' · ' + new Date(cb.requestedFor).toLocaleString('en-GB') : '') +
+                  (cb.language ? ' · ' + esc(LANG_LABEL[cb.language] || cb.language) : '') +
+                  (cb.question ? '<br>“' + esc(cb.question) + '”' : '') + '</div></span>' +
+                  '<button class="btn btn-ghost btn-sm" onclick="TL.calling.callbackDone(\'' + esc(cb.id) + '\')">Mark done</button></div>';
+              }).join('') + '</div>'
+            : '') +
+
+          '<div style="margin-top:14px"><div style="font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:var(--text-soft);margin-bottom:6px">Recent calls</div>' +
+          (calls.length
+            ? calls.map(callRowHtml).join('')
+            : '<div style="font-size:13px;color:var(--text-soft)">No calls yet.</div>') +
+          '</div>';
+      })
+      .catch(function (err) {
+        var el = document.getElementById('tlCallDash');
+        if (el) el.innerHTML = '<div class="req-note">' + esc(err.message || 'Unavailable.') + '</div>';
+      });
+  };
+
+  function callRowHtml(c) {
+    return '<div class="fcr-modal-row"><span><b>' + esc(c.candidateName || c.candidateId) + '</b>' +
+      (c.jobTitle ? ' <span style="color:var(--text-soft)">· ' + esc(c.jobTitle) + '</span>' : '') +
+      '<div style="font-size:12px;color:var(--text-soft)">' +
+        (c.queuedAt ? new Date(c.queuedAt).toLocaleString('en-GB') : '') +
+        ' · ' + esc(LANG_LABEL[c.language] || c.language) +
+        ' · ' + esc(CALL_STATUS_LABEL[c.status] || c.status) +
+        (c.outcome ? ' · ' + esc(OUTCOME_LABEL[c.outcome] || c.outcome) : '') +
+        (c.durationSeconds ? ' · ' + c.durationSeconds + 's' : '') +
+        (c.summary ? '<br>' + esc(c.summary) : '') +
+      '</div></span>' +
+      '<button class="btn btn-ghost btn-sm" onclick="TL.calling.transcript(\'' + esc(c.id) + '\')">Transcript</button></div>';
+  }
+
+  TL.calling.transcript = function (callId) {
+    window.fcrModal(
+      '<div class="fcr-modal-head"><h3>Call transcript</h3>' +
+      '<button class="btn btn-ghost btn-sm" onclick="fcrCloseModal()">✕</button></div>' +
+      '<div class="fcr-modal-body"><div id="tlCallLog" style="max-height:420px;overflow:auto;font-size:13px;line-height:1.55"></div></div>');
+    TL.calling.refreshLog(callId).catch(function (err) { say(err); });
+  };
+
+  TL.calling.callbackDone = function (id) {
+    api.post('/ai-calling/callbacks/' + encodeURIComponent(id) + '/done', {})
+      .then(function () { TL.calling.dashboard(); })
+      .catch(function (err) { say(err); });
+  };
+
+  /** The call history a recruiter sees on one candidate. */
+  TL.calling.history = function (candidateId) {
+    window.fcrModal(
+      '<div class="fcr-modal-head"><h3>AI call history</h3>' +
+      '<button class="btn btn-ghost btn-sm" onclick="fcrCloseModal()">✕</button></div>' +
+      '<div class="fcr-modal-body" id="tlCallHist"><div class="req-note">Loading…</div></div>');
+
+    api.get('/ai-calling/calls?candidateId=' + encodeURIComponent(candidateId))
+      .then(function (r) {
+        var el = document.getElementById('tlCallHist');
+        if (!el) return;
+        el.innerHTML = (r.calls || []).length
+          ? r.calls.map(callRowHtml).join('')
+          : '<div style="font-size:13px;color:var(--text-soft)">No AI calls for this candidate yet.</div>';
+      })
+      .catch(function (err) {
+        var el = document.getElementById('tlCallHist');
+        if (el) el.innerHTML = '<div class="req-note">' + esc(err.message || 'Unavailable.') + '</div>';
+      });
+  };
+
+  /* ---- the old browser-side IVR path is removed ------------------- *
+   *
+   * fcrStartIvrCall() POSTed from the browser to whatever URL was typed
+   * into the settings box, with the candidate's phone number in the body.
+   * Whatever that endpoint was, it was not this application: the call was
+   * never recorded, never checked against do-not-contact, and never
+   * reached the ATS.
+   * ----------------------------------------------------------------- */
+  window.fcrStartIvrCall = function (id) { return TL.calling.start(id); };
+  window.fcrSaveIvrSettings = function () {
+    if (typeof window.toast === 'function') {
+      window.toast('Calling is configured on the server now — no endpoint to enter here.', 'ℹ️');
+    }
+    window.fcrIvrModal();
+  };
+
+  /* ------------------------------------------------------------------ *
    * 12. Session expiry
    *
    * A cookie can expire while the tab is open. Rather than letting the
