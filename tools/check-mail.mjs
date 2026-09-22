@@ -40,6 +40,31 @@ console.log(`  user   ${config.smtpUser || '(none)'}`);
 console.log(`  from   ${config.emailFrom || config.smtpUser || '(none)'}`);
 console.log(`  pass   ${config.smtpPass ? `${config.smtpPass.length} characters` : 'NOT SET'}`);
 
+/*
+ * The length is printed for a reason.
+ *
+ * `.env` treats an unquoted # as the start of a comment, so a password
+ * containing one is silently TRUNCATED at that character - a 16-character
+ * secret arrives as two, the server says "wrong password", and nothing
+ * anywhere suggests the file is at fault. Seeing the length catches it in
+ * one glance.
+ */
+if (config.smtpPass && /[#'"\s]/.test(config.smtpPass)) {
+  console.log('         note: contains # or a quote — the value in .env must be');
+  console.log('         wrapped in double quotes or it will be cut short.');
+}
+
+/*
+ * A Google App Password is sixteen LOWERCASE LETTERS, nothing else.
+ * Anything with digits or punctuation is an ordinary password, and Gmail
+ * will refuse it however many times it is retyped.
+ */
+if (/gmail|google/i.test(config.smtpHost) && config.smtpPass
+    && !/^[a-z]{16}$/.test(config.smtpPass.replace(/\s+/g, ''))) {
+  console.log('         note: this does not look like a Google App Password,');
+  console.log('         which is 16 lowercase letters with no digits or symbols.');
+}
+
 const r = await verifySmtp();
 
 if (r.ok) {
