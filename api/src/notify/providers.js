@@ -133,11 +133,20 @@ export function emailjsReady() {
  * every EmailJS template names them differently and a template that
  * silently renders an empty email is the worst outcome here.
  */
-async function sendViaEmailJS({ to, subject, html, text, vars = {} }) {
+async function sendViaEmailJS({ to, subject, html, text, vars = {}, templateId }) {
   const e = config.emailjs;
   const body = {
     service_id: e.serviceId,
-    template_id: e.templateId,
+    /*
+     * The template this EVENT is configured with, if one is.
+     *
+     * Every message used the single EMAILJS_TEMPLATE_ID from the
+     * environment, so an interview invitation and a rejection went out
+     * through the same template however many were configured. The
+     * environment one stays as the fallback, which is what a deployment
+     * that has configured nothing should still use.
+     */
+    template_id: templateId || e.templateId,
     user_id: e.publicKey,
     template_params: {
       to_email: to,
@@ -192,7 +201,7 @@ export const emailProvider = {
     || emailjsReady().ready
     || (config.emailFrom && config.emailApiKey)),
 
-  async send({ to, subject, html, text, vars }) {
+  async send({ to, subject, html, text, vars, templateId }) {
     if (!this.configured()) {
       const ejs = emailjsReady();
       return NOT_CONFIGURED('email',
@@ -208,7 +217,7 @@ export const emailProvider = {
     // set it up has said which one it means.
     if (!smtpReady() && emailjsReady().ready) {
       try {
-        return await sendViaEmailJS({ to, subject, html, text, vars });
+        return await sendViaEmailJS({ to, subject, html, text, vars, templateId });
       } catch (err) {
         return { status: 'failed', provider: 'emailjs', error: err.message };
       }

@@ -5081,8 +5081,24 @@
     }
   }
 
+  /**
+   * The dashboard topbar keeps no Home chip.
+   *
+   * It was injected into every header, and on the recruiter, admin and
+   * client dashboards it sits in the breadcrumb - beside "Analytics ·
+   * Administrator · TeamLink Platform" - where the sidebar is already
+   * the way back and the crumb is a label, not a control.
+   */
+  function oneHomeDash() {
+    var bar = document.querySelector('.dash-main .topbar');
+    if (!bar) return;
+    var chip = bar.querySelector('[data-tlhome]');
+    if (chip && chip.parentNode) chip.parentNode.removeChild(chip);
+  }
+
   function oneHome() {
     oneHomePublic();
+    oneHomeDash();
 
     var header = document.querySelector('header.cp-hd');
     if (!header) return;

@@ -88,6 +88,34 @@ async function send(session, event, ctx) {
     ? CHANNELS.filter((c) => ctx.channels.indexOf(c) >= 0)
     : CHANNELS;
 
+  /*
+   * Which EmailJS template this event is configured with.
+   *
+   * A stage change and an interview invitation used the same template,
+   * because the sender only ever knew the one id in the environment.
+   * Looked up once per dispatch rather than per channel - only email
+   * uses it, and one query is enough.
+   *
+   * A stage change is looked up by its stage first, so "Shortlisted" and
+   * "Rejection" can have their own wording, and falls back to the
+   * generic STAGE_CHANGED row.
+   */
+  let templateId = null;
+  try {
+    const keys = event === 'STAGE_CHANGED' && meta.stage
+      ? [`STAGE_${String(meta.stage).toUpperCase()}`, 'STAGE_CHANGED']
+      : [event];
+    for (const key of keys) {
+      // eslint-disable-next-line no-await-in-loop
+      templateId = await withUser(session, async (c) => (await c.query(
+        `select notification_template_for($1) as id`, [key])).rows[0].id);
+      if (templateId) break;
+    }
+  } catch (err) {
+    // A missing configuration must never stop a candidate being told.
+    templateId = null;
+  }
+
   const attempts = await Promise.all(wanted.map(async (channel) => {
     const to = channel === 'email' ? meta.email : meta.phone;
     const provider = providers[channel];
@@ -95,6 +123,8 @@ async function send(session, event, ctx) {
     try {
       result = await provider.send({
         to,
+        // Only email has templates; the others ignore it.
+        templateId: channel === 'email' ? templateId || undefined : undefined,
         // Named variables for a template that greets by name or quotes
         // the role; the composed body is sent regardless.
         vars: {
@@ -104,7 +134,17 @@ async function send(session, event, ctx) {
           company_name: meta.company_name,
           application_id: ctx.reference || meta.application_id,
           portal_link: portalUrl,
+          portal_login_url: `${config.publicOrigin.replace(/\/$/, '')}/#/login/candidate`,
           interview_link: ctx.interviewUrl || portalUrl,
+          // The variables a template may use, filled from what this
+          // event actually knows. Anything absent is left out by the
+          // provider rather than sent as the word "undefined".
+          candidate_email: meta.email,
+          application_stage: ctx.stageLabel || meta.stage,
+          interview_date: ctx.interviewDate,
+          interview_time: ctx.interviewTime,
+          ai_score: ctx.aiScore != null ? `${ctx.aiScore}%` : undefined,
+          joining_date: ctx.joiningDate,
         },
         subject: messages.email.subject,
         html: messages.email.html,

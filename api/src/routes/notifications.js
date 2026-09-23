@@ -19,11 +19,12 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { withUser } from '../db.js';
-import { wrap, notFound, ApiError } from '../errors.js';
+import { wrap, badRequest, notFound, ApiError } from '../errors.js';
 import { requireAuth, requireRole } from '../auth.js';
 import { dispatchEvent } from '../notify/events.js';
 import { retryFailedDeliveries } from '../notify/retry.js';
 import { providers, providerMissing, providerTransport } from '../notify/providers.js';
+import { config } from '../config.js';
 
 function parse(schema, body) {
   const out = schema.safeParse(body || {});
@@ -155,6 +156,143 @@ export function notificationRoutes() {
             noAddress: seen.skipped_no_address || 0,
           };
         }),
+      });
+    }));
+
+  /**
+   * GET /api/notifications/templates
+   *
+   * One row per notification event: our stable key, the label, and the
+   * EmailJS template id if one has actually been created there.
+   *
+   * `status` is derived, never stored, so it cannot drift from the id it
+   * describes - and an event with no id says `not_connected` rather than
+   * showing a plausible-looking placeholder.
+   */
+  r.get('/notifications/templates', requireAuth(),
+    requireRole('recruiter', 'bde', 'admin'), wrap(async (req, res) => {
+      const rows = await withUser(req.session, async (c) => (await c.query(
+        `select * from notification_templates order by event_key`)).rows);
+
+      res.json({
+        // The variables a template may use. Listed by the server so the
+        // screen and the sender cannot disagree about what is available.
+        variables: [
+          'candidate_name', 'candidate_email', 'job_title', 'company_name',
+          'application_id', 'interview_date', 'interview_time', 'interview_link',
+          'login_email', 'temporary_password', 'ai_score', 'application_stage',
+          'joining_date', 'portal_login_url',
+        ],
+        templates: rows.map((t) => ({
+          eventKey: t.event_key,
+          label: t.label,
+          templateId: t.template_id || null,
+          status: t.template_id ? 'connected' : 'not_connected',
+          firesOn: t.fires_on || [],
+          updatedAt: t.updated_at ? new Date(t.updated_at).toISOString() : undefined,
+        })),
+      });
+    }));
+
+  /**
+   * PUT /api/notifications/templates/:eventKey
+   *
+   * Save the real EmailJS template id. Blank clears it, which is how an
+   * event goes back to Not Connected rather than keeping a stale id.
+   */
+  r.put('/notifications/templates/:eventKey', requireAuth(),
+    requireRole('recruiter', 'bde', 'admin'), wrap(async (req, res) => {
+      const b = parse(z.object({
+        templateId: z.string().trim().max(120).optional().nullable(),
+      }), req.body);
+
+      const value = String(b.templateId || '').trim();
+      /*
+       * The placeholder is the likeliest wrong answer, and it passes a
+       * shape check: "template_xxxxxxx" is alphanumeric, so a pattern
+       * alone accepted it and the screen said Connected about a template
+       * that does not exist. It is refused by name.
+       */
+      if (value && /^template_x+$/i.test(value)) {
+        throw badRequest(
+          'That is the example, not your template id. Open the template in '
+          + 'EmailJS and copy the id from its page.',
+          { templateId: 'Replace the placeholder with the real id.' });
+      }
+      if (value && !/^template_[A-Za-z0-9_-]{3,}$/.test(value)) {
+        throw badRequest(
+          'That does not look like an EmailJS template id. They start with '
+          + '"template_" — copy it from the template page in EmailJS.',
+          { templateId: 'Expected something like template_abc123.' });
+      }
+
+      const out = await withUser(req.session, async (c) => (await c.query(
+        `select notification_template_set($1,$2,$3) as out`,
+        [req.params.eventKey, value, req.session.userId || 'staff'])).rows[0].out);
+
+      res.json(out);
+    }));
+
+  /**
+   * POST /api/notifications/templates/:eventKey/test
+   *
+   * Send one message through that event's own template, to a named
+   * address, with every variable filled in so the wording can be read
+   * rather than guessed at.
+   */
+  r.post('/notifications/templates/:eventKey/test', requireAuth(),
+    requireRole('recruiter', 'bde', 'admin'), wrap(async (req, res) => {
+      const b = parse(z.object({
+        to: z.string().trim().email('Where should the test go?').max(160),
+      }), req.body);
+
+      const t = await withUser(req.session, async (c) => (await c.query(
+        `select * from notification_templates where event_key = $1`,
+        [req.params.eventKey])).rows[0]);
+      if (!t) throw notFound('That notification event does not exist.');
+
+      const { providers } = await import('../notify/providers.js');
+      const base = String(config.publicOrigin || '').replace(/\/$/, '');
+
+      const out = await providers.email.send({
+        to: b.to,
+        subject: `TeamLink test — ${t.label}`,
+        // Whichever template this event is configured with. Null falls
+        // back to the environment's, which is the honest behaviour when
+        // nothing has been configured yet.
+        templateId: t.template_id || undefined,
+        vars: {
+          candidate_name: 'Test Candidate',
+          candidate_email: b.to,
+          to_name: 'Test Candidate',
+          job_title: 'Java Developer',
+          company_name: config.emailFromName || 'TeamLink Consultants',
+          application_id: 'TL-APP-2026-00000',
+          interview_date: '25 Sep 2026',
+          interview_time: '11:00 AM IST',
+          interview_link: `${base}/#/candidate/interview`,
+          login_email: b.to,
+          temporary_password: '(not sent in a test)',
+          ai_score: '86%',
+          application_stage: t.label,
+          joining_date: '01 Oct 2026',
+          portal_login_url: `${base}/#/login/candidate`,
+        },
+        text: `This is a test of the "${t.label}" notification.`
+          + ` Template: ${t.template_id || 'the default from the server environment'}.`,
+        html: `<p>This is a test of the <b>${t.label}</b> notification.</p>`
+          + `<p style="color:#666;font-size:13px">Template: `
+          + `${t.template_id || 'the default from the server environment'}</p>`,
+      });
+
+      res.json({
+        eventKey: t.event_key,
+        label: t.label,
+        templateId: t.template_id || null,
+        to: b.to,
+        status: out.status,
+        provider: out.provider,
+        error: out.error || undefined,
       });
     }));
 
