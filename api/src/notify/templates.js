@@ -146,6 +146,7 @@ const SUBJECTS = {
 
   JOB_MATCH_ALERT:        (c) => `A ${c.jobTitle} role matching your profile`,
   AI_CALL_COMPLETED:      (c) => `AI call completed - ${c.candidateName}, ${c.jobTitle}`,
+  APPLICATION_IMPORTED:   (c) => `Your application for ${c.jobTitle} - ${c.company}`,
 };
 
 const BODIES = {
@@ -198,6 +199,59 @@ const BODIES = {
     + `${human(c.dueAt)}, in about two hours.`
     + '\n\nIf you have started it, please finish it before then.',
 
+  /* ---- a candidate imported from a job board ---------------------- *
+   *
+   * The one message in the system that carries credentials, so it is the
+   * one that has to be careful: the password appears here and nowhere
+   * else - not in a log, not in an API response, not in the recruiter's
+   * view of the candidate. It is generated, sent once, and stored only as
+   * a hash.
+   *
+   * Sections for values we do not have are omitted rather than printed
+   * empty: "Notice Period: N/A" in a first contact reads as a broken
+   * system.
+   * ------------------------------------------------------------------ */
+  APPLICATION_IMPORTED: (c) => {
+    const lines = [
+      `Thank you for applying for the ${c.jobTitle} position.`,
+      '',
+      `We have received your application through ${c.sourceLabel || 'Naukri'} and it has been `
+        + `registered with ${c.company}.`,
+      '',
+      `Application ID: ${c.reference}`,
+      `Applied Role: ${c.jobTitle}`,
+    ];
+
+    if (c.loginEmail && c.tempPassword) {
+      lines.push(
+        '',
+        'Candidate Portal login:',
+        `  Email: ${c.loginEmail}`,
+        `  Temporary password: ${c.tempPassword}`,
+        '',
+        'Please log in and complete your profile. You will be asked to choose your own '
+          + 'password the first time you sign in.');
+    } else if (c.loginEmail) {
+      lines.push('', 'You already have a TeamLink account - sign in with your existing password.');
+    }
+
+    lines.push(
+      '',
+      'Please verify and complete:',
+      '  - Resume',
+      '  - Total experience',
+      '  - Current company and designation',
+      '  - Current and expected CTC',
+      '  - Notice period',
+      '  - Preferred work mode and location',
+      '  - Skills',
+      '',
+      `Your Application ID ${c.reference} is used to track this application, your interview `
+        + 'and the rest of the process. Quote it in any reply.');
+
+    return lines.join('\n');
+  },
+
   /* ---- what the AI calling agent found ---------------------------- *
    *
    * This one is addressed to the RECRUITER, not the candidate: it is the
@@ -245,8 +299,12 @@ export function buildEventMessages(event, c) {
   const text = body(c);
   // An alert has no application yet, and pointing it at "your
   // applications" would be pointing at an empty page.
-  const ref = c.applicationId
-    ? `Job ID: ${c.jobId} · Application ID: ${c.applicationId}`
+  // The reference is what a person quotes back; the internal id is not
+  // for them to see, and printing both makes the message contradict
+  // itself about which one to use.
+  const quoted = c.reference || c.applicationId;
+  const ref = quoted
+    ? `Job ID: ${c.jobId} · Application ID: ${quoted}`
     : `Job ID: ${c.jobId}`;
 
   return {

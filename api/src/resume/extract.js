@@ -307,7 +307,7 @@ export function sanitize(raw) {
   return String(raw || '')
     .replace(PAGE_MARKER, '')
     // eslint-disable-next-line no-control-regex
-    .replace(/[ --]/g, ' ')
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, ' ')
     .replace(/ /g, ' ')
     .replace(/[​-‍﻿]/g, '')
     .replace(/\r\n?/g, '\n')

@@ -333,7 +333,7 @@ export function extractFields(text) {
 
   const sections = splitSections(t);
   // References contain other people's names and numbers.
-  const personal = t.replace(sections.references || ' ', '');
+  const personal = t.replace(sections.references || '\x00', '');
 
   const email = findEmail(personal);
   const phones = findPhones(personal);

@@ -127,7 +127,12 @@ export function experienceBand(job) {
 
 export function scoreExperience(job, cand) {
   const band = experienceBand(job);
-  const years = Number(cand.expYears ?? cand.exp_years);
+  // The numeric column first, then the display string - "4 yrs" on a
+  // profile is still four years, and refusing to read it means scoring
+  // somebody as inexperienced because a column was never filled in.
+  const fromLabel = /(\d+(?:\.\d+)?)/.exec(String(cand.exp || ''));
+  const years = Number(
+    cand.expYears ?? cand.exp_years ?? (fromLabel ? fromLabel[1] : NaN));
 
   if (!band) return { score: Math.round(WEIGHTS.experience * 0.5), band: null, years, fit: 'unstated' };
   if (!Number.isFinite(years)) {

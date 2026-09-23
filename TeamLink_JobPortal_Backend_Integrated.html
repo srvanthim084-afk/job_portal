@@ -28001,6 +28001,494 @@ table.data td .tl-af b{white-space:normal}
   };
 
   /* ------------------------------------------------------------------ *
+   * 18. Naukri applications, imported from the recruiter's inbox
+   *
+   * The recruiter's Applications screen gets one button. Behind it:
+   * connect the mailbox Naukri replies to, sync it, and deal with the
+   * handful of emails the system will not guess at.
+   *
+   * Everything else happens without anybody pressing anything - the
+   * server reads the connected mailboxes on a timer. The button exists
+   * for "it should be there by now" and for the queue.
+   *
+   * No screen is replaced and no module is added: this is a button in an
+   * existing panel head, a line under an existing table cell, and a
+   * modal in the prototype's own modal chrome.
+   * ------------------------------------------------------------------ */
+
+  TL.intake = {};
+
+  function intakeModalShell(title, body) {
+    if (typeof window.fcrModal === 'function') {
+      window.fcrModal(
+        '<div class="fcr-modal-head"><h3>' + esc(title) + '</h3>' +
+        '<button class="btn btn-ghost btn-sm" onclick="fcrCloseModal()">✕</button></div>' +
+        '<div class="fcr-modal-body" id="tlIntakeBody">' + body + '</div>');
+      return;
+    }
+    // The modal helper lives on the Find Candidates screen; elsewhere,
+    // fall back to the prototype's own modal if there is one.
+    if (typeof window.openModal === 'function') window.openModal(title, body);
+  }
+
+  var INTAKE_STATUS = {
+    processed: 'Imported', needs_mapping: 'Needs a requirement',
+    needs_review: 'Needs review', ignored: 'Not an application',
+    duplicate: 'Already imported', failed: 'Failed', new: 'New',
+  };
+
+  /** The Import from Mail screen. */
+  TL.intake.open = function () {
+    TL.intake.lastMessage = '';
+    intakeModalShell('Import from Mail',
+      '<div class="req-note">Loading the connected mailboxes…</div>');
+    TL.intake.refresh();
+  };
+
+  TL.intake.refresh = function () {
+    return Promise.all([
+      api.get('/intake/mailboxes'),
+      api.get('/intake/queue'),
+    ]).then(function (out) {
+      var boxes = out[0].mailboxes || [];
+      var queue = out[1].queue || [];
+      var counts = out[1].counts || {};
+      var body = document.getElementById('tlIntakeBody');
+      if (!body) return;
+
+      var jobs = (DATA.jobs || []).filter(function (j) {
+        return j.status === 'open' && !j.paused && !j.archived;
+      });
+
+      body.innerHTML =
+        // ---- the mailboxes -------------------------------------------
+        '<div style="font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;' +
+        'color:var(--text-soft);margin-bottom:6px">Connected mailboxes</div>' +
+        (boxes.length
+          ? boxes.map(function (b) {
+              var ok = b.status === 'connected';
+              return '<div class="fcr-modal-row"><span><b>' + esc(b.address) + '</b> ' +
+                '<span class="badge ' + (ok ? 'badge-ok' : 'badge-neutral') + '">' +
+                esc(ok ? 'Connected' : 'Not configured') + '</span>' +
+                '<div style="font-size:12px;color:var(--text-soft)">' +
+                esc(b.provider) + (b.recruiterName ? ' · ' + esc(b.recruiterName) : '') +
+                (b.lastSyncAt ? ' · last read ' + new Date(b.lastSyncAt).toLocaleString('en-GB') : ' · never read') +
+                (b.autoSync ? ' · syncing automatically' : ' · automatic sync off') +
+                (b.missingConfig && b.missingConfig.length
+                  ? '<br><span style="color:var(--warn-600)">Set on the server: ' +
+                    esc(b.missingConfig.join(', ')) + '</span>'
+                  : '') +
+                (b.lastError ? '<br><span style="color:var(--bad-600)">' + esc(b.lastError) + '</span>' : '') +
+                '</div></span>' +
+                '<button class="btn btn-primary btn-sm" onclick="TL.intake.sync(\'' + esc(b.id) + '\')">Sync now</button>' +
+                '</div>';
+            }).join('')
+          : '<div style="font-size:13px;color:var(--text-soft)">No mailbox is connected yet.</div>') +
+
+        // ---- connect one ---------------------------------------------
+        '<div class="panel" style="padding:12px;margin-top:12px">' +
+        '<div style="font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;' +
+        'color:var(--text-soft);margin-bottom:8px">Connect the inbox Naukri replies to</div>' +
+        '<div class="fgroup"><label>Email address</label>' +
+        '<input id="tlIntakeAddr" placeholder="kiran@teamlink.com"></div>' +
+        '<div class="fgroup"><label>Provider</label><select id="tlIntakeProvider">' +
+        '<option value="mock">Demo inbox (sample Naukri emails)</option>' +
+        '<option value="imap">IMAP (most company mailboxes)</option>' +
+        '<option value="gmail">Gmail</option>' +
+        '<option value="outlook">Outlook</option>' +
+        '</select></div>' +
+        '<div class="req-note" style="font-size:12px">The password or token is never entered here. ' +
+        'It is read from the server’s environment, keyed on the address — connect the ' +
+        'mailbox and TeamLink will tell you exactly which variable to set.</div>' +
+        '<div style="margin-top:10px"><button class="btn btn-primary btn-sm" onclick="TL.intake.connect()">Connect mailbox</button></div>' +
+        '</div>' +
+
+        // ---- the queue ------------------------------------------------
+        '<div style="font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;' +
+        'color:var(--text-soft);margin:14px 0 6px">Needs a recruiter ' +
+        '<span class="badge badge-neutral">' + queue.length + '</span></div>' +
+        (queue.length
+          ? queue.map(function (m) {
+              var p = m.parsed || {};
+              return '<div class="fcr-modal-row"><span><b>' + esc(p.name || m.subject || 'Unknown') + '</b> ' +
+                '<span class="badge badge-warn">' + esc(INTAKE_STATUS[m.status] || m.status) + '</span>' +
+                '<div style="font-size:12px;color:var(--text-soft)">' +
+                (p.email ? esc(p.email) + ' · ' : '') + (p.phone ? esc(p.phone) + ' · ' : '') +
+                (p.appliedRole ? 'applied for ' + esc(p.appliedRole) + ' · ' : '') +
+                esc(m.reason || '') + '</div></span>' +
+                (m.status === 'needs_mapping'
+                  ? '<span style="display:flex;gap:6px;align-items:center">' +
+                    '<select id="tlMap_' + esc(m.id) + '">' +
+                    jobs.map(function (j) {
+                      return '<option value="' + esc(j.id) + '">' + esc(j.title) +
+                             (j.location ? ' · ' + esc(j.location) : '') + '</option>';
+                    }).join('') + '</select>' +
+                    '<button class="btn btn-primary btn-sm" onclick="TL.intake.map(\'' + esc(m.id) + '\')">Map</button>' +
+                    '</span>'
+                  : '<button class="btn btn-ghost btn-sm" onclick="TL.intake.ignore(\'' + esc(m.id) + '\')">Not an application</button>') +
+                '</div>';
+            }).join('')
+          : '<div style="font-size:13px;color:var(--text-soft)">Nothing waiting — every email either imported or was ignored.</div>') +
+
+        '<div id="tlIntakeOut" style="margin-top:12px">' + (TL.intake.lastMessage || '') + '</div>' +
+        '<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">' +
+        '<button class="btn btn-primary" onclick="TL.intake.sync()">Sync every mailbox now</button>' +
+        '<button class="btn btn-ghost" onclick="fcrCloseModal()">Close</button>' +
+        '</div>';
+    }).catch(function (err) {
+      var body = document.getElementById('tlIntakeBody');
+      if (body) body.innerHTML = '<div class="req-note">' + esc(err.message || 'Unavailable.') + '</div>';
+    });
+  };
+
+  function intakeOut(html) {
+    // Remembered, because the refresh that follows an action rebuilds the
+    // modal - and a result that disappears the instant it is produced is
+    // the same as no result at all.
+    TL.intake.lastMessage = html || '';
+    var el = document.getElementById('tlIntakeOut');
+    if (el) el.innerHTML = html;
+  }
+
+  TL.intake.connect = function () {
+    var addr = ((document.getElementById('tlIntakeAddr') || {}).value || '').trim();
+    var provider = (document.getElementById('tlIntakeProvider') || {}).value || 'mock';
+    if (!addr) { intakeOut('<div class="req-note">Enter the email address first.</div>'); return; }
+
+    api.post('/intake/mailboxes', { address: addr, provider: provider, autoSync: true })
+      .then(function (r) {
+        var m = r.mailbox;
+        intakeOut('<div class="req-note" style="background:var(--ok-100);color:var(--ok-600)">' +
+          esc(m.address) + ' connected.' +
+          (m.missingConfig && m.missingConfig.length
+            ? ' Before it can be read, set these on the server: <b>' +
+              esc(m.missingConfig.join(', ')) + '</b>.'
+            : ' TeamLink will read it automatically from now on.') +
+          '</div>');
+        return TL.intake.refresh();
+      })
+      .catch(function (err) {
+        intakeOut('<div class="req-note">' + esc(err.message || 'That mailbox could not be connected.') + '</div>');
+      });
+  };
+
+  TL.intake.sync = function (mailboxId) {
+    intakeOut('<div class="req-note">Reading the mailbox…</div>');
+    return api.post('/intake/sync', mailboxId ? { mailboxId: mailboxId } : {})
+      .then(function (r) {
+        var lines = (r.synced || []).map(function (s) {
+          if (s.error) {
+            return '<div><b>' + esc(s.mailbox || s.mailboxId) + '</b>: ' +
+              esc(s.message || s.error) +
+              (s.missing ? ' (set ' + esc((s.missing || []).join(', ')) + ')' : '') + '</div>';
+          }
+          return '<div><b>' + esc(s.mailbox) + '</b>: read ' + s.seen + ', imported ' + s.imported +
+            (s.needsMapping ? ', ' + s.needsMapping + ' awaiting a requirement' : '') +
+            (s.needsReview ? ', ' + s.needsReview + ' needing review' : '') +
+            (s.ignored ? ', ' + s.ignored + ' ignored' : '') +
+            (s.duplicates ? ', ' + s.duplicates + ' already seen' : '') + '</div>';
+        }).join('');
+
+        intakeOut('<div class="req-note" style="background:var(--ok-100);color:var(--ok-600)">' + lines + '</div>');
+        if (typeof window.toast === 'function' && r.imported) {
+          window.toast(r.imported + ' application' + (r.imported === 1 ? '' : 's') + ' imported', '📥');
+        }
+        return refresh().then(function () { return TL.intake.refresh(); });
+      })
+      .catch(function (err) {
+        intakeOut('<div class="req-note">' + esc(err.message || 'The sync failed.') + '</div>');
+      });
+  };
+
+  TL.intake.map = function (messageId) {
+    var sel = document.getElementById('tlMap_' + messageId);
+    var jobId = sel ? sel.value : '';
+    if (!jobId) return;
+    api.post('/intake/messages/' + encodeURIComponent(messageId) + '/map', { jobId: jobId })
+      .then(function (r) {
+        intakeOut('<div class="req-note" style="background:var(--ok-100);color:var(--ok-600)">' +
+          esc(r.reference ? 'Application ' + r.reference + ' created.' : (r.reason || 'Mapped.')) + '</div>');
+        return refresh().then(function () { return TL.intake.refresh(); });
+      })
+      .catch(function (err) {
+        intakeOut('<div class="req-note">' + esc(err.message || 'That could not be mapped.') + '</div>');
+      });
+  };
+
+  TL.intake.ignore = function (messageId) {
+    api.post('/intake/messages/' + encodeURIComponent(messageId) + '/ignore', {})
+      .then(function () { return TL.intake.refresh(); })
+      .catch(function (err) { say(err); });
+  };
+
+  /** The activity timeline for one application, and its messages. */
+  TL.intake.timeline = function (applicationId) {
+    intakeModalShell('Application activity', '<div class="req-note">Loading…</div>');
+    Promise.all([
+      api.get('/intake/timeline?applicationId=' + encodeURIComponent(applicationId)),
+      api.get('/intake/applications/' + encodeURIComponent(applicationId) + '/communications'),
+    ]).then(function (out) {
+      var timeline = out[0].timeline || [];
+      var comms = out[1].communications || [];
+      var body = document.getElementById('tlIntakeBody');
+      if (!body) return;
+
+      body.innerHTML =
+        '<div style="font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;' +
+        'color:var(--text-soft);margin-bottom:6px">Activity</div>' +
+        (timeline.length
+          ? timeline.map(function (t) {
+              return '<div style="display:flex;gap:10px;padding:6px 0;border-bottom:1px solid var(--line)">' +
+                '<span style="font-size:12px;color:var(--text-soft);white-space:nowrap;min-width:150px">' +
+                new Date(t.at).toLocaleString('en-GB') + '</span>' +
+                '<span style="font-size:13px">' + esc(t.detail || t.type) + '</span></div>';
+            }).join('')
+          : '<div style="font-size:13px;color:var(--text-soft)">Nothing recorded yet.</div>') +
+
+        '<div style="font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;' +
+        'color:var(--text-soft);margin:14px 0 6px">Communication history</div>' +
+        (comms.length
+          ? '<table class="data" style="width:100%"><thead><tr><th>When</th><th>Channel</th>' +
+            '<th>To</th><th>Status</th></tr></thead><tbody>' +
+            comms.map(function (c) {
+              return '<tr><td style="font-size:12px;white-space:nowrap">' +
+                new Date(c.at).toLocaleString('en-GB') + '</td><td>' + esc(c.channel) + '</td>' +
+                '<td style="font-size:12px">' + esc(c.to || '—') + '</td>' +
+                '<td><span class="badge ' +
+                (c.status === 'sent' || c.status === 'delivered' ? 'badge-ok'
+                  : c.status === 'failed' ? 'badge-bad' : 'badge-neutral') + '">' +
+                esc(c.status) + '</span>' +
+                (c.error ? '<div style="font-size:11px;color:var(--bad-600)">' + esc(c.error) + '</div>' : '') +
+                '</td></tr>';
+            }).join('') + '</tbody></table>'
+          : '<div style="font-size:13px;color:var(--text-soft)">Nothing sent yet.</div>') +
+
+        '<div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">' +
+        '<button class="btn btn-primary btn-sm" onclick="TL.intake.resend(\'' + esc(applicationId) + '\')">Send the registration link again</button>' +
+        '<button class="btn btn-ghost btn-sm" onclick="fcrCloseModal()">Close</button></div>' +
+        '<div id="tlIntakeOut" style="margin-top:10px"></div>';
+    }).catch(function (err) {
+      var body = document.getElementById('tlIntakeBody');
+      if (body) body.innerHTML = '<div class="req-note">' + esc(err.message || 'Unavailable.') + '</div>';
+    });
+  };
+
+  TL.intake.resend = function (applicationId) {
+    api.post('/intake/applications/' + encodeURIComponent(applicationId) + '/resend', {})
+      .then(function (r) {
+        intakeOut('<div class="req-note" style="background:var(--ok-100);color:var(--ok-600)">' +
+          Object.keys(r.sent || {}).map(function (k) { return esc(k + ': ' + r.sent[k]); }).join(' · ') +
+          (r.newPasswordIssued ? '<br>A new temporary password was issued.' : '') + '</div>');
+      })
+      .catch(function (err) {
+        intakeOut('<div class="req-note">' + esc(err.message || 'That could not be sent.') + '</div>');
+      });
+  };
+
+  /* ---- the button, in the panel that is already there ------------- */
+
+  /**
+   * Put "Import from Mail" in the Applications panel head, and show each
+   * application's TL-APP reference under the candidate's name.
+   *
+   * Done after render because both live inside the prototype's own
+   * closure, which has no seam to override. Idempotent, and it never
+   * throws into a render.
+   */
+  function enhanceApplications() {
+    var heads = document.querySelectorAll('.panel-head');
+    for (var i = 0; i < heads.length; i++) {
+      var head = heads[i];
+      var h2 = head.querySelector('h2');
+      if (!h2 || !/all applications/i.test(h2.textContent || '')) continue;
+      if (head.querySelector('[data-tl-intake]')) continue;
+
+      var btn = document.createElement('button');
+      btn.className = 'btn btn-primary btn-sm';
+      btn.textContent = '📥 Import from Mail';
+      btn.title = 'Import Naukri applications from the recruiter mailbox';
+      btn.setAttribute('data-tl-intake', '1');
+      btn.onclick = function () { TL.intake.open(); };
+      btn.style.marginLeft = 'auto';
+      head.appendChild(btn);
+    }
+
+    // The application reference, where a recruiter is already looking.
+    var byId = Object.create(null);
+    (DATA.applications || []).forEach(function (a) {
+      if (a.reference) byId[a.candidateId + '|' + a.jobId] = a;
+    });
+
+    var rows = document.querySelectorAll('table.data tbody tr');
+    for (var r = 0; r < rows.length; r++) {
+      var row = rows[r];
+      if (row.querySelector('[data-tl-ref]')) continue;
+      var onclick = (row.cells[0] && row.cells[0].getAttribute('onclick')) || '';
+      var m = /candidate-profile\?id=([^']+)/.exec(onclick);
+      if (!m) continue;
+
+      var app = null;
+      var keys = Object.keys(byId);
+      for (var k = 0; k < keys.length; k++) {
+        if (keys[k].indexOf(m[1] + '|') === 0) { app = byId[keys[k]]; break; }
+      }
+      if (!app) continue;
+
+      var tag = document.createElement('div');
+      tag.setAttribute('data-tl-ref', '1');
+      tag.style.cssText = 'font-size:11px;color:var(--text-soft);margin-top:2px';
+      tag.textContent = app.reference + (app.importMethod === 'recruiter_email' ? ' · from mail' : '');
+      row.cells[0].appendChild(tag);
+    }
+  }
+
+  /**
+   * A candidate row must never read "undefined".
+   *
+   * personCell() builds its subtitle as `location · experience`, which is
+   * fine for a profile somebody filled in and wrong for one imported from
+   * an email that did not mention either - the cell then literally says
+   * "undefined · 6 years". The original is called unchanged and only the
+   * missing halves are removed, so nothing else about the cell moves.
+   */
+  /**
+   * A missing match score is an em dash, not "undefined%".
+   *
+   * The pipeline reads `a.matchScore` straight into the score badge, and
+   * an application created before scoring existed - or by any route that
+   * did not set one - rendered the word "undefined" at the recruiter.
+   * Nothing is invented to fill the gap: an unscored application says so.
+   */
+  /**
+   * A horizontal scrollbar above a wide table, as well as below it.
+   *
+   * A table that scrolls sideways puts its scrollbar at the bottom, which
+   * on a long list means scrolling down past every row to reach it, using
+   * it, and scrolling back up to read the header you were trying to
+   * reach. A second bar above the header solves it without changing the
+   * table at all.
+   *
+   * The two are the same scroll position: a thin strip holding a spacer
+   * the width of the table's content, with each one following the other.
+   * It appears only when the table actually overflows, so nothing changes
+   * on a table that fits.
+   */
+  function addTopScrollbars() {
+    var wraps = document.querySelectorAll('.tbl-wrap, .fcr-table-wrap, .table-scroll');
+    for (var i = 0; i < wraps.length; i++) {
+      var wrap = wraps[i];
+      var overflows = wrap.scrollWidth > wrap.clientWidth + 2;
+      var existing = wrap.previousElementSibling;
+      var bar = existing && existing.classList
+        && existing.classList.contains('tl-scroll-top') ? existing : null;
+
+      if (!overflows) {
+        // The table fits now - a bar with nothing to scroll is clutter.
+        if (bar) bar.remove();
+        continue;
+      }
+
+      if (!bar) {
+        bar = document.createElement('div');
+        bar.className = 'tl-scroll-top';
+        bar.appendChild(document.createElement('div'));
+        wrap.parentNode.insertBefore(bar, wrap);
+
+        // Each one follows the other. The guard stops the two scroll
+        // handlers bouncing the position back and forth.
+        var syncing = false;
+        bar.addEventListener('scroll', function (b, w) {
+          return function () {
+            if (syncing) return;
+            syncing = true;
+            w.scrollLeft = b.scrollLeft;
+            syncing = false;
+          };
+        }(bar, wrap), { passive: true });
+
+        wrap.addEventListener('scroll', function (b, w) {
+          return function () {
+            if (syncing) return;
+            syncing = true;
+            b.scrollLeft = w.scrollLeft;
+            syncing = false;
+          };
+        }(bar, wrap), { passive: true });
+      }
+
+      // The spacer is what gives the strip something to scroll.
+      bar.firstChild.style.width = wrap.scrollWidth + 'px';
+      bar.scrollLeft = wrap.scrollLeft;
+    }
+  }
+
+  // The stylesheet is the prototype's; this adds one rule to it rather
+  // than restyling anything that already exists.
+  (function () {
+    if (document.getElementById('tl-scroll-top-style')) return;
+    var css = document.createElement('style');
+    css.id = 'tl-scroll-top-style';
+    css.textContent =
+      '.tl-scroll-top{overflow-x:auto;overflow-y:hidden;height:12px;' +
+      'border-bottom:1px solid var(--line, #e5e7eb)}' +
+      '.tl-scroll-top>div{height:1px}' +
+      '.tl-scroll-top::-webkit-scrollbar{height:10px}' +
+      '.tl-scroll-top::-webkit-scrollbar-thumb{background:var(--line,#cbd5e1);border-radius:6px}' +
+      '.tl-scroll-top::-webkit-scrollbar-thumb:hover{background:var(--text-soft,#94a3b8)}';
+    (document.head || document.documentElement).appendChild(css);
+  }());
+
+  var realRenderForTables = window.render;
+  window.render = function () {
+    var out = realRenderForTables.apply(this, arguments);
+    // After the paint, when the table has a width to measure.
+    try {
+      requestAnimationFrame(function () {
+        try { addTopScrollbars(); } catch (e) { /* never break a render */ }
+      });
+    } catch (e) { /* no rAF: not worth failing over */ }
+    return out;
+  };
+
+  window.addEventListener('resize', function () {
+    try { addTopScrollbars(); } catch (e) {}
+  });
+
+  var realRenderForScores = window.render;
+  window.render = function () {
+    var out = realRenderForScores.apply(this, arguments);
+    try {
+      var badges = document.querySelectorAll('span.score');
+      for (var i = 0; i < badges.length; i++) {
+        var b = badges[i];
+        if (!/^\s*(undefined|null|NaN)%/.test(b.textContent || '')) continue;
+        b.textContent = '\u2014';
+        b.title = 'Not scored yet';
+      }
+    } catch (e) { /* never break a render */ }
+    return out;
+  };
+
+  var prevPersonCell = window.personCell;
+  if (typeof prevPersonCell === 'function') {
+    window.personCell = function () {
+      var html = prevPersonCell.apply(this, arguments);
+      return String(html)
+        .replace(/>undefined\s*\u00b7\s*undefined</g, '><')
+        .replace(/>undefined\s*\u00b7\s*/g, '>')
+        .replace(/\s*\u00b7\s*undefined</g, '<')
+        .replace(/>undefined</g, '><');
+    };
+  }
+
+  var realRenderForIntake = window.render;
+  window.render = function () {
+    var out = realRenderForIntake.apply(this, arguments);
+    try { enhanceApplications(); } catch (e) { /* never break a render */ }
+    return out;
+  };
+
+  /* ------------------------------------------------------------------ *
    * 12. Session expiry
    *
    * A cookie can expire while the tab is open. Rather than letting the

@@ -83,7 +83,19 @@ export default function authRoutes() {
     setSessionCookie(res, token, expires);
     issueCsrfToken(res);
 
-    res.json({ session: { role: session.role, id: session.profileId, email: session.email } });
+    // A candidate whose account was created by the importer signs in with
+    // a password we generated. The screen has to know to ask them to
+    // choose their own, so this is part of the session rather than
+    // something the portal has to go and look up.
+    const temp = await withUser(session, async (c) => (await c.query(
+      `select must_change_password from users where id=$1`, [session.userId])).rows[0]);
+
+    res.json({
+      session: {
+        role: session.role, id: session.profileId, email: session.email,
+        mustChangePassword: !!(temp && temp.must_change_password),
+      },
+    });
   }));
 
   r.post('/auth/register', loginLimiter, wrap(async (req, res) => {
@@ -154,7 +166,11 @@ export default function authRoutes() {
       const ok = await bcrypt.compare(current, rows[0].password_hash);
       if (!ok) throw new ApiError(400, CODES.VALIDATION_FAILED, 'Current password is incorrect.');
       const hash = await bcrypt.hash(next, config.bcryptRounds);
-      await c.query(`update users set password_hash=$1 where id=$2`, [hash, req.session.userId]);
+      // Choosing their own password is what makes the temporary one
+      // temporary.
+      await c.query(
+        `update users set password_hash=$1, must_change_password=false, password_set_at=now()
+          where id=$2`, [hash, req.session.userId]);
       // every other session for this user is invalidated
       await c.query(`delete from sessions where user_id=$1 and token_hash <> $2`,
         [req.session.userId, req.session.tokenHash]);

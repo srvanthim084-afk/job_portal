@@ -15,9 +15,11 @@ import { z } from 'zod';
 import { withUser } from '../db.js';
 import { wrap, badRequest, notFound, forbidden, ApiError, CODES } from '../errors.js';
 import { requireAuth, requireRole } from '../auth.js';
-import { toApplication, toNotification } from '../shapes.js';
+import { toApplication, toNotification, toJob, toCandidate } from '../shapes.js';
 import { dispatchInterviewNotifications } from '../notify/dispatch.js';
 import { dispatchEvent } from '../notify/events.js';
+import { matchCandidate } from '../ai/match.js';
+import { screenApplication } from '../ai/screening.js';
 
 const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
 
@@ -128,12 +130,33 @@ export default function applicationRoutes() {
         : j.employment_type === 'Internship' ? 'internship'
         : (j.posting_kind || 'job');
 
+      /*
+       * Score the application here rather than accepting one from the
+       * client.
+       *
+       * The pipeline shows an "AI Match" percentage for every row, and a
+       * client-supplied number is not a match score - it is whatever the
+       * browser felt like sending. Without one the column rendered
+       * `undefined%` for every candidate who applied through the portal,
+       * which is worse than a wrong number because it looks broken.
+       *
+       * Same engine as the job alerts, so the percentage a recruiter sees
+       * on an application means the same thing as the one on an alert.
+       */
+      let matchScore = null;
+      try {
+        const cand = (await c.query(`select * from candidates where id=$1`, [candidateId])).rows[0];
+        if (cand) matchScore = matchCandidate(toJob(j), toCandidate(cand)).score;
+      } catch (err) {
+        console.error('[applications] could not score the match:', err.message);
+      }
+
       const ins = await c.query(
         `insert into applications
            (id, job_id, candidate_id, stage, match_score, source, posting_type, resume_path)
          values ($1,$2,$3,'applied',$4,$5,$6,$7)
          returning *`,
-        [id, body.jobId, candidateId, body.matchScore ?? null,
+        [id, body.jobId, candidateId, matchScore,
          body.source || 'portal', postingType, body.resumePath || null]);
 
       // Same transaction — see the header note.
@@ -183,6 +206,20 @@ export default function applicationRoutes() {
       notify = { error: 'dispatch_failed' };
     }
 
+    // ---- AI screening, for everybody, straight away -----------------
+    //
+    // Screening used to be a button a recruiter pressed per application,
+    // so the ones nobody pressed it on sat unscored and looked identical
+    // to the ones already reviewed. Every application is screened the
+    // moment it exists; what the recruiter decides is what to do with the
+    // score.
+    let screening = null;
+    try {
+      screening = await screenApplication(out.application.id, { actor: 'system' });
+    } catch (err) {
+      console.error('[applications] screening failed:', err.message);
+    }
+
     // ---- close the loop on the alert that brought them --------------
     //
     // Keyed on job and candidate rather than on the alert id, so an
@@ -222,7 +259,7 @@ export default function applicationRoutes() {
       aiInvite = { error: 'dispatch_failed' };
     }
 
-    res.status(201).json({ ...out, notify, aiInterview: aiInvite });
+    res.status(201).json({ ...out, notify, aiInterview: aiInvite, screening });
   }));
 
   /**

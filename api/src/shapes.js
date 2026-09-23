@@ -93,6 +93,11 @@ export function toCandidate(r) {
     // Strings, not undefined - the Resume page prints these directly, and
     // a candidate with neither showed the word "undefined" on screen.
     exp: r.exp == null ? '' : r.exp,
+    // The NUMBER, not just the label. Its absence made every consumer
+    // that asks "how many years" - job matching, screening, the calling
+    // agent's plan - treat a candidate with four years on file as having
+    // no experience at all.
+    expYears: r.exp_years == null ? undefined : Number(r.exp_years),
     ctc: nz(r.ctc),
     expectedCtc: numOrU(r.expected_ctc),
     noticePeriod: nz(r.notice_period),
@@ -182,6 +187,12 @@ export function toApplication(r) {
           : r.applied_on).slice(0, 10)
       : undefined,
     appliedAt: r.applied_at ? new Date(r.applied_at).toISOString() : undefined,
+    // TL-APP-2026-00452: what a candidate quotes on the phone and what
+    // every message about this application carries. The row id is
+    // internal; this is the one people use.
+    reference: nz(r.reference),
+    importMethod: nz(r.import_method),
+    importedAt: r.imported_at ? new Date(r.imported_at).toISOString() : undefined,
     // When the AI interview window closes. Two days from the invitation,
     // set by the database, so the screen states a deadline rather than
     // counting down from whenever the tab happened to open.

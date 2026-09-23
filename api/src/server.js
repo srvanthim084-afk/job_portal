@@ -17,7 +17,7 @@ import { existsSync } from 'node:fs';
 import { config, assertConfig } from './config.js';
 import { createApp } from './app.js';
 import { getPool, assertUnprivileged, closePool } from './db.js';
-import { startDeadlineSweep } from './notify/interview-deadline.js';
+import { stopBackgroundWork } from './app.js';
 
 async function main() {
   assertConfig();
@@ -48,11 +48,13 @@ async function main() {
   // Reminders for AI interviews that are running out of time, and an
   // expiry notice for those that ran out. Idempotent: each message is
   // recorded and never sent twice.
-  const stopSweep = startDeadlineSweep();
+  // The schedulers start inside createApp(), so every way of running the
+  // application gets them - including the development server, which does
+  // not go through this file.
 
   const shutdown = async (signal) => {
     console.log(`\n${signal} received, shutting down`);
-    stopSweep();
+    stopBackgroundWork();
     server.close(async () => { await closePool(); process.exit(0); });
     // don't hang forever on a stuck connection
     setTimeout(() => process.exit(1), 10_000).unref();

@@ -27,6 +27,49 @@ import uploadRoutes from './routes/uploads.js';
 import aiInterviewRoutes from './routes/ai-interviews.js';
 import aiCallingRoutes from './routes/ai-calling.js';
 import spreadsheetRoutes from './routes/spreadsheet.js';
+import intakeRoutes from './routes/intake.js';
+import { startDeadlineSweep } from './notify/interview-deadline.js';
+import { startIntakeSync } from './intake/scheduler.js';
+import { startScreeningSweep } from './ai/screening.js';
+
+/*
+ * The background work belongs to the APPLICATION, not to one entry point.
+ *
+ * Both schedulers were started in server.js, which the development server
+ * does not use - it builds the app itself. So in development the AI
+ * interview reminders and the Naukri mailbox sync never ran at all, and
+ * "it syncs automatically" was true only in production. Starting them
+ * here means every way of running the app gets them.
+ *
+ * Guarded, because the test suite creates several apps in one process and
+ * three mailbox syncs racing each other is not a test of anything.
+ */
+let backgroundStarted = false;
+const backgroundStops = [];
+
+export function stopBackgroundWork() {
+  while (backgroundStops.length) {
+    const stop = backgroundStops.pop();
+    try { stop(); } catch { /* already stopped */ }
+  }
+  backgroundStarted = false;
+}
+
+function startBackgroundWork(logger) {
+  if (backgroundStarted) return;
+  if (process.env.DISABLE_BACKGROUND_WORK === 'true') {
+    logger.log?.('[background] disabled by DISABLE_BACKGROUND_WORK');
+    return;
+  }
+  backgroundStarted = true;
+  try {
+    backgroundStops.push(startDeadlineSweep());
+    backgroundStops.push(startIntakeSync());
+    backgroundStops.push(startScreeningSweep());
+  } catch (err) {
+    console.error('[background] could not start:', err.message);
+  }
+}
 
 export function createApp({ serveStatic = null, logger = console } = {}) {
   const app = express();
@@ -165,6 +208,11 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', uploadRoutes());
   app.use('/api', aiInterviewRoutes());
   app.use('/api', aiCallingRoutes());
+  app.use('/api', intakeRoutes());
+
+  // Reminders for interviews running out of time, and the recruiter
+  // mailboxes read on a timer.
+  startBackgroundWork(logger);
 
   app.use('/api', (_req, _res, next) =>
     next(new ApiError(404, CODES.NOT_FOUND, 'That endpoint does not exist.')));
