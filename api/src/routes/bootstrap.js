@@ -20,6 +20,7 @@
 import { Router } from 'express';
 import { withUser } from '../db.js';
 import { wrap } from '../errors.js';
+import { config } from '../config.js';
 import {
   toCompany, toJob, toCandidate, toApplication,
   toInterview, toOffer, toNotification, toPerson, attachPrimary,
@@ -140,6 +141,36 @@ export default function bootstrapRoutes() {
    * Set SHOW_LOGIN_HINTS=false to switch the whole thing off for a real
    * production deployment.
    */
+  /**
+   * GET /api/notification-settings
+   *
+   * The EmailJS service id, template id and public key - client-safe by
+   * EmailJS's own design, and exactly what the Notification Settings
+   * screen asks every recruiter to type in by hand and then keeps in
+   * their own browser. Served from the server's configuration so there
+   * is one answer for everybody.
+   *
+   * The private key is NOT here and never goes to a browser.
+   */
+  r.get('/notification-settings', wrap(async (req, res) => {
+    res.json({
+      emailjs: {
+        serviceId: config.emailjs.serviceId || '',
+        templateId: config.emailjs.templateId || '',
+        publicKey: config.emailjs.publicKey || '',
+        configured: !!(config.emailjs.serviceId && config.emailjs.templateId
+                       && config.emailjs.publicKey),
+      },
+      serverEmail: {
+        transport: config.smtpHost ? 'smtp'
+          : (config.emailjs.serviceId ? 'emailjs'
+            : (config.emailApiKey ? 'api' : 'none')),
+        from: config.emailFrom || '',
+        fromName: config.emailFromName || '',
+      },
+    });
+  }));
+
   r.get('/login-hints', wrap(async (req, res) => {
     if (process.env.SHOW_LOGIN_HINTS === 'false') {
       return res.json({ candidate: [], recruiter: [], client: [], bde: [], admin: [] });

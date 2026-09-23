@@ -100,20 +100,92 @@ function fromHeader() {
   return `"${name}" <${addr}>`;
 }
 
+/** Is EmailJS set up well enough to send? */
+export function emailjsReady() {
+  const e = config.emailjs;
+  const missing = [];
+  if (!e.serviceId) missing.push('EMAILJS_SERVICE_ID');
+  if (!e.templateId) missing.push('EMAILJS_TEMPLATE_ID');
+  if (!e.publicKey) missing.push('EMAILJS_PUBLIC_KEY');
+  return { ready: missing.length === 0, missing };
+}
+
+/**
+ * Send one message through EmailJS.
+ *
+ * The template on the EmailJS side owns the layout, so what travels is
+ * the CONTENT: who it is for, the subject, and both the HTML and plain
+ * bodies. Several common variable names are sent for each value because
+ * every EmailJS template names them differently and a template that
+ * silently renders an empty email is the worst outcome here.
+ */
+async function sendViaEmailJS({ to, subject, html, text }) {
+  const e = config.emailjs;
+  const body = {
+    service_id: e.serviceId,
+    template_id: e.templateId,
+    user_id: e.publicKey,
+    template_params: {
+      to_email: to,
+      to_name: to,
+      email: to,
+      reply_to: config.emailFrom || to,
+      from_name: config.emailFromName || 'TeamLink',
+      subject,
+      title: subject,
+      message: text || '',
+      message_html: html || '',
+      content: text || '',
+    },
+  };
+  // Only needed when the account has "API calls" in strict mode; sending
+  // it when it is not set would fail the request outright.
+  if (e.privateKey) body.accessToken = e.privateKey;
+
+  const res = await postJson(e.apiUrl, { body });
+  if (!res.ok) {
+    // EmailJS answers with plain text, and its messages are precise -
+    // "The template ID not found", "API calls are disabled for non-browser
+    // applications" - so they are passed through rather than flattened.
+    return {
+      status: 'failed',
+      provider: 'emailjs',
+      error: `HTTP ${res.status}: ${String(res.text || '').slice(0, 300)}`,
+    };
+  }
+  return { status: 'sent', provider: 'emailjs', ref: null };
+}
+
 export const emailProvider = {
   channel: 'email',
-  // Either transport counts as configured; SMTP takes precedence.
-  configured: () => !!(config.emailFrom &&
-    ((config.smtpHost && config.smtpUser && config.smtpPass) || config.emailApiKey)),
+  // Any transport counts as configured. SMTP first, then EmailJS, then a
+  // generic HTTP API - a deployment only has to set up one of them.
+  configured: () => !!(
+    (config.emailFrom && config.smtpHost && config.smtpUser && config.smtpPass)
+    || emailjsReady().ready
+    || (config.emailFrom && config.emailApiKey)),
 
   async send({ to, subject, html, text }) {
     if (!this.configured()) {
+      const ejs = emailjsReady();
       return NOT_CONFIGURED('email',
         config.smtpHost
           ? 'EMAIL_SMTP_USER / EMAIL_SMTP_PASS are not set'
-          : 'EMAIL_SMTP_HOST or EMAIL_API_KEY is not set');
+          : ejs.missing.length && ejs.missing.length < 3
+            ? `EmailJS is partly configured - still missing ${ejs.missing.join(', ')}`
+            : 'EMAIL_SMTP_HOST, EMAILJS_* or EMAIL_API_KEY is not set');
     }
     if (!to) return { status: 'failed', provider: 'email', error: 'no email address' };
+
+    // EmailJS before the generic HTTP API, because a deployment that has
+    // set it up has said which one it means.
+    if (!config.smtpHost && emailjsReady().ready) {
+      try {
+        return await sendViaEmailJS({ to, subject, html, text });
+      } catch (err) {
+        return { status: 'failed', provider: 'emailjs', error: err.message };
+      }
+    }
 
     if (config.smtpHost) {
       try {

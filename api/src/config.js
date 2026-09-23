@@ -65,6 +65,29 @@ export const config = {
   // its own is read as a robot, and treated accordingly.
   emailFromName: process.env.EMAIL_FROM_NAME || '',
 
+  /* ---- EmailJS -------------------------------------------------- *
+   *
+   * EmailJS is designed to be called from a browser, which is why its
+   * "public key" is public. Calling it from the server instead buys three
+   * things the browser path cannot: one configuration for everybody
+   * rather than per-browser localStorage, a delivery row for every send
+   * alongside every other channel, and the same message templates the
+   * rest of the system uses.
+   *
+   * The service id, template id and public key are all client-safe by
+   * EmailJS's own design, so they are also served to the screens that
+   * still send from the browser. The PRIVATE key is not, and is only ever
+   * read here.
+   * ---------------------------------------------------------------- */
+  emailjs: {
+    serviceId:  process.env.EMAILJS_SERVICE_ID || '',
+    templateId: process.env.EMAILJS_TEMPLATE_ID || '',
+    publicKey:  process.env.EMAILJS_PUBLIC_KEY || '',
+    // Needed only when the EmailJS account has API calls in strict mode.
+    privateKey: process.env.EMAILJS_PRIVATE_KEY || '',
+    apiUrl: process.env.EMAILJS_API_URL || 'https://api.emailjs.com/api/v1.0/email/send',
+  },
+
   // IVR. An automated call placed to the candidate at each stage,
   // alongside the written channels. IVR_FROM is the number the call
   // appears to come from. 'ivr' is the channel name notification_deliveries
