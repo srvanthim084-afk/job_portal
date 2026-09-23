@@ -35,6 +35,7 @@ import { startIntakeSync } from './intake/scheduler.js';
 import { startScreeningSweep } from './ai/screening.js';
 import { startRetrySweep } from './notify/retry.js';
 import { startJoiningSweep } from './notify/joining.js';
+import { startProfileNudgeSweep } from './notify/profile-nudge.js';
 
 /*
  * The background work belongs to the APPLICATION, not to one entry point.
@@ -72,6 +73,7 @@ function startBackgroundWork(logger) {
     backgroundStops.push(startScreeningSweep());
     backgroundStops.push(startRetrySweep());
     backgroundStops.push(startJoiningSweep());
+    backgroundStops.push(startProfileNudgeSweep());
   } catch (err) {
     console.error('[background] could not start:', err.message);
   }

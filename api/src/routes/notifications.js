@@ -330,6 +330,19 @@ If you are reading this, notification email is working end to end.`,
     }));
 
   /**
+   * POST /api/notifications/profile-nudge
+   *
+   * Run the profile reminders now. Admin only, and it answers with what
+   * it did - including how many were CONSIDERED, which is the number
+   * that says whether the rule is too tight or too loose.
+   */
+  r.post('/notifications/profile-nudge', requireAuth(), requireRole('admin'),
+    wrap(async (req, res) => {
+      const { sendProfileNudges } = await import('../notify/profile-nudge.js');
+      res.json(await sendProfileNudges({ limit: 100 }));
+    }));
+
+  /**
    * POST /api/notifications/retry
    *
    * Go back for everyone a provider outage skipped.

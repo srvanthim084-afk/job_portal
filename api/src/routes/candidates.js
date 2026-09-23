@@ -367,6 +367,32 @@ export default function candidateRoutes() {
       });
     }));
 
+  /**
+   * GET /api/candidates/:id/nudges
+   *
+   * Has this person been prodded about their profile, and how often?
+   *
+   * The count is what makes "twice, ever" checkable from outside - a
+   * rule nobody can inspect is a rule nobody can trust.
+   */
+  r.get('/candidates/:id/nudges', requireAuth(), wrap(async (req, res) => {
+    if (req.session.role === 'candidate' && req.session.profileId !== req.params.id) {
+      throw forbidden('You can only see your own messages.');
+    }
+    const rows = await withUser(req.session, async (c) => (await c.query(
+      `select kind, status, to_address, error, created_at
+         from candidate_nudges where candidate_id = $1
+        order by created_at desc limit 20`, [req.params.id])).rows);
+
+    res.json({
+      nudges: rows.map((n) => ({
+        kind: n.kind, status: n.status, to: n.to_address || undefined,
+        error: n.error || undefined,
+        at: new Date(n.created_at).toISOString(),
+      })),
+    });
+  }));
+
   /** Recruiter notes. RLS keeps one recruiter's notes from another's view. */
   r.post('/candidates/:id/comments', requireAuth(), requireRole('recruiter', 'admin'),
     wrap(async (req, res) => {

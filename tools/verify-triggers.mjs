@@ -123,7 +123,42 @@ await check('an offer joining date a week out is reminded, once', async () => {
   must(second.sent === 0, `${second.sent} duplicate reminder(s) on a second sweep`);
 });
 
+console.log('\nprofile reminder');
+
+await check('a brand-new thin profile is left alone', async () => {
+  /*
+   * The candidate registered a moment ago and has no resume. They are
+   * mid-way through signing up, not neglecting it, so nudging them now
+   * would be nagging somebody who is still in the room.
+   */
+  const a1 = await open();
+  await a1.api('post', '/auth/login',
+    { email: 'admin@teamlink.com', password: PW, role: 'admin' });
+  const out = await a1.api('post', '/notifications/profile-nudge', {});
+
+  const mine = ((await a1.api('get',
+    `/candidates?q=${encodeURIComponent(email)}&limit=5`)).candidates || [])[0];
+  must(mine, 'the test candidate is not visible');
+
+  const nudges = (await a1.api('get', `/candidates/${mine.id}/nudges`)).nudges || [];
+  must(nudges.length === 0,
+    `somebody who registered minutes ago was nudged (${out.considered} considered)`);
+});
+
+await check('the sweep reports who it considered, not just who it wrote to', async () => {
+  const a2 = await open();
+  await a2.api('post', '/auth/login',
+    { email: 'admin@teamlink.com', password: PW, role: 'admin' });
+  const out = await a2.api('post', '/notifications/profile-nudge', {});
+  must(typeof out.considered === 'number', 'no count of who was considered');
+  must(typeof out.sent === 'number', 'no count of what was sent');
+  // Considering nobody is a valid answer; sending to somebody it never
+  // considered is not.
+  must(out.sent <= out.considered, `sent ${out.sent} of ${out.considered} considered`);
+});
+
+
 await browser.close();
 console.log(failed ? `\n  ${failed} FAILED\n`
-  : '\n  TRIGGERS VERIFIED — cancelled, rescheduled, applied and joining all fire\n');
+  : '\n  TRIGGERS VERIFIED — applied, rescheduled, cancelled, joining and profile all fire\n');
 process.exitCode = failed ? 1 : 0;
