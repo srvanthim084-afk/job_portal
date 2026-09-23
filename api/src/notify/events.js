@@ -78,6 +78,17 @@ async function send(session, event, ctx) {
     try {
       result = await provider.send({
         to,
+        // Named variables for a template that greets by name or quotes
+        // the role; the composed body is sent regardless.
+        vars: {
+          to_name: meta.name,
+          candidate_name: meta.name,
+          job_title: meta.job_title,
+          company_name: meta.company_name,
+          application_id: ctx.reference || meta.application_id,
+          portal_link: portalUrl,
+          interview_link: ctx.interviewUrl || portalUrl,
+        },
         subject: messages.email.subject,
         html: messages.email.html,
         // A call gets the spoken line; the others get their own form.

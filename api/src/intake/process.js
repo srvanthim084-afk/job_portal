@@ -374,6 +374,17 @@ async function notifyCandidate({ candidate, job, applicationId, reference, crede
       try {
         result = await providers[channel].send({
           to,
+          vars: {
+            to_name: candidate.name,
+            candidate_name: candidate.name,
+            job_title: job.title,
+            company_name: job.company_name || job.companyName || '',
+            application_id: reference,
+            portal_link: portalUrl,
+            interview_link: portalUrl,
+            login_email: credentials ? credentials.email : '',
+            temporary_password: credentials ? credentials.password : '',
+          },
           subject: messages.email.subject,
           html: messages.email.html,
           text: channel === 'sms' ? messages.sms

@@ -178,6 +178,13 @@ async function sendAlert({ matchId, job, cand, match }) {
       try {
         result = await providers[channel].send({
           to,
+          vars: {
+            to_name: cand.name,
+            candidate_name: cand.name,
+            job_title: job.title,
+            company_name: job.companyName || '',
+            portal_link: jobUrl,
+          },
           subject: messages.email.subject,
           html: messages.email.html,
           text: channel === 'sms' ? messages.sms

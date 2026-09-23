@@ -119,7 +119,7 @@ export function emailjsReady() {
  * every EmailJS template names them differently and a template that
  * silently renders an empty email is the worst outcome here.
  */
-async function sendViaEmailJS({ to, subject, html, text }) {
+async function sendViaEmailJS({ to, subject, html, text, vars = {} }) {
   const e = config.emailjs;
   const body = {
     service_id: e.serviceId,
@@ -142,6 +142,13 @@ async function sendViaEmailJS({ to, subject, html, text }) {
       // the person receiving it.
       name: config.emailFromName || 'TeamLink',
       time: new Date().toLocaleString('en-GB'),
+
+      // Whatever the caller knows about this particular message, so a
+      // template can greet somebody by name and quote the role rather
+      // than only printing the composed body. Sent last so a caller can
+      // override a default above.
+      ...Object.fromEntries(
+        Object.entries(vars).filter(([, v]) => v !== undefined && v !== null && v !== '')),
     },
   };
   // Only needed when the account has "API calls" in strict mode; sending
@@ -171,7 +178,7 @@ export const emailProvider = {
     || emailjsReady().ready
     || (config.emailFrom && config.emailApiKey)),
 
-  async send({ to, subject, html, text }) {
+  async send({ to, subject, html, text, vars }) {
     if (!this.configured()) {
       const ejs = emailjsReady();
       return NOT_CONFIGURED('email',
@@ -187,7 +194,7 @@ export const emailProvider = {
     // set it up has said which one it means.
     if (!config.smtpHost && emailjsReady().ready) {
       try {
-        return await sendViaEmailJS({ to, subject, html, text });
+        return await sendViaEmailJS({ to, subject, html, text, vars });
       } catch (err) {
         return { status: 'failed', provider: 'emailjs', error: err.message };
       }

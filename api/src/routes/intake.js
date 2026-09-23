@@ -331,6 +331,14 @@ export default function intakeRoutes() {
           try {
             result = await providers[channel].send({
               to,
+              vars: {
+                to_name: ctx.name,
+                candidate_name: ctx.name,
+                job_title: ctx.job_title,
+                company_name: ctx.company_name || '',
+                application_id: ctx.reference,
+                portal_link: `${config.publicOrigin.replace(/\/$/, '')}/#/login/candidate`,
+              },
               subject: messages.email.subject,
               html: messages.email.html,
               text: channel === 'sms' ? messages.sms
