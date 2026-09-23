@@ -315,6 +315,21 @@ If you are reading this, notification email is working end to end.`,
     }));
 
   /**
+   * POST /api/notifications/joining-sweep
+   *
+   * Run the joining reminders now, rather than waiting for the timer.
+   *
+   * Admin only. It exists for the same reason the retry has one: after
+   * a joining date is corrected, waiting six hours to find out whether
+   * the reminder goes is not a workable way to check.
+   */
+  r.post('/notifications/joining-sweep', requireAuth(), requireRole('admin'),
+    wrap(async (req, res) => {
+      const { sendJoiningReminders } = await import('../notify/joining.js');
+      res.json(await sendJoiningReminders());
+    }));
+
+  /**
    * POST /api/notifications/retry
    *
    * Go back for everyone a provider outage skipped.

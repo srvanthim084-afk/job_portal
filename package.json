@@ -22,7 +22,7 @@
     "migrate:status": "node tools/migrate.mjs --status",
     "verify:search": "node tools/verify-search.mjs",
     "verify:interaction": "node tools/verify-interaction.mjs",
-    "verify:live": "npm run verify:interaction && npm run verify:search && npm run verify:candidate && npm run verify:resume && npm run verify:interview && npm run verify:notifications && npm run verify:easy-apply && npm run verify:source && npm run verify:deadline && npm run verify:matching && npm run verify:calling && npm run verify:calling-ui && npm run verify:spreadsheet && npm run verify:intake && npm run verify:intake-ui && npm run verify:screening && npm run verify:retry && npm run verify:channels-ui && npm run verify:invite && npm run verify:isolation",
+    "verify:live": "npm run verify:interaction && npm run verify:search && npm run verify:candidate && npm run verify:resume && npm run verify:interview && npm run verify:notifications && npm run verify:easy-apply && npm run verify:source && npm run verify:deadline && npm run verify:matching && npm run verify:calling && npm run verify:calling-ui && npm run verify:spreadsheet && npm run verify:intake && npm run verify:intake-ui && npm run verify:screening && npm run verify:retry && npm run verify:channels-ui && npm run verify:invite && npm run verify:isolation && npm run verify:triggers",
     "verify:stack": "node tools/verify-stack.mjs",
     "watch": "node tools/watch.mjs",
     "watch:push": "node tools/watch.mjs --push",
@@ -52,6 +52,7 @@
     "verify:channels-ui": "node tools/verify-channels-ui.mjs",
     "verify:invite": "node tools/verify-invite.mjs",
     "verify:isolation": "node tools/verify-isolation.mjs",
+    "verify:triggers": "node tools/verify-triggers.mjs",
     "send:credentials": "node tools/send-credentials.mjs",
     "intake:cleanup": "node tools/intake-cleanup.mjs",
     "intake:connect": "node tools/connect-mailbox.mjs"

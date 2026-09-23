@@ -34,6 +34,7 @@ import { startDeadlineSweep } from './notify/interview-deadline.js';
 import { startIntakeSync } from './intake/scheduler.js';
 import { startScreeningSweep } from './ai/screening.js';
 import { startRetrySweep } from './notify/retry.js';
+import { startJoiningSweep } from './notify/joining.js';
 
 /*
  * The background work belongs to the APPLICATION, not to one entry point.
@@ -70,6 +71,7 @@ function startBackgroundWork(logger) {
     backgroundStops.push(startIntakeSync());
     backgroundStops.push(startScreeningSweep());
     backgroundStops.push(startRetrySweep());
+    backgroundStops.push(startJoiningSweep());
   } catch (err) {
     console.error('[background] could not start:', err.message);
   }

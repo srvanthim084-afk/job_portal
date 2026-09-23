@@ -5044,376 +5044,56 @@
    *   candidate portal  the other one is inside a dropdown, behind a
    *                     click -> the chip stays, the menu entry goes
    */
-  function isHomeText(el) {
-    return /^\s*(🏠\s*)?Home\s*$/.test(el.textContent || '');
-  }
-
-  function oneHomePublic() {
-    var header = document.querySelector('.site-header-inner');
-    if (!header) return;
-
-    /*
-     * The chip is mounted by a script of its own, usually after this
-     * runs. Waiting once is what makes the fix land on a first paint,
-     * which is the only paint most people see.
-     */
-    var chip = header.querySelector('[data-tlhome]');
-    if (!chip) {
-      if (header.getAttribute('data-tl-onehome-wait') === '1') return;
-      header.setAttribute('data-tl-onehome-wait', '1');
-      setTimeout(function () {
-        try { oneHomePublic(); } catch (e) { /* never break a render */ }
-      }, 120);
-      return;
-    }
-
-    var links = header.querySelectorAll('a, button');
-    for (var i = 0; i < links.length; i++) {
-      var el = links[i];
-      if (el === chip || chip.contains(el)) continue;
-      if (!isHomeText(el)) continue;
-      // Hidden behind a menu is not a duplicate - it is the case the
-      // chip exists for.
-      var box = el.getBoundingClientRect();
-      if (box.width <= 0 || box.height <= 0) continue;
-      chip.parentNode.removeChild(chip);
-      return;
-    }
-  }
-
   /**
-   * The dashboard topbar keeps no Home chip.
+   * No injected Home chip, in any portal.
    *
-   * It was injected into every header, and on the recruiter, admin and
-   * client dashboards it sits in the breadcrumb - beside "Analytics ·
-   * Administrator · TeamLink Platform" - where the sidebar is already
-   * the way back and the crumb is a label, not a control.
+   * A script adds one to every header it can find. It was asked for
+   * once and is now unwanted everywhere: on the public site the nav
+   * already has Home, in the candidate portal the brand goes home, and
+   * on a dashboard the sidebar is the way back while the breadcrumb is
+   * a label rather than a control.
+   *
+   * Removed by its OWN marker rather than by guessing at a container.
+   * The earlier version looked inside `.dash-main .topbar`, which is
+   * not where the chip ends up on every screen - so it survived on the
+   * admin pages and the request had to be made twice.
+   *
+   * The script re-adds it on its own schedule, so this runs on every
+   * paint rather than once.
    */
-  function oneHomeDash() {
-    var bar = document.querySelector('.dash-main .topbar');
-    if (!bar) return;
-    var chip = bar.querySelector('[data-tlhome]');
-    if (chip && chip.parentNode) chip.parentNode.removeChild(chip);
+  /*
+   * A stylesheet, because removing the node loses a race.
+   *
+   * The injector re-mounts the chip after its own paint and on a timer,
+   * so deleting it during a render meant it came straight back - the
+   * count stayed at one on every screen however many times it was
+   * removed. A rule cannot be outrun: whatever re-adds the element, it
+   * is never displayed.
+   *
+   * The node is removed as well, so nothing is left in the layout or
+   * reachable by keyboard.
+   */
+  (function () {
+    if (document.getElementById('tl-no-home-style')) return;
+    var css = document.createElement('style');
+    css.id = 'tl-no-home-style';
+    css.textContent = '[data-tlhome],.tl-home{display:none !important}';
+    (document.head || document.documentElement).appendChild(css);
+  }());
+
+  function noHomeChip() {
+    var chips = document.querySelectorAll('[data-tlhome]');
+    for (var i = 0; i < chips.length; i++) {
+      var c = chips[i];
+      if (c.parentNode) c.parentNode.removeChild(c);
+    }
   }
 
   function oneHome() {
-    oneHomePublic();
-    oneHomeDash();
+    noHomeChip();
 
-    var header = document.querySelector('header.cp-hd');
-    if (!header) return;
-
-    /*
-     * The chip is mounted by a script of its own, on its own schedule -
-     * usually AFTER this runs. Returning early when it is not there yet
-     * meant the duplicate was never removed on a first paint, which is
-     * the only paint most people see. So: try now, and once more after
-     * the chip has had a chance to appear.
-     */
-    if (!header.querySelector('[data-tlhome]')) {
-      if (header.getAttribute('data-tl-onehome-wait') === '1') return;
-      header.setAttribute('data-tl-onehome-wait', '1');
-      setTimeout(function () {
-        try { oneHome(); } catch (e) { /* never break a render */ }
-      }, 120);
-      return;
-    }
-
-    var buttons = header.querySelectorAll('.cp-menu button');
-    for (var i = 0; i < buttons.length; i++) {
-      var b = buttons[i];
-      if (!isHomeText(b)) continue;
-      b.parentNode.removeChild(b);
-      return;
-    }
-  }
-
-  var realRenderForFirstLook = window.render;
-  window.render = function () {
-    var out = realRenderForFirstLook.apply(this, arguments);
-    try { resumeFirst(); } catch (e) { /* never break a render */ }
-    try { oneHome(); } catch (e) { /* never break a render */ }
-    return out;
-  };
-
-  // The header and the form are both painted by the prototype's own
-  // post-paint hook on some routes, so run there too.
-  var prevAfterRenderFirstLook = window.afterRender;
-  window.afterRender = function () {
-    var out = typeof prevAfterRenderFirstLook === 'function'
-      ? prevAfterRenderFirstLook.apply(this, arguments) : undefined;
-    try { resumeFirst(); } catch (e) {}
-    try { oneHome(); } catch (e) {}
-    return out;
-  };
-
-  /* ------------------------------------------------------------------ *
-   * 21. Reaching a candidate from the row you are already looking at
-   *
-   * The screens had "Notify Candidate" and "Open WhatsApp", and both were
-   * narrower than they looked:
-   *
-   *   - they appeared only on certain stages, so a candidate sitting at
-   *     "Applied" could not be contacted from the list at all
-   *   - "Open WhatsApp" opened wa.me in a new tab. That is the
-   *     recruiter's own WhatsApp, typing by hand, with nothing recorded
-   *     against the application - so "what did we send this person"
-   *     had no answer
-   *   - there was no SMS anywhere, and no way to call from a row
-   *
-   * Four buttons on every candidate and application row: email, SMS,
-   * WhatsApp, call. They go through the SAME dispatch as every automatic
-   * message, so each one is recorded per channel against the application
-   * and shows up in the communication log next to the automatic ones.
-   *
-   * WHAT THEY SEND IS NOT FREE TEXT. Each button sends the message for
-   * the stage the application is actually at, from the same table the
-   * retry sweep uses. A recruiter cannot compose arbitrary mail to a
-   * candidate from a table row, which is deliberate: the templates are
-   * where the wording is reviewed.
-   *
-   * The buttons are appended to the row's existing actions cell. No
-   * column is added, nothing is moved, and the prototype's own buttons
-   * are left exactly where they were.
-   * ------------------------------------------------------------------ */
-
-  TL.reach = {};
-
-  var REACH = [
-    { key: 'email',    icon: '✉️', label: 'Email' },
-    { key: 'sms',      icon: '💬', label: 'SMS' },
-    { key: 'whatsapp', icon: '🟢', label: 'WhatsApp' },
-    { key: 'call',     icon: '📞', label: 'AI call' },
-  ];
-
-  /** The candidate a table row is about, from the link the row already has. */
-  function reachCandidateOf(row) {
-    var cells = row.querySelectorAll('[onclick]');
-    for (var i = 0; i < cells.length; i++) {
-      var m = /candidate-profile\?id=([^'"&]+)/.exec(cells[i].getAttribute('onclick') || '');
-      if (m) return m[1];
-    }
-    return null;
-  }
-
-  /**
-   * The application a row is about.
-   *
-   * The applications list has one row PER APPLICATION, so a candidate
-   * with three of them gets three rows - and resolving by candidate gave
-   * all three the same score, the same reference and the same buttons.
-   * Every row read as if it were the same application.
-   *
-   * So the row's own id is used when it names one, which the existing
-   * handlers already carry (`runAIScreeningForApp('app_x')` and the
-   * like). The candidate's most recent is the fallback, for the
-   * candidate lists where a row is a person rather than an application.
-   */
-  function reachApplicationOfRow(row, candidateId) {
-    var marks = row.querySelectorAll('[onclick], [data-tl-reach]');
-    for (var i = 0; i < marks.length; i++) {
-      var hay = (marks[i].getAttribute('onclick') || '')
-        + ' ' + (marks[i].getAttribute('data-tl-reach') || '');
-      var m = /(app_[A-Za-z0-9]+)/.exec(hay);
-      if (!m) continue;
-      var found = (DATA.applications || []).filter(function (a) { return a.id === m[1]; })[0];
-      if (found) return found;
-    }
-    return reachApplicationOf(candidateId);
-  }
-
-  /** Their most recent application, for a row that is about a person. */
-  function reachApplicationOf(candidateId) {
-    var mine = (DATA.applications || []).filter(function (a) {
-      return a.candidateId === candidateId;
-    });
-    if (!mine.length) return null;
-    mine.sort(function (a, b) {
-      return String(b.appliedAt || '').localeCompare(String(a.appliedAt || ''));
-    });
-    return mine[0];
-  }
-
-  /**
-   * Send the stage message on ONE channel.
-   *
-   * The button reports its own outcome in place - `sent`, `failed`,
-   * `not configured` - because a toast that says "sent" when the
-   * provider refused is how somebody ends up believing a candidate was
-   * told something they were never told.
-   */
-  TL.reach.send = function (applicationId, channel, btn) {
-    var el = btn || document.querySelector(
-      '[data-tl-reach="' + applicationId + ':' + channel + '"]');
-    var before = el ? el.textContent : '';
-    if (el) { el.disabled = true; el.textContent = '…'; }
-
-    api.post('/notifications/applications/' + encodeURIComponent(applicationId) + '/send',
-      { channels: [channel] })
-      .then(function (r) {
-        var status = (r.delivery_status || {})[channel] || 'unknown';
-        if (el) {
-          el.textContent = status === 'sent' || status === 'delivered' ? '✓' : '✗';
-          el.title = status === 'sent' || status === 'delivered'
-            ? 'Sent to ' + (r.to || 'the candidate') + ' — accepted by the provider'
-            : status === 'not_configured'
-              ? channel + ' has no credentials on the server, so nothing was sent'
-              : status === 'skipped_no_address'
-                ? 'No ' + (channel === 'email' ? 'email address' : 'phone number')
-                  + ' for this candidate'
-                : 'The provider refused it';
-          // Back to normal, so the row is usable again rather than stuck
-          // showing the last thing that happened.
-          setTimeout(function () { el.disabled = false; el.textContent = before; }, 2600);
-        }
-        if (typeof window.toast === 'function') {
-          window.toast(status === 'sent' || status === 'delivered'
-            ? channel + ' sent'
-            : channel + ': ' + String(status).replace(/_/g, ' '),
-            status === 'sent' || status === 'delivered' ? '✉️' : '⚠️');
-        }
-      })
-      .catch(function (err) {
-        if (el) { el.disabled = false; el.textContent = before; el.title = err.message; }
-        if (typeof window.toast === 'function') {
-          window.toast(err.message || 'It could not be sent', '⚠️');
-        }
-      });
-  };
-
-  /** The calling agent, on the candidate in this row. */
-  TL.reach.call = function (candidateId) {
-    if (TL.calling && typeof TL.calling.preview === 'function') {
-      TL.calling.preview(candidateId);
-      return;
-    }
-    if (typeof window.toast === 'function') {
-      window.toast('The calling agent is not available on this screen', '⚠️');
-    }
-  };
-
-  function reachButton(spec, candidateId, app, hasPhone, hasEmail) {
-    var b = document.createElement('button');
-    b.className = 'btn btn-ghost btn-sm';
-    b.textContent = spec.icon;
-    b.setAttribute('data-tl-reach', (app ? app.id : candidateId) + ':' + spec.key);
-    b.style.padding = '5px 8px';
-
-    if (spec.key === 'call') {
-      b.title = hasPhone ? 'Call with the AI agent' : 'No mobile number for this candidate';
-      b.disabled = !hasPhone;
-      b.onclick = function (e) { e.stopPropagation(); TL.reach.call(candidateId); };
-      return b;
-    }
-
-    var needs = spec.key === 'email' ? hasEmail : hasPhone;
-    if (!app) {
-      // Every one of these messages is ABOUT an application - its stage,
-      // its deadline, its reference. Without one there is nothing
-      // truthful to send, so the button says so rather than failing.
-      b.disabled = true;
-      b.title = spec.label + ': this candidate has not applied to anything yet, '
-        + 'so there is no update to send';
-      return b;
-    }
-    if (!needs) {
-      b.disabled = true;
-      b.title = 'No ' + (spec.key === 'email' ? 'email address' : 'phone number')
-        + ' for this candidate';
-      return b;
-    }
-
-    b.title = spec.label + ' — sends the update for "' + (app.stage || 'their stage')
-      + '", recorded against the application';
-    b.onclick = function (e) {
-      e.stopPropagation();
-      TL.reach.send(app.id, spec.key, b);
-    };
-    return b;
-  }
-
-  function enhanceRows() {
-    var rows = document.querySelectorAll('table.data tbody tr');
-    for (var r = 0; r < rows.length; r++) {
-      var row = rows[r];
-      /*
-       * The actions cell, whatever it is called.
-       *
-       * Applications rows use `.row-actions`; the Candidates table uses a
-       * plain last cell holding the same kind of buttons. Looking only
-       * for the class meant the buttons appeared on one screen and not
-       * the other, which is worse than appearing on neither.
-       */
-      var actions = row.querySelector('.row-actions');
-      if (!actions) {
-        var last = row.cells && row.cells[row.cells.length - 1];
-        if (last && last.querySelector('button')) actions = last;
-      }
-      if (!actions || actions.querySelector('[data-tl-reach]')) continue;
-
-      var candidateId = reachCandidateOf(row);
-      if (!candidateId) continue;
-
-      var cand = DATA.candidateById ? DATA.candidateById(candidateId) : null;
-      if (!cand) continue;
-
-      var app = reachApplicationOfRow(row, candidateId);
-      var hasPhone = !!(cand.phone && String(cand.phone).trim());
-      var hasEmail = !!(cand.email && String(cand.email).trim());
-
-      var group = document.createElement('span');
-      group.style.display = 'inline-flex';
-      group.style.gap = '4px';
-      group.setAttribute('data-tl-reach-group', '1');
-      for (var i = 0; i < REACH.length; i++) {
-        group.appendChild(reachButton(REACH[i], candidateId, app, hasPhone, hasEmail));
-      }
-      actions.appendChild(group);
-    }
-  }
-
-  var realRenderForReach = window.render;
-  window.render = function () {
-    var out = realRenderForReach.apply(this, arguments);
-    try { enhanceRows(); } catch (e) { /* never break a render */ }
-    return out;
-  };
-
-  var prevAfterRenderReach = window.afterRender;
-  window.afterRender = function () {
-    var out = typeof prevAfterRenderReach === 'function'
-      ? prevAfterRenderReach.apply(this, arguments) : undefined;
-    try { enhanceRows(); } catch (e) {}
-    return out;
-  };
-
-  /* ------------------------------------------------------------------ *
-   * 22. No demo accounts on the login page
-   *
-   * The login page carried a "Quick demo login - sample recruiter
-   * accounts" panel listing every recruiter by name and employer, and
-   * above it a box printing an email and password in plain text.
-   *
-   * Both were prototype conveniences, and on a real deployment both are
-   * faults:
-   *
-   *   - the list is account enumeration. Anybody who opens the login
-   *     page learns who works here and which company each one handles,
-   *     without signing in to anything. It also grows: a recruiter added
-   *     today is advertised there tomorrow, which is how a real account
-   *     ended up in a list headed "sample accounts".
-   *   - the credentials box prints a working password on a public page.
-   *
-   * The panels are removed. The form itself is untouched - same fields,
-   * same button, same layout - because the way in is unchanged.
-   * ------------------------------------------------------------------ */
-  function hideDemoLogin() {
-    var boxes = document.querySelectorAll('.auth-form .demo-box, .demo-box');
-    for (var i = 0; i < boxes.length; i++) {
-      var box = boxes[i];
-      if (!box.closest || !box.closest('.auth-form')) continue;
-      box.remove();
-    }
+    // The prototype's own duplicate, in the candidate profile menu:
+    // with the chip gone this is the only Home, so it stays.
   }
 
   var realRenderForDemoLogin = window.render;
@@ -5663,69 +5343,14 @@
     return isFinite(n) && n > 0 ? n : null;
   }
 
-  /**
-   * Wrap the existing suggester.
+  /*
+   * The suggester is left alone.
    *
-   * The prototype's own suggestions are kept and come first; the
-   * localities are appended, each carrying its distance in `sub` - the
-   * field the renderer ALREADY prints beside every row. No markup
-   * changes, and the list looks exactly as it did.
+   * It was wrapped to add localities with distances to the flat list -
+   * which a later layer stands down anyway, and which duplicated what
+   * the panel already shows. Wrapping it now would add rows nothing
+   * renders.
    */
-  function tlLocalitiesWrapSuggest() {
-    if (!window.TL_LOC || typeof window.TL_LOC.suggest !== 'function') return false;
-    if (window.TL_LOC.__tlLocalities) return true;
-
-    var original = window.TL_LOC.suggest;
-
-    window.TL_LOC.suggest = function (q, limit) {
-      var base = [];
-      try { base = original.call(this, q, limit) || []; } catch (e) { base = []; }
-
-      // The key is not passed in, so the radius comes from whichever
-      // field is open. There is one at a time on screen.
-      var key = window.__tlLocActiveKey || null;
-      var city = tlCityFor(q, key);
-      if (!city) return base;
-
-      var near = tlLocalitiesOf(city, tlRadiusFor(key));
-      if (!near.length) return base;
-
-      var seen = Object.create(null);
-      var out = [];
-      var t = String(q || '').trim().toLowerCase();
-
-      near.forEach(function (x) {
-        // While typing, only offer what the recruiter is actually
-        // typing towards - otherwise one keystroke fills the list with
-        // twenty suburbs.
-        if (t && x.name.toLowerCase().indexOf(t) !== 0
-            && city.toLowerCase().indexOf(t) !== 0
-            && !TL_LOC_PARENT[t]) return;
-        if (seen[x.name.toLowerCase()]) return;
-        seen[x.name.toLowerCase()] = 1;
-        out.push({
-          label: x.name,
-          // The renderer prints this beside the name, unchanged. The
-          // city names its state rather than repeating itself.
-          sub: (x.name === city
-            ? ((window.INDIA_CITY_STATE_MAP || {})[city] || 'India')
-            : city) + ' · ' + x.km + ' KM',
-          val: x.name,
-        });
-      });
-
-      // Anything the prototype found that is not already listed.
-      base.forEach(function (b) {
-        if (seen[String(b.label).toLowerCase()]) return;
-        out.push(b);
-      });
-
-      return out.slice(0, Math.max(limit || 10, near.length + 2));
-    };
-
-    window.TL_LOC.__tlLocalities = true;
-    return true;
-  }
 
   /**
    * The distances the panel offers.
@@ -5773,44 +5398,19 @@
         '$1' + row + '$2');
 
       /*
-       * The localities, in the panel the recruiter is actually looking at.
+       * NO LOCALITY LIST HERE.
        *
-       * Typing does not open the flat suggestion list any more - a later
-       * layer stands it down and opens this tree instead - so the
-       * distances belong here. Same `.tl-row2` checkbox markup as every
-       * district, same tlTreePick handler, so choosing Madhapur behaves
-       * exactly like choosing a district and flows into the existing
-       * candidate filtering untouched.
+       * One was added, and it was a duplicate: the panel already lists
+       * nearby places with their distance - "NEAR PRAKASAM, ANDHRA
+       * PRADESH · 25 places within 100 km" - from data that covers the
+       * whole country, not the six metros a hand-written table could.
+       * Adding a second list meant every place appeared twice, once in
+       * each.
+       *
+       * What is kept from that change is the distance CHOICES below,
+       * which were 25/50/100/150/200 and are now 5/10/15/25/50/100 and
+       * Any Distance. The existing list does the rest, better.
        */
-      var city = tlCityFor(st.q, key);
-      if (city) {
-        var near = tlLocalitiesOf(city, tlRadiusFor(key));
-        var typed = String(st.q || '').trim().toLowerCase();
-        if (typed && city.toLowerCase().indexOf(typed) !== 0) {
-          near = near.filter(function (x) {
-            return x.name.toLowerCase().indexOf(typed) === 0;
-          });
-        }
-        if (near.length) {
-          var picked = (st.tags || []).map(function (t) { return String(t).toLowerCase(); });
-          var group = '<div class="grp"><b>' + esc(city) + ' — areas</b>'
-            + near.map(function (x) {
-                return '<label class="tl-row2" onmousedown="event.preventDefault()">'
-                  + '<input type="checkbox"'
-                  + (picked.indexOf(x.name.toLowerCase()) >= 0 ? ' checked' : '')
-                  + " onchange=\"tlTreePick('" + q(key) + "','" + q(x.name)
-                  + "',this.checked)\">"
-                  + '<span class="nm">' + esc(x.name) + ' — ' + x.km + ' KM</span>'
-                  + '</label>';
-              }).join('')
-            + '</div>';
-
-          // Above the country/region group, so the nearest places are the
-          // first thing on the panel rather than the last.
-          html = html.replace(/(<div class="grp"><b>Country)/, group + '$1');
-        }
-      }
-
       return html;
     };
     window.tlTreeHtml.__tlLocalities = true;
@@ -5841,7 +5441,6 @@
 
   function tlLocalitiesSetUp() {
     if (!tlLocalitiesInstall()) return false;
-    tlLocalitiesWrapSuggest();
     tlLocalitiesWrapField();
     tlLocalitiesWrapKm();
     return true;

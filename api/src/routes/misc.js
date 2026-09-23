@@ -143,6 +143,13 @@ export default function miscRoutes() {
     wrap(async (req, res) => {
       const { status, aiScore, feedback, date, time } = req.body || {};
       const row = await withUser(req.session, async (c) => {
+        // What it was, so the change can be described rather than
+        // guessed at: "rescheduled" only means something against a
+        // previous date.
+        const before = (await c.query(
+          `select * from interviews where id=$1`, [req.params.id])).rows[0];
+        if (!before) throw notFound('That interview no longer exists.');
+
         const sets = [], vals = [];
         if (status)   { vals.push(status);   sets.push(`status=$${vals.length}`); }
         if (date)     { vals.push(date);     sets.push(`scheduled_date=$${vals.length}`); }
@@ -156,9 +163,50 @@ export default function miscRoutes() {
         const upd = await c.query(
           `update interviews set ${sets.join(',')} where id=$${vals.length} returning *`, vals);
         if (!upd.rowCount) throw notFound('That interview no longer exists.');
-        return upd.rows[0];
+        return { before, after: upd.rows[0] };
       });
-      res.json({ interview: toInterview(row) });
+
+      /*
+       * Tell the candidate what changed.
+       *
+       * The status and the time could be edited and nobody was told, so
+       * a cancelled interview stayed in somebody's calendar and a moved
+       * one was attended at the old hour. Two cases are worth a message:
+       *
+       *   cancelled     the interview is off
+       *   rescheduled   still on, at a different date or time
+       *
+       * Anything else - a score, feedback, a no-show recorded after the
+       * fact - is recruiter bookkeeping and is not the candidate's news.
+       */
+      const wasCancelled = row.after.status === 'Cancelled'
+        && row.before.status !== 'Cancelled';
+      const moved = row.after.status !== 'Cancelled'
+        && (String(row.before.scheduled_date || '') !== String(row.after.scheduled_date || '')
+            || String(row.before.scheduled_time || '') !== String(row.after.scheduled_time || ''));
+
+      let delivery;
+      if ((wasCancelled || moved) && row.after.application_id) {
+        const when = (d) => (d
+          ? new Date(d).toLocaleDateString('en-GB',
+              { day: 'numeric', month: 'short', year: 'numeric' })
+          : undefined);
+
+        delivery = await dispatchEvent(req.session,
+          wasCancelled ? 'INTERVIEW_CANCELLED' : 'INTERVIEW_RESCHEDULED', {
+            applicationId: row.after.application_id,
+            candidateId: row.after.candidate_id,
+            jobId: row.after.job_id,
+            // A cancellation quotes the slot that is being cancelled;
+            // a reschedule quotes the new one.
+            interviewDate: when(wasCancelled ? row.before.scheduled_date : row.after.scheduled_date),
+            interviewTime: (wasCancelled ? row.before.scheduled_time : row.after.scheduled_time)
+              || undefined,
+            interviewType: row.after.type || row.after.mode || undefined,
+          });
+      }
+
+      res.json({ interview: toInterview(row.after), delivery: delivery || undefined });
     }));
 
   /* ---------------- offers ---------------- */

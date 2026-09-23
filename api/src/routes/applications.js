@@ -199,6 +199,25 @@ export default function applicationRoutes() {
         candidateId: out.application.candidateId,
         jobId: out.application.jobId,
       });
+
+      /*
+       * Confirm the application itself, when nothing else already has.
+       *
+       * The interview invitation above doubles as a confirmation - it
+       * names the role and says what happens next - so sending
+       * "Application Received" beside it is two emails saying the same
+       * thing a second apart. It goes out only when the invitation did
+       * not, which is the case for a requirement with no AI interview.
+       */
+      const sent = Object.values((notify && notify.delivery_status) || {})
+        .some((st) => st === 'sent' || st === 'delivered');
+      if (!sent) {
+        await dispatchEvent(req.session, 'APPLICATION_SUBMITTED', {
+          applicationId: out.application.id,
+          candidateId: out.application.candidateId,
+          jobId: out.application.jobId,
+        }).catch(() => null);
+      }
     } catch (err) {
       // The application stands regardless. The failure is logged, and the
       // delivery rows (or their absence) are visible on the record.
