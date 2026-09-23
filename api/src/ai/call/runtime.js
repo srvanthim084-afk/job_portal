@@ -37,6 +37,14 @@ export async function loadSettings() {
     (await c.query(`select * from ai_call_settings where id='default'`)).rows[0]);
   if (!row) return { agentName: 'Anu', companyName: 'TeamLink', defaultLanguage: 'en' };
   return {
+    // How a call is PLACED. The credentials that authorise it stay in
+    // the server environment and are never part of this.
+    provider: row.provider || 'not_selected',
+    apiUrl: row.api_url || '',
+    callerId: row.caller_id || '',
+    autoInterviewCalls: !!row.auto_interview_calls,
+    autoReminderCalls: !!row.auto_reminder_calls,
+
     agentName: row.agent_name,
     companyName: row.company_name,
     defaultLanguage: row.default_language,

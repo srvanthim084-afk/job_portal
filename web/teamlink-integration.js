@@ -4769,6 +4769,135 @@
   }
 
   /** Whether calls can actually be placed, and what is missing if not. */
+  /**
+   * Provider Configuration — the fields a recruiter can actually set.
+   *
+   * The screen this replaces had an "API Key / Token" box labelled
+   * "stored locally in this demo only". That is the one field that must
+   * not exist: this page is readable by every recruiter, and a form
+   * taking an API key hands it to anybody who can open the developer
+   * tools. The credential lives in the server environment and the panel
+   * reports only whether it is there.
+   *
+   * Everything else is genuinely a recruiter's to set — which provider,
+   * the number a candidate sees, how often to try, whether calls go out
+   * automatically — and is saved to the SERVER, not to the browser,
+   * which is what the old screen did and why nothing it saved was ever
+   * used to place a call.
+   */
+  function chProviderForm(s, t) {
+    var sel = function (id, label, value, options, hint) {
+      return '<div class="fgroup"><label>' + esc(label) + '</label>'
+        + '<select id="' + id + '" style="width:100%;padding:10px 12px;border-radius:8px;'
+        + 'border:1px solid var(--line);background:var(--card);color:var(--text);font-size:13px">'
+        + options.map(function (o) {
+            return '<option value="' + esc(o[0]) + '"'
+              + (String(value) === String(o[0]) ? ' selected' : '') + '>'
+              + esc(o[1]) + '</option>';
+          }).join('')
+        + '</select>' + (hint ? '<div class="desc">' + esc(hint) + '</div>' : '') + '</div>';
+    };
+    var inp = function (id, label, value, placeholder, hint) {
+      return '<div class="fgroup"><label>' + esc(label) + '</label>'
+        + '<input id="' + id + '" value="' + esc(value == null ? '' : value) + '"'
+        + ' placeholder="' + esc(placeholder || '') + '"'
+        + ' style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--line);'
+        + 'background:var(--card);color:var(--text);font-size:13px">'
+        + (hint ? '<div class="desc">' + esc(hint) + '</div>' : '') + '</div>';
+    };
+    var chk = function (id, label, on, hint) {
+      return '<label style="display:flex;gap:8px;align-items:flex-start;margin:8px 0">'
+        + '<input type="checkbox" id="' + id + '"' + (on ? ' checked' : '') + '>'
+        + '<span><b>' + esc(label) + '</b>'
+        + (hint ? '<div class="desc">' + esc(hint) + '</div>' : '') + '</span></label>';
+    };
+
+    var missing = (t && t.missing) || [];
+    var live = !!(t && t.configured && t.real);
+
+    return '<div class="panel"><div class="panel-head"><div><h2>Provider Configuration</h2>'
+      + '<div class="desc">Which telephony provider places the calls, and how</div></div></div>'
+      + '<div class="panel-body">'
+      + '<div class="review-grid"><div>'
+        + sel('chProvider', 'Provider', s.provider || 'not_selected', [
+            ['not_selected', 'Not selected'],
+            ['local', 'Built-in (rehearsal only — no phone rings)'],
+            ['twilio', 'Twilio'],
+            ['exotel', 'Exotel'],
+          ])
+        + inp('chCallerId', 'Caller ID', s.callerId, '+91XXXXXXXXXX',
+              'The number a candidate sees when the agent rings them')
+        + inp('chRetries', 'Max Retry Attempts', s.retryNoAnswer, '3',
+              'How many times to try again when nobody answers')
+      + '</div><div>'
+        + inp('chApiUrl', 'API URL', s.apiUrl, 'https://api.provider.com/v1',
+              'Only for a provider with a non-standard endpoint')
+        + inp('chRetryMins', 'Retry Interval (minutes)', s.retryIntervalMinutes, '15')
+        + '<div class="fgroup"><label>API Key / Token</label>'
+          + '<div class="req-note" style="margin:0;font-size:12px">'
+          + (missing.length
+            ? 'Set <b>' + esc(missing.join(', ')) + '</b> in the server environment.'
+            : 'Configured on the server.')
+          + ' It is never entered here and never reaches a browser — this page is '
+          + 'readable by every recruiter.</div></div>'
+      + '</div></div>'
+      + chk('chAutoInterview', 'Enable Automatic Interview Calls', s.autoInterviewCalls,
+            live ? 'Calls a candidate when their interview is scheduled.'
+                 : 'No carrier is connected, so this has no effect yet.')
+      + chk('chAutoReminder', 'Enable Automatic Reminder Calls', s.autoReminderCalls,
+            live ? 'Calls a candidate before their interview.'
+                 : 'No carrier is connected, so this has no effect yet.')
+      + '<div style="display:flex;gap:8px;align-items:center;margin-top:12px">'
+        + '<button class="btn btn-primary" id="chSave" onclick="TL.channels.save()">'
+        + 'Save Configuration</button>'
+        + '<span id="chSaved" style="font-size:12.5px;color:var(--text-soft)"></span>'
+      + '</div>'
+      + '</div></div>';
+  }
+
+  /** Collect the form and save it to the server. */
+  TL.channels.save = function () {
+    var val = function (id) {
+      var el = document.getElementById(id);
+      return el ? String(el.value || '').trim() : '';
+    };
+    var on = function (id) {
+      var el = document.getElementById(id);
+      return !!(el && el.checked);
+    };
+    var num = function (id) {
+      var v = Number(val(id));
+      return isFinite(v) && v >= 0 ? v : undefined;
+    };
+
+    var btn = document.getElementById('chSave');
+    var said = document.getElementById('chSaved');
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+
+    api.patch('/ai-calling/settings', {
+      provider: val('chProvider') || undefined,
+      // Sent even when blank, so clearing a caller ID really clears it
+      // rather than silently keeping the old number on a candidate's
+      // phone.
+      callerId: val('chCallerId'),
+      apiUrl: val('chApiUrl'),
+      retryNoAnswer: num('chRetries'),
+      retryIntervalMinutes: num('chRetryMins'),
+      autoInterviewCalls: on('chAutoInterview'),
+      autoReminderCalls: on('chAutoReminder'),
+    }).then(function () {
+      if (btn) { btn.disabled = false; btn.textContent = 'Save Configuration'; }
+      if (said) {
+        said.textContent = 'Saved';
+        setTimeout(function () { said.textContent = ''; }, 2600);
+      }
+      TL.channels.render(true);
+    }).catch(function (err) {
+      if (btn) { btn.disabled = false; btn.textContent = 'Save Configuration'; }
+      if (said) said.textContent = err.message || 'It could not be saved';
+    });
+  };
+
   function chTelephonyPanel(t) {
     /*
      * "Configured" and "a phone will ring" are different questions.
@@ -4891,6 +5020,7 @@
       host2.innerHTML =
         chChannelsPanel(list) +
         (calling ? chTelephonyPanel(calling.telephony) : '') +
+        (s ? chProviderForm(s, calling && calling.telephony) : '') +
         (s ? chAgentPanel(s) + chConsentPanel(s) + chCallingPanel(s) : '') +
         (s
           ? '<div class="req-note">These settings are shared by everybody who ' +

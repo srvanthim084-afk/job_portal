@@ -459,7 +459,14 @@ export default function aiCallingRoutes() {
     }));
 
   /** PATCH /api/ai-calling/settings — admin only, enforced in the database. */
-  r.patch('/ai-calling/settings', requireAuth(), requireRole('admin'), wrap(async (req, res) => {
+  /*
+   * Recruiters may set the operational fields; the database decides the
+   * rest. A non-admin patch that touches disclosure or recording leaves
+   * those exactly as they were rather than failing, so saving the
+   * provider and the caller ID still works from the recruiter screen.
+   */
+  r.patch('/ai-calling/settings', requireAuth(), requireRole('recruiter', 'bde', 'admin'),
+    wrap(async (req, res) => {
     await withUser(req.session, (c) => c.query(
       `select ai_call_settings_update($1::jsonb,$2)`,
       [JSON.stringify(req.body || {}), req.session.userId || 'admin']));
