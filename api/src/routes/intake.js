@@ -15,6 +15,7 @@ import { withUser } from '../db.js';
 import { wrap, badRequest, notFound, ApiError } from '../errors.js';
 import { requireAuth, requireRole } from '../auth.js';
 import { syncMailbox, syncAll, mapMessage, temporaryPassword } from '../intake/process.js';
+import { SOURCES } from '../intake/source.js';
 import { mailboxReadiness, verifyMailbox, SAMPLE_EMAILS } from '../intake/mailbox.js';
 import { hashPassword } from '../auth.js';
 import { providers } from '../notify/providers.js';
@@ -346,8 +347,36 @@ export default function intakeRoutes() {
       const results = out.flatMap((x) => x.results || []);
       const countStatus = (st) => results.filter((r) => r.status === st).length;
 
+      /*
+       * Which boards this reader has actually been proven against.
+       *
+       * Naukri's shapes were built from real emails out of a live
+       * mailbox. Shine's were written from its documented format and no
+       * Shine message has ever been seen, so a recruiter pressing Sync
+       * Shine and getting nothing has two possible explanations - Shine
+       * sent nothing, or the reader does not recognise what Shine sends
+       * - and no way to tell them apart. Saying so is the difference
+       * between a quiet afternoon and a silent failure.
+       *
+       * `unverified` is a NOTE, not a warning to dismiss: the path runs,
+       * the parsing is the same labelled-block reader Naukri's
+       * per-candidate mails already use, and the first real Shine email
+       * either confirms it or says exactly what to change.
+       */
+      const boards = Object.values(SOURCES)
+        .filter((src) => board === 'all' || src.id === board)
+        .map((src) => ({ id: src.id, label: src.label, verified: src.verified }));
+      const unverified = boards.filter((x) => !x.verified).map((x) => x.label);
+
       res.json({
         board,
+        boards,
+        note: unverified.length && !results.some((r) => unverified
+          .some((l) => r.source === l.toLowerCase()))
+          ? `No ${unverified.join(' or ')} email has been read here yet, so that `
+            + 'format has not been confirmed against a real message. Forward one '
+            + 'to this mailbox if a response is missing.'
+          : undefined,
         synced: out,
         emailsRead: tally((x) => x.seen),
         naukri: results.filter((r) => r.source === 'naukri').length,
