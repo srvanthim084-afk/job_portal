@@ -25,6 +25,7 @@ import { dispatchEvent } from '../notify/events.js';
 import { retryFailedDeliveries } from '../notify/retry.js';
 import { providers, providerMissing, providerTransport } from '../notify/providers.js';
 import { config } from '../config.js';
+import { emailLayout } from '../notify/layout.js';
 
 function parse(schema, body) {
   const out = schema.safeParse(body || {});
@@ -278,11 +279,28 @@ export function notificationRoutes() {
           joining_date: '01 Oct 2026',
           portal_login_url: `${base}/#/login/candidate`,
         },
-        text: `This is a test of the "${t.label}" notification.`
-          + ` Template: ${t.template_id || 'the default from the server environment'}.`,
-        html: `<p>This is a test of the <b>${t.label}</b> notification.</p>`
-          + `<p style="color:#666;font-size:13px">Template: `
-          + `${t.template_id || 'the default from the server environment'}</p>`,
+        text: `This is a test of the "${t.label}" notification, sent from TeamLink.`
+          + `
+
+If you are reading this, notification email is working end to end.`,
+        // The same shell every real message uses, so the test shows what
+        // a candidate will actually receive rather than a bare line of
+        // text that says nothing about the design.
+        html: emailLayout({
+          title: `${t.label} — test message`,
+          preheader: `A test of the ${t.label} notification from TeamLink.`,
+          greeting: 'Hello,',
+          body: `This is a test of the "${t.label}" notification, sent from TeamLink.`
+            + `
+
+If you are reading this, notification email is working end to end.`,
+          facts: [
+            ['Notification', t.label],
+            ['Template', t.template_id || 'the default from the server environment'],
+            ['Sent to', b.to],
+          ],
+          cta: { label: 'Open the candidate portal', url: `${base}/#/login/candidate` },
+        }),
       });
 
       res.json({

@@ -7,6 +7,8 @@
  * breaks when each provider formats its own copy of the date.
  */
 
+import { emailLayout } from './layout.js';
+
 const esc = (s) => String(s ?? '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;');
@@ -394,12 +396,34 @@ export function buildEventMessages(event, c) {
       text: `Hi ${c.candidateName},\n\n${text}\n\n`
         + (ref ? `${ref}\n\n` : '')
         + `${c.portalUrl}\n\n— TeamLink`,
-      html:
-        `<p>Hi ${esc(c.candidateName)},</p>` +
-        `<p>${esc(text).replace(/\n/g, '<br>')}</p>` +
-        (ref ? `<p style="color:#666;font-size:13px">${esc(ref)}</p>` : '') +
-        `<p><a href="${esc(c.portalUrl)}">${esc(c.linkLabel || 'View your applications')}</a></p>` +
-        `<p>— TeamLink</p>`,
+      /*
+       * The same words, in the company's own shell.
+       *
+       * It was a bare stack of <p> tags - correct, readable, and
+       * indistinguishable from a script's output. A candidate deciding
+       * whether to trust a link and hand over a password reads the
+       * design before they read the words.
+       *
+       * The TEXT above stays plain on purpose: a client showing text
+       * wants text, not a description of a layout.
+       */
+      html: emailLayout({
+        title: subject(c),
+        preheader: String(text).split('\n')[0],
+        greeting: c.candidateName ? `Hi ${c.candidateName},` : '',
+        body: text,
+        facts: [
+          ['Role', c.jobTitle],
+          ['Company', c.company && c.company !== 'the company' ? c.company : ''],
+          ['Application ID', c.reference || c.applicationId],
+          ['Interview', [c.interviewDate, c.interviewTime].filter(Boolean).join(' · ')],
+        ],
+        cta: { label: c.linkLabel || 'View your applications', url: c.portalUrl },
+        note: c.loginEmail && c.tempPassword
+          ? 'Your sign-in details are above. You will be asked to choose your own '
+            + 'password the first time you sign in.'
+          : '',
+      }),
     },
     // Kept short on purpose: an SMS that runs to three segments costs three
     // times as much and is read no more carefully.
