@@ -45,9 +45,16 @@ async function checkEmailJs() {
   // sends a template id that cannot exist, so nothing goes out - and the
   // answer still says whether the service, the key and non-browser access
   // are all in order.
+  //
+  // NO Origin header, because the application does not send one either.
+  // An earlier version of this check did, which made EmailJS treat it as
+  // a browser and answer "template not found" - so it reported the
+  // configuration as working while every real send was refused with a
+  // 403. A check that exercises a different path from the code is worse
+  // than no check at all.
   const probe = await fetch(e.apiUrl, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', origin: 'http://localhost' },
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       service_id: e.serviceId,
       template_id: e.templateId || 'template_probe_not_real',
@@ -76,9 +83,11 @@ async function checkEmailJs() {
   }
 
   if (/non-browser|strict/i.test(probe.text)) {
-    console.log('\n  EmailJS is refusing calls from a server.');
-    console.log('  Either enable "Allow EmailJS API for non-browser applications" in');
-    console.log('  Account → Security, or set EMAILJS_PRIVATE_KEY.\n');
+    console.log('\n  EmailJS is refusing calls from a server, so nothing can be sent.');
+    console.log('  Tick "Allow EmailJS API for non-browser applications" at');
+    console.log('    https://dashboard.emailjs.com/admin/account/security');
+    console.log('  That one setting is all that is missing — the service, the template');
+    console.log('  and the key are otherwise in order.\n');
     return 1;
   }
 

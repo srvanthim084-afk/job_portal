@@ -70,7 +70,9 @@ let candidateId, applicationId, jobId, dispatch = [];
 const reg = await candidate.api('post', '/auth/register', {
   name: (TO.split('@')[0] || 'Candidate').replace(/[._-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
   email: TO,
-  password: `Journey@${stamp}`,
+  // Always a letter AND a digit: a base36 stamp can come out all
+  // letters, and the server quite rightly refuses it.
+  password: `Journey@${stamp}9a`,
 }).catch(async (e) => {
   // The server's code for this is EMAIL_TAKEN; both are accepted so a
   // rename on either side does not turn "run it twice" into a crash.
@@ -83,7 +85,7 @@ const reg = await candidate.api('post', '/auth/register', {
 
 if (reg) {
   candidateId = reg.candidateId;
-  step(1, `registered ${TO}  (password for signing in: Journey@${stamp})`);
+  step(1, `registered ${TO}  (password for signing in: Journey@${stamp}9a)`);
 } else {
   // Registering signs the candidate in; coming back does not. The journey
   // is driven AS the candidate on purpose - applying and interviewing as
