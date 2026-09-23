@@ -106,6 +106,68 @@ export async function logout(token) {
   await withUser(null, (c) => c.query(`select auth_destroy_session($1)`, [sha256(token)]));
 }
 
+/**
+ * Sign in AS somebody, without their password.
+ *
+ * An administrator opening a recruiter's portal to see what they see.
+ * There is no other honest way to answer "what is Kiran actually
+ * looking at?" - reading the policies and believing them is how a
+ * permissions bug survives.
+ *
+ * Deliberately narrow:
+ *
+ *   - the CALLER must already be an administrator; this function does
+ *     not check that, the route does, and it is the only caller
+ *   - only a recruiter may be impersonated, never another admin
+ *   - a suspended account cannot be entered, so deactivating somebody
+ *     locks an administrator out of their portal too rather than
+ *     leaving a back door open
+ *   - the session is an ordinary one and expires like any other
+ *
+ * @returns the same shape as login()
+ */
+export async function impersonate(userId, { userAgent, ip } = {}) {
+  return withUser(null, async (c) => {
+    /*
+     * Through a definer function, as login() does.
+     *
+     * There is no session yet, so this runs anonymously - and row-level
+     * security correctly shows an anonymous caller nothing in `users`.
+     * Reading the table directly found no row and reported "that account
+     * does not exist" about an account that plainly did.
+     */
+    const { rows } = await c.query(
+      `select * from auth_user_for_impersonation($1)`, [userId]);
+    const user = rows[0];
+    if (!user) throw new ApiError(404, CODES.NOT_FOUND, 'That account does not exist.');
+    if (user.role !== 'recruiter') {
+      throw forbidden('Only a recruiter account can be opened this way.');
+    }
+    if (user.status !== 'active') {
+      throw forbidden('That login is deactivated. Activate it first.');
+    }
+
+    const { token, hash } = newSessionToken();
+    const expires = new Date(Date.now() + config.sessionDays * 86_400_000);
+    await c.query(`select auth_create_session($1,$2,$3,$4,$5)`,
+      [user.id, hash, expires, userAgent || null, ip || null]);
+
+    const who = await c.query(`select * from auth_resolve_session($1)`, [hash]);
+    const profile = who.rows[0];
+
+    return {
+      token,
+      expires,
+      session: {
+        userId: user.id,
+        role: user.role,
+        profileId: profile ? profile.profile_id : null,
+        email: user.email,
+      },
+    };
+  });
+}
+
 export function setSessionCookie(res, token, expires) {
   res.cookie(config.sessionCookie, token, {
     httpOnly: true,                 // unreadable from JavaScript → XSS cannot steal it

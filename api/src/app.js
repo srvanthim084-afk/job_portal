@@ -29,6 +29,7 @@ import aiCallingRoutes from './routes/ai-calling.js';
 import spreadsheetRoutes from './routes/spreadsheet.js';
 import intakeRoutes from './routes/intake.js';
 import { notificationRoutes } from './routes/notifications.js';
+import staffRoutes from './routes/staff.js';
 import { startDeadlineSweep } from './notify/interview-deadline.js';
 import { startIntakeSync } from './intake/scheduler.js';
 import { startScreeningSweep } from './ai/screening.js';
@@ -217,6 +218,7 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', aiCallingRoutes());
   app.use('/api', intakeRoutes());
   app.use('/api', notificationRoutes());
+  app.use('/api', staffRoutes());
 
   // Reminders for interviews running out of time, and the recruiter
   // mailboxes read on a timer.

@@ -5841,6 +5841,451 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * 24. Admin → Recruiter Management
+   *
+   * A recruiter existed as a login and almost nothing else: no way to
+   * add one without editing the database, no way to see what any of them
+   * were doing, and no way to turn a login off when somebody left.
+   *
+   * This fills the admin's existing Recruiters page rather than adding a
+   * module beside it - the nav item, the shell, the styling and the
+   * chrome are the prototype's. Everything here is its content.
+   *
+   * ONE ACCOUNT, NOT TWO. "Create Recruiter & Login" writes the same
+   * `users` row the Recruiter Portal authenticates against. There is no
+   * second credential store and nothing bypasses the ordinary login:
+   * create kiran@ with a password, and kiran signs in at the Recruiter
+   * Portal with exactly that.
+   *
+   * NO PASSWORD IS EVER SHOWN. Not after creating, not after a reset.
+   * The screen reports that a login exists and whether it is active.
+   * ------------------------------------------------------------------ */
+
+  TL.staff = { list: [], q: '', dept: '', status: '' };
+
+  var STAGE_LABELS = {
+    applied: 'Applied', ai_screening: 'Screening', shortlisted: 'Shortlisted',
+    interview_scheduled: 'Interview', ai_interview_done: 'AI Done',
+    client_review: 'With Client', offer_extended: 'Offer',
+    selected: 'Selected', rejected: 'Rejected',
+  };
+  var STAGE_ORDER = Object.keys(STAGE_LABELS);
+
+  function staffModal(title, body) {
+    if (typeof window.fcrModal === 'function') {
+      window.fcrModal(
+        '<div class="fcr-modal-head"><h3>' + esc(title) + '</h3>' +
+        '<button class="btn btn-ghost btn-sm" onclick="fcrCloseModal()">✕</button></div>' +
+        '<div class="fcr-modal-body" id="tlStaffModal">' + body + '</div>');
+      return true;
+    }
+    return false;
+  }
+  function staffClose() {
+    if (typeof window.fcrCloseModal === 'function') window.fcrCloseModal();
+  }
+  function staffSay(msg, icon) {
+    if (typeof window.toast === 'function') window.toast(msg, icon || 'ℹ️');
+  }
+
+  /* ---- the list ---------------------------------------------------- */
+
+  TL.staff.refresh = function () {
+    return api.get('/staff/recruiters').then(function (r) {
+      TL.staff.list = r.recruiters || [];
+      staffPaint();
+      return TL.staff.list;
+    }).catch(function (err) {
+      var host = document.getElementById('tlStaffBody');
+      if (host) host.innerHTML = '<tr><td colspan="9"><div class="empty-note">' +
+        esc(err.message || 'The recruiters could not be loaded.') + '</div></td></tr>';
+    });
+  };
+
+  function staffVisible() {
+    var q = String(TL.staff.q || '').trim().toLowerCase();
+    return TL.staff.list.filter(function (x) {
+      if (TL.staff.dept && String(x.department || '') !== TL.staff.dept) return false;
+      if (TL.staff.status && x.loginStatus !== TL.staff.status) return false;
+      if (!q) return true;
+      return [x.name, x.email, x.employeeId, x.department, x.designation, x.team]
+        .some(function (v) { return String(v || '').toLowerCase().indexOf(q) >= 0; });
+    });
+  }
+
+  function staffPaint() {
+    var body = document.getElementById('tlStaffBody');
+    if (!body) return;
+    var rows = staffVisible();
+
+    if (!rows.length) {
+      body.innerHTML = '<tr><td colspan="9"><div class="empty-note">' +
+        (TL.staff.list.length ? 'No recruiter matches those filters.'
+          : 'No recruiters yet. Use + Add Recruiter to create the first one.') +
+        '</div></td></tr>';
+    } else {
+      body.innerHTML = rows.map(function (x) {
+        var live = x.loginStatus === 'active';
+        var counts = STAGE_ORDER.map(function (s) {
+          var n = (x.stages || {})[s] || 0;
+          return '<td title="' + esc(STAGE_LABELS[s]) + '">'
+            + (n ? '<b>' + n + '</b>' : '<span style="color:var(--text-soft)">0</span>') + '</td>';
+        }).join('');
+
+        return '<tr>'
+          + '<td><b>' + esc(x.name) + '</b>'
+            + '<div style="font-size:11.5px;color:var(--text-soft)">' + esc(x.email) + '</div></td>'
+          + '<td>' + esc(x.employeeId || '—') + '</td>'
+          + '<td>' + esc(x.department || '—')
+            + '<div style="font-size:11.5px;color:var(--text-soft)">'
+            + esc(x.designation || '') + (x.team ? ' · ' + esc(x.team) : '') + '</div></td>'
+          + '<td>' + x.assignedRequirements + '</td>'
+          + '<td><b>' + x.totalCandidates + '</b></td>'
+          + counts
+          + '<td><span class="badge ' + (live ? 'badge-ok' : 'badge-neutral') + '">'
+            + (x.loginStatus === 'none' ? 'No login' : live ? 'Active' : 'Inactive')
+            + '</span></td>'
+          + '<td class="row-actions" style="flex-wrap:wrap">'
+            + '<button class="btn btn-ghost btn-sm" onclick="TL.staff.view(\'' + esc(x.id) + '\')">View</button>'
+            + '<button class="btn btn-ghost btn-sm" onclick="TL.staff.edit(\'' + esc(x.id) + '\')">Edit</button>'
+            + '<button class="btn btn-primary btn-sm" onclick="TL.staff.loginAs(\'' + esc(x.id) + '\')">Login As Recruiter</button>'
+            + '<button class="btn btn-ghost btn-sm" onclick="TL.staff.resetPassword(\'' + esc(x.id) + '\')">Reset Password</button>'
+            + '<button class="btn btn-sm ' + (live ? 'btn-danger-ghost' : 'btn-ghost') + '"'
+              + ' onclick="TL.staff.toggle(\'' + esc(x.id) + '\',' + (live ? 'false' : 'true') + ')">'
+              + (live ? 'Deactivate' : 'Activate') + '</button>'
+          + '</td></tr>';
+      }).join('');
+    }
+
+    var dept = document.getElementById('tlStaffDept');
+    if (dept && dept.options.length <= 1) {
+      var seen = {};
+      TL.staff.list.forEach(function (x) { if (x.department) seen[x.department] = 1; });
+      dept.innerHTML = '<option value="">All departments</option>' +
+        Object.keys(seen).sort().map(function (d) {
+          return '<option value="' + esc(d) + '">' + esc(d) + '</option>';
+        }).join('');
+    }
+  }
+
+  TL.staff.filter = function (what, value) {
+    TL.staff[what] = value;
+    staffPaint();
+  };
+
+  /* ---- add ---------------------------------------------------------- */
+
+  function field(id, label, opts) {
+    opts = opts || {};
+    return '<div class="fgroup"><label>' + esc(label) + (opts.required ? ' *' : '') + '</label>'
+      + '<input id="' + id + '" type="' + (opts.type || 'text') + '"'
+      + ' placeholder="' + esc(opts.placeholder || '') + '"'
+      + ' style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--line);'
+      + 'background:var(--card);color:var(--text);font-size:13px"></div>';
+  }
+
+  TL.staff.add = function () {
+    var ok = staffModal('Add Recruiter',
+      '<div class="review-grid">'
+      + '<div>'
+        + field('tlSfName', 'Employee Name', { required: true, placeholder: 'e.g. Kiran Kumar' })
+        + field('tlSfEmp', 'Employee ID', { placeholder: 'e.g. TL-1042' })
+        + field('tlSfEmail', 'Email', { required: true, type: 'email', placeholder: 'kiran@teamlinkcs.com' })
+        + field('tlSfMobile', 'Mobile Number', { placeholder: '+91 90000 00000' })
+        + field('tlSfDept', 'Department', { placeholder: 'e.g. Talent Acquisition' })
+        + field('tlSfDesig', 'Designation', { placeholder: 'e.g. Senior Recruiter' })
+      + '</div><div>'
+        + field('tlSfRole', 'Recruiter Role', { placeholder: 'e.g. Recruiter, Team Lead' })
+        + field('tlSfTeam', 'Assigned Team', { placeholder: 'e.g. Healthcare' })
+        + field('tlSfPass', 'Password', { required: true, type: 'password', placeholder: 'At least 8 characters' })
+        + field('tlSfPass2', 'Confirm Password', { required: true, type: 'password' })
+        + '<div class="fgroup"><label>Login Status</label>'
+          + '<select id="tlSfStatus" style="width:100%;padding:10px 12px;border-radius:8px;'
+          + 'border:1px solid var(--line);background:var(--card);color:var(--text);font-size:13px">'
+          + '<option value="active">Active</option><option value="inactive">Inactive</option>'
+          + '</select></div>'
+      + '</div></div>'
+      + '<div class="req-note">The email and password entered here ARE the recruiter’s '
+      + 'Recruiter Portal login — there is no second account. They will be asked to '
+      + 'choose their own password the first time they sign in.</div>'
+      + '<div id="tlSfErr"></div>'
+      + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">'
+      + '<button class="btn btn-ghost" onclick="TL.staff.cancel()">Cancel</button>'
+      + '<button class="btn btn-primary" id="tlSfGo" onclick="TL.staff.create()">Create Recruiter &amp; Login</button>'
+      + '</div>');
+    if (!ok) staffSay('This screen needs the recruiter modal', '⚠️');
+  };
+
+  TL.staff.cancel = function () { staffClose(); };
+
+  TL.staff.create = function () {
+    var val = function (id) {
+      var el = document.getElementById(id);
+      return el ? String(el.value || '').trim() : '';
+    };
+    var err = document.getElementById('tlSfErr');
+    var say = function (m) {
+      if (err) err.innerHTML = '<div class="req-note" style="background:var(--bad-100);'
+        + 'color:var(--bad-600)">' + esc(m) + '</div>';
+    };
+
+    var body = {
+      name: val('tlSfName'), email: val('tlSfEmail'),
+      password: val('tlSfPass'), confirmPassword: val('tlSfPass2'),
+      employeeId: val('tlSfEmp'), mobile: val('tlSfMobile'),
+      department: val('tlSfDept'), designation: val('tlSfDesig'),
+      recruiterRole: val('tlSfRole'), team: val('tlSfTeam'),
+      loginStatus: (document.getElementById('tlSfStatus') || {}).value || 'active',
+    };
+
+    // Said here so the person is not sent to the server to be told
+    // something the form already knows.
+    if (!body.name || !body.email) return say('A name and an email address are required.');
+    if (body.password.length < 8) return say('The password must be at least 8 characters.');
+    if (body.password !== body.confirmPassword) return say('The two passwords do not match.');
+
+    var go = document.getElementById('tlSfGo');
+    if (go) { go.disabled = true; go.textContent = 'Creating…'; }
+
+    api.post('/staff/recruiters', body).then(function (r) {
+      staffClose();
+      staffSay(r.recruiter.name + ' can now sign in at the Recruiter Portal', '✅');
+      TL.staff.refresh();
+    }).catch(function (e) {
+      if (go) { go.disabled = false; go.textContent = 'Create Recruiter & Login'; }
+      say(e.message || 'The recruiter could not be created.');
+    });
+  };
+
+  /* ---- row actions -------------------------------------------------- */
+
+  TL.staff.edit = function (id) {
+    var x = TL.staff.list.filter(function (r) { return r.id === id; })[0];
+    if (!x) return;
+    staffModal('Edit ' + x.name,
+      '<div class="review-grid"><div>'
+      + field('tlSeName', 'Employee Name') + field('tlSeEmp', 'Employee ID')
+      + field('tlSeMobile', 'Mobile Number')
+      + '</div><div>'
+      + field('tlSeDept', 'Department') + field('tlSeDesig', 'Designation')
+      + field('tlSeTeam', 'Assigned Team')
+      + '</div></div>'
+      + '<div class="req-note">The email is the login and is not changed here — '
+      + 'changing it would lock ' + esc(x.name) + ' out of an account they still use.</div>'
+      + '<div id="tlSfErr"></div>'
+      + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">'
+      + '<button class="btn btn-ghost" onclick="TL.staff.cancel()">Cancel</button>'
+      + '<button class="btn btn-primary" onclick="TL.staff.saveEdit(\'' + esc(id) + '\')">Save</button>'
+      + '</div>');
+
+    [['tlSeName', x.name], ['tlSeEmp', x.employeeId], ['tlSeMobile', x.mobile],
+     ['tlSeDept', x.department], ['tlSeDesig', x.designation], ['tlSeTeam', x.team]]
+      .forEach(function (p) {
+        var el = document.getElementById(p[0]);
+        if (el) el.value = p[1] || '';
+      });
+  };
+
+  TL.staff.saveEdit = function (id) {
+    var val = function (i) { var e = document.getElementById(i); return e ? e.value.trim() : ''; };
+    api.patch('/staff/recruiters/' + encodeURIComponent(id), {
+      name: val('tlSeName'), employeeId: val('tlSeEmp'), mobile: val('tlSeMobile'),
+      department: val('tlSeDept'), designation: val('tlSeDesig'), team: val('tlSeTeam'),
+    }).then(function () {
+      staffClose(); staffSay('Saved', '✅'); TL.staff.refresh();
+    }).catch(function (e) { staffSay(e.message || 'It could not be saved', '⚠️'); });
+  };
+
+  TL.staff.toggle = function (id, active) {
+    api.post('/staff/recruiters/' + encodeURIComponent(id) + '/status', { active: !!active })
+      .then(function () {
+        staffSay(active ? 'Login activated' : 'Login deactivated — their data is untouched', '🔐');
+        TL.staff.refresh();
+      }).catch(function (e) { staffSay(e.message || 'It could not be changed', '⚠️'); });
+  };
+
+  TL.staff.resetPassword = function (id) {
+    var x = TL.staff.list.filter(function (r) { return r.id === id; })[0] || {};
+    staffModal('Reset password for ' + (x.name || 'this recruiter'),
+      field('tlSrPass', 'New password', { type: 'password', required: true, placeholder: 'At least 8 characters' })
+      + field('tlSrPass2', 'Confirm new password', { type: 'password', required: true })
+      + '<div class="req-note">They will be asked to choose their own the first time they '
+      + 'sign in, so an address you know does not stay one you can sign in as.</div>'
+      + '<div id="tlSfErr"></div>'
+      + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">'
+      + '<button class="btn btn-ghost" onclick="TL.staff.cancel()">Cancel</button>'
+      + '<button class="btn btn-primary" onclick="TL.staff.doReset(\'' + esc(id) + '\')">Reset password</button>'
+      + '</div>');
+  };
+
+  TL.staff.doReset = function (id) {
+    var a = (document.getElementById('tlSrPass') || {}).value || '';
+    var b = (document.getElementById('tlSrPass2') || {}).value || '';
+    var err = document.getElementById('tlSfErr');
+    var say = function (m) {
+      if (err) err.innerHTML = '<div class="req-note" style="background:var(--bad-100);color:var(--bad-600)">'
+        + esc(m) + '</div>';
+    };
+    if (a.length < 8) return say('At least 8 characters.');
+    if (a !== b) return say('The two passwords do not match.');
+
+    api.post('/staff/recruiters/' + encodeURIComponent(id) + '/password',
+      { password: a, confirmPassword: b })
+      .then(function () { staffClose(); staffSay('Password reset', '🔐'); })
+      .catch(function (e) { say(e.message || 'It could not be reset.'); });
+  };
+
+  /**
+   * Open that recruiter's portal, as them.
+   *
+   * The admin session is REPLACED - two sessions in one browser is how
+   * somebody acts as the wrong person without noticing - so this says so
+   * before doing it.
+   */
+  TL.staff.loginAs = function (id) {
+    var x = TL.staff.list.filter(function (r) { return r.id === id; })[0] || {};
+    staffModal('Open ' + (x.name || 'this recruiter') + '’s portal',
+      '<div class="req-note">You will be signed in as <b>' + esc(x.name || '') + '</b> '
+      + '(' + esc(x.email || '') + ') and will see only what they see. Your own admin '
+      + 'session ends — sign out and back in to return to it.</div>'
+      + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">'
+      + '<button class="btn btn-ghost" onclick="TL.staff.cancel()">Cancel</button>'
+      + '<button class="btn btn-primary" onclick="TL.staff.doLoginAs(\'' + esc(id) + '\')">Open their portal</button>'
+      + '</div>');
+  };
+
+  TL.staff.doLoginAs = function (id) {
+    api.post('/staff/recruiters/' + encodeURIComponent(id) + '/login-as', {})
+      .then(function (r) {
+        staffClose();
+        staffSay('Signed in as ' + r.recruiter.name, '👤');
+        return TL.refresh().then(function () {
+          window.location.hash = '#/recruiter/home';
+        });
+      })
+      .catch(function (e) { staffSay(e.message || 'Their portal could not be opened', '⚠️'); });
+  };
+
+  /** Read-only monitoring: their candidates and where each one stands. */
+  TL.staff.view = function (id) {
+    staffModal('Recruiter activity', '<div class="req-note">Loading…</div>');
+    api.get('/staff/recruiters/' + encodeURIComponent(id) + '/activity').then(function (r) {
+      var host = document.getElementById('tlStaffModal');
+      if (!host) return;
+      var x = r.recruiter || {};
+      var rows = r.activity || [];
+
+      host.innerHTML =
+        '<div class="fcr-jd-row"><label>Recruiter</label><span class="v">' + esc(x.name || '')
+          + ' · ' + esc(x.email || '') + '</span></div>'
+        + '<div class="fcr-jd-row"><label>Department</label><span class="v">'
+          + esc(x.department || '—') + (x.team ? ' · ' + esc(x.team) : '') + '</span></div>'
+        + '<div class="fcr-jd-row"><label>Requirements</label><span class="v">'
+          + x.assignedRequirements + '</span></div>'
+        + (rows.length
+          ? '<div class="tbl-wrap" style="margin-top:10px"><table class="data">'
+            + '<thead><tr><th>Candidate</th><th>Requirement</th><th>Client</th>'
+            + '<th>Stage</th><th>Last action</th><th>Updated</th></tr></thead><tbody>'
+            + rows.map(function (a) {
+                return '<tr><td><b>' + esc(a.candidate) + '</b>'
+                  + (a.reference ? '<div style="font-size:11px;color:var(--text-soft)">'
+                      + esc(a.reference) + '</div>' : '')
+                  + '</td><td>' + esc(a.requirement) + '</td>'
+                  + '<td>' + esc(a.client || '—') + '</td>'
+                  + '<td>' + esc(a.stageLabel) + '</td>'
+                  + '<td style="max-width:260px;font-size:12px">' + esc(a.lastAction || '—') + '</td>'
+                  + '<td style="white-space:nowrap;font-size:12px">'
+                    + esc(a.lastActionAt ? new Date(a.lastActionAt).toLocaleDateString('en-GB')
+                        : (a.appliedAt ? new Date(a.appliedAt).toLocaleDateString('en-GB') : '—'))
+                  + '</td></tr>';
+              }).join('')
+            + '</tbody></table></div>'
+          : '<div class="empty-note">No candidates on this desk yet.</div>')
+        + '<div class="req-note">Read-only. These are the same applications the recruiter '
+        + 'sees — nothing is copied, so the two cannot disagree.</div>';
+    }).catch(function (e) {
+      var host = document.getElementById('tlStaffModal');
+      if (host) host.innerHTML = '<div class="req-note">' + esc(e.message || 'Unavailable.') + '</div>';
+    });
+  };
+
+  /* ---- the page ----------------------------------------------------- */
+
+  function staffShell() {
+    var head = STAGE_ORDER.map(function (s) {
+      return '<th title="' + esc(STAGE_LABELS[s]) + '">' + esc(STAGE_LABELS[s]) + '</th>';
+    }).join('');
+
+    return '<div class="panel" data-tl-staff="1">'
+      + '<div class="panel-head"><div><h2>Recruiter Management</h2>'
+        + '<div class="desc">Every recruiter, their desk, and their login</div></div>'
+        + '<button class="btn btn-primary btn-sm" style="margin-left:auto"'
+        + ' onclick="TL.staff.add()">＋ Add Recruiter</button></div>'
+      + '<div class="panel-body" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+        + '<input id="tlStaffQ" placeholder="Search name, email, employee ID…"'
+          + ' oninput="TL.staff.filter(\'q\',this.value)"'
+          + ' style="flex:1;min-width:220px;padding:9px 12px;border-radius:8px;'
+          + 'border:1px solid var(--line);background:var(--card);color:var(--text);font-size:13px">'
+        + '<select id="tlStaffDept" onchange="TL.staff.filter(\'dept\',this.value)"'
+          + ' style="padding:9px 12px;border-radius:8px;border:1px solid var(--line);'
+          + 'background:var(--card);color:var(--text);font-size:13px">'
+          + '<option value="">All departments</option></select>'
+        + '<select onchange="TL.staff.filter(\'status\',this.value)"'
+          + ' style="padding:9px 12px;border-radius:8px;border:1px solid var(--line);'
+          + 'background:var(--card);color:var(--text);font-size:13px">'
+          + '<option value="">Any login status</option>'
+          + '<option value="active">Active</option>'
+          + '<option value="inactive">Inactive</option></select>'
+      + '</div>'
+      + '<div class="panel-body pad0"><div class="tbl-wrap"><table class="data">'
+        + '<thead><tr><th>Recruiter</th><th>Employee ID</th><th>Department</th>'
+        + '<th>Reqs</th><th>Candidates</th>' + head + '<th>Login</th><th>Actions</th></tr></thead>'
+        + '<tbody id="tlStaffBody"><tr><td colspan="9">'
+        + '<div class="empty-note">Loading…</div></td></tr></tbody>'
+      + '</table></div></div></div>';
+  }
+
+  /**
+   * Fill the admin's existing Recruiters page.
+   *
+   * The nav item, the shell and the chrome are the prototype's; this
+   * replaces what sits inside, and only on that page.
+   */
+  function enhanceAdminRecruiters() {
+    if (!/#\/admin\/recruiters/.test(String(location.hash || ''))) return;
+    var session = TL.session;
+    if (!session || session.role !== 'admin') return;
+
+    var main = document.querySelector('.dash-main .dash-body')
+      || document.querySelector('.dash-main');
+    if (!main) return;
+    if (main.querySelector('[data-tl-staff]')) return;
+
+    var panels = main.querySelectorAll(':scope > .panel, :scope > .stat-row');
+    for (var i = 0; i < panels.length; i++) panels[i].style.display = 'none';
+
+    var host = document.createElement('div');
+    host.innerHTML = staffShell();
+    main.appendChild(host.firstChild);
+    TL.staff.refresh();
+  }
+
+  var realRenderForStaff = window.render;
+  window.render = function () {
+    var out = realRenderForStaff.apply(this, arguments);
+    try { enhanceAdminRecruiters(); } catch (e) { /* never break a render */ }
+    return out;
+  };
+
+  var prevAfterRenderStaff = window.afterRender;
+  window.afterRender = function () {
+    var out = typeof prevAfterRenderStaff === 'function'
+      ? prevAfterRenderStaff.apply(this, arguments) : undefined;
+    try { enhanceAdminRecruiters(); } catch (e) {}
+    return out;
+  };
+
+  /* ------------------------------------------------------------------ *
    * 12. Session expiry
    *
    * A cookie can expire while the tab is open. Rather than letting the
