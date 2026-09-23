@@ -5416,6 +5416,431 @@
   };
 
   /* ------------------------------------------------------------------ *
+   * 23. Localities inside the Location filter that already exists
+   *
+   * The filter knew 86 cities and nothing smaller, so a recruiter
+   * searching Hyderabad could not narrow to Madhapur or Gachibowli - the
+   * places candidates actually write on their profiles.
+   *
+   * ADD-ONLY, and deliberately so. The component, its markup, its
+   * styling, its keyboard handling and its "Within" control are the
+   * prototype's own and are not touched. Two things are extended:
+   *
+   *   INDIA_COORDS   gains locality coordinates, so the EXISTING
+   *                  coordsOf(), canonical() and matches() understand
+   *                  them - which is why picking one keeps working with
+   *                  the existing candidate search, unchanged
+   *   TL_LOC.suggest is wrapped to offer a city's localities and to put
+   *                  the distance in the `sub` field the renderer
+   *                  ALREADY prints beside every row
+   *
+   * So the distance appears with no change to a single line of markup.
+   *
+   * DISTANCES ARE NOT HARD-CODED. What is added here is coordinates -
+   * latitude and longitude, geographic facts - and the distance is
+   * computed by the haversine already in the file
+   * (TL_LOC.distanceKm). Change a coordinate and every distance derived
+   * from it changes with it.
+   *
+   * These cover the metros TeamLink recruits in. A locality that is not
+   * listed behaves exactly as it did before: it is still typeable, still
+   * matches by name, and simply has no distance beside it. Full national
+   * coverage needs a geocoding service, which is a network call and a
+   * key rather than a table.
+   * ------------------------------------------------------------------ */
+
+  /** [latitude, longitude] — real coordinates, to four decimal places. */
+  var TL_LOCALITIES = {
+    Hyderabad: [
+      ['Hyderabad', 17.3850, 78.4867],
+      ['Begumpet', 17.4400, 78.4600],
+      ['Ameerpet', 17.4375, 78.4483],
+      ['Madhapur', 17.4483, 78.3915],
+      ['Hitech City', 17.4435, 78.3772],
+      ['Gachibowli', 17.4401, 78.3489],
+      ['Kondapur', 17.4849, 78.3915],
+      ['Kukatpally', 17.4948, 78.4000],
+      ['Miyapur', 17.4969, 78.3428],
+      ['Manikonda', 17.4048, 78.3772],
+      ['Secunderabad', 17.4399, 78.4983],
+      ['Uppal', 17.4056, 78.5590],
+      ['LB Nagar', 17.3457, 78.5522],
+      ['Dilsukhnagar', 17.3687, 78.5247],
+      ['Banjara Hills', 17.4126, 78.4392],
+      ['Jubilee Hills', 17.4326, 78.4071],
+      ['Kompally', 17.5430, 78.4870],
+      ['Shamshabad', 17.2403, 78.4294],
+      ['Nizampet', 17.5100, 78.3900],
+      ['Attapur', 17.3600, 78.4200],
+    ],
+    Bengaluru: [
+      ['Bengaluru', 12.9716, 77.5946],
+      ['Whitefield', 12.9698, 77.7500],
+      ['Electronic City', 12.8452, 77.6602],
+      ['Koramangala', 12.9352, 77.6245],
+      ['Indiranagar', 12.9784, 77.6408],
+      ['Marathahalli', 12.9591, 77.6974],
+      ['HSR Layout', 12.9116, 77.6474],
+      ['Bellandur', 12.9304, 77.6784],
+      ['Hebbal', 13.0358, 77.5970],
+      ['Yelahanka', 13.1007, 77.5963],
+      ['Jayanagar', 12.9250, 77.5938],
+      ['Rajajinagar', 12.9916, 77.5526],
+      ['Banashankari', 12.9250, 77.5460],
+      ['Sarjapur Road', 12.9010, 77.6870],
+      ['Hosur Road', 12.8900, 77.6300],
+    ],
+    Chennai: [
+      ['Chennai', 13.0827, 80.2707],
+      ['Guindy', 13.0067, 80.2206],
+      ['Velachery', 12.9750, 80.2200],
+      ['OMR', 12.8900, 80.2270],
+      ['Perungudi', 12.9600, 80.2450],
+      ['Sholinganallur', 12.9010, 80.2279],
+      ['Adyar', 13.0063, 80.2574],
+      ['T Nagar', 13.0418, 80.2341],
+      ['Anna Nagar', 13.0850, 80.2101],
+      ['Porur', 13.0382, 80.1565],
+      ['Ambattur', 13.1143, 80.1548],
+      ['Tambaram', 12.9229, 80.1275],
+    ],
+    Pune: [
+      ['Pune', 18.5204, 73.8567],
+      ['Hinjewadi', 18.5993, 73.7389],
+      ['Kharadi', 18.5515, 73.9470],
+      ['Magarpatta', 18.5150, 73.9290],
+      ['Baner', 18.5590, 73.7868],
+      ['Wakad', 18.5980, 73.7620],
+      ['Viman Nagar', 18.5679, 73.9143],
+      ['Kothrud', 18.5074, 73.8077],
+      ['Hadapsar', 18.5089, 73.9260],
+      ['Pimpri', 18.6298, 73.7997],
+    ],
+    Mumbai: [
+      ['Mumbai', 19.0760, 72.8777],
+      ['Andheri', 19.1197, 72.8468],
+      ['Bandra', 19.0596, 72.8295],
+      ['Powai', 19.1176, 72.9060],
+      ['Goregaon', 19.1663, 72.8526],
+      ['Malad', 19.1860, 72.8487],
+      ['Lower Parel', 18.9960, 72.8300],
+      ['Thane', 19.2183, 72.9781],
+      ['Navi Mumbai', 19.0330, 73.0297],
+      ['Vashi', 19.0771, 72.9986],
+    ],
+    Delhi: [
+      ['Delhi', 28.7041, 77.1025],
+      ['New Delhi', 28.6139, 77.2090],
+      ['Gurgaon', 28.4595, 77.0266],
+      ['Noida', 28.5355, 77.3910],
+      ['Greater Noida', 28.4744, 77.5040],
+      ['Faridabad', 28.4089, 77.3178],
+      ['Ghaziabad', 28.6692, 77.4538],
+      ['Dwarka', 28.5921, 77.0460],
+      ['Saket', 28.5245, 77.2066],
+      ['Connaught Place', 28.6315, 77.2167],
+    ],
+  };
+
+  /** Locality -> its parent city, so a row can say where it is. */
+  var TL_LOC_PARENT = Object.create(null);
+
+  function tlLocalitiesInstall() {
+    if (!window.INDIA_COORDS) return false;
+
+    Object.keys(TL_LOCALITIES).forEach(function (city) {
+      TL_LOCALITIES[city].forEach(function (row) {
+        var name = row[0];
+        // Never overwrite a coordinate the prototype already has: the
+        // city entries are its own and are the reference point.
+        if (!window.INDIA_COORDS[name]) window.INDIA_COORDS[name] = [row[1], row[2]];
+        TL_LOC_PARENT[name.toLowerCase()] = city;
+
+        /*
+         * Deliberately NOT added to INDIA_CITY_STATE_MAP.
+         *
+         * The prototype's own suggester manufactures a "<name>
+         * Metropolitan Area" row for every city it finds there, so
+         * registering localities produced "Gachibowli Metropolitan
+         * Area" - a place that does not exist. Coordinates are enough:
+         * coordsOf() reads INDIA_COORDS, which is what distance and
+         * radius matching actually need.
+         */
+      });
+    });
+    return true;
+  }
+
+  /**
+   * Localities of a city, nearest first, with the distance computed.
+   *
+   * @param city    the parent city
+   * @param radius  kilometres, or null for all of them
+   */
+  function tlLocalitiesOf(city, radius) {
+    var rows = TL_LOCALITIES[city];
+    if (!rows || !window.TL_LOC) return [];
+    var origin = window.TL_LOC.coordsOf(city);
+    if (!origin) return [];
+
+    return rows.map(function (row) {
+      /*
+       * Read the coordinate back through coordsOf rather than using the
+       * row directly, so the city measures against ITS OWN coordinate
+       * and comes out at 0. The prototype's table already holds
+       * Hyderabad, this one is not allowed to overwrite it, and the two
+       * differ by a kilometre - which is how the city appeared as
+       * "Hyderabad - 1 KM", a kilometre from itself.
+       */
+      var here = window.TL_LOC.coordsOf(row[0]) || [row[1], row[2]];
+      var km = window.TL_LOC.distanceKm(origin, here);
+      return { name: row[0], km: Math.round(km) };
+    }).filter(function (x) {
+      return radius == null || x.km <= Number(radius);
+    }).sort(function (a, b) { return a.km - b.km; });
+  }
+
+  /** Which city is being typed or has already been picked. */
+  function tlCityFor(q, key) {
+    var t = String(q || '').trim().toLowerCase();
+    var names = Object.keys(TL_LOCALITIES);
+
+    for (var i = 0; i < names.length; i++) {
+      if (names[i].toLowerCase().indexOf(t) === 0 && t) return names[i];
+    }
+    // Typing a locality shows its neighbours too, which is what somebody
+    // narrowing down a search actually wants - and a PREFIX of one
+    // counts, since "Gachi" is how it is typed in practice.
+    if (t) {
+      if (TL_LOC_PARENT[t]) return TL_LOC_PARENT[t];
+      var keys = Object.keys(TL_LOC_PARENT);
+      for (var k = 0; k < keys.length; k++) {
+        if (keys[k].indexOf(t) === 0) return TL_LOC_PARENT[keys[k]];
+      }
+    }
+
+    // Nothing typed: use whatever is already selected, so the radius
+    // control has something to act on.
+    if (!t && key && typeof window.tlLocState === 'function') {
+      var tags = (window.tlLocState(key) || {}).tags || [];
+      for (var j = 0; j < tags.length; j++) {
+        var tag = String(tags[j]).toLowerCase();
+        if (TL_LOCALITIES[tags[j]]) return tags[j];
+        if (TL_LOC_PARENT[tag]) return TL_LOC_PARENT[tag];
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The radius currently chosen in the field's own "Within" control.
+   *
+   * Read from the component's state rather than kept separately, so the
+   * one control drives both the list and the candidate filtering it
+   * already drove.
+   */
+  function tlRadiusFor(key) {
+    if (!key || typeof window.tlLocState !== 'function') return null;
+    var km = (window.tlLocState(key) || {}).km;
+    if (km === '' || km == null || km === 'any') return null;
+    var n = Number(km);
+    return isFinite(n) && n > 0 ? n : null;
+  }
+
+  /**
+   * Wrap the existing suggester.
+   *
+   * The prototype's own suggestions are kept and come first; the
+   * localities are appended, each carrying its distance in `sub` - the
+   * field the renderer ALREADY prints beside every row. No markup
+   * changes, and the list looks exactly as it did.
+   */
+  function tlLocalitiesWrapSuggest() {
+    if (!window.TL_LOC || typeof window.TL_LOC.suggest !== 'function') return false;
+    if (window.TL_LOC.__tlLocalities) return true;
+
+    var original = window.TL_LOC.suggest;
+
+    window.TL_LOC.suggest = function (q, limit) {
+      var base = [];
+      try { base = original.call(this, q, limit) || []; } catch (e) { base = []; }
+
+      // The key is not passed in, so the radius comes from whichever
+      // field is open. There is one at a time on screen.
+      var key = window.__tlLocActiveKey || null;
+      var city = tlCityFor(q, key);
+      if (!city) return base;
+
+      var near = tlLocalitiesOf(city, tlRadiusFor(key));
+      if (!near.length) return base;
+
+      var seen = Object.create(null);
+      var out = [];
+      var t = String(q || '').trim().toLowerCase();
+
+      near.forEach(function (x) {
+        // While typing, only offer what the recruiter is actually
+        // typing towards - otherwise one keystroke fills the list with
+        // twenty suburbs.
+        if (t && x.name.toLowerCase().indexOf(t) !== 0
+            && city.toLowerCase().indexOf(t) !== 0
+            && !TL_LOC_PARENT[t]) return;
+        if (seen[x.name.toLowerCase()]) return;
+        seen[x.name.toLowerCase()] = 1;
+        out.push({
+          label: x.name,
+          // The renderer prints this beside the name, unchanged. The
+          // city names its state rather than repeating itself.
+          sub: (x.name === city
+            ? ((window.INDIA_CITY_STATE_MAP || {})[city] || 'India')
+            : city) + ' · ' + x.km + ' KM',
+          val: x.name,
+        });
+      });
+
+      // Anything the prototype found that is not already listed.
+      base.forEach(function (b) {
+        if (seen[String(b.label).toLowerCase()]) return;
+        out.push(b);
+      });
+
+      return out.slice(0, Math.max(limit || 10, near.length + 2));
+    };
+
+    window.TL_LOC.__tlLocalities = true;
+    return true;
+  }
+
+  /**
+   * The distances the panel offers.
+   *
+   * The active field keeps its radius as a row of pills inside the
+   * location panel, built from a module-local `KM` array that cannot be
+   * reached from here. So the pill row it returns is rewritten - same
+   * `tl-kmp` class, same `tlTreeKm` handler, same markup - rather than
+   * the function being replaced. Styling and behaviour stay the
+   * prototype's; only the values on offer change.
+   */
+  var TL_KM_CHOICES = [5, 10, 15, 25, 50, 100];
+
+  function tlLocalitiesWrapField() {
+    if (typeof window.tlTreeHtml !== 'function' || window.tlTreeHtml.__tlLocalities) return false;
+    var original = window.tlTreeHtml;
+
+    window.tlTreeHtml = function (key) {
+      window.__tlLocActiveKey = key;
+      var html = original.apply(this, arguments);
+      if (typeof html !== 'string') return html;
+
+      var st = (typeof window.tlLocState === 'function' && window.tlLocState(key)) || {};
+      /*
+       * Single quotes inside the attribute, as the prototype writes it.
+       * JSON.stringify emits DOUBLE quotes, which closed the
+       * double-quoted onclick attribute early and left the browser
+       * parsing "tlTreeKm(" as the whole handler - every pill threw
+       * "Unexpected end of input" and none of them worked.
+       */
+      var q = function (v) { return String(v).split("'").join('&#39;'); };
+      var pill = function (v, label) {
+        return '<button type="button" class="tl-kmp '
+          + (String(st.km || '') === String(v) ? 'on' : '') + '"'
+          + ' onmousedown="event.preventDefault()"'
+          + " onclick=\"tlTreeKm('" + q(key) + "','" + q(v) + "')\">"
+          + esc(label) + '</button>';
+      };
+
+      var row = pill('', 'Exact city')
+        + TL_KM_CHOICES.map(function (k) { return pill(k, k + ' KM'); }).join('')
+        + pill('any', 'Any Distance');
+
+      html = html.replace(/(<div class="tl-kmrow">)[\s\S]*?(<\/div>)/,
+        '$1' + row + '$2');
+
+      /*
+       * The localities, in the panel the recruiter is actually looking at.
+       *
+       * Typing does not open the flat suggestion list any more - a later
+       * layer stands it down and opens this tree instead - so the
+       * distances belong here. Same `.tl-row2` checkbox markup as every
+       * district, same tlTreePick handler, so choosing Madhapur behaves
+       * exactly like choosing a district and flows into the existing
+       * candidate filtering untouched.
+       */
+      var city = tlCityFor(st.q, key);
+      if (city) {
+        var near = tlLocalitiesOf(city, tlRadiusFor(key));
+        var typed = String(st.q || '').trim().toLowerCase();
+        if (typed && city.toLowerCase().indexOf(typed) !== 0) {
+          near = near.filter(function (x) {
+            return x.name.toLowerCase().indexOf(typed) === 0;
+          });
+        }
+        if (near.length) {
+          var picked = (st.tags || []).map(function (t) { return String(t).toLowerCase(); });
+          var group = '<div class="grp"><b>' + esc(city) + ' — areas</b>'
+            + near.map(function (x) {
+                return '<label class="tl-row2" onmousedown="event.preventDefault()">'
+                  + '<input type="checkbox"'
+                  + (picked.indexOf(x.name.toLowerCase()) >= 0 ? ' checked' : '')
+                  + " onchange=\"tlTreePick('" + q(key) + "','" + q(x.name)
+                  + "',this.checked)\">"
+                  + '<span class="nm">' + esc(x.name) + ' — ' + x.km + ' KM</span>'
+                  + '</label>';
+              }).join('')
+            + '</div>';
+
+          // Above the country/region group, so the nearest places are the
+          // first thing on the panel rather than the last.
+          html = html.replace(/(<div class="grp"><b>Country)/, group + '$1');
+        }
+      }
+
+      return html;
+    };
+    window.tlTreeHtml.__tlLocalities = true;
+    return true;
+  }
+
+  /**
+   * Redraw the list when a distance pill is pressed.
+   *
+   * tlTreeKm() records the choice and refreshes the panel; the
+   * suggestion list is a separate element, so a recruiter choosing
+   * 25 KM saw the same locations until they typed again.
+   */
+  function tlLocalitiesWrapKm() {
+    if (typeof window.tlTreeKm !== 'function' || window.tlTreeKm.__tlLocalities) return false;
+    var original = window.tlTreeKm;
+    window.tlTreeKm = function (key) {
+      window.__tlLocActiveKey = key;
+      var out = original.apply(this, arguments);
+      try {
+        if (typeof window.tlLocRefresh === 'function') window.tlLocRefresh(key);
+      } catch (e) { /* the radius still applied */ }
+      return out;
+    };
+    window.tlTreeKm.__tlLocalities = true;
+    return true;
+  }
+
+  function tlLocalitiesSetUp() {
+    if (!tlLocalitiesInstall()) return false;
+    tlLocalitiesWrapSuggest();
+    tlLocalitiesWrapField();
+    tlLocalitiesWrapKm();
+    return true;
+  }
+
+  // The prototype defines these in a later script block, so the first
+  // attempt can be too early. Try now, then once more after load.
+  if (!tlLocalitiesSetUp()) {
+    var tlLocTries = 0;
+    var tlLocTimer = setInterval(function () {
+      if (tlLocalitiesSetUp() || ++tlLocTries > 40) clearInterval(tlLocTimer);
+    }, 150);
+  }
+
+  /* ------------------------------------------------------------------ *
    * 12. Session expiry
    *
    * A cookie can expire while the tab is open. Rather than letting the
