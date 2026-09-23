@@ -158,6 +158,34 @@ await check('the sweep reports who it considered, not just who it wrote to', asy
 });
 
 
+/*
+ * Take the test data back out.
+ *
+ * This ran four times and left four jobs called "Trigger Test" and
+ * four candidates called "Trigger Candidate" sitting in the portal,
+ * where a recruiter opening Candidates sees them among the real ones.
+ * A verifier that dirties the database it verifies is worse than no
+ * verifier: somebody has to clean up after it by hand, and until
+ * they do the screen is lying.
+ *
+ * The job goes through the admin route. The candidate has no delete
+ * route - correctly, since a recruiter must not be able to erase an
+ * applicant - so it is named for what it is and reported, rather
+ * than left looking like somebody who applied.
+ */
+await check('the test data is removed again', async () => {
+  const admin = await open();
+  await admin.api('post', '/auth/login',
+    { email: 'admin@teamlink.com', password: PW, role: 'admin' });
+  await admin.api('delete', `/jobs/${job.id}`);
+  const left = ((await admin.api('get',
+    `/jobs?q=${encodeURIComponent(`Trigger Test ${stamp}`)}`)).jobs || [])
+    .filter((j) => j.title === `Trigger Test ${stamp}`);
+  must(left.length === 0, `${left.length} test job(s) left in the portal`);
+  console.log(`        candidate ${email} remains - there is no route that`
+    + ' deletes an applicant, and there should not be');
+});
+
 await browser.close();
 console.log(failed ? `\n  ${failed} FAILED\n`
   : '\n  TRIGGERS VERIFIED — applied, rescheduled, cancelled, joining and profile all fire\n');

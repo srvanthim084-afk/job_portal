@@ -37,6 +37,7 @@ import { screenApplication } from '../ai/screening.js';
 import { mailboxProvider, mailboxReadiness, newMessageId } from './mailbox.js';
 import { looksLikeDigest, parseNaukriDigest } from './naukri.js';
 import { detectSource, rulesFor, wantedBy } from './source.js';
+import { storeAttachedResume } from './attachment.js';
 
 const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 
@@ -322,6 +323,18 @@ export async function processMessage(session, { mailbox, message, rowId, provide
        resume: c.resumeName || null,
      })]));
 
+  /* ---- the resume that came with it -------------------------------- *
+   * Before the screening, not after: the screening reads the resume,
+   * and one that arrives a moment too late produces a score computed
+   * from a name and a job title.
+   */
+  const resumeImport = await storeAttachedResume({
+    candidateId, applicationId, attachments: message.attachments,
+  });
+  if (resumeImport.status === 'unreadable') {
+    warnings.push(`An attached file (${resumeImport.filename}) could not be stored as a resume.`);
+  }
+
   /* ---- the portal account ----------------------------------------- */
   let credentials = null;
   if (c.email) {
@@ -379,7 +392,8 @@ export async function processMessage(session, { mailbox, message, rowId, provide
     warnings.length
       ? `${warnings.join(' ')} Application ${reference} for ${match.job.title} was still created.`
       : `${candidateIsNew ? 'Candidate created' : 'Existing candidate'}, application ${reference} for ${match.job.title}`,
-    { candidateId, applicationId, reference, delivery, credentialsIssued: !!credentials });
+    { candidateId, applicationId, reference, delivery,
+      credentialsIssued: !!credentials, resume: resumeImport });
 }
 
 /* ------------------------------------------------------------------ *
@@ -527,14 +541,37 @@ async function importDigest(session, { mailbox, message, rowId, digest, finish }
        JSON.stringify({ source: (source && source.id) || 'naukri', digest: true,
                         subject: message.subject })]));
 
+    /*
+     * A resume, but only when it can be said WHOSE.
+     *
+     * A digest carries several people. One attached file against six
+     * names cannot be attributed, and putting somebody else's CV on a
+     * candidate is worse than having none: it is what gets sent to a
+     * client. So the file is imported only where the digest names one
+     * person, and is otherwise recorded, unattached, for a human.
+     */
+    if (digest.candidates.length === 1) {
+      const got = await storeAttachedResume({
+        candidateId, applicationId, attachments: message.attachments,
+      });
+      if (got.status === 'stored') out.resumes = (out.resumes || 0) + 1;
+    }
+
     // Screened like any other application, so the recruiter sees a score
     // rather than a row that says only where it came from.
     try { await screenApplication(applicationId, { actor: 'system' }); }
     catch (err) { console.error('[intake] screening failed:', err.message); }
   }
 
+  const unattributed = (message.attachments || []).length && digest.candidates.length > 1
+    ? ` — ${message.attachments.length} attached file(s) could not be matched to one of the `
+      + `${digest.candidates.length} candidates in this summary`
+    : '';
+
   const summary = `${out.imported} imported, ${out.duplicates} already known`
+    + (out.resumes ? `, ${out.resumes} with a resume` : '')
     + (out.unmapped ? `, ${out.unmapped} awaiting a requirement` : '')
+    + unattributed
     + (digest.jobTitle ? ` — "${digest.jobTitle}"` : '')
     + (job ? '' : ' (no open requirement matches that title)');
 

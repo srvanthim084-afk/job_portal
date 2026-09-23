@@ -20,7 +20,7 @@
  */
 import { connect as tlsConnect } from 'node:tls';
 import { randomUUID } from 'node:crypto';
-import { bodyOf } from './mime.js';
+import { bodyOf, attachmentsOf } from './mime.js';
 
 /* ------------------------------------------------------------------ *
  * where a mailbox's secret comes from
@@ -126,7 +126,22 @@ class Imap {
       const cleanup = () => { clearTimeout(timer); socket.removeListener('error', fail); };
 
       socket.once('error', fail);
-      socket.setEncoding('utf8');
+      /*
+       * latin1, not utf8, and it matters for attachments.
+       *
+       * A FETCH literal announces its size in BYTES - {41993} - and the
+       * message is sliced out of a STRING by that number. Under utf8 a
+       * multi-byte sequence becomes one character, so the count and the
+       * index stop agreeing and the slice runs past the message into the
+       * IMAP trailer, or short of the last MIME boundary.
+       *
+       * latin1 maps one byte to one character, so the count is exact and
+       * every byte survives intact - which is what lets a base64 resume
+       * be decoded back to the same file the candidate attached. Text
+       * parts are turned back into UTF-8 where they declare it, in
+       * mime.js.
+       */
+      socket.setEncoding('latin1');
       socket.on('data', (chunk) => this.onData(chunk));
       socket.once('data', () => { cleanup(); this.socket = socket; resolve(socket); });
     });
@@ -448,8 +463,19 @@ const imapProvider = {
         let raw;
         try { raw = await client.fetch(n); } catch { continue; }
         const body = bodyOf(raw);
+        /*
+         * Read the files BEFORE `raw` is truncated below.
+         *
+         * `raw` is clipped to 200 KB for the stored record, which is
+         * ample for reading an email and nowhere near a PDF: a resume
+         * survives base64 at roughly four thirds of its size, so a 300 KB
+         * CV is 400 KB of the very thing being thrown away. Extracting
+         * afterwards would have found a truncated part every time.
+         */
+        const attachments = attachmentsOf(raw);
         const messageId = header(raw, 'Message-ID') || `imap-${mailbox.id}-${n}`;
         out.push({
+          attachments,
           messageId,
           from: header(raw, 'From'),
           to: header(raw, 'To') || mailbox.address,
@@ -457,8 +483,10 @@ const imapProvider = {
           text: typeof body === 'string' ? body : body.text,
           raw: raw.slice(0, 200000),
           receivedAt: new Date(header(raw, 'Date') || Date.now()),
-          attachmentName: typeof body === 'string' ? null : (body.attachment || null),
-          hasAttachment: typeof body === 'string' ? false : !!body.attachment,
+          attachmentName: (attachments[0] && attachments[0].filename)
+            || (typeof body === 'string' ? null : (body.attachment || null)),
+          hasAttachment: attachments.length > 0
+            || (typeof body === 'string' ? false : !!body.attachment),
         });
       }
       return out;
@@ -497,9 +525,13 @@ function httpProvider(name) {
             { headers: auth });
           if (!full.ok) continue;
           const { raw } = await full.json();
-          const text = Buffer.from(String(raw || ''), 'base64url').toString('utf8');
+          // latin1 for the same reason the IMAP socket uses it: every
+          // byte of an attachment has to survive the round trip.
+          const text = Buffer.from(String(raw || ''), 'base64url').toString('latin1');
           const body = bodyOf(text);
+          const attachments = attachmentsOf(text);
           out.push({
+            attachments,
             messageId: header(text, 'Message-ID') || m.id,
             from: header(text, 'From'),
             to: header(text, 'To') || mailbox.address,
@@ -507,8 +539,10 @@ function httpProvider(name) {
             text: typeof body === 'string' ? body : body.text,
             raw: text.slice(0, 200000),
             receivedAt: new Date(header(text, 'Date') || Date.now()),
-            attachmentName: typeof body === 'string' ? null : (body.attachment || null),
-            hasAttachment: typeof body === 'string' ? false : !!body.attachment,
+            attachmentName: (attachments[0] && attachments[0].filename)
+              || (typeof body === 'string' ? null : (body.attachment || null)),
+            hasAttachment: attachments.length > 0
+              || (typeof body === 'string' ? false : !!body.attachment),
           });
         }
         return out;
@@ -521,17 +555,52 @@ function httpProvider(name) {
       const res = await fetch(url, { headers: auth });
       if (!res.ok) throw new Error(`Outlook refused the request (${res.status})`);
       const { value = [] } = await res.json();
-      return value.map((m) => ({
-        messageId: m.internetMessageId || m.id,
-        from: m.from?.emailAddress?.address || '',
-        to: (m.toRecipients || [])[0]?.emailAddress?.address || mailbox.address,
-        subject: m.subject || '',
-        text: String(m.body?.content || '').replace(/<[^>]+>/g, ' '),
-        raw: String(m.body?.content || '').slice(0, 200000),
-        receivedAt: new Date(m.receivedDateTime || Date.now()),
-        attachmentName: null,
-        hasAttachment: !!m.hasAttachments,
-      }));
+
+      /*
+       * Graph does not hand the files over with the message.
+       *
+       * $select can say `hasAttachments` and nothing more, so a second
+       * request per message is the only way to get the bytes - which is
+       * why this asks ONLY for the messages that say they have one,
+       * rather than a call per message on every sync.
+       */
+      const out = [];
+      for (const m of value) {
+        let attachments = [];
+        if (m.hasAttachments) {
+          try {
+            const a = await fetch(
+              `https://graph.microsoft.com/v1.0/me/messages/${m.id}/attachments`,
+              { headers: auth });
+            if (a.ok) {
+              const { value: files = [] } = await a.json();
+              attachments = files
+                .filter((f) => f.contentBytes && !f.isInline)
+                .slice(0, 8)
+                .map((f) => ({
+                  filename: f.name || 'attachment',
+                  contentType: String(f.contentType || '').toLowerCase(),
+                  buffer: Buffer.from(f.contentBytes, 'base64'),
+                  size: Number(f.size) || 0,
+                }));
+            }
+          } catch { /* the message is still worth importing without it */ }
+        }
+
+        out.push({
+          messageId: m.internetMessageId || m.id,
+          from: m.from?.emailAddress?.address || '',
+          to: (m.toRecipients || [])[0]?.emailAddress?.address || mailbox.address,
+          subject: m.subject || '',
+          text: String(m.body?.content || '').replace(/<[^>]+>/g, ' '),
+          raw: String(m.body?.content || '').slice(0, 200000),
+          receivedAt: new Date(m.receivedDateTime || Date.now()),
+          attachments,
+          attachmentName: (attachments[0] && attachments[0].filename) || null,
+          hasAttachment: !!m.hasAttachments,
+        });
+      }
+      return out;
     },
   };
 }
