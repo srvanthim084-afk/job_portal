@@ -32,6 +32,29 @@ if (existsSync(envFile) && typeof process.loadEnvFile === 'function') {
 const BASE = (process.env.TL_URL || 'http://localhost:4323/').replace(/\/$/, '');
 const PASSWORD = process.env.TL_PASSWORD || 'TeamLink@2026';
 
+/*
+ * The accounts this actually signs in with.
+ *
+ * It used to be recruiter@teamlink.com, which was a seeded demo login
+ * and went when the demo data did. Every check past the first one then
+ * failed with UNAUTHENTICATED - fifteen of them - which reads like the
+ * intake is broken when the only thing broken was the password this
+ * file types.
+ *
+ * Passed in, never written into the page, and overridable so a
+ * deployment with different accounts does not have to edit the test.
+ */
+const RECRUITER = {
+  email: process.env.TL_RECRUITER || 'teamlinkmed001@tmlink.in',
+  password: process.env.TL_RECRUITER_PASSWORD || 'Teamlink@2026',
+  role: 'recruiter',
+};
+const ADMIN = {
+  email: process.env.TL_ADMIN || 'admin@teamlink.com',
+  password: process.env.TL_ADMIN_PASSWORD || PASSWORD,
+  role: 'admin',
+};
+
 let failed = 0;
 const check = async (name, fn) => {
   try { await fn(); console.log(`  PASS  ${name}`); }
@@ -179,8 +202,7 @@ const stamp = Date.now();
 let mailboxId, javaJobId, reactJobId;
 
 await check('a recruiter connects the inbox Naukri replies to', async () => {
-  await recruiter.api('post', '/auth/login',
-    { email: 'recruiter@teamlink.com', password: PASSWORD, role: 'recruiter' });
+  await recruiter.api('post', '/auth/login', RECRUITER);
   await recruiter.page.evaluate(() => window.TL.refresh());
   await recruiter.page.waitForTimeout(700);
 
@@ -199,10 +221,17 @@ await check('a recruiter connects the inbox Naukri replies to', async () => {
 });
 
 await check('the requirements the emails refer to exist', async () => {
-  const companyId = await recruiter.page.evaluate(() => {
-    const rec = (DATA.recruiters || []).find((r) => r.email === 'recruiter@teamlink.com');
-    return rec ? rec.companyId : (DATA.companies[0] || {}).id;
-  });
+  /*
+   * The client, from the API rather than from a seeded fixture.
+   *
+   * This used to look the recruiter up in DATA by the demo address and
+   * read their companyId off it, which stopped working the moment that
+   * account no longer existed. Asking the server which clients this
+   * recruiter can see is both correct and what the screen does.
+   */
+  const { companies = [] } = await recruiter.api('get', '/companies');
+  const companyId = (companies[0] || {}).id;
+  must(companyId, 'this recruiter can see no client to raise a requirement for');
   const java = await recruiter.api('post', '/jobs', {
     title: 'Java Developer', companyId, location: 'Hyderabad', mode: 'Hybrid',
     exp: '3-5 yrs', skills: ['Java', 'Spring Boot'], status: 'open',
@@ -432,12 +461,50 @@ await check('the candidate can sign in with the credentials that were emailed', 
  * ------------------------------------------------------------------ */
 try {
   const cleaner = await open();
-  await cleaner.api('post', '/auth/login',
-    { email: 'admin@teamlink.com', password: PASSWORD, role: 'admin' });
+  await cleaner.api('post', '/auth/login', ADMIN);
   const gone = await cleaner.api('post', '/intake/cleanup', { confirm: true });
   if (gone.mailboxes) {
     console.log(`  cleaned up: ${gone.mailboxes} sample mailbox(es), `
-      + `${gone.applications} application(s), ${gone.candidates} candidate(s)`);
+      + `${gone.applications} application(s), ${gone.candidates} candidate(s), `
+      + `${gone.logins} login(s)`);
+  }
+
+
+  /*
+   * The two requirements as well.
+   *
+   * intake_cleanup_mock removes the mailbox and the people who exist
+   * only because of it, and it has no business touching jobs - a real
+   * requirement raised by a recruiter must survive a cleanup. But these
+   * two were raised by this file, so this file takes them away, and
+   * until it did every run left another "Java Developer" and another
+   * "React Developer" on the recruiter's board.
+   */
+  let removedJobs = 0;
+  for (const id of [javaJobId, reactJobId]) {
+    if (!id) continue;
+    try { await cleaner.api('del', `/jobs/${id}`); removedJobs++; }
+    catch (e) { console.log(`  NOTE: requirement ${id} was left behind (${e.message}).`); }
+  }
+  if (removedJobs) console.log(`  cleaned up: ${removedJobs} test requirement(s)`);
+
+  /*
+   * The logins as well, and this is checked rather than assumed.
+   *
+   * The cleanup used to delete the candidate and leave the account they
+   * signed in with. Six of them had built up that way, each one a
+   * credential with nobody attached to it, in a database that should
+   * have held two.
+   *
+   * Last, because it is a report rather than a removal: a check that
+   * throws must not be standing between the cleanup and the requirements
+   * it still has to take away.
+   */
+  const { recruiters = [] } = await cleaner.api('get', '/staff/recruiters');
+  const stray = recruiters.filter((r) => /^kiran\./.test(r.email || ''));
+  if (stray.length) {
+    console.log(`  NOTE: ${stray.length} recruiter login(s) from earlier runs remain: `
+      + stray.map((r) => r.email).join(', '));
   }
 } catch (e) {
   console.log(`  NOTE: the sample mailboxes were left behind (${e.message}).`);
