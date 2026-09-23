@@ -35,6 +35,7 @@ import { parseMessage, matchRequirement, DEFAULT_RULES } from './parse.js';
 import { matchCandidate } from '../ai/match.js';
 import { screenApplication } from '../ai/screening.js';
 import { mailboxProvider, mailboxReadiness, newMessageId } from './mailbox.js';
+import { looksLikeDigest, parseNaukriDigest } from './naukri.js';
 
 const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 
@@ -86,6 +87,26 @@ export async function processMessage(session, { mailbox, message, rowId }) {
        extra.candidateId || null, extra.applicationId || null]));
     return { status, reason, ...extra };
   };
+
+  /*
+   * Naukri's daily digest, which is most of what actually arrives.
+   *
+   * It is not one application per email: it is a summary carrying the
+   * top few candidates for one requirement, and the single-candidate
+   * parser below finds no labelled block in it. Every one of them used
+   * to end as "no candidate name could be read" - 87 real applications
+   * saying nothing useful.
+   *
+   * Handled first, because a digest that also happens to satisfy the
+   * single-candidate parser would otherwise import one person and
+   * silently drop the rest.
+   */
+  if (looksLikeDigest(message.text || message.raw || '')) {
+    const digest = parseNaukriDigest(message.text || '', { subject: message.subject });
+    if (digest.candidates.length) {
+      return importDigest(session, { mailbox, message, rowId, digest, finish });
+    }
+  }
 
   if (!parsed.isApplication) {
     return finish('ignored', parsed.why);
@@ -347,6 +368,181 @@ export async function processMessage(session, { mailbox, message, rowId }) {
 /* ------------------------------------------------------------------ *
  * the message to the candidate
  * ------------------------------------------------------------------ */
+
+
+/**
+ * Import every candidate in one Naukri digest.
+ *
+ * A digest is one email and several applicants, so one row in the queue
+ * has to account for all of them. The result says how many were
+ * imported, how many were already known and how many could not be
+ * placed, rather than collapsing to a single status that is wrong for
+ * most of them.
+ *
+ * WHAT IS NOT IN A DIGEST: an email address or a phone number. Naukri
+ * keeps contact details behind the "View" link on their site. A missing
+ * field leaves that column empty; it never rejects the candidate, since
+ * throwing away a real application because one field is absent is the
+ * worst available answer. What depends on an address degrades honestly:
+ * no portal account is created, and every send records
+ * `skipped_no_address` instead of pretending.
+ */
+async function importDigest(session, { mailbox, message, rowId, digest, finish }) {
+  const jobs = await withUser(ENGINE, async (cl) => (await cl.query(
+    `select j.*, co.name as company_name from jobs j
+       left join companies co on co.id = j.company_id
+      where j.status = 'open' and not j.paused and not j.archived limit 500`)).rows);
+
+  const shaped = jobs.map((j) => ({
+    ...toJob(j), companyName: j.company_name, status: 'open',
+    recruiterId: j.recruiter_id, createdAt: j.created_at, publishedAt: j.published_at,
+  }));
+
+  /*
+   * The digest names its requirement in the body - "87 candidates
+   * applied to your job today / Human Resource Recruiter" - which is a
+   * far better signal than guessing from a candidate's skills. It is
+   * matched against the open requirements by title; if none matches, the
+   * candidates are still created and the applications wait for a human,
+   * because putting somebody in front of the wrong client is not a
+   * recoverable mistake.
+   */
+  const wanted = String(digest.jobTitle || '').toLowerCase().trim();
+  const job = wanted
+    ? shaped.find((j) => String(j.title || '').toLowerCase().trim() === wanted)
+      || shaped.find((j) => String(j.title || '').toLowerCase().includes(wanted))
+      || shaped.find((j) => wanted.includes(String(j.title || '').toLowerCase().trim()))
+    : null;
+
+  const out = { imported: 0, duplicates: 0, unmapped: 0, candidates: [] };
+  let firstCandidateId = null;
+  let firstApplicationId = null;
+
+  for (const person of digest.candidates) {
+    /*
+     * Finding somebody again without an address to match on.
+     *
+     * The usual keys - email, phone - are simply absent here, so the
+     * match is the name together with where they are and who they work
+     * for. Name alone would merge two different people who happen to
+     * share one, which is common and unrecoverable.
+     */
+    const existing = await withUser(ENGINE, async (cl) => (await cl.query(
+      `select * from candidates
+        where lower(name) = lower($1)
+          and coalesce(lower(location), '') = coalesce(lower($2), '')
+          and coalesce(lower(current_company), '') = coalesce(lower($3), '')
+        limit 1`,
+      [person.name, person.location || '', person.currentCompany || ''])).rows[0]);
+
+    let candidateId;
+    if (existing) {
+      candidateId = existing.id;
+      out.duplicates++;
+      // Fill the gaps, never overwrite: what is already on the profile
+      // has usually been through a human, and a digest has not.
+      await withUser(ENGINE, (cl) => cl.query(
+        `update candidates set
+            title = coalesce(nullif(title, ''), $2),
+            exp = coalesce(nullif(exp, ''), $3),
+            exp_years = coalesce(exp_years, $4),
+            ctc = coalesce(nullif(ctc, ''), $5),
+            notice_period = coalesce(nullif(notice_period, ''), $6),
+            education = coalesce(nullif(education, ''), $7),
+            preferred_location = coalesce(nullif(preferred_location, ''), $8),
+            skills = case when coalesce(array_length(skills, 1), 0) = 0
+                          then $9::text[] else skills end,
+            updated_at = now()
+          where id = $1`,
+        [candidateId, person.title || null, person.experience || null,
+         person.expYears, person.currentCtc || null, person.noticePeriod || null,
+         person.education || null, person.preferredLocation || null,
+         person.skills || []]));
+    } else {
+      candidateId = newId('cand');
+      await withUser(ENGINE, (cl) => cl.query(
+        `insert into candidates
+           (id, name, email, phone, location, preferred_location, title,
+            current_company, exp, exp_years, ctc, notice_period, education,
+            skills, technical_skills, owner_recruiter_id)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14,$15)`,
+        [candidateId, person.name,
+         // Absent in a digest. NULL rather than '' so every "do we have
+         // an address" check gives the right answer.
+         person.email || null, person.phone || null,
+         person.location || null, person.preferredLocation || null,
+         person.title || null, person.currentCompany || null,
+         person.experience || null, person.expYears,
+         person.currentCtc || null, person.noticePeriod || null,
+         person.education || null, person.skills || [],
+         mailbox.recruiter_id || null]));
+      out.imported++;
+    }
+
+    firstCandidateId = firstCandidateId || candidateId;
+    out.candidates.push({ id: candidateId, name: person.name, new: !existing });
+
+    if (!job) { out.unmapped++; continue; }
+
+    // One application per person per requirement, however many digests
+    // mention them.
+    const already = await withUser(ENGINE, async (cl) => (await cl.query(
+      `select id from applications where candidate_id = $1 and job_id = $2 limit 1`,
+      [candidateId, job.id])).rows[0]);
+    if (already) { firstApplicationId = firstApplicationId || already.id; continue; }
+
+    const applicationId = newId('app');
+    await withUser(ENGINE, (cl) => cl.query(
+      `insert into applications
+         (id, job_id, candidate_id, recruiter_id, stage, source, import_method,
+          source_message_id, imported_by, imported_at)
+       values ($1,$2,$3,$4,'applied','naukri','recruiter_email',$5,$6,now())`,
+      [applicationId, job.id, candidateId, mailbox.recruiter_id || null,
+       message.messageId, mailbox.recruiter_id || null]));
+
+    firstApplicationId = firstApplicationId || applicationId;
+
+    await withUser(ENGINE, (cl) => cl.query(
+      `select app_event($1,$2,'application.created',$3,'system',$4::jsonb)`,
+      [applicationId, candidateId,
+       `Imported from a Naukri response summary received by ${mailbox.address}`,
+       JSON.stringify({ source: 'naukri', digest: true, subject: message.subject })]));
+
+    // Screened like any other application, so the recruiter sees a score
+    // rather than a row that says only where it came from.
+    try { await screenApplication(applicationId, { actor: 'system' }); }
+    catch (err) { console.error('[intake] screening failed:', err.message); }
+  }
+
+  const summary = `${out.imported} imported, ${out.duplicates} already known`
+    + (out.unmapped ? `, ${out.unmapped} awaiting a requirement` : '')
+    + (digest.jobTitle ? ` — "${digest.jobTitle}"` : '')
+    + (job ? '' : ' (no open requirement matches that title)');
+
+  /*
+   * The status is the one that describes MOST of what happened. A digest
+   * where nothing could be placed is not "imported", and one where
+   * everybody was already known is not "needs review".
+   */
+  const status = !job ? 'needs_mapping'
+    : out.imported ? 'processed'
+    : out.duplicates ? 'duplicate'
+    : 'needs_review';
+
+  return finish(status, summary, {
+    candidateId: firstCandidateId,
+    applicationId: firstApplicationId,
+    parsed: {
+      digest: true,
+      jobTitle: digest.jobTitle,
+      matchedJobId: job ? job.id : null,
+      candidates: out.candidates,
+      imported: out.imported,
+      duplicates: out.duplicates,
+      unmapped: out.unmapped,
+    },
+  });
+}
 
 async function notifyCandidate({ candidate, job, applicationId, reference, credentials }) {
   const base = config.publicOrigin.replace(/\/$/, '');

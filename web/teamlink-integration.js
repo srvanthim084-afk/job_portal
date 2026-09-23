@@ -4149,10 +4149,22 @@
         'color:var(--text-soft);margin-bottom:6px">Connected mailboxes</div>' +
         (boxes.length
           ? boxes.map(function (b) {
+              /*
+               * Three states, not two.
+               *
+               * "Not configured" was shown for everything that was not
+               * connected, including a mailbox whose settings are all
+               * present and whose password the server rejected. That
+               * sends somebody to check environment variables that are
+               * already correct. A refused login is a different problem
+               * with a different fix, and says so.
+               */
               var ok = b.status === 'connected';
+              var missing = (b.missingConfig || []).length > 0;
+              var label = ok ? 'Connected' : missing ? 'Not configured' : 'Login refused';
               return '<div class="fcr-modal-row"><span><b>' + esc(b.address) + '</b> ' +
                 '<span class="badge ' + (ok ? 'badge-ok' : 'badge-neutral') + '">' +
-                esc(ok ? 'Connected' : 'Not configured') + '</span>' +
+                esc(label) + '</span>' +
                 '<div style="font-size:12px;color:var(--text-soft)">' +
                 esc(b.provider) + (b.recruiterName ? ' · ' + esc(b.recruiterName) : '') +
                 (b.lastSyncAt ? ' · last read ' + new Date(b.lastSyncAt).toLocaleString('en-GB') : ' · never read') +

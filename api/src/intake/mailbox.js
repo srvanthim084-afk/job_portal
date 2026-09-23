@@ -20,6 +20,7 @@
  */
 import { connect as tlsConnect } from 'node:tls';
 import { randomUUID } from 'node:crypto';
+import { bodyOf } from './mime.js';
 
 /* ------------------------------------------------------------------ *
  * where a mailbox's secret comes from
@@ -185,7 +186,32 @@ class Imap {
   /** Headers and the first part of the body, for one message. */
   async fetch(seq) {
     const out = await this.send(`FETCH ${seq} (BODY.PEEK[])`);
-    return out;
+
+    /*
+     * The message, not the conversation about it.
+     *
+     * A FETCH response wraps the message in IMAP framing:
+     *
+     *     * 4 FETCH (BODY[] {41993}
+     *     <the RFC822 message>
+     *     )
+     *     a4 OK Fetch completed
+     *
+     * Returning all of that as `raw` meant the MIME parser was handed a
+     * document whose first line is IMAP protocol, so it found no
+     * content-type, treated the lot as plain text, and extracted the
+     * trailer - "a4 OK Fetch completed" - as the body of the email.
+     *
+     * The literal's byte count is in braces, so the message is exactly
+     * that many bytes after the line it sits on. Taken by LENGTH rather
+     * than by looking for the closing bracket, because a message
+     * containing ")" on its own line is ordinary and would truncate.
+     */
+    const lit = /\{(\d+)\}\r?\n/.exec(out);
+    if (!lit) return out;
+
+    const from = lit.index + lit[0].length;
+    return out.slice(from, from + Number(lit[1]));
   }
 
   async logout() {
@@ -214,43 +240,6 @@ function decodeMime(v) {
 }
 
 /** The readable body: text/plain if there is one, else the HTML stripped. */
-function bodyOf(raw) {
-  const boundary = (/boundary="?([^";\r\n]+)"?/i.exec(raw) || [])[1];
-  const decodePart = (headers, body) => {
-    if (/quoted-printable/i.test(headers)) {
-      return body.replace(/=\r?\n/g, '')
-        .replace(/=([0-9A-F]{2})/gi, (_, h) => String.fromCharCode(parseInt(h, 16)));
-    }
-    if (/base64/i.test(headers)) {
-      try { return Buffer.from(body.replace(/\s+/g, ''), 'base64').toString('utf8'); }
-      catch { return body; }
-    }
-    return body;
-  };
-
-  if (!boundary) {
-    const idx = raw.search(/\r?\n\r?\n/);
-    return idx < 0 ? raw : decodePart(raw.slice(0, idx), raw.slice(idx).replace(/^\r?\n\r?\n/, ''));
-  }
-
-  let plain = '';
-  let html = '';
-  let attachment = '';
-  for (const part of raw.split(new RegExp(`--${boundary.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))) {
-    const idx = part.search(/\r?\n\r?\n/);
-    if (idx < 0) continue;
-    const h = part.slice(0, idx);
-    const b = part.slice(idx).replace(/^\r?\n\r?\n/, '');
-    const filename = (/filename="?([^"\r\n;]+)"?/i.exec(h) || [])[1];
-    if (filename) { attachment = attachment || filename; continue; }
-    if (/text\/plain/i.test(h)) plain = plain || decodePart(h, b);
-    else if (/text\/html/i.test(h)) html = html || decodePart(h, b);
-  }
-
-  const text = plain || html.replace(/<[^>]+>/g, ' ');
-  return { text, attachment };
-}
-
 /* ------------------------------------------------------------------ *
  * providers
  * ------------------------------------------------------------------ */

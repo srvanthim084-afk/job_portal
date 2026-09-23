@@ -147,6 +147,45 @@ export default function intakeRoutes() {
    * Nothing is read and nothing is changed; the outcome is written to
    * the mailbox so the list stops disagreeing with reality.
    */
+  /**
+   * POST /api/intake/mailboxes/:id/rescan
+   *
+   * Forget what was read, so the next sync reads it again.
+   *
+   * Every message is recorded by its provider id, which is what stops
+   * one email creating the same application twice. It also means an
+   * email read by a FAULTY parser is never looked at again: the four
+   * Naukri digests that failed while the MIME reader was broken stayed
+   * failed after it was fixed, because the sync saw them as already
+   * processed.
+   *
+   * This drops the RECORD of those emails, not the emails themselves -
+   * they are still in the mailbox and are read again on the next sync.
+   * Candidates and applications already created from them are untouched;
+   * the importer finds them again and treats them as duplicates.
+   */
+  r.post('/intake/mailboxes/:id/rescan', requireAuth(), requireRole('recruiter', 'admin'),
+    wrap(async (req, res) => {
+      const b = parse(z.object({
+        // By default only the ones that never produced anything, because
+        // re-reading a successful import is pointless work.
+        onlyUnresolved: z.boolean().optional(),
+      }), req.body);
+
+      const box = await withUser(req.session, async (c) => (await c.query(
+        `select id from email_mailboxes where id=$1`, [req.params.id])).rows[0]);
+      if (!box) throw notFound('That mailbox could not be found.');
+
+      const cleared = await withUser(ENGINE, async (c) => (await c.query(
+        `delete from email_messages
+          where mailbox_id = $1
+            and ($2::boolean is not true
+                 or status in ('needs_review','failed','ignored','new'))
+          returning id`, [req.params.id, b.onlyUnresolved !== false])).rowCount);
+
+      res.json({ cleared, note: 'The next sync will read these emails again.' });
+    }));
+
   r.post('/intake/mailboxes/:id/test', requireAuth(), requireRole('recruiter', 'bde', 'admin'),
     wrap(async (req, res) => {
       const box = await withUser(req.session, async (c) => (await c.query(
