@@ -12,9 +12,11 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { withUser } from '../db.js';
-import { wrap, badRequest, notFound, forbidden } from '../errors.js';
+import { wrap, badRequest, notFound, forbidden, ApiError } from '../errors.js';
 import { requireAuth, requireRole } from '../auth.js';
 import { toCandidate, toApplication, attachPrimary } from '../shapes.js';
+import { inviteCandidate, resendCredentials } from '../notify/invite.js';
+import { hashPassword } from '../auth.js';
 
 const list = (v) => {
   if (v === undefined || v === null || v === '') return [];
@@ -226,6 +228,12 @@ export default function candidateRoutes() {
       preferredWorkModes: z.array(z.string().max(40)).max(10).optional(),
       isPrivate: z.boolean().optional(),
       whatsappOptIn: z.boolean().optional(),
+      // "Stop contacting me." Recorded when a call hears it, and
+      // settable here so an emailed or spoken request can be honoured
+      // without somebody editing the database by hand. Every outbound
+      // channel checks it - calls, alerts, stage updates and the retry
+      // sweep - so one flag stops all of them.
+      doNotContact: z.boolean().optional(),
     });
     const out = schema.safeParse(req.body || {});
     if (!out.success) {
@@ -248,6 +256,7 @@ export default function candidateRoutes() {
       certifications: 'certifications', languages: 'languages',
       preferredWorkModes: 'preferred_work_modes',
       isPrivate: 'is_private', whatsappOptIn: 'whatsapp_opt_in',
+      doNotContact: 'do_not_contact',
     };
 
     const cand = await withUser(req.session, async (c) => {
@@ -269,6 +278,157 @@ export default function candidateRoutes() {
     });
 
     res.json({ candidate: toCandidate(cand) });
+  }));
+
+  /**
+   * GET /api/candidates/:id/invites
+   *
+   * Did this person ever get their login, and on which channel?
+   *
+   * The question a recruiter asks when somebody they imported has not
+   * signed in. RLS on candidate_invites answers it only for people they
+   * can already see, and the candidate can see their own.
+   *
+   * NO PASSWORD IS RETURNED, EVER. `hadCredentials` says whether the
+   * message carried one; the value itself existed for the length of one
+   * function call and was never stored.
+   */
+  r.get('/candidates/:id/invites', requireAuth(), wrap(async (req, res) => {
+    if (req.session.role === 'candidate' && req.session.profileId !== req.params.id) {
+      throw forbidden('You can only see your own messages.');
+    }
+    const rows = await withUser(req.session, async (c) => (await c.query(
+      `select channel, status, to_address, provider, error,
+              had_credentials, created_at
+         from candidate_invites where candidate_id = $1
+        order by created_at desc limit 50`, [req.params.id])).rows);
+
+    res.json({
+      invites: rows.map((d) => ({
+        channel: d.channel,
+        status: d.status,
+        to: d.to_address || undefined,
+        provider: d.provider || undefined,
+        error: d.error || undefined,
+        hadCredentials: !!d.had_credentials,
+        at: new Date(d.created_at).toISOString(),
+      })),
+    });
+  }));
+
+  /**
+   * POST /api/candidates/:id/invite
+   *
+   * Give this person a way into the portal, and tell them.
+   *
+   * Two cases, and the difference matters:
+   *
+   *   no account yet  -> create one and send the credentials
+   *   has an account  -> issue a NEW temporary password, but only if the
+   *                      message actually leaves. See resendCredentials:
+   *                      committing first and sending second would lock
+   *                      somebody out the moment a provider is down.
+   *
+   * NO PASSWORD IS RETURNED. The response says which channels the
+   * message left on, and nothing else.
+   */
+  r.post('/candidates/:id/invite', requireAuth(), requireRole('recruiter', 'bde', 'admin'),
+    wrap(async (req, res) => {
+      const c = await withUser(req.session, async (cl) => (await cl.query(
+        `select id, name, email, phone, user_id, do_not_contact
+           from candidates where id = $1`, [req.params.id])).rows[0]);
+      if (!c) throw notFound('That candidate could not be found.');
+
+      if (c.do_not_contact) {
+        throw new ApiError(409, 'DO_NOT_CONTACT',
+          `${c.name} has asked not to be contacted.`);
+      }
+      if (!c.email) {
+        throw badRequest('That candidate has no email address, so there is '
+          + 'nowhere to send a login.');
+      }
+
+      const who = { id: c.id, name: c.name, email: c.email, phone: c.phone };
+      const out = c.user_id
+        ? await resendCredentials(who, { invitedBy: req.session.userId || 'recruiter' })
+        : await inviteCandidate(who, { invitedBy: req.session.userId || 'recruiter' });
+
+      const sent = !!(out.sent || out.invited);
+      res.json({
+        sent,
+        // Which case it was, so the screen can say "account created" or
+        // "new password issued" rather than guessing.
+        accountCreated: !!out.accountCreated,
+        passwordReplaced: sent && !!c.user_id,
+        to: c.email,
+        delivery: out.delivery || {},
+        // Why nothing happened, when nothing did. Never a password.
+        reason: out.reason || undefined,
+      });
+    }));
+
+  /**
+   * POST /api/staff/recruiters — give a colleague a recruiter login.
+   *
+   * Admin only. There was no way to do this at all: the seeded accounts
+   * were the only recruiters that could ever exist, so a real company
+   * could not add its own staff without someone editing the database.
+   *
+   * The password is set here and returned NOWHERE. It is hashed into
+   * `users` with must_change_password, so the person chooses their own
+   * the first time they sign in.
+   */
+  r.post('/staff/recruiters', requireAuth(), requireRole('admin'), wrap(async (req, res) => {
+    const schema = z.object({
+      name: z.string().trim().min(2).max(120),
+      email: z.string().trim().email().max(160),
+      password: z.string().min(8).max(200),
+      title: z.string().trim().max(120).optional(),
+      companyId: z.string().trim().max(64).optional(),
+    });
+    const out = schema.safeParse(req.body || {});
+    if (!out.success) {
+      const details = {};
+      for (const i of out.error.issues) details[i.path.join('.') || 'form'] = i.message;
+      throw badRequest('Please check the highlighted fields.', details);
+    }
+    const b = out.data;
+    const email = b.email.toLowerCase();
+
+    const made = await withUser(req.session, async (c) => {
+      const clash = await c.query(`select 1 from users where lower(email)=$1`, [email]);
+      if (clash.rowCount) {
+        throw new ApiError(409, 'EMAIL_TAKEN', 'That address already signs in.');
+      }
+      return (await c.query(`select staff_recruiter_create($1,$2,$3,$4,$5) as out`,
+        [b.name, email, await hashPassword(b.password),
+         b.title || 'Recruiter', b.companyId || null])).rows[0].out;
+    });
+
+    res.status(201).json({ recruiter: made });
+  }));
+
+  /**
+   * POST /api/admin/purge-demo
+   *
+   * Empty the portal of the seeded data. Admin only, and it does nothing
+   * without `confirm: true` - the same counts come back either way, so
+   * the decision is made on the numbers rather than after them.
+   */
+  r.post('/admin/purge-demo', requireAuth(), requireRole('admin'), wrap(async (req, res) => {
+    const schema = z.object({
+      confirm: z.boolean().optional(),
+      keep: z.array(z.string().email()).min(1).max(20).optional(),
+    });
+    const out = schema.safeParse(req.body || {});
+    if (!out.success) throw badRequest('Check the confirm flag and the keep list.');
+
+    const keep = out.data.keep && out.data.keep.length
+      ? out.data.keep
+      : ['admin@teamlink.com'];
+
+    res.json(await withUser(req.session, async (c) => (await c.query(
+      `select purge_demo_data($1,$2) as out`, [!!out.data.confirm, keep])).rows[0].out));
   }));
 
   /** Recruiter notes. RLS keeps one recruiter's notes from another's view. */

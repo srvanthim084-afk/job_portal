@@ -360,6 +360,10 @@
     get:  function (p, o) { return request('GET', p, undefined, o); },
     post: function (p, b, o) { return request('POST', p, b, o); },
     put:  function (p, b, o) { return request('PUT', p, b, o); },
+    // The settings routes take a partial update rather than a whole
+    // object, so a screen that shows six of thirty fields cannot blank
+    // the other twenty-four by saving.
+    patch: function (p, b, o) { return request('PATCH', p, b, o); },
     del:  function (p, o) { return request('DELETE', p, undefined, o); },
     say: say,
   };
@@ -4171,12 +4175,32 @@
         '<div class="fgroup"><label>Email address</label>' +
         '<input id="tlIntakeAddr" placeholder="kiran@teamlink.com"></div>' +
         '<div class="fgroup"><label>Provider</label><select id="tlIntakeProvider">' +
-        '<option value="mock">Demo inbox (sample Naukri emails)</option>' +
-        '<option value="imap">IMAP (most company mailboxes)</option>' +
-        '<option value="gmail">Gmail</option>' +
-        '<option value="outlook">Outlook</option>' +
+        // IMAP first, and the demo inbox is not offered at all.
+        //
+        // It used to be the first option and therefore the DEFAULT, so
+        // connecting a real company address without touching the
+        // dropdown attached it to a generator of sample Naukri emails.
+        // The ATS filled with applications from candidates who do not
+        // exist, indistinguishable on screen from real ones - 86 of them
+        // here before anybody noticed. The sample feed still exists for
+        // tests, through the API, where choosing it is deliberate.
+        /*
+         * IMAP only.
+         *
+         * Gmail and Outlook here mean the REST APIs, which authenticate
+         * with an OAuth access token and nothing else. This deployment's
+         * mail is self-hosted (mail.tmlink.in), so there is no such
+         * token to obtain - and picking Gmail for a self-hosted address
+         * produced a mailbox that asked for a credential which cannot
+         * exist. It happened three times.
+         *
+         * The providers are still in the API for a deployment that
+         * genuinely uses Google or Microsoft; they are not offered here,
+         * where every choice but one is a dead end.
+         */
+        '<option value="imap">IMAP</option>' +
         '</select></div>' +
-        '<div class="req-note" style="font-size:12px">The password or token is never entered here. ' +
+        '<div class="req-note" style="font-size:12px">The mailbox password is never entered here. ' +
         'It is read from the server’s environment, keyed on the address — connect the ' +
         'mailbox and TeamLink will tell you exactly which variable to set.</div>' +
         '<div style="margin-top:10px"><button class="btn btn-primary btn-sm" onclick="TL.intake.connect()">Connect mailbox</button></div>' +
@@ -4533,18 +4557,51 @@
     try { addTopScrollbars(); } catch (e) {}
   });
 
+  /*
+   * The score, where the stage badge used to say nothing.
+   *
+   * Every application is screened automatically on arrival, and the
+   * result - a percentage against the requirement, from the weights in
+   * AI Settings - was written to the application and shown nowhere. The
+   * recruiter saw an "AI Screening" badge instead, which said the
+   * software had run without saying what it found.
+   *
+   * The score cell now prefers the SCREENING score and explains which
+   * one it is, falling back to the keyword match when nothing has been
+   * screened yet. An unscored application shows an em dash rather than
+   * "undefined%".
+   */
+  function showScores() {
+    var badges = document.querySelectorAll('span.score');
+    for (var i = 0; i < badges.length; i++) {
+      var b = badges[i];
+      if (b.getAttribute('data-tl-score') === '1') continue;
+
+      var row = b.closest ? b.closest('tr') : null;
+      var cid = row ? reachCandidateOf(row) : null;
+      var app = cid ? reachApplicationOfRow(row, cid) : null;
+
+      if (app && app.aiScore != null) {
+        b.textContent = app.aiScore + '%';
+        b.title = 'AI screening score — how well this resume matches the '
+          + 'requirement, scored automatically when they applied'
+          + (app.matchScore != null ? '. Keyword match: ' + app.matchScore + '%' : '');
+        b.setAttribute('data-tl-score', '1');
+        continue;
+      }
+
+      if (/^\s*(undefined|null|NaN)%/.test(b.textContent || '')) {
+        b.textContent = '\u2014';
+        b.title = 'Not scored yet';
+        b.setAttribute('data-tl-score', '1');
+      }
+    }
+  }
+
   var realRenderForScores = window.render;
   window.render = function () {
     var out = realRenderForScores.apply(this, arguments);
-    try {
-      var badges = document.querySelectorAll('span.score');
-      for (var i = 0; i < badges.length; i++) {
-        var b = badges[i];
-        if (!/^\s*(undefined|null|NaN)%/.test(b.textContent || '')) continue;
-        b.textContent = '\u2014';
-        b.title = 'Not scored yet';
-      }
-    } catch (e) { /* never break a render */ }
+    try { showScores(); } catch (e) { /* never break a render */ }
     return out;
   };
 
@@ -4564,6 +4621,785 @@
   window.render = function () {
     var out = realRenderForIntake.apply(this, arguments);
     try { enhanceApplications(); } catch (e) { /* never break a render */ }
+    return out;
+  };
+
+  /* ------------------------------------------------------------------ *
+   * 19. Every channel a candidate hears from us on, on the recruiter's
+   *     own screen
+   *
+   * Two gaps, one screen.
+   *
+   * FIRST: email had a settings page and the other three did not. SMS,
+   * WhatsApp and the calling agent already send at every stage - the
+   * same dispatch, the same templates, the same delivery log - but with
+   * no credentials they record `not_configured`, which reads like a
+   * fault rather than a setting nobody has filled in. "She got no SMS"
+   * had no answer anywhere a recruiter could reach.
+   *
+   * SECOND: the calling agent's configuration existed for an admin only,
+   * so the recruiter placing the calls could not see what the agent
+   * would say, which languages it answers in, whether it discloses that
+   * it is an AI, or why a call is not going out.
+   *
+   * This is a TAB on the existing Email / SMS / IVR screen. Not a new
+   * module, not a new menu: same tab strip, same panels, same classes,
+   * same buttons.
+   *
+   * ONE DELIBERATE DIFFERENCE from the usual provider-settings page:
+   * there is no API key box anywhere on it. Credentials are environment
+   * variables on the server. This screen reports whether they are
+   * present and names the ones that are missing - it never receives,
+   * displays or stores a value. A page that takes an API key in a text
+   * field hands it to everybody who can open the developer tools.
+   *
+   * A recruiter reads. Only an admin writes, and that is enforced by the
+   * API and by row-level security, not by hiding a button.
+   * ------------------------------------------------------------------ */
+
+  TL.channels = {};
+
+  var CH_LANGS = { en: 'English', hi: 'Hindi', te: 'Telugu' };
+
+  var CH_META = {
+    email:    { icon: '✉️', label: 'Email',       what: 'Every stage, and the interview deadline' },
+    sms:      { icon: '💬', label: 'SMS',         what: 'The same updates, shortened to one message' },
+    whatsapp: { icon: '🟢', label: 'WhatsApp',    what: 'The same updates, for candidates who read little else' },
+    // The spoken STAGE UPDATE, which is a different thing from the
+    // conversational agent below: this one reads an update out and hangs
+    // up, the agent holds a conversation. They are configured separately
+    // and a screen that blurs them sends somebody hunting the wrong
+    // credential.
+    ivr:      { icon: '📞', label: 'Voice call',  what: 'The same updates, read out over the phone' },
+  };
+
+  /*
+   * READ-ONLY, and not for the reason it first looks.
+   *
+   * This started with editable fields for an admin. They were dead code:
+   * the prototype routes /recruiter/* to the recruiter login for anybody
+   * else, so an admin cannot open this screen at all. A Save button
+   * nobody can reach is worse than none - it implies a way to change
+   * these that does not exist.
+   *
+   * The settings ARE changed, through PATCH /ai-calling/settings, which
+   * is admin-only and enforced in the API and in the database. This
+   * screen is the recruiter's answer to "what will the agent say, and
+   * why did nothing go out", which is what they actually needed.
+   */
+  function chRow(label, value) {
+    return '<div class="fcr-jd-row"><label>' + esc(label) + '</label>' +
+           '<span class="v">' + value + '</span></div>';
+  }
+
+  function chField(label, value, hint) {
+    return chRow(label, esc(String(value == null ? '' : value)) +
+      (hint ? '<div class="desc">' + esc(hint) + '</div>' : ''));
+  }
+
+  function chToggle(label, on, hint) {
+    return chRow(label, (on
+      ? '<span class="badge badge-ok">On</span>'
+      : '<span class="badge badge-neutral">Off</span>') +
+      (hint ? '<div class="desc">' + esc(hint) + '</div>' : ''));
+  }
+
+  /**
+   * The four channels, side by side.
+   *
+   * Counts over thirty days, because "it has never worked" and "it
+   * stopped working on Tuesday" are different problems and the screen
+   * should not make somebody guess which one they have.
+   */
+  function chChannelsPanel(list) {
+    var rows = list.map(function (c) {
+      var m = CH_META[c.channel] || { icon: '•', label: c.channel, what: '' };
+      var state = c.configured
+        ? '<span class="badge badge-ok">Sending</span>'
+        : '<span class="badge badge-neutral">Not configured</span>';
+
+      var detail = c.configured
+        ? esc(c.transport)
+        : (c.missing && c.missing.length
+            ? 'Needs ' + c.missing.map(esc).join(', ') +
+              ' on the server — never entered here'
+            : 'No provider connected');
+
+      return '<tr><td><b>' + m.icon + ' ' + esc(m.label) + '</b>' +
+        '<div class="desc">' + esc(m.what) + '</div></td>' +
+        '<td>' + state + '<div class="desc">' + detail + '</div></td>' +
+        '<td>' + c.sent + '</td>' +
+        '<td>' + (c.failed ? '<b>' + c.failed + '</b>' : '0') + '</td>' +
+        '<td>' + (c.notConfigured || 0) + '</td>' +
+        '<td>' + (c.noAddress || 0) + '</td></tr>';
+    }).join('');
+
+    var silent = list.filter(function (c) { return !c.configured; });
+
+    return '<div class="panel"><div class="panel-head"><div><h2>Notification channels</h2>' +
+      '<div class="desc">What a candidate hears from us on, and what it has ' +
+      'done in the last 30 days</div></div></div>' +
+      '<div class="panel-body pad0"><div class="tbl-wrap"><table class="data">' +
+      '<thead><tr><th>Channel</th><th>Status</th><th>Sent</th><th>Failed</th>' +
+      '<th>Not configured</th><th>No number</th></tr></thead>' +
+      '<tbody>' + rows + '</tbody></table></div>' +
+      (silent.length
+        ? '<div class="panel-body"><div class="req-note"><b>' +
+          silent.map(function (c) { return esc((CH_META[c.channel] || {}).label || c.channel); }).join(', ') +
+          '</b> already send at every stage — the same updates as email, ' +
+          'from the same code. They are recorded as <i>not configured</i> rather ' +
+          'than sent because the credentials are not on the server yet. Nothing ' +
+          'needs building: add the values named above and they start going out, ' +
+          'and everybody who was missed while they were silent is picked up by ' +
+          'the retry.</div></div>'
+        : '') +
+      '</div>';
+  }
+
+  /** Whether calls can actually be placed, and what is missing if not. */
+  function chTelephonyPanel(t) {
+    /*
+     * "Configured" and "a phone will ring" are different questions.
+     *
+     * The built-in driver is always usable - it is what lets the whole
+     * conversation be rehearsed on screen without a carrier account -
+     * and it reports itself as configured. Reading "Calls are live" off
+     * that would tell a recruiter something untrue about a candidate who
+     * was never actually rung.
+     */
+    var live = !!(t && t.configured && t.real);
+    var rehearsal = !!(t && t.simulated);
+    var missing = (t && t.missing) || [];
+
+    var note = live
+      ? '<div class="req-note" style="background:var(--ok-100);color:var(--ok-600)">' +
+        '<b>Calls are live.</b> The agent places real calls through ' + esc(t.active) +
+        ', and every call is recorded against the candidate and the requirement.</div>'
+      : rehearsal
+        ? '<div class="req-note"><b>Rehearsal only — no phone rings.</b> ' +
+          'No carrier is connected, so calls run on the built-in driver: the ' +
+          'agent plans the call and holds the whole conversation on screen, ' +
+          'and the result is recorded, but nobody is dialled. Connect a ' +
+          'provider to place real calls.</div>'
+        : '<div class="req-note"><b>No phone rings yet.</b> ' +
+          (missing.length
+            ? 'The server is missing ' + missing.map(esc).join(', ') + '. Those are ' +
+              'environment variables — they are never entered here and never ' +
+              'reach a browser.'
+            : 'No telephony provider is connected.') + '</div>';
+
+    return '<div class="panel"><div class="panel-head"><div><h2>Calling provider</h2>' +
+      '<div class="desc">Whether the agent can place a real call right now</div></div>' +
+      '<span class="badge ' + (live ? 'badge-ok' : 'badge-neutral') + '" style="margin-left:auto">' +
+      (live ? 'Connected' : rehearsal ? 'Rehearsal only' : 'Not configured') + '</span></div>' +
+      '<div class="panel-body">' + note +
+      chRow('Provider', esc(String((t && t.requested) || 'none'))) +
+      chRow('In use', esc(String((t && t.active) || 'none'))) +
+      chRow('Speech to text', esc(String((t && t.stt) || 'none'))) +
+      chRow('Speech from text', esc(String((t && t.tts) || 'none'))) +
+      '</div></div>';
+  }
+
+  /** What the agent says, and to whom. */
+  function chAgentPanel(s) {
+    var langs = (s.supportedLanguages || []).map(function (l) {
+      return CH_LANGS[l] || l;
+    }).join(', ');
+
+    return '<div class="panel"><div class="panel-head"><div><h2>The calling agent</h2>' +
+      '<div class="desc">What the agent calls itself, and the languages it ' +
+      'answers in</div></div></div>' +
+      '<div class="panel-body">' +
+      chField('Agent name', s.agentName, 'The name it gives when somebody answers') +
+      chField('Calling on behalf of', s.companyName) +
+      chRow('Languages', esc(langs) + ' — detected from the first words the ' +
+            'candidate speaks, and switched mid-call if they switch') +
+      chRow('Default language', esc(CH_LANGS[s.defaultLanguage] || s.defaultLanguage || 'English')) +
+      chField('Voice', s.voice) +
+      chField('Style', s.conversationStyle) +
+      '</div></div>';
+  }
+
+  /** Consent, disclosure and recording: the part with legal weight. */
+  function chConsentPanel(s) {
+    return '<div class="panel"><div class="panel-head"><div><h2>Disclosure and recording</h2>' +
+      '<div class="desc">What the candidate is told before anything else</div></div></div>' +
+      '<div class="panel-body">' +
+      chToggle('Say that the caller is an AI', s.discloseAi,
+        'Required in several places, and the honest default everywhere else.') +
+      chRow('Wording', esc(s.aiDisclosure || '')) +
+      chToggle('Record calls', s.recordingEnabled,
+        'When on, the candidate is told before the conversation starts.') +
+      chRow('Wording', esc(s.recordingDisclosure || '')) +
+      chToggle('Discuss salary', s.discloseSalary) +
+      chToggle('Name the client company', s.discloseClient,
+        'Off by default — the client’s name is usually not ours to give out.') +
+      '<div class="req-note">A candidate who asks not to be contacted again is ' +
+      'recorded as do-not-contact, and that stops <b>every</b> channel — calls, ' +
+      'job alerts, stage updates and the retry — not only the calling agent.</div>' +
+      '</div></div>';
+  }
+
+  /** When it calls, how long it waits, and how often it tries again. */
+  function chCallingPanel(s) {
+    return '<div class="panel"><div class="panel-head"><div><h2>When and how often</h2>' +
+      '<div class="desc">Calling hours, retries and how long a call may run</div></div></div>' +
+      '<div class="panel-body">' +
+      chField('Calls start at', s.callWindowStart) +
+      chField('Calls stop at', s.callWindowEnd,
+        'Nobody is called outside these hours, whatever a campaign asks for.') +
+      chField('Retries when there is no answer', s.retryNoAnswer) +
+      chField('Minutes between retries', s.retryIntervalMinutes) +
+      chField('Longest a call may run (seconds)', s.maxDurationSeconds) +
+      chField('Seconds of silence before prompting', s.silencePromptSeconds) +
+      chField('Prompts before hanging up politely', s.maxSilencePrompts) +
+      '</div></div>';
+  }
+
+  /** Paint the tab body, fetching the live status first. */
+  TL.channels.render = function (force) {
+    var host = document.getElementById('tlChannels');
+    if (!host) return;
+    if (host.getAttribute('data-loaded') === '1' && !force) return;
+    host.setAttribute('data-loaded', '1');
+
+    Promise.all([
+      api.get('/notifications/channels'),
+      // The calling agent's own configuration. A recruiter can read it;
+      // only an admin can write, which the API enforces.
+      api.get('/ai-calling/status').catch(function () { return null; }),
+    ]).then(function (out) {
+      var host2 = document.getElementById('tlChannels');
+      if (!host2) return;
+
+      var list = (out[0] && out[0].channels) || [];
+      var calling = out[1];
+      var s = (calling && calling.settings) || null;
+
+      host2.innerHTML =
+        chChannelsPanel(list) +
+        (calling ? chTelephonyPanel(calling.telephony) : '') +
+        (s ? chAgentPanel(s) + chConsentPanel(s) + chCallingPanel(s) : '') +
+        (s
+          ? '<div class="req-note">These settings are shared by everybody who ' +
+            'calls, so an administrator changes them for the whole team. Ask ' +
+            'one to, rather than working around a setting that is wrong.</div>'
+          : '');
+    }).catch(function (err) {
+      var host2 = document.getElementById('tlChannels');
+      if (host2) {
+        host2.setAttribute('data-loaded', '0');
+        host2.innerHTML = '<div class="req-note">' +
+          esc(err.message || 'The channel settings could not be loaded.') + '</div>';
+      }
+    });
+  };
+
+  /**
+   * Add the tab, and take over the body when it is the one selected.
+   *
+   * The tab strip is the prototype's own; this appends one button to it
+   * and replaces what sits underneath. Nothing else on the screen is
+   * touched, and on every other tab it does nothing at all.
+   */
+  function enhanceComm() {
+    var strip = document.querySelector('.tws-tabs');
+    if (!strip) return;
+
+    // Only the recruiter's Email / SMS / IVR screen has an IVR tab, so
+    // this cannot wander onto another screen that uses the same chrome.
+    var isComm = false;
+    var buttons = strip.querySelectorAll('.tws-tab');
+    for (var i = 0; i < buttons.length; i++) {
+      if (/ivr templates/i.test(buttons[i].textContent || '')) isComm = true;
+    }
+    if (!isComm) return;
+
+    var active = /[?&]tab=channels(&|$)/.test(String(location.hash || location.href));
+
+    var tab = strip.querySelector('[data-tl-channels]');
+    if (!tab) {
+      tab = document.createElement('button');
+      tab.className = 'tws-tab';
+      tab.textContent = 'SMS / WhatsApp / AI Calling';
+      tab.setAttribute('data-tl-channels', '1');
+      tab.onclick = function () { window.navigate('/recruiter/comm?tab=channels'); };
+      strip.appendChild(tab);
+    }
+    tab.className = 'tws-tab' + (active ? ' on' : '');
+
+    if (!active) return;
+
+    // With tab=channels the prototype matched none of its own tabs and
+    // fell through to the email template list. Replace that, and only that.
+    var host = document.getElementById('tlChannels');
+    if (!host) {
+      var node = strip.nextElementSibling;
+      while (node) {
+        var next = node.nextElementSibling;
+        node.parentNode.removeChild(node);
+        node = next;
+      }
+      host = document.createElement('div');
+      host.id = 'tlChannels';
+      host.innerHTML = '<div class="req-note">Loading the notification channels…</div>';
+      strip.parentNode.appendChild(host);
+    }
+    TL.channels.render(false);
+  }
+
+  var realRenderForChannels = window.render;
+  window.render = function () {
+    var out = realRenderForChannels.apply(this, arguments);
+    try { enhanceComm(); } catch (e) { /* never break a render */ }
+    return out;
+  };
+
+  /* ------------------------------------------------------------------ *
+   * 20. Two things a person sees before anything else
+   *
+   * (a) THE RESUME COMES FIRST. It was section 3 of 5, below Personal
+   *     and Professional Information - so the form asked somebody to
+   *     type their name, mobile, location, company, designation,
+   *     experience, qualification and skills, and only then offered to
+   *     read all of it out of the file they were about to upload
+   *     anyway. The upload fills those fields; putting it last is asking
+   *     for work the software was about to do.
+   *
+   *     Nothing is rebuilt: the same panel, the same upload box, the
+   *     same handlers. It is moved to the top of the form and the
+   *     section numbers are renumbered to match, so the page still reads
+   *     1, 2, 3, 4, 5.
+   *
+   * (b) ONE HOME, NOT TWO. The candidate header carries a Home chip, and
+   *     the profile dropdown in the SAME header carries another. Two
+   *     controls, one destination, an arm's length apart. The visible
+   *     chip stays; the one hidden behind a menu goes.
+   * ------------------------------------------------------------------ */
+
+  /** Put the resume panel at the top of the registration form. */
+  function resumeFirst() {
+    var form = document.getElementById('registerForm');
+    if (!form || form.getAttribute('data-tl-resume-first') === '1') return;
+
+    var panels = form.querySelectorAll(':scope > .panel');
+    if (!panels.length) return;
+
+    var resume = null;
+    for (var i = 0; i < panels.length; i++) {
+      var h2 = panels[i].querySelector('.panel-head h2');
+      if (h2 && /^\s*\d*\s*Resume\s*$/.test(h2.textContent || '')) { resume = panels[i]; break; }
+    }
+    if (!resume) return;
+
+    // Already first: nothing to do, and marking it stops the walk on
+    // every later render.
+    if (resume !== panels[0]) form.insertBefore(resume, panels[0]);
+    form.setAttribute('data-tl-resume-first', '1');
+
+    // The numbers are part of the page's own design, so they are kept
+    // correct rather than removed.
+    var nums = form.querySelectorAll('.reg-section-num');
+    for (var n = 0; n < nums.length; n++) nums[n].textContent = String(n + 1);
+
+    // Say why it is first. Somebody who has just been asked to upload
+    // before typing anything should be told the typing may not be
+    // needed, rather than left to guess.
+    var body = resume.querySelector('.panel-body');
+    if (body && !body.querySelector('[data-tl-resume-lead]')) {
+      var lead = document.createElement('div');
+      lead.className = 'req-note';
+      lead.setAttribute('data-tl-resume-lead', '1');
+      lead.style.marginBottom = '12px';
+      lead.textContent = 'Start here. Upload your resume and the rest of this form '
+        + 'fills itself in — you only correct what it got wrong.';
+      body.insertBefore(lead, body.firstChild);
+    }
+  }
+
+  /**
+   * One Home per header.
+   *
+   * A Home chip is injected into every header by a script of its own.
+   * Where the header already had a Home, that leaves two controls with
+   * one destination side by side - most plainly on the public site,
+   * whose nav has read "Home ... Home" ever since.
+   *
+   * The rule: keep whichever Home is ALWAYS VISIBLE, and where both
+   * are, keep the page's own.
+   *
+   *   public site       the nav Home is visible -> the chip goes
+   *   candidate portal  the other one is inside a dropdown, behind a
+   *                     click -> the chip stays, the menu entry goes
+   */
+  function isHomeText(el) {
+    return /^\s*(🏠\s*)?Home\s*$/.test(el.textContent || '');
+  }
+
+  function oneHomePublic() {
+    var header = document.querySelector('.site-header-inner');
+    if (!header) return;
+
+    /*
+     * The chip is mounted by a script of its own, usually after this
+     * runs. Waiting once is what makes the fix land on a first paint,
+     * which is the only paint most people see.
+     */
+    var chip = header.querySelector('[data-tlhome]');
+    if (!chip) {
+      if (header.getAttribute('data-tl-onehome-wait') === '1') return;
+      header.setAttribute('data-tl-onehome-wait', '1');
+      setTimeout(function () {
+        try { oneHomePublic(); } catch (e) { /* never break a render */ }
+      }, 120);
+      return;
+    }
+
+    var links = header.querySelectorAll('a, button');
+    for (var i = 0; i < links.length; i++) {
+      var el = links[i];
+      if (el === chip || chip.contains(el)) continue;
+      if (!isHomeText(el)) continue;
+      // Hidden behind a menu is not a duplicate - it is the case the
+      // chip exists for.
+      var box = el.getBoundingClientRect();
+      if (box.width <= 0 || box.height <= 0) continue;
+      chip.parentNode.removeChild(chip);
+      return;
+    }
+  }
+
+  function oneHome() {
+    oneHomePublic();
+
+    var header = document.querySelector('header.cp-hd');
+    if (!header) return;
+
+    /*
+     * The chip is mounted by a script of its own, on its own schedule -
+     * usually AFTER this runs. Returning early when it is not there yet
+     * meant the duplicate was never removed on a first paint, which is
+     * the only paint most people see. So: try now, and once more after
+     * the chip has had a chance to appear.
+     */
+    if (!header.querySelector('[data-tlhome]')) {
+      if (header.getAttribute('data-tl-onehome-wait') === '1') return;
+      header.setAttribute('data-tl-onehome-wait', '1');
+      setTimeout(function () {
+        try { oneHome(); } catch (e) { /* never break a render */ }
+      }, 120);
+      return;
+    }
+
+    var buttons = header.querySelectorAll('.cp-menu button');
+    for (var i = 0; i < buttons.length; i++) {
+      var b = buttons[i];
+      if (!isHomeText(b)) continue;
+      b.parentNode.removeChild(b);
+      return;
+    }
+  }
+
+  var realRenderForFirstLook = window.render;
+  window.render = function () {
+    var out = realRenderForFirstLook.apply(this, arguments);
+    try { resumeFirst(); } catch (e) { /* never break a render */ }
+    try { oneHome(); } catch (e) { /* never break a render */ }
+    return out;
+  };
+
+  // The header and the form are both painted by the prototype's own
+  // post-paint hook on some routes, so run there too.
+  var prevAfterRenderFirstLook = window.afterRender;
+  window.afterRender = function () {
+    var out = typeof prevAfterRenderFirstLook === 'function'
+      ? prevAfterRenderFirstLook.apply(this, arguments) : undefined;
+    try { resumeFirst(); } catch (e) {}
+    try { oneHome(); } catch (e) {}
+    return out;
+  };
+
+  /* ------------------------------------------------------------------ *
+   * 21. Reaching a candidate from the row you are already looking at
+   *
+   * The screens had "Notify Candidate" and "Open WhatsApp", and both were
+   * narrower than they looked:
+   *
+   *   - they appeared only on certain stages, so a candidate sitting at
+   *     "Applied" could not be contacted from the list at all
+   *   - "Open WhatsApp" opened wa.me in a new tab. That is the
+   *     recruiter's own WhatsApp, typing by hand, with nothing recorded
+   *     against the application - so "what did we send this person"
+   *     had no answer
+   *   - there was no SMS anywhere, and no way to call from a row
+   *
+   * Four buttons on every candidate and application row: email, SMS,
+   * WhatsApp, call. They go through the SAME dispatch as every automatic
+   * message, so each one is recorded per channel against the application
+   * and shows up in the communication log next to the automatic ones.
+   *
+   * WHAT THEY SEND IS NOT FREE TEXT. Each button sends the message for
+   * the stage the application is actually at, from the same table the
+   * retry sweep uses. A recruiter cannot compose arbitrary mail to a
+   * candidate from a table row, which is deliberate: the templates are
+   * where the wording is reviewed.
+   *
+   * The buttons are appended to the row's existing actions cell. No
+   * column is added, nothing is moved, and the prototype's own buttons
+   * are left exactly where they were.
+   * ------------------------------------------------------------------ */
+
+  TL.reach = {};
+
+  var REACH = [
+    { key: 'email',    icon: '✉️', label: 'Email' },
+    { key: 'sms',      icon: '💬', label: 'SMS' },
+    { key: 'whatsapp', icon: '🟢', label: 'WhatsApp' },
+    { key: 'call',     icon: '📞', label: 'AI call' },
+  ];
+
+  /** The candidate a table row is about, from the link the row already has. */
+  function reachCandidateOf(row) {
+    var cells = row.querySelectorAll('[onclick]');
+    for (var i = 0; i < cells.length; i++) {
+      var m = /candidate-profile\?id=([^'"&]+)/.exec(cells[i].getAttribute('onclick') || '');
+      if (m) return m[1];
+    }
+    return null;
+  }
+
+  /**
+   * The application a row is about.
+   *
+   * The applications list has one row PER APPLICATION, so a candidate
+   * with three of them gets three rows - and resolving by candidate gave
+   * all three the same score, the same reference and the same buttons.
+   * Every row read as if it were the same application.
+   *
+   * So the row's own id is used when it names one, which the existing
+   * handlers already carry (`runAIScreeningForApp('app_x')` and the
+   * like). The candidate's most recent is the fallback, for the
+   * candidate lists where a row is a person rather than an application.
+   */
+  function reachApplicationOfRow(row, candidateId) {
+    var marks = row.querySelectorAll('[onclick], [data-tl-reach]');
+    for (var i = 0; i < marks.length; i++) {
+      var hay = (marks[i].getAttribute('onclick') || '')
+        + ' ' + (marks[i].getAttribute('data-tl-reach') || '');
+      var m = /(app_[A-Za-z0-9]+)/.exec(hay);
+      if (!m) continue;
+      var found = (DATA.applications || []).filter(function (a) { return a.id === m[1]; })[0];
+      if (found) return found;
+    }
+    return reachApplicationOf(candidateId);
+  }
+
+  /** Their most recent application, for a row that is about a person. */
+  function reachApplicationOf(candidateId) {
+    var mine = (DATA.applications || []).filter(function (a) {
+      return a.candidateId === candidateId;
+    });
+    if (!mine.length) return null;
+    mine.sort(function (a, b) {
+      return String(b.appliedAt || '').localeCompare(String(a.appliedAt || ''));
+    });
+    return mine[0];
+  }
+
+  /**
+   * Send the stage message on ONE channel.
+   *
+   * The button reports its own outcome in place - `sent`, `failed`,
+   * `not configured` - because a toast that says "sent" when the
+   * provider refused is how somebody ends up believing a candidate was
+   * told something they were never told.
+   */
+  TL.reach.send = function (applicationId, channel, btn) {
+    var el = btn || document.querySelector(
+      '[data-tl-reach="' + applicationId + ':' + channel + '"]');
+    var before = el ? el.textContent : '';
+    if (el) { el.disabled = true; el.textContent = '…'; }
+
+    api.post('/notifications/applications/' + encodeURIComponent(applicationId) + '/send',
+      { channels: [channel] })
+      .then(function (r) {
+        var status = (r.delivery_status || {})[channel] || 'unknown';
+        if (el) {
+          el.textContent = status === 'sent' || status === 'delivered' ? '✓' : '✗';
+          el.title = status === 'sent' || status === 'delivered'
+            ? 'Sent to ' + (r.to || 'the candidate') + ' — accepted by the provider'
+            : status === 'not_configured'
+              ? channel + ' has no credentials on the server, so nothing was sent'
+              : status === 'skipped_no_address'
+                ? 'No ' + (channel === 'email' ? 'email address' : 'phone number')
+                  + ' for this candidate'
+                : 'The provider refused it';
+          // Back to normal, so the row is usable again rather than stuck
+          // showing the last thing that happened.
+          setTimeout(function () { el.disabled = false; el.textContent = before; }, 2600);
+        }
+        if (typeof window.toast === 'function') {
+          window.toast(status === 'sent' || status === 'delivered'
+            ? channel + ' sent'
+            : channel + ': ' + String(status).replace(/_/g, ' '),
+            status === 'sent' || status === 'delivered' ? '✉️' : '⚠️');
+        }
+      })
+      .catch(function (err) {
+        if (el) { el.disabled = false; el.textContent = before; el.title = err.message; }
+        if (typeof window.toast === 'function') {
+          window.toast(err.message || 'It could not be sent', '⚠️');
+        }
+      });
+  };
+
+  /** The calling agent, on the candidate in this row. */
+  TL.reach.call = function (candidateId) {
+    if (TL.calling && typeof TL.calling.preview === 'function') {
+      TL.calling.preview(candidateId);
+      return;
+    }
+    if (typeof window.toast === 'function') {
+      window.toast('The calling agent is not available on this screen', '⚠️');
+    }
+  };
+
+  function reachButton(spec, candidateId, app, hasPhone, hasEmail) {
+    var b = document.createElement('button');
+    b.className = 'btn btn-ghost btn-sm';
+    b.textContent = spec.icon;
+    b.setAttribute('data-tl-reach', (app ? app.id : candidateId) + ':' + spec.key);
+    b.style.padding = '5px 8px';
+
+    if (spec.key === 'call') {
+      b.title = hasPhone ? 'Call with the AI agent' : 'No mobile number for this candidate';
+      b.disabled = !hasPhone;
+      b.onclick = function (e) { e.stopPropagation(); TL.reach.call(candidateId); };
+      return b;
+    }
+
+    var needs = spec.key === 'email' ? hasEmail : hasPhone;
+    if (!app) {
+      // Every one of these messages is ABOUT an application - its stage,
+      // its deadline, its reference. Without one there is nothing
+      // truthful to send, so the button says so rather than failing.
+      b.disabled = true;
+      b.title = spec.label + ': this candidate has not applied to anything yet, '
+        + 'so there is no update to send';
+      return b;
+    }
+    if (!needs) {
+      b.disabled = true;
+      b.title = 'No ' + (spec.key === 'email' ? 'email address' : 'phone number')
+        + ' for this candidate';
+      return b;
+    }
+
+    b.title = spec.label + ' — sends the update for "' + (app.stage || 'their stage')
+      + '", recorded against the application';
+    b.onclick = function (e) {
+      e.stopPropagation();
+      TL.reach.send(app.id, spec.key, b);
+    };
+    return b;
+  }
+
+  function enhanceRows() {
+    var rows = document.querySelectorAll('table.data tbody tr');
+    for (var r = 0; r < rows.length; r++) {
+      var row = rows[r];
+      /*
+       * The actions cell, whatever it is called.
+       *
+       * Applications rows use `.row-actions`; the Candidates table uses a
+       * plain last cell holding the same kind of buttons. Looking only
+       * for the class meant the buttons appeared on one screen and not
+       * the other, which is worse than appearing on neither.
+       */
+      var actions = row.querySelector('.row-actions');
+      if (!actions) {
+        var last = row.cells && row.cells[row.cells.length - 1];
+        if (last && last.querySelector('button')) actions = last;
+      }
+      if (!actions || actions.querySelector('[data-tl-reach]')) continue;
+
+      var candidateId = reachCandidateOf(row);
+      if (!candidateId) continue;
+
+      var cand = DATA.candidateById ? DATA.candidateById(candidateId) : null;
+      if (!cand) continue;
+
+      var app = reachApplicationOfRow(row, candidateId);
+      var hasPhone = !!(cand.phone && String(cand.phone).trim());
+      var hasEmail = !!(cand.email && String(cand.email).trim());
+
+      var group = document.createElement('span');
+      group.style.display = 'inline-flex';
+      group.style.gap = '4px';
+      group.setAttribute('data-tl-reach-group', '1');
+      for (var i = 0; i < REACH.length; i++) {
+        group.appendChild(reachButton(REACH[i], candidateId, app, hasPhone, hasEmail));
+      }
+      actions.appendChild(group);
+    }
+  }
+
+  var realRenderForReach = window.render;
+  window.render = function () {
+    var out = realRenderForReach.apply(this, arguments);
+    try { enhanceRows(); } catch (e) { /* never break a render */ }
+    return out;
+  };
+
+  var prevAfterRenderReach = window.afterRender;
+  window.afterRender = function () {
+    var out = typeof prevAfterRenderReach === 'function'
+      ? prevAfterRenderReach.apply(this, arguments) : undefined;
+    try { enhanceRows(); } catch (e) {}
+    return out;
+  };
+
+  /* ------------------------------------------------------------------ *
+   * 22. No demo accounts on the login page
+   *
+   * The login page carried a "Quick demo login - sample recruiter
+   * accounts" panel listing every recruiter by name and employer, and
+   * above it a box printing an email and password in plain text.
+   *
+   * Both were prototype conveniences, and on a real deployment both are
+   * faults:
+   *
+   *   - the list is account enumeration. Anybody who opens the login
+   *     page learns who works here and which company each one handles,
+   *     without signing in to anything. It also grows: a recruiter added
+   *     today is advertised there tomorrow, which is how a real account
+   *     ended up in a list headed "sample accounts".
+   *   - the credentials box prints a working password on a public page.
+   *
+   * The panels are removed. The form itself is untouched - same fields,
+   * same button, same layout - because the way in is unchanged.
+   * ------------------------------------------------------------------ */
+  function hideDemoLogin() {
+    var boxes = document.querySelectorAll('.auth-form .demo-box, .demo-box');
+    for (var i = 0; i < boxes.length; i++) {
+      var box = boxes[i];
+      if (!box.closest || !box.closest('.auth-form')) continue;
+      box.remove();
+    }
+  }
+
+  var realRenderForDemoLogin = window.render;
+  window.render = function () {
+    var out = realRenderForDemoLogin.apply(this, arguments);
+    try { hideDemoLogin(); } catch (e) { /* never break a render */ }
+    return out;
+  };
+
+  var prevAfterRenderDemoLogin = window.afterRender;
+  window.afterRender = function () {
+    var out = typeof prevAfterRenderDemoLogin === 'function'
+      ? prevAfterRenderDemoLogin.apply(this, arguments) : undefined;
+    try { hideDemoLogin(); } catch (e) {}
     return out;
   };
 

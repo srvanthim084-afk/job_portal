@@ -73,6 +73,20 @@ async function getSmtp() {
   return smtpTransport;
 }
 
+/**
+ * SMTP is set up - all four parts of it, not just a host name.
+ *
+ * `configured()` already required all four; the send path branched on the
+ * HOST alone, and the two disagreeing is a real hazard during a
+ * switchover: a host written into .env before the password arrives sends
+ * every message down the SMTP branch with no credentials, where it fails,
+ * while a perfectly working EmailJS is skipped because a host is set.
+ * Half a setting is not a preference.
+ */
+export function smtpReady() {
+  return !!(config.emailFrom && config.smtpHost && config.smtpUser && config.smtpPass);
+}
+
 /** Exposed so a "send test email" action can prove the settings before use. */
 export async function verifySmtp() {
   if (!config.smtpHost) return { ok: false, error: 'EMAIL_SMTP_HOST is not set' };
@@ -174,7 +188,7 @@ export const emailProvider = {
   // Any transport counts as configured. SMTP first, then EmailJS, then a
   // generic HTTP API - a deployment only has to set up one of them.
   configured: () => !!(
-    (config.emailFrom && config.smtpHost && config.smtpUser && config.smtpPass)
+    smtpReady()
     || emailjsReady().ready
     || (config.emailFrom && config.emailApiKey)),
 
@@ -192,7 +206,7 @@ export const emailProvider = {
 
     // EmailJS before the generic HTTP API, because a deployment that has
     // set it up has said which one it means.
-    if (!config.smtpHost && emailjsReady().ready) {
+    if (!smtpReady() && emailjsReady().ready) {
       try {
         return await sendViaEmailJS({ to, subject, html, text, vars });
       } catch (err) {
@@ -200,7 +214,7 @@ export const emailProvider = {
       }
     }
 
-    if (config.smtpHost) {
+    if (smtpReady()) {
       try {
         const t = await getSmtp();
         const info = await t.sendMail({
@@ -417,6 +431,67 @@ export const providers = {
   ivr: ivrProvider,
   email: emailProvider,
 };
+
+/**
+ * What each channel still needs, by NAME.
+ *
+ * Names only, never values. A recruiter looking at "nothing reached this
+ * candidate on WhatsApp" needs to know the reason is a missing
+ * credential rather than a wrong number, and that is answerable without
+ * showing anybody a secret.
+ *
+ * Email is the awkward one because it has three possible transports; the
+ * answer is whichever one the deployment has started setting up, so the
+ * advice matches what somebody has already decided to use.
+ */
+export function providerMissing(channel) {
+  if (channel === 'sms') {
+    return [
+      !config.smsApiKey && 'SMS_API_KEY',
+      !config.smsApiUrl && 'SMS_API_URL',
+    ].filter(Boolean);
+  }
+  if (channel === 'whatsapp') {
+    return [
+      !config.whatsappApiKey && 'WHATSAPP_API_KEY',
+      !config.whatsappPhoneId && 'WHATSAPP_PHONE_ID',
+    ].filter(Boolean);
+  }
+  if (channel === 'ivr') {
+    return [
+      !config.ivrApiKey && 'IVR_API_KEY',
+      !config.ivrApiUrl && 'IVR_API_URL',
+    ].filter(Boolean);
+  }
+  if (channel === 'email') {
+    if (emailProvider.configured()) return [];
+    // Partly set up counts as chosen: finish the one already started
+    // rather than being told about three alternatives.
+    if (config.smtpHost || config.smtpUser || config.smtpPass) {
+      return [
+        !config.smtpHost && 'EMAIL_SMTP_HOST',
+        !config.smtpUser && 'EMAIL_SMTP_USER',
+        !config.smtpPass && 'EMAIL_SMTP_PASS',
+        !config.emailFrom && 'EMAIL_FROM',
+      ].filter(Boolean);
+    }
+    const ejs = emailjsReady();
+    if (ejs.missing && ejs.missing.length && ejs.missing.length < 4) {
+      return ejs.missing.slice();
+    }
+    return ['EMAIL_SMTP_HOST (or the EMAILJS_* settings)'];
+  }
+  return [];
+}
+
+/** Which transport a configured channel is actually using. */
+export function providerTransport(channel) {
+  if (channel !== 'email') return channel;
+  if (smtpReady()) return `SMTP (${config.smtpHost})`;
+  if (emailjsReady().ready) return 'EmailJS';
+  if (config.emailApiKey) return 'HTTP API';
+  return 'none';
+}
 
 /** What an operator sees on the admin screen / at boot. */
 export function providerStatus() {

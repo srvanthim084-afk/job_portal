@@ -15,7 +15,7 @@ import { withUser } from '../db.js';
 import { wrap, badRequest, notFound, ApiError } from '../errors.js';
 import { requireAuth, requireRole } from '../auth.js';
 import { syncMailbox, syncAll, mapMessage, temporaryPassword } from '../intake/process.js';
-import { mailboxReadiness, SAMPLE_EMAILS } from '../intake/mailbox.js';
+import { mailboxReadiness, verifyMailbox, SAMPLE_EMAILS } from '../intake/mailbox.js';
 import { hashPassword } from '../auth.js';
 import { providers } from '../notify/providers.js';
 import { buildEventMessages } from '../notify/templates.js';
@@ -99,11 +99,29 @@ export default function intakeRoutes() {
     wrap(async (req, res) => {
       const b = parse(z.object({
         address: z.string().trim().email('That is not a valid email address.').max(160),
-        provider: z.enum(['mock', 'imap', 'gmail', 'outlook']).optional().default('mock'),
+        /*
+         * IMAP by default, NOT mock.
+         *
+         * The default was `mock`, so connecting a real company address
+         * without naming a provider silently attached it to a generator
+         * of sample Naukri emails - and the ATS filled with applications
+         * from candidates who do not exist, indistinguishable from real
+         * ones on the screen. A real address must never quietly become a
+         * demo feed.
+         */
+        provider: z.enum(['mock', 'imap', 'gmail', 'outlook']).optional().default('imap'),
         displayName: z.string().trim().max(120).optional(),
         autoSync: z.boolean().optional().default(true),
         rules: z.record(z.any()).optional(),
       }), req.body);
+
+      // The sample feed exists so the workflow can be exercised before
+      // anybody hands over a password. It has no business on a live
+      // deployment, where every row it creates is a fake candidate.
+      if (b.provider === 'mock' && config.env === 'production') {
+        throw badRequest('The sample mailbox is not available here. Connect a real '
+          + 'mailbox with provider "imap", "gmail" or "outlook".');
+      }
 
       const recruiterId = req.session.role === 'recruiter' ? req.session.profileId : null;
       const id = await withUser(req.session, async (c) => (await c.query(
@@ -116,12 +134,119 @@ export default function intakeRoutes() {
       res.status(201).json({ mailbox: toMailbox(row) });
     }));
 
+  /**
+   * POST /api/intake/mailboxes/:id/test
+   *
+   * Open the mailbox for real: connect, LOGIN, SELECT INBOX, close.
+   *
+   * "Connected" used to mean only that the environment variables were
+   * present, so a wrong password or a wrong host still read as connected
+   * and the first sign of trouble was an empty queue hours later. This
+   * answers the question the screen was already claiming to answer.
+   *
+   * Nothing is read and nothing is changed; the outcome is written to
+   * the mailbox so the list stops disagreeing with reality.
+   */
+  r.post('/intake/mailboxes/:id/test', requireAuth(), requireRole('recruiter', 'bde', 'admin'),
+    wrap(async (req, res) => {
+      const box = await withUser(req.session, async (c) => (await c.query(
+        `select * from email_mailboxes where id=$1`, [req.params.id])).rows[0]);
+      if (!box) throw notFound('That mailbox could not be found.');
+
+      const out = await verifyMailbox(box);
+
+      await withUser(ENGINE, (c) => c.query(
+        `update email_mailboxes
+            set status = $2, last_error = $3, updated_at = now()
+          where id = $1`,
+        [box.id, out.ok ? 'connected' : 'disconnected', out.ok ? null : out.error]));
+
+      res.json({
+        ok: out.ok,
+        // The server's own words. "Authentication failed" and "host not
+        // found" are different problems and deserve different fixes.
+        detail: out.detail || undefined,
+        error: out.error || undefined,
+      });
+    }));
+
   r.post('/intake/mailboxes/:id/disconnect', requireAuth(), requireRole('recruiter', 'admin'),
     wrap(async (req, res) => {
       await withUser(ENGINE, (c) => c.query(
         `update email_mailboxes set status='disconnected', auto_sync=false, updated_at=now()
           where id=$1`, [req.params.id]));
       res.json({ ok: true });
+    }));
+
+  /**
+   * DELETE /api/intake/mailboxes/:id
+   *
+   * Remove a mailbox and everything it brought in.
+   *
+   * Disconnecting only stops future syncs; it leaves every message the
+   * mailbox ever produced in the queue. For a sample mailbox that is
+   * exactly the wrong outcome - the demo applications stay, and a
+   * recruiter cannot tell them from real ones.
+   *
+   * The email_messages rows go with it (on delete cascade). Candidates
+   * and applications already created from them are NOT touched here:
+   * deleting somebody's application because a mailbox was removed would
+   * be a far worse surprise. `?purge=1` says what would go instead, and
+   * tools/intake-cleanup.mjs does the removal deliberately.
+   */
+  r.delete('/intake/mailboxes/:id', requireAuth(), requireRole('recruiter', 'admin'),
+    wrap(async (req, res) => {
+      const out = await withUser(ENGINE, async (c) => {
+        const box = (await c.query(
+          `select * from email_mailboxes where id=$1`, [req.params.id])).rows[0];
+        if (!box) return null;
+        const n = (await c.query(
+          `select count(*)::int n from email_messages where mailbox_id=$1`,
+          [req.params.id])).rows[0].n;
+        await c.query(`delete from email_mailboxes where id=$1`, [req.params.id]);
+        return { address: box.address, provider: box.provider, messages: n };
+      });
+      if (!out) throw notFound('That mailbox could not be found.');
+      res.json({ removed: out });
+    }));
+
+  /**
+   * POST /api/intake/cleanup
+   *
+   * Take the sample mailboxes, and everything they invented, back out.
+   *
+   * The `mock` provider serves a fixed set of sample Naukri emails so
+   * the workflow can be exercised before anybody hands over a password.
+   * Everything downstream of it is real - that is the point, and also
+   * the problem: a deployment that has run it holds applications from
+   * candidates who do not exist, and nothing on the screen says which is
+   * which.
+   *
+   * ADMIN ONLY, and it does nothing at all without `confirm: true`. The
+   * same counts come back either way, so the decision is made on the
+   * numbers rather than after them.
+   *
+   * A candidate is removed only when EVERY application they have came
+   * from a sample mailbox. Somebody who arrived through the demo and has
+   * since applied for a real role keeps their profile and their real
+   * applications.
+   */
+  r.post('/intake/cleanup', requireAuth(), requireRole('admin'),
+    wrap(async (req, res) => {
+      const b = parse(z.object({ confirm: z.boolean().optional() }), req.body);
+
+      /*
+       * Through a definer function, not a query.
+       *
+       * Removing these needs DELETE on `candidates`, which app_api
+       * deliberately does not have - the API must not be able to delete
+       * people. intake_cleanup_mock() checks for an admin itself, so the
+       * grant that exists for a good reason stays as it is.
+       */
+      const out = await withUser(req.session, async (c) => (await c.query(
+        `select intake_cleanup_mock($1) as out`, [!!b.confirm])).rows[0].out);
+
+      res.json(out);
     }));
 
   r.patch('/intake/mailboxes/:id', requireAuth(), requireRole('recruiter', 'admin'),

@@ -20,6 +20,7 @@ import { wrap, badRequest, ApiError } from '../errors.js';
 import { requireAuth, requireRole } from '../auth.js';
 import { readSpreadsheet, writeSheet } from '../xlsx.js';
 import { toRupees } from '../money.js';
+import { inviteCandidates } from '../notify/invite.js';
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -207,24 +208,56 @@ export default function spreadsheetRoutes() {
               await c.query(`update candidates set ${sets.join(', ')}, updated_at = now()
                               where id = $${vals.length}`, vals);
             }
-            updated.push({ line, id: existing.id, name: existing.name });
+            updated.push({ line, id: existing.id, name: existing.name,
+                           email: existing.email, phone: existing.phone });
             continue;
           }
 
           const id = newId('cand');
           await c.query(
+            // The recruiter who uploaded the file owns the row. Without
+            // an owner the profile is visible to every recruiter, which
+            // is the leak recruiter isolation exists to close.
             `insert into candidates
                (id, name, email, phone, location, preferred_location, title,
                 current_company, exp_years, exp, ctc, expected_ctc, notice_period,
-                education, skills, technical_skills)
-             values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15)`,
+                education, skills, technical_skills, owner_recruiter_id)
+             values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15,$16)`,
             [id, fields.name, fields.email, fields.phone, fields.location,
              fields.preferred_location, fields.title, fields.current_company,
              fields.exp_years, fields.exp, fields.ctc, fields.expected_ctc,
-             fields.notice_period, fields.education, skills]);
-          imported.push({ line, id, name });
+             fields.notice_period, fields.education, skills,
+             req.session.role === 'recruiter' ? req.session.profileId : null]);
+          imported.push({ line, id, name, email: fields.email, phone: fields.phone });
         }
       });
+
+      /*
+       * Give them a way in.
+       *
+       * An imported candidate used to be a row nobody could see but the
+       * recruiter: no login, no way to correct what the file said about
+       * them, no idea they were on a list. Each one now gets a portal
+       * account and their credentials by email, SMS and WhatsApp.
+       *
+       * AFTER the transaction, and not awaited: a provider timing out
+       * must not roll back an import that has already succeeded, and a
+       * recruiter who has just uploaded four hundred rows should not
+       * watch a spinner while four hundred messages go out. The result
+       * of every attempt is recorded in candidate_invites either way.
+       */
+      // Updated rows too, not only new ones: somebody already in the
+      // database who has never had a login is in exactly the position
+      // this fixes. candidate_portal_account() declines to make a second
+      // account, and candidate_invited() declines to send a second set
+      // of credentials, so nobody is written to twice.
+      const invitable = imported.concat(updated).filter((c) => c.email || c.phone);
+      if (invitable.length) {
+        inviteCandidates(invitable, {
+          invitedBy: req.session.userId || 'import',
+          addedBy: null,
+        }).catch((err) => console.error('[import] invitations failed:', err.message));
+      }
 
       res.status(201).json({
         format,
@@ -232,6 +265,9 @@ export default function spreadsheetRoutes() {
         imported: imported.length,
         updated: updated.length,
         skipped: skipped.length,
+        // What the recruiter is told will happen, so "did they get their
+        // login?" is answerable from the same screen that imported them.
+        invited: invitable.length,
         detail: { imported, updated, skipped },
       });
     }));

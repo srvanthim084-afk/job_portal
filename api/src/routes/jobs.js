@@ -86,6 +86,26 @@ export default function jobRoutes() {
         where.push(`(title ilike $${params.length} or $${params.length} = any(skills))`);
       }
       if (loc) { params.push(`%${loc}%`); where.push(`location ilike $${params.length}`); }
+
+      /*
+       * A recruiter's list is their own desk.
+       *
+       * An OPEN requirement is a public posting - the job board shows it
+       * to anybody, signed in or not - so row-level security cannot hide
+       * it, and should not: hiding an advertisement from a colleague
+       * while showing it to the world is incoherent. But the recruiter's
+       * own Jobs screen is not the job board, and it was listing every
+       * open requirement in the company as if each one were theirs.
+       *
+       * `?mine=all` opts back in, for a screen that genuinely wants the
+       * whole board.
+       */
+      if (req.session && req.session.role === 'recruiter'
+          && req.query.mine !== 'all' && req.session.profileId) {
+        params.push(req.session.profileId);
+        where.push(`recruiter_id = $${params.length}`);
+      }
+
       const clause = where.length ? `where ${where.join(' and ')}` : '';
 
       const total = await c.query(`select count(*)::int n from ${view} ${clause}`, params);

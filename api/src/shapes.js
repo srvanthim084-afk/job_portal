@@ -85,6 +85,10 @@ export function toCandidate(r) {
     id: r.id,
     name: r.name,
     email: r.email,
+    // Whether this person can sign in. Not the account, not the address
+    // it uses, and certainly not a password - just the one fact a
+    // recruiter needs to answer "can they see their own profile?".
+    hasPortalAccount: !!r.user_id,
     phone: nz(r.phone),
     location: nz(r.location),
     gender: nz(r.gender),

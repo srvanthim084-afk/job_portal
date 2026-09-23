@@ -28,9 +28,11 @@ import aiInterviewRoutes from './routes/ai-interviews.js';
 import aiCallingRoutes from './routes/ai-calling.js';
 import spreadsheetRoutes from './routes/spreadsheet.js';
 import intakeRoutes from './routes/intake.js';
+import { notificationRoutes } from './routes/notifications.js';
 import { startDeadlineSweep } from './notify/interview-deadline.js';
 import { startIntakeSync } from './intake/scheduler.js';
 import { startScreeningSweep } from './ai/screening.js';
+import { startRetrySweep } from './notify/retry.js';
 
 /*
  * The background work belongs to the APPLICATION, not to one entry point.
@@ -66,6 +68,7 @@ function startBackgroundWork(logger) {
     backgroundStops.push(startDeadlineSweep());
     backgroundStops.push(startIntakeSync());
     backgroundStops.push(startScreeningSweep());
+    backgroundStops.push(startRetrySweep());
   } catch (err) {
     console.error('[background] could not start:', err.message);
   }
@@ -135,7 +138,11 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
       cb(new ApiError(403, CODES.FORBIDDEN, 'Origin not allowed.'));
     },
     credentials: true,               // the session cookie must travel
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    // PATCH is a partial update, which the settings routes take so a
+    // screen showing six of thirty fields cannot blank the other
+    // twenty-four. Its absence here made those routes unreachable from
+    // a browser while answering perfectly to curl.
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['content-type', 'x-csrf-token'],
   }));
 
@@ -209,6 +216,7 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', aiInterviewRoutes());
   app.use('/api', aiCallingRoutes());
   app.use('/api', intakeRoutes());
+  app.use('/api', notificationRoutes());
 
   // Reminders for interviews running out of time, and the recruiter
   // mailboxes read on a timer.

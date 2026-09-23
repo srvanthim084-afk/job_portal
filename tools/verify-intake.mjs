@@ -14,11 +14,20 @@
  *
  *   node tools/verify-intake.mjs      (needs npm run dev on :4323)
  */
+import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
 import { chromium } from 'playwright';
 import {
   classify, extractCandidate, parseMessage, matchRequirement,
 } from '../api/src/intake/parse.js';
 import { temporaryPassword } from '../api/src/intake/process.js';
+
+// Which transport the server is using decides whether a sent message can
+// be read back locally; see the credentials check below.
+const envFile = resolve(process.cwd(), process.env.ENV_FILE || '.env');
+if (existsSync(envFile) && typeof process.loadEnvFile === 'function') {
+  process.loadEnvFile(envFile);
+}
 
 const BASE = (process.env.TL_URL || 'http://localhost:4323/').replace(/\/$/, '');
 const PASSWORD = process.env.TL_PASSWORD || 'TeamLink@2026';
@@ -369,8 +378,26 @@ await check('the candidate can sign in with the credentials that were emailed', 
   // The password is only in the message that was sent, so this reads it
   // back out of the local mail sink the same way the candidate would
   // read their inbox.
+  //
+  // Only possible when mail is going to that sink. With EMAILJS_* or a
+  // real EMAIL_SMTP_HOST configured, the message leaves for a provider
+  // and nothing arrives here - which is correct behaviour, not a
+  // failure, so it is skipped rather than reported as one. An earlier
+  // version only checked whether the sink was RUNNING, and failed the
+  // moment a real transport was configured.
+  //
+  // The sink only receives mail when SMTP is FULLY configured and points
+  // at this machine. A host name alone is not enough: with the password
+  // still missing, mail goes out over EmailJS and nothing arrives here.
+  const host = String(process.env.EMAIL_SMTP_HOST || '');
+  const localSink = !(host && process.env.EMAIL_SMTP_USER && process.env.EMAIL_SMTP_PASS
+    && /^(localhost|127\.0\.0\.1|::1)$/.test(host));
   const sink = await fetch('http://localhost:2580/messages.json').then((r) => r.json(), () => null);
   if (!sink) { console.log('        (the local inbox is not running - skipped)'); return; }
+  if (localSink) {
+    console.log('        (mail is going to a real provider, not the local inbox - skipped)');
+    return;
+  }
 
   const email = await recruiter.page.evaluate((id) =>
     ((DATA.candidates || []).find((c) => c.id === id) || {}).email, rahulCandidateId);
@@ -389,6 +416,33 @@ await check('the candidate can sign in with the credentials that were emailed', 
   must(me.session.mustChangePassword === true || me.mustChangePassword === true,
     'the candidate was not asked to change the temporary password');
 });
+
+
+/* ------------------------------------------------------------------ *
+ * Put the inbox back the way it was found.
+ *
+ * Every run of this used to leave its sample mailbox connected, and with
+ * it the applications and candidates the sample emails created. After a
+ * few runs the recruiter's Import from Mail screen was a list of
+ * `kiran.1790…@teamlink.com` and the ATS held dozens of candidates who
+ * do not exist - which is how a live database ended up with 86 of them.
+ *
+ * A test that leaves its fixtures behind is a test that damages the
+ * thing it is testing.
+ * ------------------------------------------------------------------ */
+try {
+  const cleaner = await open();
+  await cleaner.api('post', '/auth/login',
+    { email: 'admin@teamlink.com', password: PASSWORD, role: 'admin' });
+  const gone = await cleaner.api('post', '/intake/cleanup', { confirm: true });
+  if (gone.mailboxes) {
+    console.log(`  cleaned up: ${gone.mailboxes} sample mailbox(es), `
+      + `${gone.applications} application(s), ${gone.candidates} candidate(s)`);
+  }
+} catch (e) {
+  console.log(`  NOTE: the sample mailboxes were left behind (${e.message}).`);
+  console.log('        Run `npm run intake:cleanup -- --confirm` to remove them.');
+}
 
 await browser.close();
 console.log(failed === 0

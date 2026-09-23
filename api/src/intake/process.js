@@ -186,13 +186,16 @@ export async function processMessage(session, { mailbox, message, rowId }) {
       `insert into candidates
          (id, name, email, phone, location, preferred_location, title, current_company,
           exp, exp_years, ctc, expected_ctc, notice_period, education, skills,
-          technical_skills, summary)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15,$16)`,
+          technical_skills, summary, owner_recruiter_id)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15,$16,$17)`,
       [candidateId, c.name, c.email || null, c.phone || null, c.location || null,
        c.preferredLocation || null, c.title || null, c.currentCompany || null,
        c.experience || null, c.expYears || null, c.currentCtc || null,
        null, c.noticePeriod || null, c.education || null, c.skills || [],
-       c.summary || null]));
+       c.summary || null,
+       // Whoever's inbox it arrived in. Naukri writes to a recruiter's
+       // own mailbox, so that recruiter is the one working the lead.
+       mailbox.recruiter_id || null]));
   }
 
   await withUser(ENGINE, (cl) => cl.query(

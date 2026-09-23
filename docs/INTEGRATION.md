@@ -617,12 +617,339 @@ consequences are handled:
   rebuilds them from the database on every refresh, inventing nothing:
   every field comes from the application, the job or the interview row.
 
+## "She never received anything"
+
+The complaint that found two separate faults, both of which looked fine
+from the inside.
+
+A candidate applied, was screened, was invited to her AI interview and
+given her two-day deadline. Four messages. The delivery log for
+`TL-APP-2026-00332` recorded all four:
+
+```
+10:22:02  email  failed  #1  HTTP 403: API access from non-browser environments is currently disabled
+10:22:03  email  failed  #2  …
+10:23:26  email  failed  #3  …
+10:26:08  email  failed  #6  …
+```
+
+Nothing lied. Every attempt was recorded, with the provider's own reason.
+The faults were what happened next, and what "success" turned out to mean.
+
+### Fault one: nothing ever went back
+
+A provider outage is the ordinary case — a rate limit, an expired token, a
+setting somebody had not ticked yet. When the setting was fixed at 10:36,
+the four refused messages stayed refused. From her side TeamLink had
+simply never written, and nobody would have found out until she rang.
+
+`failed_deliveries_pending()` (migrations 0020, 0021) answers *who never
+heard from us*: the applications whose **most recent** attempt on a
+channel did not get through. Built from the latest attempt rather than
+from every failure, so a message that failed and was later delivered is
+not chased again — the verifier holds a second pass to zero sends.
+
+`not_configured` counts as never having heard from us too. It is an honest
+record — we did not claim to send — but from the candidate's side it is
+indistinguishable from silence. 89 applications here were in that state
+from before any transport existed.
+
+Three exclusions, each for a reason:
+
+* **three attempts**, then it is not transient and a human should look
+* **do-not-contact**, which now has somewhere to be set: `doNotContact`
+  on `PUT /candidates/:id`, next to `whatsappOptIn`. The flag existed
+  since the calling agent (0018) but nothing outside a call could record
+  it, so a request made by email could not be honoured without editing
+  the database by hand. Every outbound channel checks it
+* **reserved domains** — `example.com`, `.test`, `.invalid`, `.local`.
+  They can receive mail nowhere, so an attempt is not a retry, it is
+  burnt provider quota. Seed and test rows live there and must not crowd
+  out a real person
+
+`startRetrySweep()` runs with the other background work in `createApp()`
+— fifteen minutes, fifty at a time. Deliberately slow: a thousand emails
+the moment a provider recovers is its own kind of failure. Its first pass
+delivered the 12 messages that were outstanding.
+
+**Not a replay.** The message sent is the one for the candidate's
+**current** stage, from the same table a recruiter's manual send uses
+(`EVENT_FOR_STAGE`), so the two can never disagree. A three-day-old "your
+interview is scheduled" is worse than silence once the interview has
+moved.
+
+### Fault two: `sent` does not prove sent *to her*
+
+With the transport fixed, her messages recorded `sent`. She still had
+nothing.
+
+An EmailJS template carries its **own** "To Email" field. If that field
+holds a fixed address instead of `{{to_email}}`, every message goes to
+that one address, the API still answers `200 OK`, and the delivery log
+still records `sent`. There is no error anywhere to find.
+
+**This cannot be detected from the API, and one attempt to do so was
+wrong.** A probe was built on the assumption that a template wired to
+`{{to_email}}` would refuse a send with an empty recipient. It does not.
+EmailJS performs no recipient validation whatsoever at that boundary:
+
+```
+to_email omitted entirely   200 OK
+to_email = ''               200 OK
+to_email = '   '            200 OK
+to_email = 'not an address' 200 OK
+template id wrong           400 The template ID not found
+```
+
+It validates the template id and nothing about the recipient, so an
+accepted probe says nothing either way. The probe was removed, and the
+finding is recorded here so nobody rebuilds it.
+
+What is checked instead splits cleanly in two.
+
+**Our side, asserted.** `verify:retry` calls the provider for real with
+`fetch` captured and inspects the actual outbound payload: `to_email`
+holds the candidate's own address, two different candidates produce two
+different recipients, `{{email}}` agrees with `{{to_email}}` so it cannot
+matter which one a template reads, `to_name` is the person's name rather
+than their address, `reply_to` is the company rather than the candidate,
+and neither key nor temporary password travels as a template variable.
+
+**The provider's side, stated.** `check:mail` reports `EMAILJS ACCEPTED`
+and then says plainly what that does *not* establish — who it went to, and
+whether it arrived — naming the template settings page and Email History,
+which lists the recipient a send actually used. It no longer implies more
+than the API can support.
+
+### Reaching one person
+
+`POST /notifications/applications/:id/send` (recruiter, BDE, admin) sends
+that candidate the update for the stage they are **actually** at, and
+echoes the address it went to — which, for "she got nothing", is usually
+the answer. It cannot compose arbitrary mail: the stage chooses the
+message.
+
+`POST /notifications/retry` (admin) runs the same queue on demand, for
+when an outage has just been fixed and waiting out the sweep is silly.
+
+From a terminal:
+
+```bash
+node tools/notify-candidate.mjs sravanthimangalapalli715@gmail.com
+```
+
+It resolves the person first and refuses to guess between two similar
+names, then reports the role, the stage, the message and the recipient.
+It goes through the running server rather than opening its own database
+connection: the embedded development engine serves one client at a time,
+so a second connection is refused while the API holds it.
+
+## Moving to SMTP, and what the move exposed
+
+EmailJS is built to be called from a browser. Server-side it answers
+`200 OK` for almost everything and reports nothing per recipient, so
+"did it go?" has no answer in the log. SMTP answers with the mail
+server's own accept or refusal, per address, with a message id. The code
+path already existed; only the settings changed.
+
+Three faults surfaced during the switch, all found by doing it rather
+than by reading it.
+
+### A half-set SMTP silently disabled email
+
+`configured()` required all four of host, user, password and from
+address. The send path branched on the **host alone**. So writing a host
+into `.env` before the password arrives sent every message down the SMTP
+branch with no credentials, where it failed — while a working EmailJS
+was skipped precisely because a host was set. Half a setting is not a
+preference.
+
+`smtpReady()` is now the single test, used by `configured()` and by the
+send path. `check:mail` uses it too, and reports the transport that will
+**actually** be used rather than the one the host name implies.
+
+### "due undefined"
+
+A real invitation went out reading
+
+> Your AI interview for Java Developer — due undefined
+
+`AI_INTERVIEW_INVITED` states a deadline, and only the reminder sweep
+ever passed one; the stage and retry paths did not, and
+`String(undefined)` is a perfectly good string. The footer had the same
+fault with a missing job id, and four other messages had it with a
+stage name, a score, and an application reference.
+
+`events.js` now reads the application's real `ai_interview_due_at`, and
+every template omits what it was not given rather than printing the
+word. `verify:retry` holds **every** message on **every** channel against
+`undefined`, `NaN` and `[object Object]`, with the optional context
+deliberately withheld — which is the state a caller that forgot
+something actually produces.
+
+### The retry budget locked out the people it was for
+
+0020 stopped chasing a delivery after three attempts, reading the count
+from `notification_deliveries.attempt` — which is a **lifetime** counter
+for that application and channel. A candidate who has had a
+confirmation, an invitation, a deadline reminder and a few stage updates
+is already past three, so the moment a provider fails she is ineligible
+for the retry that exists for exactly her case. The longer somebody has
+been in the pipeline, the less the safety net covers them.
+
+Found the hard way: a real send failed on `HTTP 426: Monthly request
+quota exceeded`, and the queue came back empty.
+
+0022 counts the run of consecutive failures **since the last message that
+got through**. A working channel resets it, so three means three goes at
+the message in front of us. She reappeared in the queue immediately.
+
+### A note on quota
+
+The EmailJS free tier is a few hundred sends a month, and the verifiers
+send real mail. Between the sweeps and the test runs it was exhausted,
+which is its own argument for SMTP: Gmail allows far more, and a refusal
+arrives as a refusal rather than as an accepted message nobody receives.
+
+## SMS, WhatsApp and calling, where the recruiter already is
+
+Two complaints, one screen.
+
+Email had a settings page. SMS, WhatsApp and voice did not — although all
+four **already send at every stage**, from the same `dispatchEvent`, the
+same templates and the same delivery log. With no credentials they record
+`not_configured`, which reads like a fault rather than a setting nobody
+has filled in yet. "She got no SMS" had no answer anywhere a recruiter
+could reach.
+
+And the calling agent's configuration was admin-only, so the recruiter
+placing the calls could not see what the agent would say, which languages
+it answers in, whether it discloses that it is an AI, or why no phone
+rang.
+
+It is a **tab on the existing Email / SMS / IVR screen** — not a new
+module and not a new menu, which the brief rules out. Same tab strip,
+same panels, same classes; the prototype's five tabs are untouched and
+the verifier holds them to that.
+
+### No credential field, anywhere
+
+The usual provider-settings page has an API Key box, often with a note
+saying the value is "stored locally in this demo only". That hands the
+key to everybody who can open the developer tools.
+
+This screen has no key, token or password field on it. Credentials are
+environment variables on the server; the screen reports whether they are
+**present** and names the ones that are **missing**, and never receives
+or renders a value. Two checks hold that: no credential-shaped input
+exists, and no credential-shaped value appears in the markup.
+
+### Three faults found by building it
+
+**A simulator reported itself as a live carrier.** The built-in
+telephony driver answers `configured: true` because it is always usable —
+it is what lets the whole conversation be rehearsed on screen with no
+carrier account. Reading a status badge off that flag produced
+*"Connected — the agent places real calls through local"* about a
+candidate nobody had dialled. `telephonyStatus()` now answers two
+questions separately: `configured` (usable) and `real` (a phone rings).
+The screen says **Rehearsal only** until a carrier is connected.
+
+**A retry pass on one channel re-sent every other channel.** Extending
+the sweep past email looked like a one-line change. `dispatchEvent` sends
+on all four channels, so four passes would have sent four copies of the
+same email to somebody whose only problem was a dead SMS gateway. The
+queue is per channel, so the send is now too — `ctx.channels` names the
+one being retried.
+
+**An unconfigured channel would have spent its own retry budget.** A
+sweep over WhatsApp with no credentials records `not_configured` again,
+and three of those in a row exhaust the budget from 0022 — so the day
+somebody finally sets WhatsApp up, everybody who was waiting for it is
+already excluded. A channel that cannot send is now not retried at all,
+which is what keeps its queue intact.
+
+### Read-only, and for a specific reason
+
+The panels started with editable fields for an admin. That was dead code:
+the prototype sends anybody who is not a recruiter from `/recruiter/*` to
+the recruiter login, so an admin cannot open this screen at all. A Save
+button nobody can reach is worse than none — it implies a way to change
+these that does not exist. The settings are changed through
+`PATCH /ai-calling/settings`, which is admin-only and enforced in the API
+and in the database; a verifier asserts the refusal rather than trusting
+the hidden button.
+
+## An imported candidate could not see themselves
+
+A person who arrived through the Naukri mailbox got a portal account and
+a message carrying their login. A person imported from a CSV or an Excel
+file got a row in `candidates` and nothing else. The recruiter could see
+them; they could not see themselves, could not correct what the file said
+about them, could not upload a current resume, and never heard they were
+in the database at all.
+
+The account already had a home — `candidate_portal_account()` from 0019 —
+so `notify/invite.js` reuses it and sends the credentials on the same
+three channels as everything else: **email, SMS and WhatsApp**. Migration
+0023 adds `candidate_invites`, which could not live in
+`notification_deliveries`: that table requires an application and a job,
+and an invitation has neither. It is about the person, not a role they
+have applied for.
+
+**The password lives for the length of one function call.** Generated,
+hashed into `users`, put into the outgoing message, returned to nobody. It
+is not logged, not stored, and appears in no API response — the record
+keeps `had_credentials`, a boolean, and never the value. Two checks hold
+that.
+
+Three decisions worth stating:
+
+* **Updated rows are invited too**, not only new ones. Somebody already in
+  the database who has never had a login is in exactly the position this
+  fixes.
+* **The invitations are sent after the response, and not awaited.** A
+  provider timing out must not roll back an import that has already
+  succeeded, and a recruiter who has uploaded four hundred rows should
+  not watch a spinner while four hundred messages go out.
+* **Nobody is written to twice.** The first guard asked "has a message
+  been SENT?" — which, on a deployment where SMS is not configured and
+  email is refusing, is never true, so a second upload of the same file
+  messaged everybody again. 0024 asks instead: once one got through,
+  never again; otherwise not again within a day. A repeated upload is
+  silent, while a genuine outage does not silence somebody forever.
+
+### The first thing a person sees
+
+**The resume comes first.** It was section 3 of 5, below Personal and
+Professional Information — so the form asked for name, mobile, location,
+company, designation, experience, qualification and skills, and only then
+offered to read all of it out of the file the candidate was about to
+upload anyway. It is now section 1, the numbers renumber to match, and
+nothing is rebuilt: same panel, same upload box, same handlers.
+
+**One Home per header.** A Home chip is injected into every header by a
+script of its own. Where the header already had one, that left two
+controls with one destination side by side — the public nav has read
+"Home … Home" ever since. The rule is now: keep whichever Home is always
+visible, and where both are, keep the page's own. So the public site
+keeps its nav item and loses the chip; the candidate portal keeps the
+chip and loses the duplicate buried in the profile dropdown.
+
+Both were timing bugs as much as layout ones: the chip mounts from its own
+script, usually *after* the render hook runs, so the first attempt found
+nothing and gave up. It now waits once and tries again, which is what
+makes the fix land on the first paint — the only paint most people see.
+
 ## Verification
 
 ```
 npm run verify:db         schema 10/10 · rls 29/29 · seed 16/16 · migrate 13/13
 npm run test:api          72/72
 npm run verify:candidate  18/18  register -> login -> apply -> history -> refresh
+npm run verify:invite     11/11  an imported candidate gets a login, once, on three channels
+npm run verify:channels-ui 14/14  four channels on the recruiter screen, no secret on it
+npm run verify:retry      32/32  the candidate's own address, no "undefined", nobody left unheard
 npm run verify:interaction 7/7   real clicks on real controls
 npm run verify:search      9/9
 npm run verify:interview  15/15  the blueprint, the deadline, the five scores

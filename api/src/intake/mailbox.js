@@ -43,12 +43,31 @@ function envKey(address, suffix) {
 export function mailboxSecrets(address) {
   const pick = (suffix, fallback) =>
     process.env[envKey(address, suffix)] || process.env[`MAILBOX_${suffix}`] || fallback || '';
+
+  const domain = String(address || '').split('@')[1] || '';
+  const token = pick('TOKEN');
+
   return {
-    host: pick('HOST'),
+    /*
+     * The host defaults to mail.<domain>, which is where a company
+     * mailbox almost always is. One variable fewer to set, and an
+     * explicit HOST still wins when it is somewhere else.
+     */
+    host: pick('HOST', domain ? `mail.${domain}` : ''),
     port: Number(pick('PORT', '993')),
     user: pick('USER', address),
-    password: pick('PASSWORD'),
-    token: pick('TOKEN'),          // gmail / outlook OAuth access token
+    /*
+     * PASSWORD or TOKEN - whichever is set.
+     *
+     * TOKEN was originally the Gmail/Outlook OAuth access token and
+     * nothing else, so an IMAP mailbox configured with it reported
+     * itself unconfigured while a perfectly good credential sat in the
+     * environment. They are the same thing from this code's point of
+     * view: the secret that opens this mailbox. Accepting either means
+     * whichever variable somebody has already set simply works.
+     */
+    password: pick('PASSWORD') || token,
+    token,
   };
 }
 
@@ -57,9 +76,13 @@ export function mailboxReadiness(mailbox) {
   const s = mailboxSecrets(mailbox.address);
   if (mailbox.provider === 'mock') return { ready: true, missing: [] };
   if (mailbox.provider === 'imap') {
+    // Only the credential is ever genuinely missing now: the host has a
+    // sensible default, and either variable name supplies the secret.
     const missing = [];
     if (!s.host) missing.push(envKey(mailbox.address, 'HOST'));
-    if (!s.password) missing.push(envKey(mailbox.address, 'PASSWORD'));
+    if (!s.password) {
+      missing.push(`${envKey(mailbox.address, 'PASSWORD')} (or ${envKey(mailbox.address, 'TOKEN')})`);
+    }
     return { ready: missing.length === 0, missing };
   }
   if (mailbox.provider === 'gmail' || mailbox.provider === 'outlook') {
@@ -365,6 +388,53 @@ const mockProvider = {
     }));
   },
 };
+
+/**
+ * Does this mailbox actually open?
+ *
+ * "Connected" used to mean only that the environment variables were
+ * present - so a wrong password, a wrong host or a mailbox that does not
+ * exist all read as connected on screen, and the first sign of trouble
+ * was an empty queue hours later. Having the key is not the same as the
+ * door opening.
+ *
+ * This opens it: connect, LOGIN, SELECT INBOX, disconnect. Nothing is
+ * read and nothing is changed.
+ */
+export async function verifyMailbox(mailbox) {
+  const s = mailboxSecrets(mailbox.address);
+
+  if (mailbox.provider === 'mock') return { ok: true, detail: 'sample inbox' };
+
+  if (mailbox.provider === 'imap') {
+    if (!s.host || !s.password) {
+      return { ok: false, error: 'No IMAP host or password is configured on the server.' };
+    }
+    const client = new Imap({
+      host: s.host, port: s.port || 993, user: s.user, password: s.password,
+    });
+    try {
+      await client.connect();
+      await client.login();
+      await client.selectInbox();
+      return { ok: true, detail: `${s.host}:${s.port || 993} as ${s.user}` };
+    } catch (err) {
+      // The server's own words. "Authentication failed" and "getaddrinfo
+      // ENOTFOUND" are different problems and deserve different fixes.
+      return { ok: false, error: String(err.message || err).slice(0, 300) };
+    } finally {
+      try { await client.logout(); } catch { /* already gone */ }
+    }
+  }
+
+  if (mailbox.provider === 'gmail' || mailbox.provider === 'outlook') {
+    return s.token
+      ? { ok: true, detail: 'an OAuth token is configured' }
+      : { ok: false, error: 'No OAuth token is configured on the server.' };
+  }
+
+  return { ok: false, error: `Unknown provider "${mailbox.provider}".` };
+}
 
 const imapProvider = {
   name: 'imap',

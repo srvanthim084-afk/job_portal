@@ -145,11 +145,23 @@ export async function screenApplication(applicationId, { actor = 'system', force
     settings,
   });
 
-  // Only an application still at the start of the pipeline may be moved:
-  // screening must never drag somebody back out of an interview.
+  /*
+   * Screening is a STEP, not a place to sit.
+   *
+   * A failing score used to move the application INTO `ai_screening` and
+   * leave it there, so the recruiter's list became a column of identical
+   * "AI Screening" badges - one per candidate, saying nothing about any
+   * of them, and hiding the score that had just been worked out. The
+   * stage told you the software had run; it never told you the answer.
+   *
+   * Now a score that passes shortlists, and a score that does not leaves
+   * the application exactly where it was - at `applied`, its real
+   * position in the pipeline - with the score attached and on screen.
+   * Nobody is rejected either way: that stays a person's decision.
+   */
   const movable = ['applied', 'ai_screening'].includes(ctx.app.stage);
   const nextStage = movable
-    ? (result.verdict === 'shortlist' ? 'shortlisted' : 'ai_screening')
+    ? (result.verdict === 'shortlist' ? 'shortlisted' : 'applied')
     : ctx.app.stage;
 
   const note = `AI screening ${result.score}% (threshold ${result.threshold}) - `

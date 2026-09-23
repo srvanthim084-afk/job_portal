@@ -45,6 +45,9 @@ async function send(session, event, ctx) {
       `select cand.id as candidate_id, cand.name, cand.email, cand.phone,
               cand.whatsapp_opt_in,
               a.id as application_id, a.applied_at, a.stage,
+              -- The deadline the database set when the interview was
+              -- invited. Without it the invitation said "due undefined".
+              a.ai_interview_due_at,
               j.id as job_id, j.title as job_title,
               co.name as company_name
          from applications a
@@ -65,13 +68,27 @@ async function send(session, event, ctx) {
     jobId: meta.job_id,
     applicationId: meta.application_id,
     appliedAt: meta.applied_at,
+    dueAt: meta.ai_interview_due_at || undefined,
     portalUrl,
     ...ctx,
   });
 
   if (!messages) return { event, delivery_status: {}, skipped: 'no template' };
 
-  const attempts = await Promise.all(CHANNELS.map(async (channel) => {
+  /*
+   * Normally every channel. A retry names ONE.
+   *
+   * The retry sweep goes channel by channel, and without this a pass for
+   * SMS would also re-send the email that already arrived - four sweeps,
+   * four copies of the same message to somebody whose only problem was
+   * that their SMS gateway was down. The queue is per channel, so the
+   * send must be too.
+   */
+  const wanted = Array.isArray(ctx.channels) && ctx.channels.length
+    ? CHANNELS.filter((c) => ctx.channels.indexOf(c) >= 0)
+    : CHANNELS;
+
+  const attempts = await Promise.all(wanted.map(async (channel) => {
     const to = channel === 'email' ? meta.email : meta.phone;
     const provider = providers[channel];
     let result;
@@ -108,10 +125,12 @@ async function send(session, event, ctx) {
   await withUser(session, async (c) => {
     for (const a of attempts) {
       await c.query(
-        `select record_delivery($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        `select record_delivery($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
         [meta.application_id, meta.candidate_id, meta.job_id, a.channel,
          a.result.status, a.to || null, a.result.provider || null,
-         a.result.ref || null, a.result.error || null, meta.applied_at, null]);
+         a.result.ref || null, a.result.error || null, meta.applied_at, null,
+         // Which message this was, so a retry knows what it is retrying.
+         event]);
     }
   }).catch((err) => {
     console.error('[notify] could not record delivery outcomes:', err.message);

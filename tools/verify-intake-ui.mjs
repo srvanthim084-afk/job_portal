@@ -52,16 +52,6 @@ await check('the Applications screen offers Import from Mail', async () => {
   must(found, 'the Import from Mail button is not on the Applications screen');
 });
 
-await check('every imported application shows its TL-APP reference in the list', async () => {
-  const refs = await page.evaluate(() =>
-    [...document.querySelectorAll('[data-tl-ref]')].map((e) => e.textContent.trim()));
-  must(refs.length > 0, 'no application reference is shown in the table');
-  must(refs.every((r) => /^TL-APP-\d{4}-\d{5}/.test(r)),
-    `a reference is malformed: ${refs.find((r) => !/^TL-APP-/.test(r))}`);
-  must(refs.some((r) => /from mail/.test(r)),
-    'no application is marked as having come from the mailbox');
-});
-
 await check('the button opens the mailbox screen', async () => {
   await page.evaluate(() => window.TL.intake.open());
   await page.waitForTimeout(1800);
@@ -106,6 +96,27 @@ await check('Sync now imports, and says what happened to each message', async ()
   const { messages } = await api('get', `/intake/messages?mailboxId=${mailboxId}`);
   must(messages.length >= 4, `only ${messages.length} messages were recorded`);
   must(messages.some((m) => m.status === 'processed'), 'nothing was imported');
+});
+
+/*
+ * AFTER the sync, not before it.
+ *
+ * This reads application rows marked "from mail" - rows the sync above
+ * creates. At the top of the file it was reading whatever a PREVIOUS run
+ * had left behind, so it passed for as long as the suite leaked its
+ * fixtures and failed the moment that was fixed. A check that depends on
+ * the litter of an earlier run is not checking anything.
+ */
+await check('every imported application shows its TL-APP reference in the list', async () => {
+  await page.evaluate(() => { location.hash = '#/recruiter/applications'; });
+  await page.waitForTimeout(1500);
+  const refs = await page.evaluate(() =>
+    [...document.querySelectorAll('[data-tl-ref]')].map((e) => e.textContent.trim()));
+  must(refs.length > 0, 'no application reference is shown in the table');
+  must(refs.every((r) => /^TL-APP-\d{4}-\d{5}/.test(r)),
+    `a reference is malformed: ${refs.find((r) => !/^TL-APP-/.test(r))}`);
+  must(refs.some((r) => /from mail/.test(r)),
+    'no application is marked as having come from the mailbox');
 });
 
 await check('an email the system will not guess at is offered for mapping', async () => {
@@ -158,6 +169,33 @@ await check('no console errors through any of that', async () => {
   const real = errors.filter((e) => !/favicon|manifest/i.test(e));
   must(real.length === 0, `console errors: ${real.slice(0, 2).join(' | ')}`);
 });
+
+
+/* ------------------------------------------------------------------ *
+ * Put the inbox back the way it was found.
+ *
+ * Every run of this used to leave its sample mailbox connected, and with
+ * it the applications and candidates the sample emails created. After a
+ * few runs the recruiter's Import from Mail screen was a list of
+ * `kiran.1790…@teamlink.com` and the ATS held dozens of candidates who
+ * do not exist - which is how a live database ended up with 86 of them.
+ *
+ * A test that leaves its fixtures behind is a test that damages the
+ * thing it is testing.
+ * ------------------------------------------------------------------ */
+try {
+  // This file drives one page, so it reuses it rather than opening another.
+  await api('post', '/auth/login',
+    { email: 'admin@teamlink.com', password: PASSWORD, role: 'admin' });
+  const gone = await api('post', '/intake/cleanup', { confirm: true });
+  if (gone.mailboxes) {
+    console.log(`  cleaned up: ${gone.mailboxes} sample mailbox(es), `
+      + `${gone.applications} application(s), ${gone.candidates} candidate(s)`);
+  }
+} catch (e) {
+  console.log(`  NOTE: the sample mailboxes were left behind (${e.message}).`);
+  console.log('        Run `npm run intake:cleanup -- --confirm` to remove them.');
+}
 
 await browser.close();
 console.log(failed === 0

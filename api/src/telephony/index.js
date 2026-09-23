@@ -320,10 +320,24 @@ export function telephony() {
 export function telephonyStatus() {
   const want = (config.telephony.provider || 'local').toLowerCase();
   const p = PROVIDERS[want];
+  const active = telephony().name;
   return {
     requested: want,
-    active: telephony().name,
+    active,
     configured: !!p && p.configured(),
+    /*
+     * Whether a phone would actually ring.
+     *
+     * The local driver answers `configured: true` because it is always
+     * usable - it is what lets the conversation be rehearsed on screen
+     * with no carrier account. But it dials nothing, and a status screen
+     * reading "Connected / calls are live" off that flag tells a
+     * recruiter something untrue about a candidate who was never
+     * called. The two questions are different and now have different
+     * answers.
+     */
+    real: active !== 'local',
+    simulated: active === 'local',
     stt: speechToText.name(),
     tts: textToSpeech.name(),
     missing: !p ? [`unknown provider "${want}"`]

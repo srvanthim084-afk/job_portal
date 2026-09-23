@@ -14,7 +14,17 @@ const esc = (s) => String(s ?? '')
 /** "Fri 23 Sep, 6:30 PM" — readable, unambiguous, no locale surprises. */
 function human(ts) {
   const d = ts instanceof Date ? ts : new Date(ts);
-  if (Number.isNaN(d.getTime())) return String(ts);
+  /*
+   * A missing date must never reach a candidate as the word "undefined".
+   *
+   * It did: an invitation went out reading "Your AI interview for Java
+   * Developer - due undefined", because the caller had not passed the
+   * deadline and String(undefined) is a perfectly good string. "Soon" is
+   * not as good as a date, but it is a sentence a person can read - and
+   * the caller is the thing that actually needs fixing.
+   */
+  if (ts === undefined || ts === null || ts === '') return 'soon';
+  if (Number.isNaN(d.getTime())) return 'soon';
   return d.toLocaleString('en-GB', {
     weekday: 'short', day: 'numeric', month: 'short',
     hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'UTC',
@@ -139,7 +149,10 @@ const SUBJECTS = {
   AI_SCORE_AVAILABLE:     (c) => `Your interview result for ${c.jobTitle}`,
   OFFER_EXTENDED:         (c) => `An offer for ${c.jobTitle}`,
 
-  AI_INTERVIEW_INVITED:   (c) => `Your AI interview for ${c.jobTitle} — due ${human(c.dueAt)}`,
+  // No deadline in hand means no deadline in the subject line, rather
+  // than a subject that reads "due soon" and says nothing at all.
+  AI_INTERVIEW_INVITED:   (c) => `Your AI interview for ${c.jobTitle}`
+    + (c.dueAt ? ` — due ${human(c.dueAt)}` : ''),
   AI_INTERVIEW_REMINDER:  (c) => `Reminder: your AI interview for ${c.jobTitle} closes tomorrow`,
   AI_INTERVIEW_FINAL:     (c) => `Last chance: your AI interview for ${c.jobTitle} closes in 2 hours`,
   AI_INTERVIEW_EXPIRED:   (c) => `Your AI interview window for ${c.jobTitle} has closed`,
@@ -147,11 +160,17 @@ const SUBJECTS = {
   JOB_MATCH_ALERT:        (c) => `A ${c.jobTitle} role matching your profile`,
   AI_CALL_COMPLETED:      (c) => `AI call completed - ${c.candidateName}, ${c.jobTitle}`,
   APPLICATION_IMPORTED:   (c) => `Your application for ${c.jobTitle} - ${c.company}`,
+  CANDIDATE_INVITED:      (c) => `Your ${c.company || 'TeamLink'} candidate portal login`,
 };
 
 const BODIES = {
+  // Without a stage name this says the application has moved, which is
+  // still true and still worth reading; naming a stage of "undefined" is
+  // not.
   STAGE_CHANGED: (c) =>
-    `Your application for ${c.jobTitle} at ${c.company} has moved to "${c.stageLabel || c.stage}".`
+    (c.stageLabel || c.stage
+      ? `Your application for ${c.jobTitle} at ${c.company} has moved to "${c.stageLabel || c.stage}".`
+      : `Your application for ${c.jobTitle} at ${c.company} has moved to the next stage.`)
     + (c.note ? `\n\nNote from the team: ${c.note}` : ''),
 
   INTERVIEW_SCHEDULED: (c) =>
@@ -166,10 +185,16 @@ const BODIES = {
     + `${c.questionsAsked ?? 'the'} questions.`,
 
   AI_SCORE_AVAILABLE: (c) =>
-    `Your AI interview for ${c.jobTitle} has been assessed. `
-    + `Overall score: ${c.overall}%`
-    + (c.technical != null ? ` (technical ${c.technical}%, communication ${c.communication}%)` : '')
-    + '.\n\nYou can see the full breakdown on your applications page.',
+    `Your AI interview for ${c.jobTitle} has been assessed.`
+    // No number in hand means none is quoted. "Overall score: undefined%"
+    // is worse than sending them to the page that has the real one.
+    + (c.overall != null
+      ? ` Overall score: ${c.overall}%`
+        + (c.technical != null
+          ? ` (technical ${c.technical}%, communication ${c.communication}%)` : '')
+        + '.'
+      : '')
+    + '\n\nYou can see the full breakdown on your applications page.',
 
   OFFER_EXTENDED: (c) =>
     `${c.company} has extended an offer for ${c.jobTitle}.`
@@ -186,7 +211,8 @@ const BODIES = {
   AI_INTERVIEW_INVITED: (c) =>
     `Your application for ${c.jobTitle} at ${c.company} includes a short AI interview: `
     + '15 questions about your background, this role and your resume, taken in your browser.'
-    + `\n\nIt must be completed by ${human(c.dueAt)} — two days from now. `
+    + `\n\nIt must be completed by ${human(c.dueAt)}`
+    + (c.dueAt ? ' — two days from now. ' : '. ')
     + 'You can take it at any time before then, and it takes about 20 minutes.',
 
   AI_INTERVIEW_REMINDER: (c) =>
@@ -211,6 +237,52 @@ const BODIES = {
    * empty: "Notice Period: N/A" in a first contact reads as a broken
    * system.
    * ------------------------------------------------------------------ */
+  /* ---- a candidate added to the database, with no application yet -- *
+   *
+   * Somebody imported from a spreadsheet is in the database and cannot
+   * see themselves: no login, no way to correct what the file said about
+   * them, and no idea they are on a recruiter's list at all. This is the
+   * message that fixes that.
+   *
+   * It carries credentials, so it follows the same rule as the one
+   * below: the password appears HERE and nowhere else - not in a log,
+   * not in an API response, not in the recruiter's view of the
+   * candidate. Generated, sent once, stored only as a hash.
+   *
+   * It promises nothing about a role. They have not applied for
+   * anything, and a first message implying a live application would be
+   * a lie the recruiter has to explain later.
+   * ------------------------------------------------------------------ */
+  CANDIDATE_INVITED: (c) => {
+    const lines = [
+      `Your profile has been added to the ${c.company || 'TeamLink'} candidate database`
+        + `${c.addedBy ? ` by ${c.addedBy}` : ''}.`,
+      '',
+      'You can sign in to see what we hold about you, correct anything that is '
+        + 'wrong, upload your current resume and set the roles and locations you '
+        + 'want to hear about.',
+    ];
+
+    if (c.loginEmail && c.tempPassword) {
+      lines.push(
+        '',
+        'Candidate Portal login:',
+        `  Email: ${c.loginEmail}`,
+        `  Temporary password: ${c.tempPassword}`,
+        '',
+        'You will be asked to choose your own password the first time you sign in.');
+    } else if (c.loginEmail) {
+      lines.push('', 'You already have a TeamLink account - sign in with your existing password.');
+    }
+
+    lines.push(
+      '',
+      'If you would rather not hear from us, reply to this message and we will '
+        + 'remove you.');
+
+    return lines.join('\n');
+  },
+
   APPLICATION_IMPORTED: (c) => {
     const lines = [
       `Thank you for applying for the ${c.jobTitle} position.`,
@@ -218,7 +290,7 @@ const BODIES = {
       `We have received your application through ${c.sourceLabel || 'Naukri'} and it has been `
         + `registered with ${c.company}.`,
       '',
-      `Application ID: ${c.reference}`,
+      ...(c.reference ? [`Application ID: ${c.reference}`] : []),
       `Applied Role: ${c.jobTitle}`,
     ];
 
@@ -246,8 +318,12 @@ const BODIES = {
       '  - Preferred work mode and location',
       '  - Skills',
       '',
-      `Your Application ID ${c.reference} is used to track this application, your interview `
-        + 'and the rest of the process. Quote it in any reply.');
+      // Named only when there is one to name.
+      c.reference
+        ? `Your Application ID ${c.reference} is used to track this application, your `
+          + 'interview and the rest of the process. Quote it in any reply.'
+        : 'Your Application ID is on your applications page, and is used to track this '
+          + 'application, your interview and the rest of the process.');
 
     return lines.join('\n');
   },
@@ -303,18 +379,25 @@ export function buildEventMessages(event, c) {
   // for them to see, and printing both makes the message contradict
   // itself about which one to use.
   const quoted = c.reference || c.applicationId;
-  const ref = quoted
-    ? `Job ID: ${c.jobId} · Application ID: ${quoted}`
-    : `Job ID: ${c.jobId}`;
+  // An id that is missing is left out rather than printed. The footer
+  // once read "Job ID: undefined" whenever a caller did not supply one,
+  // which makes a real message look like a broken one.
+  const ids = [
+    c.jobId ? `Job ID: ${c.jobId}` : null,
+    quoted ? `Application ID: ${quoted}` : null,
+  ].filter(Boolean);
+  const ref = ids.join(' · ');
 
   return {
     email: {
       subject: subject(c),
-      text: `Hi ${c.candidateName},\n\n${text}\n\n${ref}\n\n${c.portalUrl}\n\n— TeamLink`,
+      text: `Hi ${c.candidateName},\n\n${text}\n\n`
+        + (ref ? `${ref}\n\n` : '')
+        + `${c.portalUrl}\n\n— TeamLink`,
       html:
         `<p>Hi ${esc(c.candidateName)},</p>` +
         `<p>${esc(text).replace(/\n/g, '<br>')}</p>` +
-        `<p style="color:#666;font-size:13px">${esc(ref)}</p>` +
+        (ref ? `<p style="color:#666;font-size:13px">${esc(ref)}</p>` : '') +
         `<p><a href="${esc(c.portalUrl)}">${esc(c.linkLabel || 'View your applications')}</a></p>` +
         `<p>— TeamLink</p>`,
     },
@@ -322,12 +405,15 @@ export function buildEventMessages(event, c) {
     // times as much and is read no more carefully.
     sms: (c.smsLead
       ? `TeamLink: ${c.smsLead} ${c.portalUrl}`
-      : `TeamLink: ${text.split('\n')[0]} (Job ${c.jobId}). ${c.portalUrl}`).slice(0, 320),
+      : `TeamLink: ${text.split('\n')[0]}`
+        + (c.jobId ? ` (Job ${c.jobId})` : '')
+        + `. ${c.portalUrl}`).slice(0, 320),
     // Spoken aloud: no link, no ids, and the candidate's name first so
     // they know the call is for them.
     ivr: `Hello ${c.candidateName}. This is a call from TeamLink. `
          + `${text.split('\n')[0]} `
          + 'Please check your TeamLink applications page for details. Thank you.',
-    whatsapp: `*TeamLink*\n\nHi ${c.candidateName},\n\n${text}\n\n${ref}\n${c.portalUrl}`,
+    whatsapp: `*TeamLink*\n\nHi ${c.candidateName},\n\n${text}\n\n`
+      + (ref ? `${ref}\n` : '') + `${c.portalUrl}`,
   };
 }

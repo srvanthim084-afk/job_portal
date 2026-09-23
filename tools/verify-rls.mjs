@@ -160,24 +160,48 @@ await check('candidate sees ONLY notifications addressed to them', async () => {
   eq(await ids(`select id from notifications`), ['nt_c1'], 'notification isolation');
 });
 
-await check('recruiter sees the talent pool (Find Candidates works)', async () => {
+/*
+ * The tenancy boundary is the RECRUITER, not the company (0031).
+ *
+ * These three used to assert the opposite - a shared talent pool, and
+ * applications visible to everybody at the same company. That was the
+ * model; it is not any more, because a consultancy where each recruiter
+ * runs their own desk needs the narrower one. They are kept rather than
+ * deleted: "who can see what" still has to be asserted, only the answer
+ * has changed.
+ */
+await check('a recruiter sees no candidate belonging to another recruiter', async () => {
   await as('r1', 'recruiter');
-  const r = await q(`select count(*)::int n from candidates`);
-  if (r[0].n < 5) throw new Error(`recruiter sees only ${r[0].n} candidates — search is crippled`);
+  const foreign = await q(
+    `select count(*)::int n from candidates
+      where owner_recruiter_id is not null and owner_recruiter_id <> 'r1'`);
+  if (foreign[0].n > 0) {
+    throw new Error(`${foreign[0].n} candidate(s) owned by another recruiter are visible`);
+  }
 });
 
-await check('recruiter sees applications for their OWN company only', async () => {
-  await as('r1', 'recruiter');           // r1 -> technova
-  const r = await q(`select distinct j.company_id
-                     from applications a join jobs j on j.id=a.job_id`);
-  eq(r.map(x => x.company_id).sort(), ['technova'], 'recruiter cross-company applications');
+await check('a recruiter sees only applications on their own requirements', async () => {
+  await as('r1', 'recruiter');
+  const wrong = await q(
+    `select count(*)::int n
+       from applications a join jobs j on j.id = a.job_id
+      where coalesce(j.recruiter_id, '') <> 'r1'
+        and coalesce(a.recruiter_id, '') <> 'r1'`);
+  if (wrong[0].n > 0) {
+    throw new Error(`${wrong[0].n} application(s) belonging to another recruiter are visible`);
+  }
 });
 
-await check('recruiter of another company sees a different set', async () => {
-  await as('r2', 'recruiter');           // r2 -> innovatesoft
-  const r = await q(`select distinct j.company_id
-                     from applications a join jobs j on j.id=a.job_id`);
-  eq(r.map(x => x.company_id).sort(), ['innovatesoft'], 'r2 cross-company applications');
+await check('another recruiter sees a different set again', async () => {
+  await as('r2', 'recruiter');
+  const wrong = await q(
+    `select count(*)::int n
+       from applications a join jobs j on j.id = a.job_id
+      where coalesce(j.recruiter_id, '') <> 'r2'
+        and coalesce(a.recruiter_id, '') <> 'r2'`);
+  if (wrong[0].n > 0) {
+    throw new Error(`${wrong[0].n} application(s) belonging to another recruiter are visible`);
+  }
 });
 
 await check("recruiter cannot edit another company's job", async () => {

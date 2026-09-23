@@ -22,7 +22,7 @@ if (existsSync(envFile) && typeof process.loadEnvFile === 'function') {
 }
 
 const { config } = await import('../api/src/config.js');
-const { verifySmtp, emailjsReady } = await import('../api/src/notify/providers.js');
+const { verifySmtp, emailjsReady, smtpReady } = await import('../api/src/notify/providers.js');
 
 /* ------------------------------------------------------------------ *
  * EmailJS
@@ -70,7 +70,42 @@ async function checkEmailJs() {
     .catch((err) => ({ status: 0, text: err.message }));
 
   if (ready.ready && probe.status === 200) {
-    console.log(`\n  EMAILJS ACCEPTED — a message was sent to ${config.emailFrom}.\n`);
+    /*
+     * ACCEPTED is not the same as ADDRESSED, and the difference is what
+     * cost a real candidate every message TeamLink sent her.
+     *
+     * An EmailJS template carries its OWN "To Email" field. If that field
+     * holds a fixed address instead of {{to_email}}, every message goes
+     * to that one address, the API still answers 200 OK, and the delivery
+     * log still records `sent`. There is no error anywhere to find.
+     *
+     * This CANNOT be detected from the API. It was worth trying, and the
+     * attempt is recorded here so nobody repeats it: EmailJS performs no
+     * recipient validation whatsoever at this boundary. A send with
+     * to_email empty, whitespace, malformed, or omitted from
+     * template_params altogether is answered 200 OK in every case. It
+     * validates the template id (400 when wrong) and nothing about the
+     * recipient. So an accepted probe says nothing about which address
+     * the template resolves - only the provider's own Email History
+     * lists the recipient a message actually went to.
+     *
+     * What CAN be checked is our own side: that the address TeamLink puts
+     * in to_email is the candidate's. `npm run verify:retry` asserts that
+     * against the real outbound payload.
+     */
+    console.log(`\n  EMAILJS ACCEPTED — a message was sent to ${config.emailFrom}.`);
+    console.log('\n  Two things this does NOT establish, both worth knowing:');
+    console.log('\n    1. WHO IT WENT TO. The template has its own "To Email" field, and');
+    console.log('       a fixed address there sends every message to that address while');
+    console.log('       the API still answers OK. EmailJS does not validate the recipient');
+    console.log('       here at all, so this check cannot tell the difference.');
+    console.log(`       Confirm the field reads exactly {{to_email}}:\n         https://dashboard.emailjs.com/admin/templates/${e.templateId}/settings`);
+    console.log('       and confirm the recipient of a real send in Email History:');
+    console.log('         https://dashboard.emailjs.com/admin/history');
+    console.log('\n    2. THAT IT ARRIVED. Accepted means queued, not delivered. Email');
+    console.log('       History is the record of what a mail server took.');
+    console.log('\n  Our own side IS checked: `npm run verify:retry` asserts that the');
+    console.log("  address in to_email is the candidate's, against the real payload.\n");
     return 0;
   }
 
@@ -173,7 +208,31 @@ async function checkSmtp() {
 /* ------------------------------------------------------------------ */
 
 let code;
-if (config.smtpHost) {
+/*
+ * Check the transport that will ACTUALLY be used.
+ *
+ * SMTP is preferred over EmailJS, but only once all four of its parts are
+ * present - a host written into .env before the password arrives is not a
+ * preference, it is a half-finished setting, and mail keeps going out
+ * over EmailJS meanwhile. Reporting on SMTP in that window would describe
+ * a transport nothing is using.
+ */
+if (config.smtpHost && !smtpReady()) {
+  console.log('\n  SMTP is half configured, so mail is still going out over EmailJS.');
+  console.log('\n    host   ' + `${config.smtpHost}:${config.smtpPort}`);
+  console.log('    user   ' + (config.smtpUser || '(not set)'));
+  console.log('    from   ' + (config.emailFrom || '(not set)'));
+  console.log('    pass   ' + (config.smtpPass ? 'set' : 'NOT SET - this is what is missing'));
+  if (!config.smtpPass && /gmail|google/i.test(config.smtpHost)) {
+    console.log('\n  Gmail does not accept an account password over SMTP. Turn on 2-Step');
+    console.log('  Verification, generate an App Password at');
+    console.log('    https://myaccount.google.com/apppasswords');
+    console.log('  and put those 16 letters in EMAIL_SMTP_PASS, in double quotes.');
+  }
+  console.log('\n  Nothing is broken in the meantime - the EmailJS transport below is');
+  console.log('  what is sending today.');
+  code = await checkEmailJs();
+} else if (config.smtpHost) {
   code = await checkSmtp();
 } else if (config.emailjs.serviceId || config.emailjs.publicKey) {
   code = await checkEmailJs();
