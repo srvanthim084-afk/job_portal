@@ -4768,6 +4768,119 @@
       '</div>';
   }
 
+  /**
+   * SMS and WhatsApp configuration — what the carrier checks.
+   *
+   * Both channels have composed a message at every stage since the
+   * dispatcher was built. What stopped them was never the code, and
+   * adding the API key alone does not finish it either:
+   *
+   *   SMS       An Indian operator drops a message whose header is not a
+   *             registered DLT sender and whose body does not match a
+   *             registered DLT template. Some aggregators answer that
+   *             with a success-shaped response, so it reads as sent.
+   *   WhatsApp  Meta allows free text only inside the 24 hours after the
+   *             candidate writes to us. A stage update is
+   *             business-initiated, so it needs an approved template.
+   *
+   * These are the fields that carry those, and none of them is a secret:
+   * a sender header and a template name are printed on the message the
+   * candidate receives. The key is not here, for the same reason it is
+   * not on the calling panel — every recruiter can open this page.
+   */
+  function chChannelForm(channel, cfg, status) {
+    var f = function (id, label, value, placeholder, hint) {
+      return '<div class="fgroup"><label>' + esc(label) + '</label>'
+        + '<input id="' + id + '" value="' + esc(value == null ? '' : value) + '"'
+        + ' placeholder="' + esc(placeholder || '') + '"'
+        + ' style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--line);'
+        + 'background:var(--card);color:var(--text);font-size:13px">'
+        + (hint ? '<div class="desc">' + esc(hint) + '</div>' : '') + '</div>';
+    };
+    var missing = (status && status.missing) || [];
+    var keyNote = '<div class="fgroup"><label>API Key</label>'
+      + '<div class="req-note" style="margin:0;font-size:12px">'
+      + (missing.length
+          ? 'Set <b>' + missing.map(esc).join(', ') + '</b> in the server environment.'
+          : 'Configured on the server.')
+      + ' It is never entered here and never reaches a browser.</div></div>';
+
+    var left, right, head, why;
+
+    if (channel === 'sms') {
+      head = 'SMS Configuration';
+      why = 'The sender header and DLT registration an operator checks';
+      left = f('chSmsSender', 'Sender ID / Header', cfg.senderId, 'TMLINK',
+               'The six characters a candidate sees instead of a number')
+           + f('chSmsEntity', 'DLT Entity ID', cfg.dltEntityId, '11010xxxxxxxxxxxxx',
+               'Issued once, to the company, when it registers with the operator');
+      right = f('chSmsTemplate', 'DLT Template ID', cfg.dltTemplateId, '11070xxxxxxxxxxxxx',
+               'The approved wording this message must match')
+           + keyNote;
+    } else {
+      head = 'WhatsApp Configuration';
+      why = 'The approved template used for messages we start';
+      left = f('chWaTemplate', 'Message Template Name', cfg.templateName, 'teamlink_update',
+               'Approved in WhatsApp Manager. Leave empty to send plain text, '
+               + 'which only reaches a candidate who messaged us in the last 24 hours.')
+           + f('chWaLang', 'Template Language', cfg.templateLanguage, 'en',
+               'The language code on the approved template, e.g. en, en_US, hi, te');
+      right = keyNote
+        + '<div class="req-note" style="margin:10px 0 0;font-size:12px">'
+        + 'The template must have exactly <b>one</b> body variable. '
+        + 'The whole message goes into it, so the wording stays the same '
+        + 'across email, SMS and WhatsApp instead of drifting into a second copy.'
+        + '</div>';
+    }
+
+    return '<div class="panel"><div class="panel-head"><div><h2>' + esc(head) + '</h2>'
+      + '<div class="desc">' + esc(why) + '</div></div></div>'
+      + '<div class="panel-body">'
+      + '<div class="review-grid"><div>' + left + '</div><div>' + right + '</div></div>'
+      + '<div style="display:flex;gap:8px;align-items:center;margin-top:12px">'
+        + '<button class="btn btn-primary" id="chSave_' + channel + '"'
+        + ' onclick="TL.channels.saveChannel(\'' + channel + '\')">Save Configuration</button>'
+        + '<span id="chSaved_' + channel + '" style="font-size:12.5px;color:var(--text-soft)"></span>'
+      + '</div>'
+      + '</div></div>';
+  }
+
+  /**
+   * Save one channel's settings to the server.
+   *
+   * Every field is sent, including the blank ones, so clearing a DLT
+   * template id really clears it rather than leaving the old one on
+   * every message.
+   */
+  TL.channels.saveChannel = function (channel) {
+    var val = function (id) {
+      var el = document.getElementById(id);
+      return el ? String(el.value || '').trim() : '';
+    };
+    var body = channel === 'sms'
+      ? { senderId: val('chSmsSender'),
+          dltEntityId: val('chSmsEntity'),
+          dltTemplateId: val('chSmsTemplate') }
+      : { templateName: val('chWaTemplate'),
+          templateLanguage: val('chWaLang') };
+
+    var btn = document.getElementById('chSave_' + channel);
+    var said = document.getElementById('chSaved_' + channel);
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+
+    api.patch('/notifications/channels/' + channel, body).then(function () {
+      if (btn) { btn.disabled = false; btn.textContent = 'Save Configuration'; }
+      if (said) {
+        said.textContent = 'Saved';
+        setTimeout(function () { said.textContent = ''; }, 2600);
+      }
+      TL.channels.render(true);
+    }).catch(function (err) {
+      if (btn) { btn.disabled = false; btn.textContent = 'Save Configuration'; }
+      if (said) said.textContent = err.message || 'It could not be saved';
+    });
+  };
+
   /** Whether calls can actually be placed, and what is missing if not. */
   /**
    * Provider Configuration — the fields a recruiter can actually set.
@@ -5014,11 +5127,20 @@
       if (!host2) return;
 
       var list = (out[0] && out[0].channels) || [];
+      var chan = (out[0] && out[0].settings) || {};
       var calling = out[1];
       var s = (calling && calling.settings) || null;
+      var statusOf = function (name) {
+        for (var i = 0; i < list.length; i++) {
+          if (list[i].channel === name) return list[i];
+        }
+        return null;
+      };
 
       host2.innerHTML =
         chChannelsPanel(list) +
+        chChannelForm('sms', chan.sms || {}, statusOf('sms')) +
+        chChannelForm('whatsapp', chan.whatsapp || {}, statusOf('whatsapp')) +
         (calling ? chTelephonyPanel(calling.telephony) : '') +
         (s ? chProviderForm(s, calling && calling.telephony) : '') +
         (s ? chAgentPanel(s) + chConsentPanel(s) + chCallingPanel(s) : '') +

@@ -24,6 +24,7 @@ import { requireAuth, requireRole } from '../auth.js';
 import { dispatchEvent } from '../notify/events.js';
 import { retryFailedDeliveries } from '../notify/retry.js';
 import { providers, providerMissing, providerTransport } from '../notify/providers.js';
+import { loadChannelSettings, forgetChannelSettings } from '../notify/channel-settings.js';
 import { config } from '../config.js';
 import { emailLayout } from '../notify/layout.js';
 
@@ -140,8 +141,20 @@ export function notificationRoutes() {
         c[row.status] = row.n;
       }
 
+      /*
+       * The operational settings, alongside the counts.
+       *
+       * Sender headers and template names, never a credential - the same
+       * rule `missing` follows. They are returned even for a channel
+       * that cannot send yet, because filling them in BEFORE the key
+       * arrives is the sensible order: DLT registration and template
+       * approval both take days.
+       */
+      const settings = await loadChannelSettings();
+
       res.json({
         since,
+        settings,
         channels: ['email', 'sms', 'whatsapp', 'ivr'].map((name) => {
           const seen = byChannel[name] || {};
           return {
@@ -158,6 +171,44 @@ export function notificationRoutes() {
           };
         }),
       });
+    }));
+
+  /**
+   * PATCH /api/notifications/channels/:channel
+   *
+   * The settings a carrier checks before it accepts a message: the DLT
+   * header and template for SMS, the approved template for WhatsApp.
+   *
+   * NO CREDENTIAL IS ACCEPTED HERE, and the schema is strict rather than
+   * permissive so that a body carrying `apiKey` is REFUSED instead of
+   * quietly ignored. A recruiter can open this screen; an endpoint that
+   * silently drops a secret still had the secret in the request.
+   */
+  const channelPatch = z.object({
+    senderId: z.string().max(40).optional(),
+    dltEntityId: z.string().max(60).optional(),
+    dltTemplateId: z.string().max(60).optional(),
+    templateName: z.string().max(120).optional(),
+    templateLanguage: z.string().max(12).optional(),
+  }).strict();
+
+  r.patch('/notifications/channels/:channel', requireAuth(),
+    requireRole('recruiter', 'bde', 'admin'), wrap(async (req, res) => {
+      const channel = String(req.params.channel || '').toLowerCase();
+      if (channel !== 'sms' && channel !== 'whatsapp') {
+        throw badRequest('Only the SMS and WhatsApp channels have settings');
+      }
+      const body = parse(channelPatch, req.body);
+
+      const row = await withUser(req.session, async (c) => (await c.query(
+        `select channel_settings_update($1,$2::jsonb,$3) as s`,
+        [channel, JSON.stringify(body), req.session.userId || 'admin'])).rows[0].s);
+
+      // So the next message uses what was just saved rather than the
+      // value the cache is still holding.
+      forgetChannelSettings();
+
+      res.json({ channel, settings: row });
     }));
 
   /**

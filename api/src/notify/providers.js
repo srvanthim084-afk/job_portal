@@ -20,6 +20,7 @@
  * keys in localStorage, where any visitor could read them.
  */
 import { config } from '../config.js';
+import { channelSettings } from './channel-settings.js';
 
 const NOT_CONFIGURED = (provider, hint) => ({
   status: 'not_configured', provider, error: hint,
@@ -264,6 +265,28 @@ export const emailProvider = {
 /* ------------------------------------------------------------------ *
  * SMS
  * ------------------------------------------------------------------ */
+/**
+ * The body posted to the aggregator, as a function of the settings.
+ *
+ * Separated from the send so the branch can be tested without a network
+ * or a database: "the field saved" and "the field changes the message"
+ * are different claims, and only the second one decides whether a
+ * candidate hears anything.
+ *
+ * Each field appears only when it has a value, so an aggregator that
+ * does not use DLT is not handed keys it will reject.
+ */
+export function smsBody(to, text, cfg = {}) {
+  const sender = cfg.senderId || config.smsSenderId || undefined;
+  return {
+    to,
+    sender,
+    message: text,
+    ...(cfg.dltEntityId ? { entityId: cfg.dltEntityId } : {}),
+    ...(cfg.dltTemplateId ? { templateId: cfg.dltTemplateId } : {}),
+  };
+}
+
 export const smsProvider = {
   channel: 'sms',
   configured: () => !!(config.smsApiKey && config.smsApiUrl),
@@ -273,10 +296,25 @@ export const smsProvider = {
     }
     if (!to) return { status: 'skipped_no_address', provider: 'sms', error: 'no phone number' };
 
+    /*
+     * The settings an Indian operator actually checks.
+     *
+     * A correct API key still produces a dropped message when the header
+     * is not a registered DLT sender and the body does not match a
+     * registered DLT template - and several aggregators report that as a
+     * success-shaped response, so it looks sent and never arrives. The
+     * values are entered on the channels screen; the key stays in the
+     * environment.
+     *
+     * Each field is sent only when it has a value, so an aggregator that
+     * does not use DLT is not handed keys it will reject.
+     */
+    const cfg = await channelSettings('sms');
+
     try {
       const res = await postJson(config.smsApiUrl, {
         headers: { authorization: `Bearer ${config.smsApiKey}` },
-        body: { to, sender: config.smsSenderId || undefined, message: text },
+        body: smsBody(to, text, cfg),
       });
       if (!res.ok) {
         return { status: 'failed', provider: 'sms',
@@ -352,6 +390,31 @@ function speakable(text) {
 /* ------------------------------------------------------------------ *
  * WhatsApp
  * ------------------------------------------------------------------ */
+/**
+ * Template or free text, and the choice is Meta's, not ours.
+ *
+ * Separated from the send for the same reason as smsBody: this branch
+ * is the difference between a message WhatsApp accepts and one it
+ * rejects, so it is tested directly rather than inferred from a
+ * successful HTTP call.
+ */
+export function whatsappBody(text, cfg = {}) {
+  if (!cfg.templateName) {
+    return { type: 'text', text: { preview_url: true, body: text } };
+  }
+  return {
+    type: 'template',
+    template: {
+      name: cfg.templateName,
+      language: { code: cfg.templateLanguage || 'en' },
+      // Exactly one body variable, holding the whole composed message,
+      // so the wording stays the same across every channel instead of
+      // drifting into a second copy kept in WhatsApp Manager.
+      components: [{ type: 'body', parameters: [{ type: 'text', text }] }],
+    },
+  };
+}
+
 export const whatsappProvider = {
   channel: 'whatsapp',
   configured: () => !!(config.whatsappApiKey && config.whatsappPhoneId),
@@ -361,6 +424,22 @@ export const whatsappProvider = {
     }
     if (!to) return { status: 'skipped_no_address', provider: 'whatsapp', error: 'no phone number' };
 
+    /*
+     * Template or free text, and the choice is Meta's, not ours.
+     *
+     * WhatsApp allows free-form text only inside the 24-hour window that
+     * opens when the candidate messages US. A stage update is
+     * business-initiated, so outside that window it is rejected unless
+     * it is sent as a template Meta has approved.
+     *
+     * The template is expected to carry exactly ONE body variable, and
+     * the whole composed message goes into it - which keeps one wording
+     * across every channel instead of a second copy that drifts. With no
+     * template name configured this still sends text, because inside the
+     * window that is correct and it is what a reply needs.
+     */
+    const cfg = await channelSettings('whatsapp');
+
     try {
       // WhatsApp Cloud API shape.
       const url = `${config.whatsappApiUrl.replace(/\/$/, '')}/${config.whatsappPhoneId}/messages`;
@@ -369,8 +448,7 @@ export const whatsappProvider = {
         body: {
           messaging_product: 'whatsapp',
           to: String(to).replace(/[^\d+]/g, ''),
-          type: 'text',
-          text: { preview_url: true, body: text },
+          ...whatsappBody(text, cfg),
         },
       });
       if (!res.ok) {
