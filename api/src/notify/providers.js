@@ -136,6 +136,12 @@ async function sendViaEmailJS({ to, subject, html, text }) {
       message: text || '',
       message_html: html || '',
       content: text || '',
+      // EmailJS's stock templates use {{name}} and {{time}}. Sending them
+      // as well means a template left partly as it came still renders -
+      // an email with a blank sender name looks like a system fault to
+      // the person receiving it.
+      name: config.emailFromName || 'TeamLink',
+      time: new Date().toLocaleString('en-GB'),
     },
   };
   // Only needed when the account has "API calls" in strict mode; sending
