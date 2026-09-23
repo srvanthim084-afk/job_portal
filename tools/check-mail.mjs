@@ -82,7 +82,20 @@ async function checkEmailJs() {
     return 1;
   }
 
-  if (/non-browser|strict/i.test(probe.text)) {
+  // Strict mode is the SAFER choice of the two, so it gets its own
+  // message rather than being lumped in with "the gate is shut": the
+  // account holder did the right thing and only needs to hand the key to
+  // the server.
+  if (/strict mode/i.test(probe.text)) {
+    console.log('\n  EmailJS is in STRICT MODE, which is the secure setting — it just');
+    console.log('  needs the Private Key, which lives on the server and never reaches');
+    console.log('  a browser.');
+    console.log('  Find it at https://dashboard.emailjs.com/admin/account');
+    console.log('  under API Keys, next to the Public Key, and set EMAILJS_PRIVATE_KEY.\n');
+    return 1;
+  }
+
+  if (/non-browser/i.test(probe.text)) {
     console.log('\n  EmailJS is refusing calls from a server, so nothing can be sent.');
     console.log('  Tick "Allow EmailJS API for non-browser applications" at');
     console.log('    https://dashboard.emailjs.com/admin/account/security');
