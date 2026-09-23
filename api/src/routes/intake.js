@@ -325,17 +325,41 @@ export default function intakeRoutes() {
       const b = parse(z.object({
         mailboxId: z.string().trim().max(64).optional(),
         limit: z.number().int().min(1).max(200).optional(),
+        // Which job board to process. `all` is both, and the default,
+        // because a recruiter pressing Sync means "get my candidates".
+        board: z.enum(['all', 'naukri', 'shine']).optional(),
       }), req.body);
 
+      const board = b.board || 'all';
       const out = b.mailboxId
-        ? [await syncMailbox(req.session, b.mailboxId, { limit: b.limit })]
-        : await syncAll(req.session, { onlyAuto: false });
+        ? [await syncMailbox(req.session, b.mailboxId, { limit: b.limit, board })]
+        : await syncAll(req.session, { onlyAuto: false, board });
+
+      /*
+       * What happened, counted per outcome.
+       *
+       * "Read" and "imported" are different numbers and were reported as
+       * one: a sync that read forty emails and imported none looked
+       * identical to one that read none at all.
+       */
+      const tally = (pick) => out.reduce((n, x) => n + (pick(x) || 0), 0);
+      const results = out.flatMap((x) => x.results || []);
+      const countStatus = (st) => results.filter((r) => r.status === st).length;
 
       res.json({
+        board,
         synced: out,
-        imported: out.reduce((n, x) => n + (x.imported || 0), 0),
-        needsMapping: out.reduce((n, x) => n + (x.needsMapping || 0), 0),
-        needsReview: out.reduce((n, x) => n + (x.needsReview || 0), 0),
+        emailsRead: tally((x) => x.seen),
+        naukri: results.filter((r) => r.source === 'naukri').length,
+        shine: results.filter((r) => r.source === 'shine').length,
+        imported: tally((x) => x.imported),
+        updated: countStatus('updated'),
+        duplicates: countStatus('duplicate') + countStatus('already_processed'),
+        needsMapping: tally((x) => x.needsMapping),
+        needsReview: tally((x) => x.needsReview),
+        notAnApplication: countStatus('ignored'),
+        skipped: countStatus('skipped'),
+        errors: countStatus('failed'),
       });
     }));
 

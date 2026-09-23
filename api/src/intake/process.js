@@ -36,6 +36,7 @@ import { matchCandidate } from '../ai/match.js';
 import { screenApplication } from '../ai/screening.js';
 import { mailboxProvider, mailboxReadiness, newMessageId } from './mailbox.js';
 import { looksLikeDigest, parseNaukriDigest } from './naukri.js';
+import { detectSource, rulesFor, wantedBy } from './source.js';
 
 const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 
@@ -76,8 +77,24 @@ export function temporaryPassword() {
 /**
  * @returns {{status, reason, candidateId?, applicationId?, reference?, delivery?}}
  */
-export async function processMessage(session, { mailbox, message, rowId }) {
-  const rules = { ...DEFAULT_RULES, ...(mailbox.rules || {}) };
+export async function processMessage(session, { mailbox, message, rowId, provider }) {
+  /*
+   * Which board sent it, before anything else is decided.
+   *
+   * The rules were Naukri's alone - its sender domains, its subject
+   * wording, its keywords - so a Shine response scored too low to be
+   * looked at and was filed as "not an application". A recruiter using
+   * both boards saw half their candidates.
+   */
+  const source = detectSource(message);
+  const rules = rulesFor(source, { ...DEFAULT_RULES, ...(mailbox.rules || {}) });
+
+  // "Sync Shine" means Shine. A Naukri email is left exactly as it was,
+  // unread, for the sync that wants it.
+  if (!wantedBy(provider, source)) {
+    return { status: 'skipped', reason: 'not this provider', skipped: true };
+  }
+
   const parsed = parseMessage(message, rules);
 
   const finish = async (status, reason, extra = {}) => {
@@ -104,7 +121,7 @@ export async function processMessage(session, { mailbox, message, rowId }) {
   if (looksLikeDigest(message.text || message.raw || '')) {
     const digest = parseNaukriDigest(message.text || '', { subject: message.subject });
     if (digest.candidates.length) {
-      return importDigest(session, { mailbox, message, rowId, digest, finish });
+      return importDigest(session, { mailbox, message, rowId, digest, finish, source });
     }
   }
 
@@ -505,8 +522,10 @@ async function importDigest(session, { mailbox, message, rowId, digest, finish }
     await withUser(ENGINE, (cl) => cl.query(
       `select app_event($1,$2,'application.created',$3,'system',$4::jsonb)`,
       [applicationId, candidateId,
-       `Imported from a Naukri response summary received by ${mailbox.address}`,
-       JSON.stringify({ source: 'naukri', digest: true, subject: message.subject })]));
+       `Imported from a ${(source && source.label) || 'Naukri'} response summary`
+         + ` received by ${mailbox.address}`,
+       JSON.stringify({ source: (source && source.id) || 'naukri', digest: true,
+                        subject: message.subject })]));
 
     // Screened like any other application, so the recruiter sees a score
     // rather than a row that says only where it came from.
@@ -626,7 +645,11 @@ async function notifyCandidate({ candidate, job, applicationId, reference, crede
  * through cannot cause a re-import, and a message that fails to process
  * is marked failed rather than left to be retried forever.
  */
-export async function syncMailbox(session, mailboxId, { since, limit = 50 } = {}) {
+export async function syncMailbox(session, mailboxId,
+  // `board` is the JOB BOARD to sync - naukri, shine, or all. `provider`
+  // below is the mailbox transport (imap/gmail), which is a different
+  // thing entirely and was already using that name.
+  { since, limit = 50, board = 'all' } = {}) {
   const mailbox = await withUser(ENGINE, async (c) =>
     (await c.query(`select * from email_mailboxes where id=$1`, [mailboxId])).rows[0]);
   if (!mailbox) throw new Error('no such mailbox');
@@ -690,9 +713,12 @@ export async function syncMailbox(session, mailboxId, { since, limit = 50 } = {}
     }
 
     try {
-      const out = await processMessage(session, { mailbox, message, rowId: stored });
+      const out = await processMessage(session, { mailbox, message, rowId: stored, provider: board });
       if (out.status === 'processed') imported++;
-      results.push({ messageId: message.messageId, subject: message.subject, ...out });
+      // The board goes on the result so the summary can say how many of
+      // each arrived, not just how many emails there were.
+      results.push({ messageId: message.messageId, subject: message.subject,
+                     source: (detectSource(message) || {}).id, ...out });
     } catch (err) {
       console.error('[intake] message failed:', err.message);
       await withUser(ENGINE, (c) => c.query(
@@ -718,14 +744,14 @@ export async function syncMailbox(session, mailboxId, { since, limit = 50 } = {}
 }
 
 /** Every mailbox with auto-sync on. Used by the scheduler and by "Sync now". */
-export async function syncAll(session, { onlyAuto = true } = {}) {
+export async function syncAll(session, { onlyAuto = true, board = 'all' } = {}) {
   const boxes = await withUser(ENGINE, async (c) => (await c.query(
     `select id from email_mailboxes ${onlyAuto ? 'where auto_sync' : ''} order by created_at`)).rows);
 
   const out = [];
   for (const b of boxes) {
     try {
-      out.push(await syncMailbox(session, b.id));
+      out.push(await syncMailbox(session, b.id, { board }));
     } catch (err) {
       out.push({ mailboxId: b.id, error: 'sync_failed', message: err.message });
     }
