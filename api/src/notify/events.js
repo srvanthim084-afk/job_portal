@@ -44,11 +44,14 @@ async function send(session, event, ctx) {
     const { rows } = await c.query(
       `select cand.id as candidate_id, cand.name, cand.email, cand.phone,
               cand.whatsapp_opt_in,
-              a.id as application_id, a.applied_at, a.stage,
+              a.id as application_id, a.applied_at, a.stage, a.reference,
               -- The deadline the database set when the interview was
               -- invited. Without it the invitation said "due undefined".
               a.ai_interview_due_at,
               j.id as job_id, j.title as job_title,
+              -- The house format lists these, and they were not being
+              -- read, so "Location:" and "Department:" came out blank.
+              j.location as job_location, j.department as job_department,
               co.name as company_name
          from applications a
          join candidates cand on cand.id = a.candidate_id
@@ -61,19 +64,43 @@ async function send(session, event, ctx) {
   if (!meta) throw new Error(`application ${ctx.applicationId} not found`);
 
   const portalUrl = `${config.publicOrigin.replace(/\/$/, '')}/#/candidate/applications`;
-  const messages = buildEventMessages(event, {
+  /*
+   * A stage change has its own wording per stage.
+   *
+   * STAGE_CHANGED is the generic fallback; Shortlisted, Selected and
+   * Rejected read very differently and a single template for all three
+   * is how a rejection ends up congratulating somebody.
+   */
+  const houseEvent = event === 'STAGE_CHANGED' && meta.stage
+    ? `STAGE_${String(meta.stage).toUpperCase()}`
+    : event;
+
+  const messages = buildEventMessages(houseEvent, {
     candidateName: meta.name,
     jobTitle: meta.job_title,
     company: meta.company_name || 'the company',
     jobId: meta.job_id,
     applicationId: meta.application_id,
     appliedAt: meta.applied_at,
+    location: meta.job_location || undefined,
+    department: meta.job_department || undefined,
+    applicationDate: meta.applied_at
+      ? new Date(meta.applied_at).toLocaleDateString('en-GB',
+          { day: 'numeric', month: 'short', year: 'numeric' })
+      : undefined,
+    reference: ctx.reference || meta.reference || undefined,
     dueAt: meta.ai_interview_due_at || undefined,
     portalUrl,
     ...ctx,
   });
 
-  if (!messages) return { event, delivery_status: {}, skipped: 'no template' };
+  // Fall back to the generic wording when this stage has none of its own.
+  const composed = messages || buildEventMessages(event, {
+    candidateName: meta.name, jobTitle: meta.job_title,
+    company: meta.company_name || 'the company', jobId: meta.job_id,
+    applicationId: meta.application_id, portalUrl, ...ctx,
+  });
+  if (!composed) return { event, delivery_status: {}, skipped: 'no template' };
 
   /*
    * Normally every channel. A retry names ONE.
@@ -146,13 +173,13 @@ async function send(session, event, ctx) {
           ai_score: ctx.aiScore != null ? `${ctx.aiScore}%` : undefined,
           joining_date: ctx.joiningDate,
         },
-        subject: messages.email.subject,
-        html: messages.email.html,
+        subject: composed.email.subject,
+        html: composed.email.html,
         // A call gets the spoken line; the others get their own form.
-        text: channel === 'sms' ? messages.sms
-            : channel === 'whatsapp' ? messages.whatsapp
-            : channel === 'ivr' ? messages.ivr
-            : messages.email.text,
+        text: channel === 'sms' ? composed.sms
+            : channel === 'whatsapp' ? composed.whatsapp
+            : channel === 'ivr' ? composed.ivr
+            : composed.email.text,
       });
     } catch (err) {
       result = { status: 'failed', provider: channel, error: err.message };

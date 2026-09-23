@@ -8,6 +8,7 @@
  */
 
 import { emailLayout } from './layout.js';
+import { houseMessage, houseText } from './messages.js';
 
 const esc = (s) => String(s ?? '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -370,6 +371,53 @@ ${c.summary || ''}`,
 };
 
 export function buildEventMessages(event, c) {
+  /*
+   * The house format, where one exists for this event.
+   *
+   * Every message used to be written ad hoc - "Hi" in one, "Hello" in
+   * another, a details block in some and not others - so a candidate
+   * receiving four of them across a hiring process could not tell they
+   * came from the same company. notify/messages.js holds the wording;
+   * this composes the email from it.
+   *
+   * SMS, WhatsApp and the spoken call keep the short bodies below. A
+   * "Dear <name>, ... Regards, Recruitment Team" costs three SMS
+   * segments to say what one says.
+   */
+  const house = houseMessage(event, c);
+  if (house) {
+    const shortBody = BODIES[event] ? BODIES[event](c) : house.body;
+    return {
+      email: {
+        subject: house.subject,
+        text: houseText(house),
+        html: emailLayout({
+          title: house.subject,
+          preheader: String(house.body).split('\n')[0],
+          greeting: house.greeting,
+          body: house.instruction
+            ? `${house.body}\n\n${house.instruction}`
+            : house.body,
+          facts: house.facts,
+          cta: house.cta,
+          note: house.help,
+        }),
+      },
+      sms: (c.smsLead
+        ? `TeamLink: ${c.smsLead} ${c.portalUrl}`
+        : `TeamLink: ${String(shortBody).split('\n')[0]}`
+          + (c.jobId ? ` (Job ${c.jobId})` : '') + `. ${c.portalUrl}`).slice(0, 320),
+      ivr: `Hello ${c.candidateName}. This is a call from TeamLink. `
+        + `${String(shortBody).split('\n')[0]} `
+        + 'Please check your TeamLink applications page for details. Thank you.',
+      whatsapp: `*TeamLink*\n\n${house.greeting}\n\n${house.body}`
+        + (house.facts.length
+          ? '\n\n' + house.facts.map(function (f) { return `${f[0]}: ${f[1]}`; }).join('\n')
+          : '')
+        + `\n\n${c.portalUrl}`,
+    };
+  }
+
   const subject = SUBJECTS[event];
   const body = BODIES[event];
   if (!subject || !body) return null;
