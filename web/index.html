@@ -15223,6 +15223,16 @@ body .cap-feedbar{bottom:0}
 /* The distance, on the same row as the place it belongs to. Nothing else
    about the row changes: same height, same hover, same checkbox. */
 .tl-row2 .nm{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* A district row that can open, and the areas inside it. The row itself
+   is unchanged - this only puts a chevron beside it and indents what it
+   opens. */
+.tl-drow{display:flex;align-items:center}
+.tl-drow>.tl-row2{flex:1 1 auto;min-width:0}
+.tl-dcar{flex:0 0 auto;border:0;background:none;cursor:pointer;color:#9aa6b6;
+  font-size:10px;line-height:1;padding:0 2px 0 6px}
+.tl-dcar:hover{color:#1d6ff2}
+.tl-areas{padding-left:18px}
+.tl-areas .tl-row2{font-size:12.3px}
 .tl-row2 .tl-km{flex:0 0 auto;margin-left:auto;padding-left:10px;font-size:11.5px;
   font-weight:700;color:#8a94a6;font-variant-numeric:tabular-nums}
 .tl-row2:hover .tl-km{color:#5b90e8}
@@ -15312,6 +15322,16 @@ body .cap-feedbar{bottom:0}
      those. "Expand all" is still there for when somebody genuinely wants
      the whole thing - it is a deliberate choice rather than the state
      you are dropped into. */
+  /* Open the areas inside one district. Independent of which STATE is
+     open, so opening Hyderabad's areas does not close Telangana. */
+  window.tlTreeArea=function(key,st,d){
+    const t=tstate(key);
+    t.area=t.area||{};
+    const k=st+'|'+d;
+    t.area[k]=!t.area[k];
+    tlLocRefresh(key);
+  };
+
   window.tlTreeExpand=function(key,st){
     const t=tstate(key);
     const wasOpen=t.exp[st]===true;
@@ -15350,6 +15370,37 @@ body .cap-feedbar{bottom:0}
     const row=(v,label,bold)=>`<label class="tl-row2 ${bold?'b':''}" onmousedown="event.preventDefault()">
       <input type="checkbox" ${on(v)?'checked':''} onchange="tlTreePick('${jq(key)}','${jq(v)}',this.checked)">
       <span class="nm">${esc(label)}</span></label>`;
+
+    /* A DISTRICT, and the areas inside it.
+
+       The third level of the hierarchy - state, district, area - and it
+       is the same row as every other row: the same label, the same
+       checkbox, the same tlTreePick(). A district that has areas on file
+       gains a chevron to open them; one that does not is exactly what it
+       was before, because inventing an empty expander for six hundred
+       rural districts would be a worse screen than no expander at all.
+
+       The distance beside each area is measured from the district's own
+       coordinate, by haversine, at the moment it is drawn. */
+    const distRow=(k,t2,st2,d)=>{
+      const areas=(typeof window.tlAreasOfDistrict==='function')
+        ? window.tlAreasOfDistrict(st2,d) : [];
+      if(!areas.length) return row(d,d);
+      const key2=st2+'|'+d;
+      const isOpen=t2.area&&t2.area[key2]===true;
+      return `<div class="tl-drow">
+          <button type="button" class="tl-dcar" onmousedown="event.preventDefault()"
+            onclick="event.stopPropagation();tlTreeArea('${jq(k)}','${jq(st2)}','${jq(d)}')"
+            title="${areas.length} place${areas.length===1?'':'s'} in ${esc(d)}">${isOpen?'▾':'▸'}</button>
+          ${row(d,d)}
+        </div>
+        ${isOpen?`<div class="tl-areas">${areas.map(a=>
+            `<label class="tl-row2" onmousedown="event.preventDefault()">
+               <input type="checkbox" ${on(a.name)?'checked':''}
+                 onchange="tlTreePick('${jq(k)}','${jq(a.name)}',this.checked)">
+               <span class="nm">${esc(a.name)}</span>
+               <span class="tl-km">${Math.round(a.km)} KM</span></label>`).join('')}</div>`:''}`;
+    };
     let h='';
     if(!t.noKm){
       const pill=(v,label)=>`<button type="button" class="tl-kmp ${String(st.km||'')===String(v)?'on':''}"
@@ -15365,7 +15416,7 @@ body .cap-feedbar{bottom:0}
       const open=t.exp[s]===true, ds=GEO[s]||[];
       return `<div class="tl-sthead" onmousedown="event.preventDefault()" onclick="tlTreeExpand('${jq(key)}','${jq(s)}')">
           <span class="car">${open?'▾':'▸'}</span><span>${esc(s)}</span><span class="n">${ds.length}</span></div>
-        ${open?`<div class="tl-dists">${row(s,'All - '+s,true)}${ds.map(d=>row(d,d)).join('')}</div>`:''}`;
+        ${open?`<div class="tl-dists">${row(s,'All - '+s,true)}${ds.map(d=>distRow(key,t,s,d)).join('')}</div>`:''}`;
     }).join('');
     const anyOpen=STATES.some(s=>t.exp[s]===true);
     h+=`<div class="foot">
@@ -20769,6 +20820,143 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
 
   /* So a screen can ask, rather than guessing from a name. */
   window.INDIA_LOCALITIES = L;
+
+  /*
+   * WHICH DISTRICT each area belongs to.
+   *
+   * This is an administrative fact, not something a distance can decide.
+   * Shamshabad is closer to the centre of Hyderabad district than to the
+   * centre of Rangareddy, and it is in Rangareddy - so the nearest
+   * centroid would have filed it under the wrong one, and a recruiter
+   * filtering by district would have got the wrong answer with no way to
+   * see why.
+   *
+   * Only the areas this file adds are listed. Anything else in the
+   * dataset keeps the district it already had, and an area with no entry
+   * here is placed by its nearest district centroid instead - an
+   * approximation, and labelled as one where it matters.
+   */
+  var DISTRICT_OF = {
+    /* Telangana */
+    'Secunderabad': 'Hyderabad', 'Madhapur': 'Hyderabad', 'Hitech City': 'Hyderabad',
+    'Gachibowli': 'Hyderabad', 'Kondapur': 'Hyderabad', 'Banjara Hills': 'Hyderabad',
+    'Jubilee Hills': 'Hyderabad', 'Ameerpet': 'Hyderabad', 'Begumpet': 'Hyderabad',
+    'Dilsukhnagar': 'Hyderabad', 'LB Nagar': 'Hyderabad', 'Uppal': 'Medchal-Malkajgiri',
+    'Kukatpally': 'Medchal-Malkajgiri', 'Miyapur': 'Medchal-Malkajgiri',
+    'Nizampet': 'Medchal-Malkajgiri', 'Kompally': 'Medchal-Malkajgiri',
+    'Ghatkesar': 'Medchal-Malkajgiri',
+    'Manikonda': 'Rangareddy', 'Nanakramguda': 'Rangareddy', 'Shamshabad': 'Rangareddy',
+    'Patancheru': 'Sangareddy',
+
+    /* Karnataka */
+    'Whitefield': 'Bangalore', 'Electronic City': 'Bangalore', 'Koramangala': 'Bangalore',
+    'Indiranagar': 'Bangalore', 'Marathahalli': 'Bangalore', 'HSR Layout': 'Bangalore',
+    'BTM Layout': 'Bangalore', 'Jayanagar': 'Bangalore', 'JP Nagar': 'Bangalore',
+    'Banashankari': 'Bangalore', 'Rajajinagar': 'Bangalore', 'Malleshwaram': 'Bangalore',
+    'Hebbal': 'Bangalore', 'Bellandur': 'Bangalore', 'Peenya': 'Bangalore',
+    'Kengeri': 'Bangalore', 'Yelahanka': 'Bangalore Rural', 'Sarjapur': 'Bangalore Rural',
+
+    /* Tamil Nadu */
+    'T Nagar': 'Chennai', 'Velachery': 'Chennai', 'Adyar': 'Chennai',
+    'Anna Nagar': 'Chennai', 'Guindy': 'Chennai', 'Nungambakkam': 'Chennai',
+    'Egmore': 'Chennai', 'Porur': 'Chennai', 'Ambattur': 'Chennai',
+    'Perungudi': 'Chennai', 'Sholinganallur': 'Chennai',
+    'Tambaram': 'Chengalpattu', 'Chromepet': 'Chengalpattu', 'Siruseri': 'Chengalpattu',
+    'Avadi': 'Tiruvallur',
+
+    /* Maharashtra - Mumbai */
+    'Andheri': 'Mumbai Suburban', 'Bandra': 'Mumbai Suburban', 'Powai': 'Mumbai Suburban',
+    'Goregaon': 'Mumbai Suburban', 'Malad': 'Mumbai Suburban', 'Borivali': 'Mumbai Suburban',
+    'Chembur': 'Mumbai Suburban', 'Ghatkopar': 'Mumbai Suburban', 'Mulund': 'Mumbai Suburban',
+    'Bandra Kurla Complex': 'Mumbai Suburban',
+    'Dadar': 'Mumbai', 'Lower Parel': 'Mumbai',
+    'Vashi': 'Thane', 'Airoli': 'Thane', 'Kalyan': 'Thane',
+    'Panvel': 'Raigad',
+
+    /* Maharashtra - Pune */
+    'Hinjewadi': 'Pune', 'Kharadi': 'Pune', 'Magarpatta': 'Pune', 'Viman Nagar': 'Pune',
+    'Baner': 'Pune', 'Aundh': 'Pune', 'Wakad': 'Pune', 'Pimpri': 'Pune',
+    'Chinchwad': 'Pune', 'Hadapsar': 'Pune', 'Kothrud': 'Pune', 'Katraj': 'Pune',
+    'Chakan': 'Pune',
+
+    /* Delhi NCR */
+    'Connaught Place': 'New Delhi', 'Karol Bagh': 'Central Delhi',
+    'Saket': 'South Delhi', 'Nehru Place': 'South East Delhi',
+    'Lajpat Nagar': 'South East Delhi', 'Okhla': 'South East Delhi',
+    'Vasant Kunj': 'South West Delhi', 'Dwarka': 'South West Delhi',
+    'Janakpuri': 'West Delhi', 'Rohini': 'North West Delhi',
+    'Cyber City': 'Gurgaon', 'Greater Noida': 'Gautam Buddha Nagar',
+
+    /* West Bengal */
+    'Salt Lake': 'North 24 Parganas', 'New Town': 'North 24 Parganas',
+    'Rajarhat': 'North 24 Parganas', 'Dum Dum': 'North 24 Parganas',
+    'Park Street': 'Kolkata', 'Behala': 'Kolkata', 'Garia': 'South 24 Parganas',
+
+    /* Gujarat */
+    'SG Highway': 'Ahmedabad', 'Satellite': 'Ahmedabad', 'Bopal': 'Ahmedabad',
+    'Maninagar': 'Ahmedabad', 'Vastrapur': 'Ahmedabad', 'Naroda': 'Ahmedabad'
+  };
+
+  window.INDIA_AREA_DISTRICT = DISTRICT_OF;
+
+  /**
+   * The areas inside one district, nearest first, with real distances.
+   *
+   * Measured from the district's own coordinate with the same haversine
+   * everything else uses. An area with an administrative district on
+   * file is placed by that; anything else falls back to the nearest
+   * district centroid IN THE SAME STATE, which is an approximation and
+   * is marked `approx` so a screen can say so rather than imply it is
+   * certain.
+   */
+  window.tlAreasOfDistrict = function (state, district) {
+    var C = window.INDIA_COORDS || {};
+    var CS = window.INDIA_CITY_STATE_MAP || {};
+    var GEO = window.INDIA_GEO || {};
+    var here = C[district];
+    if (!here) return [];
+
+    var rad = function (x) { return x * Math.PI / 180; };
+    var km = function (a, b) {
+      var R = 6371;
+      var dLa = rad(b[0] - a[0]);
+      var dLo = rad(b[1] - a[1]);
+      var h = Math.sin(dLa / 2) * Math.sin(dLa / 2)
+        + Math.cos(rad(a[0])) * Math.cos(rad(b[0])) * Math.sin(dLo / 2) * Math.sin(dLo / 2);
+      return 2 * R * Math.asin(Math.sqrt(h));
+    };
+
+    var districts = (GEO[state] || []).filter(function (d) { return C[d]; });
+    var out = [];
+
+    Object.keys(C).forEach(function (name) {
+      if (name === district) return;
+      // A district is not an area inside another district.
+      if ((GEO[state] || []).indexOf(name) >= 0) return;
+
+      var stated = DISTRICT_OF[name];
+      if (stated) {
+        if (stated !== district) return;
+        out.push({ name: name, km: km(here, C[name]), approx: false });
+        return;
+      }
+
+      // No administrative district on file: the nearest one in this
+      // state, and only when this IS the nearest.
+      if (CS[name] !== state) return;
+      var best = null;
+      var bestKm = Infinity;
+      districts.forEach(function (d) {
+        var v = km(C[d], C[name]);
+        if (v < bestKm) { bestKm = v; best = d; }
+      });
+      if (best === district) out.push({ name: name, km: km(here, C[name]), approx: true });
+    });
+
+    out.sort(function (a, b) { return a.km - b.km; });
+    return out;
+  };
+
 })();
 </script>
 
