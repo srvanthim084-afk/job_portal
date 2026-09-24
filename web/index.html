@@ -22912,11 +22912,63 @@ table.data td .tl-af b{white-space:normal}
     ];
   }
   function shuffle(arr){ var a=arr.slice(); for(var i=a.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1)); var t=a[i]; a[i]=a[j]; a[j]=t; } return a; }
+  /**
+   * What a requirement is ABOUT, when nobody filled in its skills.
+   *
+   * All four real requirements here - Staff Nurse, Cardiologist,
+   * Emergency Physician, Human Resource Recruiter - were posted with an
+   * empty skills list, so without this the interview would fall straight
+   * through to the candidate's own CV and ask a nurse about Excel.
+   *
+   * The title is the strongest signal and the description is the rest;
+   * common words are dropped so "Senior Staff Nurse (Night Shift)"
+   * becomes "staff nurse", not "senior" and "shift".
+   */
+  var TL_Q_STOP=('a an the and or of for to in on at with without by from as is are be '
+    +'senior junior lead head chief assistant associate trainee fresher experienced '
+    +'required requirement role position job vacancy opening hiring urgent immediate '
+    +'full time part time contract permanent shift night day years year exp experience '
+    +'candidate candidates good strong excellent knowledge work working').split(' ');
+  function tlTopicsFromRequirement(j){
+    if(!j) return [];
+    var stop={}; TL_Q_STOP.forEach(function(w){ stop[w]=1; });
+    var out=[], seen={};
+    var take=function(text, max){
+      String(text||'').toLowerCase()
+        .split(/[^a-z0-9+#.]+/)
+        .forEach(function(w){
+          if(out.length>=max) return;
+          if(!w||w.length<3||stop[w]||/^\d+$/.test(w)) return;
+          if(seen[w]) return;
+          seen[w]=1; out.push(w);
+        });
+    };
+    /* The title first, and it alone is usually enough. */
+    take(j.title, 4);
+    if(out.length<2) take([j.department, j.education].join(' '), 4);
+    if(out.length<2) take(j.description, 5);
+    return out;
+  }
+
   function generateQuestions(rec){
     var c=cand(rec.candidateId)||{}; var j=job(rec.jobId)||{};
-    var skills=((c.technicalSkills&&c.technicalSkills.length)?c.technicalSkills:(c.skills||[])).slice();
-    if(!skills.length && j.skills) skills=j.skills.slice();
-    if(!skills.length) skills=['your core stack'];
+
+    /* THE REQUIREMENT DECIDES WHAT IS ASKED.
+       This took the CANDIDATE's skills first and fell back to the job's
+       only when the candidate had none - so a Radiologist requirement
+       interviewed somebody about Excel and Python because that is what
+       their CV happened to list. An interview is for finding out whether
+       this person can do THIS job; what they already know is the answer,
+       not the question.
+
+       Order: the requirement's own skills, then the subjects its title
+       and description name, and only then - with nothing else to go on -
+       the candidate's own, so a requirement written in a hurry still
+       produces an interview rather than none. */
+    var skills=(j.skills||[]).slice();
+    if(!skills.length) skills=tlTopicsFromRequirement(j);
+    if(!skills.length) skills=((c.technicalSkills&&c.technicalSkills.length)?c.technicalSkills:(c.skills||[])).slice();
+    if(!skills.length) skills=['the work this role involves'];
     var LAST_KEY='tl_ai_last_qset_'+rec.candidateId;
     var lastSig=''; try{ lastSig=localStorage.getItem(LAST_KEY)||''; }catch(e){}
     var qs, sig, tries=0;
@@ -22939,13 +22991,30 @@ table.data td .tl-af b{white-space:normal}
   function scoreAnswer(q, a){
     if(!a || !a.answered) return {score:0, comm:0, justification:'No spoken response — scored 0.', ne:false};
     var t=normTxt(a.transcript); var words=t.split(/\s+/).filter(Boolean);
-    if(!t){ var est=Math.max(35,Math.min(72, 40+Math.round(Math.min(1,(a.voicedMs||0)/20000)*32)));
-      return {score:est, comm:(a.voicedMs>3000?60:42), justification:'Spoken response captured but not transcribed in this browser — content not verified (open over https for full content scoring).', ne:true}; }
+    if(!t){
+      /* NOTHING WAS UNDERSTOOD, SO NOTHING IS SCORED.
+         This used to award between 35 and 72 out of a hundred based on
+         how LONG the person made noise for - a mark for an answer nobody
+         read, on a scale where a correct answer earns the same. Somebody
+         humming for twenty seconds scored 72. A score that was not earned
+         is worse than no score, because the recruiter cannot tell them
+         apart. */
+      return {score:0, comm:0, ne:true, unscored:true,
+        justification:'Speech was heard but this browser could not transcribe it, '
+          +'so the answer could not be read or scored. Open the interview over https '
+          +'for content scoring.'}; }
     var exp=q.exp||[]; var topic=(q.topic||[]).map(normTxt);
     var hits=exp.filter(function(k){ return t.indexOf(String(k).toLowerCase())>=0; });
     var topicHit=topic.some(function(k){ return t.indexOf(k)>=0; }) || hits.length>0;
     var comm=Math.max(20,Math.min(95, Math.round(35 + Math.min(1,words.length/45)*55 + (/[.,]/.test(t)?5:0))));
-    if(!topicHit){ return {score:Math.min(24,8+words.length), comm:comm, justification:'Off-topic — the answer did not address what was asked.', ne:false}; }
+    /* AN ANSWER TO A DIFFERENT QUESTION IS NOT A PARTIAL ANSWER.
+       This gave up to 24 out of a hundred for saying enough words, so a
+       candidate who talked about something else for a minute scored
+       higher than one who answered briefly and correctly. Off topic is
+       zero, and the transcript is kept so a recruiter can see what was
+       actually said. */
+    if(!topicHit){ return {score:0, comm:comm, offTopic:true,
+      justification:'Off topic — the answer did not address what was asked.', ne:false}; }
     var coverage=exp.length? hits.length/exp.length : (words.length>8?0.5:0.25);
     var depth=Math.min(1, words.length/50);
     var s=Math.max(15,Math.min(98, Math.round(coverage*62 + depth*28 + 6)));
@@ -23016,6 +23085,14 @@ table.data td .tl-af b{white-space:normal}
   window.aiivFinish=function(){ finishAnswer(false,false); };
   window.aiivSkip=function(){ finishAnswer(false,true); };
   function finishAnswer(timedOut, skipped){
+    /* ONE ANSWER PER QUESTION, however this was reached.
+       The per-question timer and the "Finish answer" button both call
+       this, and when they landed together the last question finished
+       twice - which submitted the interview twice and said "Thank you.
+       Your interview is complete" twice over the top of itself. */
+    if(AIIV.finishing) return;
+    AIIV.finishing=true;
+    setTimeout(function(){ AIIV.finishing=false; }, 0);
     stopListening();
     var answered = skipped ? false : (vadAvailable()? (AIIV.spoke && AIIV.voicedMs>=MIN_VOICE_MS) : true);
     AIIV.answers[AIIV.idx]={ answered:answered, transcript:(AIIV.sttText||'').trim(), voicedMs:Math.round(AIIV.voicedMs||0) };
@@ -23029,6 +23106,11 @@ table.data td .tl-af b{white-space:normal}
   window.aiivBeginBriefing=function(){ AIIV.phase='briefing'; render(); setTimeout(function(){ aiivAttach(); if(!AIIV.briefSpoken){ AIIV.briefSpoken=true; speak('Welcome, and thank you for joining. Before we begin, a few conditions. '+BRIEF.join(' ')+' When you are ready, press start to begin the questions.'); } }, 60); };
   window.aiivBeginQuestions=function(){ var rec=recById(AIIV.appId); if(rec){ rec.aiInterview.questions=generateQuestions(rec); try{persist();}catch(e){} } AIIV.phase='interview'; AIIV.idx=0; renderAndAsk(); };
   window.aiivSubmit=function(){
+    /* SUBMITTED ONCE. It is a global, the last question calls it, and a
+       second call would write a second set of results and thank the
+       candidate again. */
+    if(AIIV.submitted) return;
+    AIIV.submitted=true;
     stopListening(); stopSpeak(); var rec=recById(AIIV.appId); if(!rec) return;
     var qs=curQs(rec); var sc=aiScore(rec, qs, AIIV.answers);
     var report={ candidate_id:rec.candidateId, job_id:rec.jobId, status:'COMPLETED',
