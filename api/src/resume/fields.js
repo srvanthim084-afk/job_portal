@@ -62,7 +62,17 @@ export function splitSections(text) {
 const EMAIL_RE = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
 
 /** Indian mobile numbers, plus general international forms. */
-const PHONE_RE = /(?:(?:\+|00)\d{1,3}[\s.-]?)?(?:\(\d{2,4}\)[\s.-]?)?\d{3,5}[\s.-]?\d{3,4}[\s.-]?\d{0,4}/g;
+/*
+ * A phone number, and NOT a run of digits inside a longer one.
+ *
+ * Without the guards at either end this matched thirteen digits out
+ * of the middle of a longer number - an employee id, an Aadhaar, a
+ * timestamp - and then took the last ten of THAT as somebody's
+ * mobile. The number it invents looks exactly like a real one, and a
+ * resume matched to a candidate by an invented number is attached to
+ * the wrong person: the document that gets sent to a client.
+ */
+const PHONE_RE = /(?<![\d])(?:(?:\+|00)\d{1,3}[\s.-]?)?(?:\(\d{2,4}\)[\s.-]?)?\d{3,5}[\s.-]?\d{3,4}[\s.-]?\d{0,4}(?![\d])/g;
 
 /**
  * "Label: value", and also "Label" followed by the value on the next line.
@@ -113,6 +123,13 @@ function findPhones(text) {
     // 10 digits (India) up to 13 with a country code. Anything shorter is a
     // year, a PIN code, a salary or a date.
     if (digits.length < 10 || digits.length > 13) continue;
+    /*
+     * More than ten digits is only a phone number if it actually CARRIES
+     * a country code. "1790228675118" is a timestamp; taking its last
+     * ten digits produces 0228675118, which is not a mobile number in
+     * any country and belongs to nobody.
+     */
+    if (digits.length > 10 && !/^(\+|00)/.test(raw.trim())) continue;
     // A run of digits inside a longer number (an Aadhaar, an account) is not
     // a phone number.
     if (/^(19|20)\d{2}$/.test(digits.slice(0, 4)) && digits.length === 10) continue;

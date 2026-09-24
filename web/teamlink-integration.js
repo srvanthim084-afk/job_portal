@@ -4328,6 +4328,33 @@
           : '<div style="font-size:13px;color:var(--text-soft)">Nothing waiting — every email either imported or was ignored.</div>') +
 
         '<div id="tlIntakeOut" style="margin-top:12px">' + (TL.intake.lastMessage || '') + '</div>' +
+        /*
+         * ADD THE RESUMES, which the mail did not bring.
+         *
+         * A summary email carries a name, a title, a company and a
+         * location - no CV. The CVs arrive separately, and without this
+         * somebody opens each one, works out who it is, finds them here
+         * and attaches it. Dropping the folder in does that looking-up
+         * from what each resume says about itself.
+         */
+        '<div class="panel" style="padding:12px;margin-top:12px">' +
+        '<div style="font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;' +
+        'color:var(--text-soft);margin-bottom:6px">Add resumes</div>' +
+        '<div class="req-note" style="margin:0 0 8px;font-size:12px">' +
+        'The summary emails carry no attachment, so the CVs come separately. ' +
+        'Choose them here and each one is matched to the candidate it belongs to ' +
+        'by what the resume itself says &mdash; the address first, then the number, ' +
+        'then the name together with the company or the city. Anything that cannot ' +
+        'be placed is listed rather than attached to a guess.' +
+        '</div>' +
+        '<input type="file" id="tlResumeFiles" multiple accept=".pdf,.doc,.docx,.txt" ' +
+        'style="font-size:13px">' +
+        '<div style="margin-top:10px">' +
+        '<button class="btn btn-primary btn-sm" onclick="TL.intake.addResumes()">' +
+        'Match and attach</button></div>' +
+        '<div id="tlResumeOut" style="margin-top:10px"></div>' +
+        '</div>' +
+
         // Which board to read, beside the button that reads it. Three
         // plain buttons in the row that is already there - no new panel,
         // and "Both" is first because it is what a morning sync wants.
@@ -4398,6 +4425,75 @@
     [].forEach.call(host.querySelectorAll('button'), function (b) {
       b.className = 'btn btn-sm ' + (b.getAttribute('data-board') === TL.intake.board
         ? 'btn-primary' : 'btn-ghost');
+    });
+  };
+
+  /**
+   * Send the chosen resumes and report what happened to each.
+   *
+   * Counts first, then the detail: a recruiter needs to know how many
+   * landed before they need to know which. The ones that did NOT match
+   * are shown with what was read from them, because that is what makes
+   * them placeable by hand rather than a file to open again.
+   */
+  TL.intake.addResumes = function () {
+    var input = document.getElementById('tlResumeFiles');
+    var out = document.getElementById('tlResumeOut');
+    var files = input && input.files ? input.files : [];
+    if (!files.length) {
+      if (out) out.innerHTML = '<div class="req-note">Choose the resume files first.</div>';
+      return;
+    }
+
+    var fd = new FormData();
+    for (var i = 0; i < files.length; i++) fd.append('resumes', files[i]);
+    if (out) {
+      out.innerHTML = '<div class="req-note">Reading ' + files.length
+        + ' file' + (files.length === 1 ? '' : 's') + '...</div>';
+    }
+
+    return api.post('/candidates/resumes/match', fd).then(function (r) {
+      var d = r.detail || {};
+      var html = '<div class="req-note" style="background:var(--ok-100);color:var(--ok-600)">'
+        + r.matched + ' of ' + r.files + ' attached'
+        + (r.unmatched ? ', ' + r.unmatched + ' not matched' : '')
+        + (r.refused ? ', ' + r.refused + ' could not be read' : '') + '</div>';
+
+      html += (d.matched || []).map(function (m) {
+        return '<div style="font-size:12.5px;margin-top:6px">'
+          + '&#10003; <b>' + esc(m.candidateName) + '</b> &mdash; ' + esc(m.file)
+          + ' <span style="color:var(--text-soft)">(matched by ' + esc(m.matchedBy)
+          + (m.rescreened && m.rescreened.length
+            ? ', rescored ' + m.rescreened.map(function (x) { return x.score + '%'; }).join(', ')
+            : '') + ')</span></div>';
+      }).join('');
+
+      /* The ones a person has to place, with what was read from them. */
+      html += (d.unmatched || []).map(function (u) {
+        var read = u.read || {};
+        var bits = [read.name, read.email, read.phone, read.currentCompany, read.location]
+          .filter(Boolean).map(esc).join(' &middot; ');
+        return '<div style="font-size:12.5px;margin-top:6px;color:var(--warn-600)">'
+          + '? ' + esc(u.file) + ' &mdash; ' + esc(u.reason)
+          + (bits ? '<div style="color:var(--text-soft)">read: ' + bits + '</div>' : '')
+          + '</div>';
+      }).join('');
+
+      html += (d.refused || []).map(function (x) {
+        return '<div style="font-size:12.5px;margin-top:6px;color:var(--bad-600)">'
+          + '&times; ' + esc(x.file) + ' &mdash; ' + esc(x.reason) + '</div>';
+      }).join('');
+
+      if (out) out.innerHTML = html;
+      if (typeof window.toast === 'function' && r.matched) {
+        window.toast(r.matched + ' resume' + (r.matched === 1 ? '' : 's') + ' attached');
+      }
+      return refresh();
+    }).catch(function (err) {
+      if (out) {
+        out.innerHTML = '<div class="req-note" style="background:var(--bad-100);color:var(--bad-600)">'
+          + esc(err.message || 'Those files could not be added.') + '</div>';
+      }
     });
   };
 

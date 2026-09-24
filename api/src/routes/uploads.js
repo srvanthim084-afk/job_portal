@@ -20,6 +20,7 @@ import { storeResume, getStorage, ALLOWED_EXT } from '../storage.js';
 import { extractResumeText } from '../resume/extract.js';
 import { extractFields, parseConfidence } from '../resume/fields.js';
 import { applyExtractedFields } from '../resume/apply.js';
+import { matchResumeToCandidate } from '../resume/match.js';
 import { toCandidate } from '../shapes.js';
 import { screenApplication } from '../ai/screening.js';
 
@@ -33,6 +34,19 @@ const ENGINE_SESSION = { userId: '', role: 'admin', profileId: null };
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: config.maxUploadBytes, files: 1, fields: 20 },
+});
+
+/*
+ * The same rules, for a batch.
+ *
+ * Memory storage for the same reason as above: nothing is written until
+ * its magic bytes have been read. Forty at a time, because emptying a
+ * folder of CVs is the case this exists for, and a limit that refuses is
+ * better than a request that times out half way through.
+ */
+const bulk = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: config.maxUploadBytes, files: 40, fields: 20 },
 });
 
 export default function uploadRoutes() {
@@ -187,6 +201,157 @@ export default function uploadRoutes() {
    *
    * Useful after the extractor improves, and after a parse that failed.
    */
+  /**
+   * POST /api/candidates/resumes/match
+   *
+   * A batch of resumes, placed on the candidates they belong to.
+   *
+   * The candidates imported from a job board's summary email have no CV,
+   * because the mail carries none. The CVs arrive separately - forwarded
+   * together, downloaded from the dashboard - and somebody would
+   * otherwise open each one, work out who it is, find them in the portal
+   * and attach it. For eighty-seven candidates that is a day's work, and
+   * it is the kind of day that does not happen.
+   *
+   * Each file is read, the person is looked up from what the resume
+   * ITSELF says, and it is attached. A file that cannot be placed is
+   * REPORTED, with what was read from it, rather than attached to a best
+   * guess - a CV on the wrong candidate is the document that gets sent
+   * to a client.
+   *
+   * The lookup runs as the CALLER, so a recruiter can only ever place a
+   * resume onto somebody they were already entitled to see.
+   */
+  r.post('/candidates/resumes/match', requireAuth(),
+    requireRole('recruiter', 'bde', 'admin'),
+    (req, res, next) => bulk.array('resumes', 40)(req, res, (err) => {
+      if (!err) return next();
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        const mb = Math.round(config.maxUploadBytes / 1024 / 1024);
+        return next(new ApiError(413, CODES.FILE_TOO_LARGE,
+          `One of those files is too large. The limit is ${mb}MB each.`));
+      }
+      if (err.code === 'LIMIT_UNEXPECTED_FILE') {
+        return next(badRequest('Too many files at once - 40 is the limit.'));
+      }
+      return next(new ApiError(400, CODES.UPLOAD_FAILED, 'Those files could not be uploaded.'));
+    }),
+    wrap(async (req, res) => {
+      const files = req.files || [];
+      if (!files.length) throw badRequest('Choose the resume files to add.');
+
+      const matched = [];
+      const unmatched = [];
+      const refused = [];
+
+      for (const file of files) {
+        const name = file.originalname || 'resume';
+
+        let doc;
+        let parsed;
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          doc = await extractResumeText(file.buffer, name);
+          parsed = extractFields(doc.text);
+        } catch (err) {
+          refused.push({ file: name, reason: err.message || 'it could not be read' });
+          continue;
+        }
+
+        // eslint-disable-next-line no-await-in-loop
+        const hit = await matchResumeToCandidate(req.session, parsed.fields);
+        if (!hit) {
+          /*
+           * What was read, so a person can place it without opening the
+           * file again. The fields only - never the text of somebody's
+           * CV in an API response.
+           */
+          unmatched.push({
+            file: name,
+            read: {
+              name: parsed.fields.name || undefined,
+              email: parsed.fields.email || undefined,
+              phone: parsed.fields.phone || undefined,
+              currentCompany: parsed.fields.currentCompany || undefined,
+              location: parsed.fields.location || undefined,
+            },
+            reason: (parsed.fields.name || parsed.fields.email)
+              ? 'nobody in the portal matches what this resume says'
+              : 'no name, address or number could be read from it',
+          });
+          continue;
+        }
+
+        let stored;
+        try {
+          // Magic bytes. A file that is not a document never reaches
+          // storage, whatever it is called.
+          // eslint-disable-next-line no-await-in-loop
+          stored = await storeResume({
+            candidateId: hit.candidateId, buffer: file.buffer, originalName: name,
+          });
+        } catch (err) {
+          refused.push({ file: name, reason: err.message });
+          continue;
+        }
+
+        const text = String(doc.text || '').slice(0, 200000);
+        const confidence = parseConfidence({ fields: parsed.fields, chars: doc.chars });
+
+        // eslint-disable-next-line no-await-in-loop
+        await withUser(req.session, async (c) => {
+          await c.query(
+            `update candidates
+                set resume_file=$1, resume_storage_path=$2, resume_mime=$3,
+                    resume_size=$4, resume_uploaded_at=now(), resume_parsed_at=now(),
+                    resume_parser=$6, resume_chars=$7, resume_fields_detected=$8,
+                    resume_parse_confidence=$9, resume_parse_error=null, resume_text=$10
+              where id=$5`,
+            [stored.displayName, stored.path, stored.mime, stored.size, hit.candidateId,
+             doc.parser, doc.chars, parsed.found, confidence, text]);
+          await applyExtractedFields(c, hit.candidateId, parsed.fields);
+        });
+
+        /*
+         * And the score is worked out again, because it was computed
+         * before this CV existed. A failure to re-screen must not lose
+         * the resume, which is safely stored either way.
+         */
+        const rescreened = [];
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          const apps = await withUser(ENGINE_SESSION, async (c) => (await c.query(
+            `select id from applications where candidate_id=$1
+               and stage not in ('rejected','joined')`, [hit.candidateId])).rows);
+          for (const a of apps) {
+            // eslint-disable-next-line no-await-in-loop
+            const out = await screenApplication(a.id, { actor: 'system', force: true });
+            if (out) rescreened.push({ applicationId: a.id, score: out.score });
+          }
+        } catch (err) {
+          console.error('[resumes] re-screening failed:', err.message);
+        }
+
+        matched.push({
+          file: name,
+          candidateId: hit.candidateId,
+          candidateName: hit.name,
+          matchedBy: hit.by,
+          fileName: stored.displayName,
+          fieldsDetected: parsed.found,
+          rescreened,
+        });
+      }
+
+      res.status(201).json({
+        files: files.length,
+        matched: matched.length,
+        unmatched: unmatched.length,
+        refused: refused.length,
+        detail: { matched, unmatched, refused },
+      });
+    }));
+
   r.post('/candidates/:id/resume/reparse', requireAuth(), wrap(async (req, res) => {
     const candidateId = req.session.role === 'candidate'
       ? req.session.profileId
