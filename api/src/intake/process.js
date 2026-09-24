@@ -378,33 +378,40 @@ export async function processMessage(session, { mailbox, message, rowId, provide
   if (!c.name) {
     return finish('needs_review', 'No candidate name could be read from this email.');
   }
-  if (!c.email && !c.phone) {
-    return finish('needs_review',
-      'No email address and no mobile number - there is nothing to contact this candidate on.');
-  }
-
   /*
-   * A missing email address does NOT stop the import.
+   * NO CONTACT DETAILS IS NOT A REASON TO THROW SOMEBODY AWAY.
    *
-   * The candidate and the application are still created - throwing away
-   * a real application because one field is absent is the worst possible
-   * answer - but no portal account can be made without an address, so
-   * the message is flagged for a recruiter to complete rather than
-   * marked done.
+   * Two refusals used to stand here. One turned away anybody with
+   * neither an email address nor a mobile; the other turned away anybody
+   * without an email, on the stated grounds that "the candidates table
+   * requires an email address". That has not been true since migration
+   * 0034, which is titled "a candidate without an email address is still
+   * a candidate" and was written for exactly this - Naukri's digest
+   * carries names and no contact details at all, and fifty-five
+   * candidates in this database have no email today.
+   *
+   * The single-candidate path never caught up. Two of Shine's seventeen
+   * responses stopped here: real people, with real CVs attached, whose
+   * contact details were unreadable because one CV is a photograph and
+   * the other a scanned PDF. Shine's own email carries no address. So
+   * they were not imported, their CVs were never stored - storing one
+   * needs a candidate to attach it to - and the recruiter was left with
+   * a filename in a queue and no way to open it.
+   *
+   * They are imported now. What cannot be done is still not done: no
+   * portal account is created without an address, nothing is sent, and
+   * the warning below says so on the message. A recruiter can open the
+   * CV and read the number off it, which is the only way those two were
+   * ever going to be reached.
    */
-  //
-  // The candidates table requires an email address, so there is no
-  // halfway house: without one the person cannot be created at all.
-  // Rather than failing with a constraint error nobody can act on, the
-  // message is handed to a recruiter with the reason stated - and the
-  // parsed details are kept on the row so they only have to add the
-  // address, not retype the application.
-  if (!c.email) {
-    return finish('needs_review',
-      'Candidate email missing. Manual verification required - add an address to import this application.');
-  }
-
   const warnings = [];
+  if (!c.email && !c.phone) {
+    warnings.push('No email address or mobile number could be read from this email or the '
+      + 'attached CV, so this candidate cannot be contacted automatically. Their resume is '
+      + 'on the profile - open it to add the details.');
+  } else if (!c.email) {
+    warnings.push('No email address, so no portal account was created. Add one to invite them.');
+  }
 
   /* ---- the person ------------------------------------------------- */
   const found = await withUser(ENGINE, async (cl) => {
@@ -417,7 +424,26 @@ export async function processMessage(session, { mailbox, message, rowId, provide
         order by case when lower(email) = $1 then 0 else 1 end
         limit 1`,
       [String(c.email || '').toLowerCase(), digits]);
-    return rows[0] || null;
+    if (rows[0]) return rows[0];
+
+    /*
+     * Nothing to match on. This is the same fall-back the digest import
+     * has always used for people who arrive without contact details: the
+     * name TOGETHER WITH where they are and who they work for. Name alone
+     * would merge two different people who happen to share one, which is
+     * common and unrecoverable - so all three have to agree, and a second
+     * email about the same person finds them again instead of creating a
+     * duplicate.
+     */
+    if (String(c.email || '').trim() || digits) return null;
+    const { rows: byName } = await cl.query(
+      `select * from candidates
+        where lower(name) = lower($1)
+          and coalesce(lower(location), '') = coalesce(lower($2), '')
+          and coalesce(lower(current_company), '') = coalesce(lower($3), '')
+        limit 1`,
+      [c.name, c.location || '', c.currentCompany || '']);
+    return byName[0] || null;
   });
 
   let candidateId = found ? found.id : null;
@@ -570,9 +596,27 @@ export async function processMessage(session, { mailbox, message, rowId, provide
     [candidateId, match.job.id])).rows[0]);
 
   if (existingApp) {
+    /*
+     * THE CV STILL COMES IN, even though the application is not new.
+     *
+     * This returned here and nothing further ran, so a resume could never
+     * catch up with an application that already existed. That is exactly
+     * the case that needs it: a candidate imported before the attachment
+     * could be read, or before the format was accepted at all - a
+     * photographed CV was refused until this week - keeps the same
+     * application forever and the file never arrives.
+     *
+     * storeAttachedResume() will not overwrite a resume already on file,
+     * so a re-sync can only ever fill a gap.
+     */
+    const late = await storeAttachedResume({
+      candidateId, applicationId: existingApp.id, attachments: message.attachments,
+    });
     return finish('duplicate',
-      `This candidate already has an application for ${match.job.title} (${existingApp.reference}).`,
-      { candidateId, applicationId: existingApp.id, reference: existingApp.reference });
+      `This candidate already has an application for ${match.job.title} (${existingApp.reference}).`
+      + (late.status === 'stored' ? ` Their resume (${late.filename}) was added.` : ''),
+      { candidateId, applicationId: existingApp.id, reference: existingApp.reference,
+        resume: late.status === 'stored' ? late.filename : undefined });
   }
 
   const applicationId = newId('app');
@@ -967,7 +1011,43 @@ async function importDigest(session, { mailbox, message, rowId, digest, finish, 
   });
 }
 
+/**
+ * Does the intake write to the candidates it imports?
+ *
+ * OFF UNLESS SOMEBODY TURNS IT ON, and that default is deliberate.
+ *
+ * An import is not a conversation the candidate started. These people
+ * applied on Naukri or Shine; the first they hear from TeamLink is a
+ * message saying their application is registered here, with portal
+ * credentials. That may be exactly right - it is why the feature exists -
+ * but it is an outward-facing action on somebody else's mailbox, and one
+ * re-sync of a mailbox holding a hundred and fifty messages can write to
+ * a hundred people in a minute.
+ *
+ * Sixty-nine real candidates were emailed that way during this work, by
+ * repeated syncs run while the parsing was being fixed. Nothing about
+ * fixing the parsing required writing to any of them.
+ *
+ * So the switch is off, and turning it on is a decision somebody makes:
+ *
+ *     INTAKE_NOTIFY_CANDIDATES=true
+ *
+ * With it off the candidate, the application, the resume and the
+ * screening are all created exactly as before. The only thing that does
+ * not happen is the outbound message, and it is recorded as paused with
+ * the reason, so nobody later mistakes it for a delivery.
+ */
+function intakeMayNotify() {
+  return String(process.env.INTAKE_NOTIFY_CANDIDATES || '').trim().toLowerCase() === 'true';
+}
+
 async function notifyCandidate({ candidate, job, applicationId, reference, credentials }) {
+  if (!intakeMayNotify()) {
+    return {
+      email: 'not_configured', sms: 'not_configured', whatsapp: 'not_configured',
+      paused: 'INTAKE_NOTIFY_CANDIDATES is not set, so imported candidates are not written to',
+    };
+  }
   const base = config.publicOrigin.replace(/\/$/, '');
   const portalUrl = `${base}/#/login/candidate`;
 
@@ -1080,10 +1160,18 @@ async function notifyCandidate({ candidate, job, applicationId, reference, crede
  * an application either - there is none yet, and the application insert
  * below checks for an existing one first.
  *
- * `processed`, `updated` and `duplicate` stay out. Those already
- * produced an application, and re-running them is how one becomes two.
+ * `duplicate` IS HERE TOO, for one reason: the resume. A message whose
+ * application already exists used to stop before the attachment was
+ * stored, so a CV could never catch up with a candidate imported before
+ * it could be read - or before the format was accepted at all, which is
+ * what kept a photographed CV out. Re-running one creates nothing: the
+ * application is found, reported as a duplicate exactly as before, and
+ * the only new thing that can happen is a resume filling an empty slot.
+ *
+ * `processed` and `updated` stay out. Those finished, and re-running
+ * them would send the candidate their welcome message a second time.
  */
-const RETRYABLE = new Set(['needs_review', 'ignored', 'failed', 'needs_mapping']);
+const RETRYABLE = new Set(['needs_review', 'ignored', 'failed', 'needs_mapping', 'duplicate']);
 
 /**
  * How far back to fetch, and how much.

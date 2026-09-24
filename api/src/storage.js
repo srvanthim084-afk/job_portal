@@ -43,6 +43,30 @@ const SIGNATURES = [
   { ext: 'doc',  mime: 'application/msword',
     test: (b) => b.length > 8 && b.toString('hex', 0, 8) === 'd0cf11e0a1b11ae1' },
 
+  /*
+   * A PHOTOGRAPHED OR SCANNED CV.
+   *
+   * People send them, and one arrived here: a Shine response carrying
+   * "Dr kumaresh vaidya - Consultant in noninvasive cardiology - 10 Yrs 0
+   * Month.jpg". It was refused, so the only copy of that candidate's
+   * phone number - printed on the image - could not be opened from the
+   * portal at all. A filename in a queue is not a resume.
+   *
+   * No text can be extracted from a picture, and nothing here pretends
+   * otherwise: the parse fails, the reason is recorded on the candidate,
+   * and the screening scores what it can see. What changes is that a
+   * recruiter can open it.
+   *
+   * JPEG AND PNG ONLY. An SVG is XML with scripting in it and would be
+   * stored XSS the moment it was opened; it is deliberately absent, and
+   * the magic-byte test is what keeps one out however it is named.
+   */
+  { ext: 'jpg',  mime: 'image/jpeg',
+    test: (b) => b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff },
+
+  { ext: 'png',  mime: 'image/png',
+    test: (b) => b.length > 8 && b.toString('hex', 0, 8) === '89504e470d0a1a0a' },
+
   // Plain text has no signature, so it is identified by exclusion: no NUL
   // bytes and almost no control characters. Listed LAST so a real binary
   // format always wins. The upload button has always offered TXT; the
@@ -63,7 +87,7 @@ function looksLikeText(b) {
   return control / sample.length < 0.02;
 }
 
-export const ALLOWED_EXT = ['pdf', 'doc', 'docx', 'txt'];
+export const ALLOWED_EXT = ['pdf', 'doc', 'docx', 'txt', 'jpg', 'jpeg', 'png'];
 
 export function validateResume(buffer, originalName) {
   if (!buffer || !buffer.length) {
@@ -79,15 +103,18 @@ export function validateResume(buffer, originalName) {
 
   if (!match) {
     throw new ApiError(415, CODES.UNSUPPORTED_FILE,
-      'Please upload a PDF, DOC or DOCX file.');
+      'Please upload a PDF, DOC, DOCX or TXT file, or a clear photo or scan of your CV.');
   }
   // A .docx and a .zip share a signature, so accept the claimed extension
   // when it is consistent with the detected family; reject outright lies.
   if (claimed && claimed !== match.ext) {
     const ooxml = match.ext === 'docx' && ['docx'].includes(claimed);
-    if (!ooxml) {
+    // .jpg and .jpeg are the same format under two spellings, and a
+    // camera or a mail client may use either.
+    const jpeg = match.ext === 'jpg' && ['jpg', 'jpeg'].includes(claimed);
+    if (!ooxml && !jpeg) {
       throw new ApiError(415, CODES.UNSUPPORTED_FILE,
-        `That file is named .${claimed} but its contents are ${match.ext.toUpperCase()}. Please upload a valid PDF, DOC or DOCX.`);
+        `That file is named .${claimed} but its contents are ${match.ext.toUpperCase()}. Please upload a valid PDF, DOC, DOCX or image.`);
     }
   }
   return { ext: match.ext, mime: match.mime, size: buffer.length };
