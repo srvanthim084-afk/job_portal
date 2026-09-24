@@ -42,22 +42,63 @@ const ENGINE = { userId: '', role: 'admin', profileId: null };
  * is how an import feature ends up unused. Headers are matched loosely;
  * a file with no recognisable header falls back to the documented order.
  */
+/*
+ * ORDER MATTERS. The first pattern that matches a column claims it, and a
+ * column is claimed once - so the most specific spelling has to come
+ * first. A Naukri export carries both "Current Designation" and "Role";
+ * if `title` matched "Role" first, the designation column would be left
+ * for something else to pick up.
+ */
 const FIELDS = [
-  ['name', /^(candidate\s*)?(full\s*)?name$|^candidate$/i],
-  ['phone', /phone|mobile|contact\s*(no|number)?|cell/i],
-  ['email', /e.?mail/i],
-  ['skills', /skill|technolog|stack/i],
-  ['location', /^(current\s*)?location$|^city$|based/i],
+  ['name', /^(candidate\s*)?(full\s*)?name$|^candidate$|^applicant\s*name$/i],
+  // "Verified Mobile" is a yes/no column in a Naukri export, not a
+  // number, so the real one is matched first and the flag never wins.
+  ['phone', /^(mobile|phone|contact)\s*(no\.?|number|num)?$|mobile\s*number|phone\s*number|^cell/i],
+  ['email', /^e.?mail(\s*(id|address))?$|^email$/i],
+  ['skills', /key\s*skills|it\s*skills|^skills?$|technolog|stack/i],
+  ['location', /^(current\s*)?(location|city)$|current\s*location|^based/i],
   ['preferredLocation', /pref.*location/i],
-  ['title', /designation|title|role(?!.*applied)|position/i],
-  ['currentCompany', /company|employer|organisation|organization/i],
-  ['expYears', /exp(erience)?\s*(years|yrs)?$|total\s*exp/i],
-  ['ctc', /current\s*(ctc|salary|package)/i],
-  ['expectedCtc', /expected\s*(ctc|salary|package)/i],
+  ['title', /current\s*designation|^designation$|resume\s*headline|job\s*title|^title$|^position$/i],
+  ['currentCompany', /current\s*(employer|company|organi[sz]ation)|^company$|^employer$|organi[sz]ation/i],
+  /*
+   * Naukri writes experience as "5 Year(s) 6 Month(s)" and also exports
+   * a plain "Total Experience". Both are read; parseExperience() below
+   * turns the first into 5.5 rather than 56.
+   */
+  ['expYears', /total\s*exp|work\s*exp|^exp(erience)?\s*(in\s*years|years|yrs)?$/i],
+  // "Annual Salary" and "Expected Annual Salary" are Naukri's wording;
+  // the expected one is matched FIRST so it cannot be taken as current.
+  ['expectedCtc', /expected\s*(annual\s*)?(ctc|salary|package)|exp(ected)?\s*ctc/i],
+  ['ctc', /current\s*(annual\s*)?(ctc|salary|package)|^annual\s*salary$|^ctc$|^salary$/i],
   ['noticePeriod', /notice/i],
-  ['education', /education|qualification|degree/i],
-  ['source', /source|portal|board/i],
+  ['education', /highest\s*(degree|qualification)|ug\s*course|pg\s*course|education|qualification|degree/i],
+  ['source', /^source$|portal|job\s*board/i],
 ];
+
+/**
+ * "5 Year(s) 6 Month(s)" is five and a half years, not fifty-six.
+ *
+ * Stripping the non-digits - which is what this did - glued the numbers
+ * together and imported a candidate with 56 years of experience. Naukri
+ * writes it that way on every row of an export, so it was not an edge
+ * case; it was every row.
+ */
+export function parseExperience(v) {
+  const s = String(v == null ? '' : v).trim();
+  if (!s) return null;
+
+  const ym = /(\d+(?:\.\d+)?)\s*(?:y|yr|yrs|year|years)\b[^\d]*(?:(\d+)\s*(?:m|mo|mon|month|months)\b)?/i.exec(s);
+  if (ym) {
+    const years = Number(ym[1]) + (ym[2] ? Number(ym[2]) / 12 : 0);
+    return Number.isFinite(years) ? Math.round(years * 10) / 10 : null;
+  }
+  // Months alone - a fresher with "8 Month(s)".
+  const m = /(\d+)\s*(?:m|mo|mon|month|months)\b/i.exec(s);
+  if (m) return Math.round((Number(m[1]) / 12) * 10) / 10;
+
+  const plain = Number(s.replace(/[^\d.]/g, ''));
+  return Number.isFinite(plain) && plain > 0 && plain < 60 ? plain : null;
+}
 
 /** Header row -> {field: columnIndex} */
 function mapColumns(header) {
@@ -124,11 +165,41 @@ export default function spreadsheetRoutes() {
       rows = rows.filter((row) => row.some((c) => String(c || '').trim() !== ''));
       if (!rows.length) throw badRequest('That file has no rows.');
 
+      /*
+       * The header is not always the first row.
+       *
+       * A Naukri export opens with a banner - the search name, the date
+       * it was run, a blank line or two - and the column names sit a few
+       * rows down. Taking row 0 as the header meant falling back to the
+       * positional order, which mapped somebody's name to whatever
+       * happened to be in column one, or refused the file outright with
+       * "no name column".
+       *
+       * So the header is LOOKED FOR, in the first fifteen rows, and
+       * everything above it is discarded as the banner it is.
+       */
       let header = null;
       let map = {};
-      if (looksLikeHeader(rows[0])) {
-        header = rows.shift();
-        map = mapColumns(header);
+      let bannerRows = 0;
+      let headerCells = [];
+      const lookIn = Math.min(rows.length, 15);
+      for (let i = 0; i < lookIn; i++) {
+        if (!looksLikeHeader(rows[i])) continue;
+        const found = mapColumns(rows[i]);
+        // A header names at least a couple of things we understand; one
+        // stray cell saying "location" in the banner does not count.
+        if (Object.keys(found).length < 2) continue;
+        bannerRows = i;
+        headerCells = rows[i].map((c) => String(c || '').trim());
+        rows.splice(0, i + 1);
+        header = true;
+        map = found;
+        break;
+      }
+      if (!header && looksLikeHeader(rows[0])) {
+        header = true;
+        headerCells = rows[0].map((c) => String(c || '').trim());
+        map = mapColumns(rows.shift());
       }
       if (!Object.keys(map).length) {
         DEFAULT_ORDER.forEach((f, i) => { map[f] = i; });
@@ -159,26 +230,68 @@ export default function spreadsheetRoutes() {
             continue;
           }
 
-          // One master profile per person: an import must never fork
-          // somebody who is already in the database.
+          const company = at(row, 'currentCompany');
+          const place = at(row, 'location');
+
+          /*
+           * One master profile per person: an import must never fork
+           * somebody who is already in the database.
+           *
+           * Email and phone first, because they identify a person. But
+           * THE CANDIDATES ALREADY HERE MAY HAVE NEITHER - the ones
+           * imported from Naukri's summary emails have a name, a title,
+           * a company and a location and nothing else, because that is
+           * all the digest carries. Matching on address alone would have
+           * created a second Bershan beside the first, and the export
+           * that finally brought his phone number would have left the
+           * original sitting there uncontactable forever.
+           *
+           * So a contactless profile is matched on NAME PLUS a
+           * corroborating field. Never name alone - two people share a
+           * name often, and merging them is not recoverable - and never
+           * a profile that already has contact details, because then
+           * this would be merging two people who each told us who they
+           * are.
+           */
           const existing = (await c.query(
             `select id, name, email, phone from candidates
               where ($1 <> '' and lower(email) = $1)
-                 or ($2 <> '' and regexp_replace(coalesce(phone,''), '[^0-9]', '', 'g')
-                     = regexp_replace($2, '[^0-9]', '', 'g'))
-              limit 1`, [email, phone])).rows[0];
+                 /*
+                  * The LAST TEN DIGITS, not the whole string.
+                  *
+                  * A Naukri export writes "+91 98450 00111" and the same
+                  * person may already be stored as "9845000111". Compared
+                  * whole, those are different numbers, and the import
+                  * created a second copy of somebody it was holding the
+                  * phone number of. Ten digits identify an Indian mobile
+                  * whatever precedes them.
+                  */
+                 or ($2 <> '' and length(regexp_replace($2, '[^0-9]', '', 'g')) >= 10
+                     and right(regexp_replace(coalesce(phone,''), '[^0-9]', '', 'g'), 10)
+                       = right(regexp_replace($2, '[^0-9]', '', 'g'), 10))
+              limit 1`, [email, phone])).rows[0]
+            || (await c.query(
+            `select id, name, email, phone from candidates
+              where lower(name) = lower($1)
+                and coalesce(email, '') = '' and coalesce(phone, '') = ''
+                and (
+                  ($2 <> '' and lower(coalesce(current_company, '')) = lower($2))
+                  or ($3 <> '' and lower(coalesce(location, '')) = lower($3))
+                )
+              limit 1`, [name, company, place])).rows[0];
 
           const skills = splitList(at(row, 'skills'));
-          const expYears = Number(String(at(row, 'expYears')).replace(/[^\d.]/g, ''));
+          // "5 Year(s) 6 Month(s)" is 5.5, not 56.
+          const expYears = parseExperience(at(row, 'expYears'));
           const fields = {
             name,
             email: email || null,
             phone: phone || null,
-            location: at(row, 'location') || null,
+            location: place || null,
             preferred_location: at(row, 'preferredLocation') || null,
             title: at(row, 'title') || null,
-            current_company: at(row, 'currentCompany') || null,
-            exp_years: Number.isFinite(expYears) && expYears > 0 ? expYears : null,
+            current_company: company || null,
+            exp_years: expYears,
             exp: at(row, 'expYears') || null,
             ctc: at(row, 'ctc') || null,
             expected_ctc: at(row, 'expectedCtc') ? toRupees(at(row, 'expectedCtc')) : null,
@@ -259,8 +372,27 @@ export default function spreadsheetRoutes() {
         }).catch((err) => console.error('[import] invitations failed:', err.message));
       }
 
+      /*
+       * WHICH COLUMNS WERE UNDERSTOOD, and which were not.
+       *
+       * "47 imported" does not tell a recruiter whether the phone column
+       * was read or quietly ignored, and an export from a job board has
+       * thirty columns of which we want twelve. Both lists are returned,
+       * so a file that half-worked says so instead of looking fine.
+       */
+      const recognised = Object.entries(map)
+        .map(([field, i]) => ({ field, column: headerCells[i] || `column ${i + 1}` }));
+      const ignored = headerCells
+        .map((h, i) => ({ h, i }))
+        .filter(({ h, i }) => String(h || '').trim()
+          && !Object.values(map).includes(i))
+        .map(({ h }) => String(h).trim());
+
       res.status(201).json({
         format,
+        bannerRows,
+        recognised,
+        ignored,
         columns: Object.keys(map),
         imported: imported.length,
         updated: updated.length,
