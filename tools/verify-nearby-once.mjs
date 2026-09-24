@@ -85,27 +85,45 @@ check(reopened.length === 1,
 check(/tirupati/i.test(reopened.join(' ')),
   'and it is the list for the place that was picked');
 
-/* ---- one state expanded at a time -------------------------------- */
+/* ---- the states, and what a click does now ------------------------- */
 /*
- * The states used to render with every district already listed, so
- * opening the picker dropped you into one continuous list of every
- * district in India. Expanding one now closes the one before it.
+ * EVERY STATE IS OPEN WHEN THE FILTER OPENS. A recruiter should not have
+ * to click Telangana to find out which districts are in it, so the
+ * districts are there from the start and the chevron is for putting one
+ * out of the way rather than for revealing it.
+ *
+ * Which also means it is not an accordion: with everything open,
+ * closing the others on a click would hide most of the list the moment
+ * somebody touched it.
  */
 const openStates = () => page.evaluate((k) =>
   document.querySelectorAll('#tlTree_' + k + ' .tl-dists').length, key);
 
+const atStart = await openStates();
+check(atStart >= 36, `every state shows its districts from the start (${atStart})`);
+
 await page.evaluate((k) => window.tlTreeExpand(k, 'Delhi'), key);
 await page.waitForTimeout(400);
-check(await openStates() === 1, `expanding Delhi opens one state (${await openStates()})`);
+const afterOne = await openStates();
+check(afterOne === atStart - 1,
+  `clicking Delhi folds that one away (${atStart} -> ${afterOne})`);
 
 await page.evaluate((k) => window.tlTreeExpand(k, 'Kerala'), key);
 await page.waitForTimeout(400);
-check(await openStates() === 1,
-  `expanding Kerala closes Delhi rather than adding to it (${await openStates()})`);
+check(await openStates() === atStart - 2,
+  'and clicking Kerala folds that one too, leaving the rest alone');
 
-await page.evaluate((k) => window.tlTreeExpand(k, 'Kerala'), key);
+await page.evaluate((k) => window.tlTreeExpand(k, 'Delhi'), key);
 await page.waitForTimeout(400);
-check(await openStates() === 0, 'clicking the open one closes it');
+check(await openStates() === atStart - 1, 'clicking a folded one opens it again');
+
+await page.evaluate((k) => window.tlTreeAll(k, false), key);
+await page.waitForTimeout(400);
+check(await openStates() === 0, 'Collapse all folds every one of them');
+
+await page.evaluate((k) => window.tlTreeAll(k, true), key);
+await page.waitForTimeout(400);
+check(await openStates() >= 36, 'and Expand all brings them back');
 
 check(errors.length === 0, `no page errors${errors.length ? `: ${errors[0]}` : ''}`);
 await browser.close();

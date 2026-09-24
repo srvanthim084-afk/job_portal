@@ -15332,16 +15332,17 @@ body .cap-feedbar{bottom:0}
     tlLocRefresh(key);
   };
 
+  /* One state, toggled. Not an accordion: with every state open by
+     default, closing the others on a click would hide most of the list
+     the moment somebody touched it. */
   window.tlTreeExpand=function(key,st){
     const t=tstate(key);
-    const wasOpen=t.exp[st]===true;
-    t.exp={};                       /* close whatever else was open */
-    if(!wasOpen) t.exp[st]=true;    /* clicking the open one closes it */
+    t.exp[st]=(t.exp[st]===false);
     tlLocRefresh(key);
   };
   window.tlTreeAll=function(key,open){
     const t=tstate(key); t.exp={};
-    if(open) STATES.forEach(s=>{ t.exp[s]=true; });
+    if(!open) STATES.forEach(s=>{ t.exp[s]=false; });
     tlLocRefresh(key);
   };
   window.tlTreePick=function(key,v,on){
@@ -15412,13 +15413,16 @@ body .cap-feedbar{bottom:0}
     h+=`<div class="grp"><b>Country &amp; region</b>${row(ALL,ALL,true)}${REGION_ORDER.map(r=>row(r,r)).join('')}</div>`;
     h+=`<div class="grp" style="border-bottom:0;padding-bottom:2px"><b>States &amp; districts</b></div>`;
     h+=STATES.map(s=>{
-      /* closed unless this is the one that was opened */
-      const open=t.exp[s]===true, ds=GEO[s]||[];
+      /* OPEN BY DEFAULT: a recruiter opening the filter sees the states
+         AND their districts, without having to click a state first. The
+         chevron collapses one that is in the way; Collapse all puts the
+         whole list back to headings. */
+      const open=t.exp[s]!==false, ds=GEO[s]||[];
       return `<div class="tl-sthead" onmousedown="event.preventDefault()" onclick="tlTreeExpand('${jq(key)}','${jq(s)}')">
           <span class="car">${open?'▾':'▸'}</span><span>${esc(s)}</span><span class="n">${ds.length}</span></div>
         ${open?`<div class="tl-dists">${row(s,'All - '+s,true)}${ds.map(d=>distRow(key,t,s,d)).join('')}</div>`:''}`;
     }).join('');
-    const anyOpen=STATES.some(s=>t.exp[s]===true);
+    const anyOpen=STATES.some(s=>t.exp[s]!==false);
     h+=`<div class="foot">
       <button onmousedown="event.preventDefault()" onclick="tlTreeAll('${jq(key)}',${anyOpen?'false':'true'})">${anyOpen?'Collapse all':'Expand all'}</button>
       <button onmousedown="event.preventDefault()" onclick="tlTreeClear('${jq(key)}')">Clear</button>
@@ -21000,21 +21004,40 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
   function pool(){
     if(POOL) return POOL;
     var seen={}, out=[];
+    var LOC=window.INDIA_LOCALITIES||{};
     function add(name,st,city){
       var k=low(name);
       if(seen[k]||!C[name]) return;
       if(!st||st==='Remote'||st==='Other') return;
       var c=C[name];
-      for(var i=0;i<out.length;i++){
-        if(km(out[i].c,c)<=2){                       /* the same place, two names */
-          if(city&&!out[i].city){ out[i].name=name; out[i].city=true; }
-          return;
+      /* Two names for ONE place are folded - NTR district IS Vijayawada,
+         Kamrup Metropolitan IS Guwahati, and listing both at the same
+         distance reads like two different towns.
+
+         TWO NEIGHBOURHOODS ARE NOT ONE PLACE, however close. Hitech City
+         is 1.7 km from Madhapur and Begumpet is 1.6 km from Ameerpet, so
+         the blanket 2 km rule was swallowing them: a recruiter asking for
+         everything within 25 km of Hyderabad was shown neither, and there
+         was nothing on screen to say why. A locality is never folded into
+         another. */
+      if(!LOC[name]){
+        for(var i=0;i<out.length;i++){
+          if(LOC[out[i].name]) continue;
+          if(km(out[i].c,c)<=2){
+            if(city&&!out[i].city){ out[i].name=name; out[i].city=true; }
+            return;
+          }
         }
       }
       seen[k]=1; out.push({name:name,state:st,c:c,city:!!city});
     }
     Object.keys(GEO).forEach(function(st){ (GEO[st]||[]).forEach(function(d){ add(d,st,false); }); });
     Object.keys(CSMAP).forEach(function(c){ add(c,CSMAP[c],true); });
+    /* Every level the dataset holds, not only districts and cities: the
+       radius is a geographic question, so a locality inside one district
+       that falls within range of a city in another still belongs in the
+       answer. */
+    Object.keys(LOC).forEach(function(n){ add(n,LOC[n][2],true); });
     POOL=out;
     return POOL;
   }

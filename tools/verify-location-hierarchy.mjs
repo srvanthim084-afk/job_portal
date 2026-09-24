@@ -137,7 +137,13 @@ check(sug.city.some((s) => /Hyderabad/.test(s)), 'searching a CITY finds it');
 check(sug.area.some((s) => /Madhapur/.test(s)), 'searching an AREA finds it');
 
 /* ---- the UI: same list, same rows, nothing new ----------------------- */
-await page.evaluate((k) => { window.tlLocOpen(k); window.tlTreeExpand(k, 'Telangana'); }, KEY);
+/*
+ * No tlTreeExpand here any more. Every state is OPEN when the filter
+ * opens - a recruiter should not have to click Telangana to see its
+ * districts - so calling expand would toggle it CLOSED and the areas
+ * inside it could not be reached.
+ */
+await page.evaluate((k) => window.tlLocOpen(k), KEY);
 await page.waitForTimeout(600);
 
 const shape = await page.evaluate(() => ({
@@ -150,7 +156,8 @@ const shape = await page.evaluate(() => ({
 }));
 check(shape.panels === 1, `one panel, not a second one (${shape.panels})`);
 check(shape.states >= 36, `every state is a row in the list (${shape.states})`);
-check(shape.openStates === 1, 'one state open at a time, as before');
+check(shape.openStates >= 36,
+  `every state shows its districts without a click (${shape.openStates})`);
 check(shape.expanders > 10,
   `districts with areas gained an expander (${shape.expanders} of them)`);
 check(JSON.stringify(shape.pills) === JSON.stringify(
@@ -170,8 +177,8 @@ const opened = await page.evaluate(() =>
 check(opened.length > 5, `opening Hyderabad shows its areas in the same list (${opened.length})`);
 check(opened.every((r) => r.checkbox && r.km),
   'each is a checkbox row with its distance, like every other row');
-check(await page.evaluate(() => document.querySelectorAll('#tlTree_recAdv .tl-dists').length) === 1,
-  'and the state it belongs to stayed open');
+check(await page.evaluate(() => document.querySelectorAll('#tlTree_recAdv .tl-dists').length) >= 36,
+  'and every other state stayed open around it');
 
 /* ---- selecting an area still feeds the candidate search -------------- */
 await page.evaluate((k) => window.tlTreePick(k, 'Madhapur', true), KEY);
