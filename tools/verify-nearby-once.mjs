@@ -3,16 +3,15 @@
  *
  *     node tools/verify-nearby-once.mjs      (needs the dev server on :4323)
  *
- * Two different parts of the location filter draw the same list: the
- * picker panel draws it inside itself, and a strip under the field draws
- * it for when the panel is closed - picking a place closes the picker,
- * and without the strip the towns around your choice vanished the moment
- * you chose one.
+ * Two different parts of the location filter drew the same list: the
+ * picker panel draws it inside its NEARBY PLACES section, and a strip
+ * under the field drew the same towns again as another row of things to
+ * tick. So "19 near Tirupati" appeared twice on screen, one above the
+ * other, same towns, same distances, both selectable.
  *
- * Both were drawing at the same time, so "19 near Tirupati" appeared
- * twice on screen, one above the other, same towns, same distances. This
- * asserts the count of visible nearby lists is exactly one in each
- * state, which is the thing that was wrong - not that either one renders.
+ * The panel is where somebody looks for them, so that is the only place
+ * they appear now. This counts the VISIBLE nearby lists, because the
+ * fault was never that either list was wrong.
  */
 import { chromium } from 'playwright';
 
@@ -70,17 +69,43 @@ await page.evaluate((k) => window.tlTreeDone(k), key);
 await page.waitForTimeout(700);
 
 const whileClosed = await lists();
-check(whileClosed.length === 1,
-  `with the panel closed, they are still listed once (${whileClosed.length}): ${
-    whileClosed.join(' || ') || 'none'}`);
-check(/tirupati/i.test(whileClosed.join(' ')),
-  'and it is still the list for the place that was picked');
+check(whileClosed.length === 0,
+  `with the panel closed, no second list is left under the field (${
+    whileClosed.length}): ${whileClosed.join(' || ') || 'none'}`);
+
+/* The pick itself survives - closing the panel must not undo it. */
+const chip = await page.evaluate((k) => (window.tlLocState(k).tags || []).join(', '), key);
+check(/tirupati/i.test(chip), `the place that was picked is still selected (${chip})`);
 
 await page.evaluate((k) => window.tlLocOpen(k), key);
 await page.waitForTimeout(700);
 const reopened = await lists();
 check(reopened.length === 1,
-  `reopening the panel does not bring the second one back (${reopened.length})`);
+  `reopening the panel shows them once, in the panel (${reopened.length})`);
+check(/tirupati/i.test(reopened.join(' ')),
+  'and it is the list for the place that was picked');
+
+/* ---- one state expanded at a time -------------------------------- */
+/*
+ * The states used to render with every district already listed, so
+ * opening the picker dropped you into one continuous list of every
+ * district in India. Expanding one now closes the one before it.
+ */
+const openStates = () => page.evaluate((k) =>
+  document.querySelectorAll('#tlTree_' + k + ' .tl-dists').length, key);
+
+await page.evaluate((k) => window.tlTreeExpand(k, 'Delhi'), key);
+await page.waitForTimeout(400);
+check(await openStates() === 1, `expanding Delhi opens one state (${await openStates()})`);
+
+await page.evaluate((k) => window.tlTreeExpand(k, 'Kerala'), key);
+await page.waitForTimeout(400);
+check(await openStates() === 1,
+  `expanding Kerala closes Delhi rather than adding to it (${await openStates()})`);
+
+await page.evaluate((k) => window.tlTreeExpand(k, 'Kerala'), key);
+await page.waitForTimeout(400);
+check(await openStates() === 0, 'clicking the open one closes it');
 
 check(errors.length === 0, `no page errors${errors.length ? `: ${errors[0]}` : ''}`);
 await browser.close();

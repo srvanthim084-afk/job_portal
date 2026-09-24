@@ -288,8 +288,24 @@ if (db) {
    * object is enough, and the candidate, the application and the resume
    * that come out of it are all real.
    */
+  /*
+   * The mailbox BELONGS to a recruiter, and that is not decoration.
+   *
+   * An imported candidate is stamped with the mailbox's owner, and the
+   * policy only lets a recruiter see candidates they own. With no owner
+   * the candidate is invisible to everybody and the download returns
+   * 404 - which is exactly what this check found the first time it ran,
+   * against a fixture that had no recruiter rather than against a fault.
+   * The real mailbox has one, so this one does too.
+   */
+  const owner = await withUser(ENGINE, async (c) => (await c.query(
+    `select id from recruiters where lower(email) = lower($1) limit 1`,
+    [process.env.TL_RECRUITER || 'teamlinkmed001@tmlink.in'])).rows[0]);
+  check(!!owner, `the recruiter who owns the mailbox exists (${owner && owner.id})`);
+
   const mailbox = { id: boxId, address: `verify-${stamp}@example.invalid`,
-                    provider: 'imap', rules: null, recruiter_id: null };
+                    provider: 'imap', rules: null,
+                    recruiter_id: owner ? owner.id : null };
 
   const rowId = `msg_verify_${stamp}`;
   const arriving = message
@@ -339,6 +355,82 @@ if (db) {
       [out.applicationId])).rows.map((r) => r.type));
     check(events.includes('resume.imported'),
       'the timeline records where the resume came from');
+
+    /* ---- and a recruiter can actually download it ------------------ *
+     * The claim this whole thing was built to fix was "a Download
+     * button with no file behind it", so the button is pressed. The API
+     * is started IN THIS PROCESS, on a real socket, because the
+     * embedded engine serves one client and this process is holding it
+     * - so the request goes over HTTP through the real routes, real
+     * row-level security and the real storage driver, not past them.
+     */
+    const { createApp } = await import('../api/src/app.js');
+    const app = createApp();
+    const server = await new Promise((ok) => {
+      const srv = app.listen(0, '127.0.0.1', () => ok(srv));
+    });
+    const origin = `http://127.0.0.1:${server.address().port}`;
+
+    try {
+      const login = await fetch(`${origin}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          email: process.env.TL_RECRUITER || 'teamlinkmed001@tmlink.in',
+          password: process.env.TL_RECRUITER_PASSWORD || 'Teamlink@2026',
+          role: 'recruiter',
+        }),
+      });
+      check(login.ok, `a recruiter can sign in (${login.status})`);
+      const cookie = (login.headers.getSetCookie?.() || [])
+        .map((c) => c.split(';')[0]).join('; ');
+
+      const meta = await fetch(`${origin}/api/candidates/${out.candidateId}/resume`,
+        { headers: { cookie } });
+      check(meta.ok, `the resume has a download link (${meta.status})`);
+      const info = meta.ok ? await meta.json() : {};
+      check(!!info.url, 'the link points somewhere');
+      /* The accents survive. The rule used to be \\w, which is ASCII
+         only, so Résumé.pdf was filed as Rsum.pdf and a name written
+         in an Indian script was stripped to nothing at all. */
+      check(info.fileName === 'Résumé.pdf',
+        `the filename is the one that was attached, accents and all (${info.fileName})`);
+
+      /*
+       * The signed URL is followed, not trusted. For the local driver it
+       * points back at /api/files/<key>, where the permission is checked
+       * AGAIN - a URL on its own must never be enough to read somebody's
+       * resume.
+       */
+      const path = String(info.url || '').replace(/^https?:\/\/[^/]+/, '');
+      const file = await fetch(`${origin}${path}`, { headers: { cookie } });
+      check(file.ok, `the file downloads (${file.status})`);
+      const bytes = Buffer.from(await file.arrayBuffer());
+      check(sha(bytes) === sha(PDF),
+        `and it is byte for byte the PDF that was attached to the email (${bytes.length} bytes)`);
+      /*
+       * Only meaningful when the file actually came back. A 404 carries
+       * a nosniff header too, and an assertion that passes on a failed
+       * download is worse than none.
+       */
+      if (file.ok) {
+        check(/attachment/i.test(file.headers.get('content-disposition') || ''),
+          'served as an attachment, so a crafted file cannot render in the origin');
+        check((file.headers.get('x-content-type-options') || '') === 'nosniff',
+          'and the browser is told not to sniff its type');
+      }
+
+      /*
+       * Nobody else. A resume is the most personal thing on the record,
+       * and the download route re-checks rather than trusting the link.
+       */
+      const anon = await fetch(`${origin}${path}`);
+      check(!anon.ok, `signed out, the same link gives nothing (${anon.status})`);
+      const anonMeta = await fetch(`${origin}/api/candidates/${out.candidateId}/resume`);
+      check(!anonMeta.ok, `and the link itself cannot be obtained (${anonMeta.status})`);
+    } finally {
+      await new Promise((ok) => server.close(ok));
+    }
   } finally {
     /*
      * Leave nothing behind.

@@ -2207,10 +2207,25 @@ function demoAccountsFor(role){
 function pageLogin(role){
   const meta = ROLE_META[role];
   if(!meta) return withChrome('', pageHome());
-  const accounts = demoAccountsFor(role);
-  const cred = ROLE_CREDENTIALS[role];
-  const prefillEmail = cred ? cred.email : '';
-  const prefillPass = cred ? cred.password : 'demo1234';
+  /* NOTHING ON THIS PAGE HINTS AT A CREDENTIAL, for any role.
+
+     It used to carry three things that cannot survive a real portal:
+
+       a "Login credentials" box printing an email address and its
+       PASSWORD in plain text on the sign-in screen;
+       the email and password PREFILLED into the form, so the page
+       arrived already holding somebody's login;
+       a "Quick demo login" panel of sample accounts.
+
+     They were the prototype's way of letting anyone try it. On a portal
+     where real recruiters and real candidates sign in, a password
+     printed beside the box you type it into is not a convenience - it is
+     the password, published. The form is now empty and the only way in
+     is to know the credential.
+
+     demoAccountsFor() and ROLE_CREDENTIALS are left alone deliberately:
+     other screens still read them, and changing them is a separate job
+     from making sure this page shows nobody anything. */
   const body = `
   <div class="auth-shell">
     <div class="auth-side">
@@ -2225,16 +2240,9 @@ function pageLogin(role){
       <form class="auth-form" onsubmit="submitLogin('${role}', event)">
         <h1>${meta.label} Login</h1>
         <p>Sign in to the TeamLink ${meta.label} portal.</p>
-        ${cred ? `<div class="demo-box" style="margin-top:0;margin-bottom:18px"><p>Login credentials</p><div style="font-size:12.5px;line-height:1.8"><b>Email:</b> <span class="mono">${esc(cred.email)}</span><br><b>Password:</b> <span class="mono">${esc(cred.password)}</span></div></div>` : ''}
-        <div class="fgroup"><label>Email</label><input name="email" type="email" placeholder="you@example.com" value="${esc(prefillEmail)}"></div>
-        <div class="fgroup"><label>Password</label><input name="password" type="password" placeholder="••••••••" value="${esc(prefillPass)}"></div>
+        <div class="fgroup"><label>Email</label><input name="email" type="email" placeholder="you@example.com" autocomplete="username" value=""></div>
+        <div class="fgroup"><label>Password</label><input name="password" type="password" placeholder="••••••••" autocomplete="current-password" value=""></div>
         <button class="btn btn-primary btn-block" type="submit">Sign in as ${meta.label}</button>
-        <div class="demo-box">
-          <p>Quick demo login — sample ${meta.label.toLowerCase()} accounts</p>
-          <div class="demo-pick">
-            ${accounts.map(a=>`<button type="button" onclick="loginAs('${role}','${a.id}')"><b>${esc(a.name)}</b><span>${esc(a.sub)}</span></button>`).join('')}
-          </div>
-        </div>
         <div class="switch-role">
           ${role!=='candidate'?'Looking for jobs? <a href="#/login/candidate">Candidate login</a>':'Are you hiring? <a href="#/login/recruiter">Recruiter login</a> · <a href="#/login/client">Client login</a>'}
         </div>
@@ -15285,12 +15293,29 @@ body .cap-feedbar{bottom:0}
   const tstate=key=>{ TS[key]=TS[key]||{exp:{}}; return TS[key]; };
   const jq=v=>String(v).replace(/\\/g,'\\\\').replace(/'/g,"\\'");
 
-  /* every state renders with all of its districts already listed; the chevron
-     only collapses one you want out of the way */
-  window.tlTreeExpand=function(key,st){ const t=tstate(key); t.exp[st]=(t.exp[st]===false); tlLocRefresh(key); };
+  /* ONE STATE AT A TIME.
+
+     Every state used to render with all of its districts already listed,
+     so opening the picker dropped you into one continuous list of every
+     district in India and the chevrons were there to shovel the ones you
+     did not want out of the way. Picking Delhi meant scrolling past
+     Andhra Pradesh's 26 and Arunachal Pradesh's 26 to reach it.
+
+     Now the states are a list you can read, and opening one closes the
+     one before it: click Delhi and you see Delhi's districts, and only
+     those. "Expand all" is still there for when somebody genuinely wants
+     the whole thing - it is a deliberate choice rather than the state
+     you are dropped into. */
+  window.tlTreeExpand=function(key,st){
+    const t=tstate(key);
+    const wasOpen=t.exp[st]===true;
+    t.exp={};                       /* close whatever else was open */
+    if(!wasOpen) t.exp[st]=true;    /* clicking the open one closes it */
+    tlLocRefresh(key);
+  };
   window.tlTreeAll=function(key,open){
     const t=tstate(key); t.exp={};
-    if(!open) STATES.forEach(s=>{ t.exp[s]=false; });
+    if(open) STATES.forEach(s=>{ t.exp[s]=true; });
     tlLocRefresh(key);
   };
   window.tlTreePick=function(key,v,on){
@@ -15330,12 +15355,13 @@ body .cap-feedbar{bottom:0}
     h+=`<div class="grp"><b>Country &amp; region</b>${row(ALL,ALL,true)}${REGION_ORDER.map(r=>row(r,r)).join('')}</div>`;
     h+=`<div class="grp" style="border-bottom:0;padding-bottom:2px"><b>States &amp; districts</b></div>`;
     h+=STATES.map(s=>{
-      const open=t.exp[s]!==false, ds=GEO[s]||[];
+      /* closed unless this is the one that was opened */
+      const open=t.exp[s]===true, ds=GEO[s]||[];
       return `<div class="tl-sthead" onmousedown="event.preventDefault()" onclick="tlTreeExpand('${jq(key)}','${jq(s)}')">
           <span class="car">${open?'▾':'▸'}</span><span>${esc(s)}</span><span class="n">${ds.length}</span></div>
         ${open?`<div class="tl-dists">${row(s,'All - '+s,true)}${ds.map(d=>row(d,d)).join('')}</div>`:''}`;
     }).join('');
-    const anyOpen=STATES.some(s=>t.exp[s]!==false);
+    const anyOpen=STATES.some(s=>t.exp[s]===true);
     h+=`<div class="foot">
       <button onmousedown="event.preventDefault()" onclick="tlTreeAll('${jq(key)}',${anyOpen?'false':'true'})">${anyOpen?'Collapse all':'Expand all'}</button>
       <button onmousedown="event.preventDefault()" onclick="tlTreeClear('${jq(key)}')">Clear</button>
@@ -20928,18 +20954,20 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
     try{ st=window.tlLocState?tlLocState(key):null; }catch(e){}
     if(!st){ el.hidden=true; return; }
 
-    /* ONE LIST AT A TIME.
+    /* THE NEARBY PLACES LIVE IN THE PANEL, AND ONLY THERE.
 
-       The picker panel draws its own nearby places, and this strip draws
-       the same places under the field. Both were visible whenever the
-       panel was open, so "19 near Tirupati" appeared twice on screen,
-       one above the other, with the same towns and the same distances.
+       This strip drew the same towns a second time under the field, as
+       another row of things to tick. Two lists of the same places, one
+       above the other, both selectable - and the picker already has a
+       NEARBY PLACES section which is where somebody looks for them.
 
-       This strip exists for when the panel is CLOSED - picking a place
-       closes the picker, and without it the towns around your choice
-       vanished the moment you made it. While the panel is open it has
-       nothing to add, so it stands down. */
-    if(st.open){ el.hidden=true; el.innerHTML=''; return; }
+       It is kept rather than deleted because it still does one useful
+       thing: NOTHING. It renders nothing, it wraps nothing, and the
+       functions below keep working so no other screen breaks. If the
+       list under the field is ever wanted back, this is the one line
+       that decides. */
+    el.hidden=true; el.innerHTML='';
+    return;
 
     var a=anchor(st.tags||[]);
     if(!a||typeof window.tlNearbyList!=='function'){ el.hidden=true; el.innerHTML=''; return; }

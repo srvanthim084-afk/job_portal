@@ -93,12 +93,34 @@ export function validateResume(buffer, originalName) {
   return { ext: match.ext, mime: match.mime, size: buffer.length };
 }
 
-/** Strips directory components and anything not filename-safe. */
+/**
+ * Strips directory components and anything not filename-safe.
+ *
+ * KEEPS LETTERS IN EVERY SCRIPT. The rule used to be \\w, which is
+ * ASCII only, so "Résumé.pdf" was stored as "Rsum.pdf" and a name
+ * written in Telugu, Hindi or Arabic was stripped to nothing at all
+ * and fell back to "resume". On a portal where most candidates are
+ * Indian, that is most of the names.
+ *
+ * What is removed is what makes a filename dangerous or unusable:
+ * path separators, the characters Windows forbids, and control
+ * bytes. Letters and digits of any language are not among them, and
+ * the stored KEY is a uuid anyway - this is only what the file is
+ * called when somebody saves it.
+ */
 export function safeName(name, ext) {
   const base = String(name || 'resume')
     .replace(/[\\/]/g, ' ')
     .replace(/\.[^.]*$/, '')
-    .replace(/[^\w .\-()]+/g, '')
+    // Windows-forbidden characters and control bytes, plus anything
+    // that is not a letter, a digit or ordinary punctuation.
+    // \p{M} is there because Indic vowel signs and the virama are
+    // MARKS, not letters: without it "మంగళపల్లి" loses half of itself and
+    // comes out as something nobody would recognise.
+    .replace(/[^\p{L}\p{M}\p{N} ._\-()]+/gu, '')
+    .replace(/\s+/g, ' ')
+    // A name that is only dots is not a name.
+    .replace(/^[.\s]+/, '')
     .trim()
     .slice(0, 80) || 'resume';
   return `${base}.${ext}`;
