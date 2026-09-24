@@ -79,6 +79,19 @@ const toMessage = (r) => ({
   status: r.status,
   reason: r.reason || undefined,
   parsed: r.parsed ? (r.parsed.candidate || r.parsed) : undefined,
+  /*
+   * What the email did NOT contain, and where the rest of it is.
+   *
+   * A digest names its top few and links to the whole list. Passing the
+   * two counts and that link through is what lets the screen say "3 of
+   * 426" rather than showing three candidates and leaving somebody to
+   * assume that was everyone who applied.
+   */
+  totalResponses: r.parsed && r.parsed.totalResponses ? r.parsed.totalResponses : undefined,
+  appliedCount: r.parsed && r.parsed.appliedCount ? r.parsed.appliedCount : undefined,
+  responsesUrl: r.parsed && r.parsed.responsesUrl ? r.parsed.responsesUrl : undefined,
+  namedInEmail: r.parsed && Array.isArray(r.parsed.candidates)
+    ? r.parsed.candidates.length : undefined,
   candidateId: r.candidate_id || undefined,
   candidateName: r.candidate_name || undefined,
   applicationId: r.application_id || undefined,

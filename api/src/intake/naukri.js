@@ -98,6 +98,44 @@ export function parseNaukriDigest(text, opts = {}) {
 
   const out = { jobTitle: jobTitleOf(lines), candidates: [] };
 
+  /*
+   * HOW MANY THERE REALLY ARE, and where the rest of them live.
+   *
+   * This email is a teaser and says so twice: "87 candidates applied to
+   * your job today", then "Top candidates who applied on your job" above
+   * three people, then "View all 426 responses" with a link. Three is
+   * everything the message contains; the other 423 are on Naukri behind
+   * that link.
+   *
+   * Reading those two numbers is what lets the screen say "3 of 426 are
+   * here" instead of showing three candidates and leaving a recruiter to
+   * assume that was all of them. The gap was invisible, which is the
+   * worst thing a gap can be.
+   */
+  const applied = /(\d[\d,]*)\s+candidates?\s+applied/i.exec(text || '');
+  if (applied) out.appliedCount = Number(applied[1].replace(/,/g, ''));
+
+  const total = /view\s*all\s*(\d[\d,]*)\s*responses/i.exec(
+    String(text || '').replace(/\s+/g, ' '));
+  if (total) out.totalResponses = Number(total[1].replace(/,/g, ''));
+
+  /*
+   * The link to that list, unwrapped.
+   *
+   * Naukri routes it through an app-link shortener with the real address
+   * in a `link=` parameter, so the useful one has to be pulled back out -
+   * a recruiter clicking the wrapper on a desktop gets an app store.
+   */
+  if (opts.raw) {
+    const flat = String(opts.raw).replace(/=\r?\n/g, '');
+    const inner = /link=3?D?(https?%3A|https?:)[^&"'\s>]*applies[^&"'\s>]*/i.exec(flat);
+    const direct = /https?:\/\/hiring\.naukri\.com\/[^\s"'<>]*applies[^\s"'<>]*/i.exec(flat);
+    let url = direct ? direct[0] : (inner ? inner[0].replace(/^link=3?D?/i, '') : '');
+    try { url = decodeURIComponent(url); } catch { /* keep it as it came */ }
+    url = url.replace(/&amp;/g, '&').replace(/=3D/g, '=');
+    if (/^https?:\/\/[^\s]*naukri\.com/i.test(url)) out.responsesUrl = url;
+  }
+
   if (!out.jobTitle && opts.subject) {
     const m = /(?:response|application)s?\s+for\s+(.+?)\s*$/i.exec(String(opts.subject));
     if (m) out.jobTitle = clean(m[1]);

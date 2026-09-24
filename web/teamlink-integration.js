@@ -4199,9 +4199,35 @@
     return Promise.all([
       api.get('/intake/mailboxes'),
       api.get('/intake/queue'),
+      // The digests, so the screen can say how many of each email's
+      // responses actually arrived here.
+      api.get('/intake/messages?limit=50').catch(function () { return { messages: [] }; }),
     ]).then(function (out) {
       var boxes = out[0].mailboxes || [];
       var queue = out[1].queue || [];
+
+      /*
+       * WHAT THE EMAILS DID NOT BRING.
+       *
+       * A Naukri summary names its top few and links to the rest - "87
+       * candidates applied", three in the message, "View all 426
+       * responses". Without this the screen showed three imported
+       * candidates and nothing at all about the other 423, so the gap
+       * was invisible, which is the worst thing a gap can be.
+       *
+       * One line per requirement, with the link the email itself
+       * carries, so the next step is a click rather than a search.
+       */
+      var digests = ((out[2] && out[2].messages) || []).filter(function (m) {
+        return m.totalResponses && m.namedInEmail
+          && m.totalResponses > m.namedInEmail;
+      });
+      var byUrl = {};
+      digests.forEach(function (m) {
+        var k = m.responsesUrl || m.subject;
+        if (!byUrl[k] || byUrl[k].totalResponses < m.totalResponses) byUrl[k] = m;
+      });
+      var short = Object.keys(byUrl).map(function (k) { return byUrl[k]; });
       var counts = out[1].counts || {};
       var body = document.getElementById('tlIntakeBody');
       if (!body) return;
@@ -4299,6 +4325,32 @@
         'mailbox and TeamLink will tell you exactly which variable to set.</div>' +
         '<div style="margin-top:10px"><button class="btn btn-primary btn-sm" onclick="TL.intake.connect()">Connect mailbox</button></div>' +
         '</div>' +
+
+        // ---- what the emails left behind on the job board -------------
+        (short.length
+          ? '<div style="font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;' +
+            'color:var(--text-soft);margin:14px 0 6px">Still on the job board</div>' +
+            '<div class="req-note" style="margin:0 0 8px;font-size:12px">' +
+            'A summary email lists only its top few and links to the rest. ' +
+            'Open the list on the board, download the applicants, then add them ' +
+            'with <b>Import Candidates</b> — the importer reads the export and ' +
+            'fills in the people already here rather than duplicating them.' +
+            '</div>' +
+            short.map(function (m) {
+              return '<div class="fcr-modal-row"><span><b>' +
+                esc((m.parsed && m.parsed.jobTitle) || m.subject || 'A requirement') + '</b>' +
+                '<div style="font-size:12px;color:var(--text-soft)">' +
+                'this email listed <b>' + m.namedInEmail + '</b> of <b>' +
+                m.totalResponses + '</b> response' + (m.totalResponses === 1 ? '' : 's') +
+                (m.appliedCount ? ' · ' + m.appliedCount + ' applied that day' : '') +
+                '</div></span>' +
+                (m.responsesUrl
+                  ? '<a class="btn btn-ghost btn-sm" target="_blank" rel="noopener noreferrer" href="' +
+                    esc(m.responsesUrl) + '">Open the full list</a>'
+                  : '') +
+                '</div>';
+            }).join('')
+          : '') +
 
         // ---- the queue ------------------------------------------------
         '<div style="font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;' +

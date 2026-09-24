@@ -37,6 +37,9 @@ import { screenApplication } from '../ai/screening.js';
 import { mailboxProvider, mailboxReadiness, newMessageId,
          mailboxSecrets, credentialFingerprint, isAuthFailure } from './mailbox.js';
 import { looksLikeDigest, parseNaukriDigest } from './naukri.js';
+import { looksLikeNvite, parseNvite } from './nvite.js';
+import { extractResumeText } from '../resume/extract.js';
+import { extractFields } from '../resume/fields.js';
 import { detectSource, rulesFor, wantedBy } from './source.js';
 import { storeAttachedResume } from './attachment.js';
 
@@ -121,9 +124,68 @@ export async function processMessage(session, { mailbox, message, rowId, provide
    * silently drop the rest.
    */
   if (looksLikeDigest(message.text || message.raw || '')) {
-    const digest = parseNaukriDigest(message.text || '', { subject: message.subject });
+    // `raw` so the parser can find the link to the full response list -
+    // the one the email itself labels "View all 426 responses".
+    const digest = parseNaukriDigest(message.text || '',
+      { subject: message.subject, raw: message.raw });
     if (digest.candidates.length) {
       return importDigest(session, { mailbox, message, rowId, digest, finish, source });
+    }
+  }
+
+  /*
+   * NAUKRI'S NVITE RESPONSE: one applicant, with their CV attached.
+   *
+   * This is the email that matters most and it was being discarded.
+   * Fifteen of them sat in the mailbox marked "No candidate name could
+   * be read from this email" - every one a real person, every one with a
+   * resume on the message - because NVite writes its labels on their own
+   * line and the labelled-block reader is looking for a colon.
+   *
+   * THE RESUME IS READ FIRST, and that is the point rather than a
+   * detail. Naukri now hides the email address and the phone number
+   * behind a "View Contact Details" link, so the MESSAGE genuinely has
+   * neither - but the attached CV has both. Reading it before the
+   * candidate is created is what makes them contactable at all; without
+   * it every one of these would land as "nothing to contact them on".
+   */
+  if (looksLikeNvite(message)) {
+    const nv = parseNvite(message);
+    if (nv && nv.name) {
+      let fromCv = {};
+      const files = message.attachments || [];
+      if (files.length) {
+        try {
+          const doc = await extractResumeText(files[0].buffer, files[0].filename);
+          fromCv = extractFields(doc.text).fields || {};
+        } catch (err) {
+          // The candidate is still worth creating without it; the file is
+          // stored and the reason recorded further down.
+          console.error('[intake] the attached CV could not be read:', err.message);
+        }
+      }
+
+      /*
+       * The EMAIL's facts win over the CV's where both have one - Naukri
+       * knows which role this application is for and the CV does not -
+       * and the CV supplies what the email is not allowed to carry.
+       */
+      parsed.isApplication = true;
+      parsed.why = 'NVite response';
+      parsed.candidate = {
+        ...parsed.candidate,
+        name: nv.name,
+        email: fromCv.email || '',
+        phone: fromCv.phone || fromCv.altPhone || '',
+        appliedRole: nv.appliedRole || (parsed.candidate || {}).appliedRole || '',
+        location: nv.location || fromCv.location || '',
+        preferredLocation: nv.preferredLocation || fromCv.preferredLocation || '',
+        experience: nv.experience || fromCv.expYears || '',
+        noticePeriod: nv.noticePeriod || fromCv.noticePeriod || '',
+        education: nv.education || fromCv.education || '',
+        currentCompany: fromCv.currentCompany || '',
+        skills: (nv.skills && nv.skills.length ? nv.skills : (fromCv.skills || [])),
+      };
     }
   }
 
@@ -419,7 +481,14 @@ export async function processMessage(session, { mailbox, message, rowId, provide
  * no portal account is created, and every send records
  * `skipped_no_address` instead of pretending.
  */
-async function importDigest(session, { mailbox, message, rowId, digest, finish }) {
+/*
+ * `source` is destructured here because the body uses it - and it was
+ * not, so every digest that reached the line naming the board threw
+ * "source is not defined" and the email was recorded as failed. Ten of
+ * them, each one a summary carrying candidates nobody ever saw. The
+ * caller has always passed it.
+ */
+async function importDigest(session, { mailbox, message, rowId, digest, finish, source }) {
   const jobs = await withUser(ENGINE, async (cl) => (await cl.query(
     `select j.*, co.name as company_name from jobs j
        left join companies co on co.id = j.company_id
@@ -540,7 +609,8 @@ async function importDigest(session, { mailbox, message, rowId, digest, finish }
        `Imported from a ${(source && source.label) || 'Naukri'} response summary`
          + ` received by ${mailbox.address}`,
        JSON.stringify({ source: (source && source.id) || 'naukri', digest: true,
-                        subject: message.subject })]));
+                        subject: message.subject,
+                        ofTotal: digest.totalResponses || undefined })]));
 
     /*
      * A resume, but only when it can be said WHOSE.
@@ -569,10 +639,21 @@ async function importDigest(session, { mailbox, message, rowId, digest, finish }
       + `${digest.candidates.length} candidates in this summary`
     : '';
 
+  /*
+   * Said in the summary, not only stored. A sync that reports "3
+   * imported" about an email covering 426 responses is accurate and
+   * misleading in the same breath.
+   */
+  const ofTotal = digest.totalResponses && digest.totalResponses > digest.candidates.length
+    ? ` — this email listed ${digest.candidates.length} of ${digest.totalResponses}`
+      + ' responses; the rest are on Naukri'
+    : '';
+
   const summary = `${out.imported} imported, ${out.duplicates} already known`
     + (out.resumes ? `, ${out.resumes} with a resume` : '')
     + (out.unmapped ? `, ${out.unmapped} awaiting a requirement` : '')
     + unattributed
+    + ofTotal
     + (digest.jobTitle ? ` — "${digest.jobTitle}"` : '')
     + (job ? '' : ' (no open requirement matches that title)');
 
@@ -597,6 +678,18 @@ async function importDigest(session, { mailbox, message, rowId, digest, finish }
       imported: out.imported,
       duplicates: out.duplicates,
       unmapped: out.unmapped,
+      /*
+       * WHAT THIS EMAIL DID NOT CONTAIN.
+       *
+       * The digest is a teaser: it names the top few and says "View all
+       * 426 responses" with a link. Recording the two numbers and that
+       * link is what lets the screen say "3 of 426 are here" instead of
+       * showing three candidates and leaving a recruiter to assume that
+       * was everyone who applied.
+       */
+      appliedCount: digest.appliedCount,
+      totalResponses: digest.totalResponses,
+      responsesUrl: digest.responsesUrl,
     },
   });
 }
