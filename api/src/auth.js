@@ -245,13 +245,29 @@ export function requireRole(...roles) {
 export const CSRF_COOKIE = 'tl_csrf';
 export const CSRF_HEADER = 'x-csrf-token';
 
-export function issueCsrfToken(res) {
+/**
+ * Issue the double-submit token.
+ *
+ * IT OUTLIVES THE BROWSER, exactly as long as the session it guards.
+ *
+ * It used to be set with no expiry, which makes it a browser-session
+ * cookie, while the session cookie beside it carries a seven-day
+ * `expires`. Close the browser and you came back with a valid session
+ * and no token - so every write was refused as CSRF_FAILED, and the
+ * message told you to refresh a page whose reload could not help,
+ * because nothing fetched a new token. A recruiter with the right
+ * password could not sign in and had no way to find out why.
+ *
+ * The two cookies now live and die together.
+ */
+export function issueCsrfToken(res, expires) {
   const token = randomBytes(24).toString('base64url');
   res.cookie(CSRF_COOKIE, token, {
     httpOnly: false,                // the client must be able to read it
     secure: config.isProd,
     sameSite: 'lax',
     domain: config.cookieDomain,
+    expires: expires || new Date(Date.now() + config.sessionDays * 86_400_000),
     path: '/',
   });
   return token;

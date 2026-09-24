@@ -278,8 +278,48 @@
     return out;
   };
 
+  var SAFE_METHOD = { GET: 1, HEAD: 1, OPTIONS: 1 };
+
+  /**
+   * Make sure we hold a CSRF token before a write goes out.
+   *
+   * The server has always offered GET /api/csrf for exactly this and
+   * NOTHING EVER CALLED IT. The token arrived only as a side effect of
+   * signing in, which makes it circular: to sign in you needed a token,
+   * and the token came from signing in. A browser that had the session
+   * cookie but not the token - which is what you get by closing the
+   * browser, since one was persistent and the other was not - could
+   * never write again, and the toast said "refresh the page", which
+   * could not possibly help.
+   *
+   * One request, only when the cookie is actually missing, and a failure
+   * to get it does not stop the attempt: the server is the one that
+   * decides, and it may not need a token at all.
+   */
+  function ensureCsrf() {
+    if (NO_ORIGIN || cookie('tl_csrf')) return Promise.resolve();
+    return fetch(API + '/csrf', { credentials: CREDENTIALS, cache: 'no-store' })
+      .then(function () {}, function () {});
+  }
+
   function request(method, path, body, opts) {
     opts = opts || {};
+
+    /*
+     * A write with no token in hand fetches one first, then goes.
+     *
+     * Only for writes, so reading a page never costs a second round
+     * trip, and only when the cookie is missing, so the normal case is
+     * unchanged.
+     */
+    if (!SAFE_METHOD[method] && !opts.__csrfReady && !NO_ORIGIN && !cookie('tl_csrf')) {
+      return ensureCsrf().then(function () {
+        var next = {};
+        for (var k in opts) if (Object.prototype.hasOwnProperty.call(opts, k)) next[k] = opts[k];
+        next.__csrfReady = true;
+        return request(method, path, body, next);
+      });
+    }
     var headers = {};
     var payload = body;
     var started = Date.now();
@@ -336,6 +376,33 @@
           // The API always sends a code. A proxy or a static 404 page does
           // not, so fall back to what the status itself means.
           var code = e.code || BY_STATUS[res.status] || 'SERVER_ERROR';
+
+          /*
+           * A refused token heals itself, once.
+           *
+           * A token can go stale for reasons nobody can see - the server
+           * restarted, the cookie expired, two tabs raced. Showing
+           * somebody "please refresh and try again" for that is asking
+           * them to do by hand what this can do correctly: throw the
+           * stale token away, ask for a new one, and send the request
+           * again.
+           *
+           * ONCE. A second failure is a real refusal and is reported as
+           * one, rather than becoming a loop.
+           */
+          if (code === 'CSRF_FAILED' && !opts.__csrfRetried) {
+            record(method, path, res.status, code, 'stale token - fetching a new one',
+              Date.now() - started);
+            return fetch(API + '/csrf', { credentials: CREDENTIALS, cache: 'no-store' })
+              .catch(function () {})
+              .then(function () {
+                var next = {};
+                for (var k in opts) if (Object.prototype.hasOwnProperty.call(opts, k)) next[k] = opts[k];
+                next.__csrfRetried = true;
+                next.__csrfReady = true;
+                return request(method, path, body, next);
+              });
+          }
           record(method, path, res.status, code,
             json || (text || '').slice(0, 400), Date.now() - started);
           throw new ApiFailure(code, e.message || 'Request failed',
