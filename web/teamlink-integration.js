@@ -4154,7 +4154,7 @@
    * 18. Naukri applications, imported from the recruiter's inbox
    *
    * The recruiter's Applications screen gets one button. Behind it:
-   * connect the mailbox Naukri replies to, sync it, and deal with the
+   * connect the mailbox the job boards reply to, sync it, and deal with the
    * handful of emails the system will not guess at.
    *
    * Everything else happens without anybody pressing anything - the
@@ -4250,9 +4250,17 @@
         // ---- connect one ---------------------------------------------
         '<div class="panel" style="padding:12px;margin-top:12px">' +
         '<div style="font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;' +
-        'color:var(--text-soft);margin-bottom:8px">Connect the inbox Naukri replies to</div>' +
+        // BOTH BOARDS, because the sync has read both since Shine was
+        // added and only this label still said otherwise - a recruiter
+        // reading it had no reason to think a Shine response would ever
+        // be imported.
+        'color:var(--text-soft);margin-bottom:8px">Connect the inbox your job boards reply to</div>' +
+        '<div class="req-note" style="margin:0 0 10px;font-size:12px">' +
+        'Naukri <b>and</b> Shine responses are both read from this mailbox. ' +
+        'Forward or receive them here and TeamLink imports the candidates from either.' +
+        '</div>' +
         '<div class="fgroup"><label>Email address</label>' +
-        '<input id="tlIntakeAddr" placeholder="kiran@teamlink.com"></div>' +
+        '<input id="tlIntakeAddr" placeholder="the address the boards send to"></div>' +
         '<div class="fgroup"><label>Provider</label><select id="tlIntakeProvider">' +
         // IMAP first, and the demo inbox is not offered at all.
         //
