@@ -65,11 +65,46 @@ export default function candidateRoutes() {
                  or education ilike $${i} or summary ilike $${i} or email ilike $${i})`);
         }
         if (skills.length) {
-          // overlap against BOTH skill columns, matching the UI's single
-          // "Skills" control which searches skills and technicalSkills
-          params.push(skills);
+          /*
+           * SKILLS ARE MATCHED CASE-INSENSITIVELY AND BY WHOLE WORD.
+           *
+           * This used to be `skills && $1::text[]` - a PostgreSQL array
+           * overlap, which is exact and case-SENSITIVE. Twenty-one
+           * candidates on file have "Python"; a recruiter typing "python"
+           * got none of them, and the screen said "No candidates match
+           * the current search criteria", which is a sentence about the
+           * candidates and was actually about the capital P. Sixteen have
+           * "SQL" and the search found the one person whose entry happens
+           * to be lowercase.
+           *
+           * Exactness was the second half of it. A skill is stored as the
+           * board or the CV wrote it - "Advanced Excel", "Excel Sheet",
+           * "Excel Report Preparation" - and none of those is the string
+           * "Excel", so an exact match finds a fraction of the people who
+           * have the skill.
+           *
+           * WHOLE WORD, though, not substring: "Excellent Communication
+           * in English" is not an Excel skill, and "C" must not match
+           * "Accounting". The pattern requires a non-alphanumeric
+           * character (or the end of the string) on each side.
+           *
+           * Both columns are searched, as before - the UI has one Skills
+           * control and the data has two columns - by concatenating them
+           * rather than repeating the condition.
+           */
+          const rx = (t) => String(t).trim()
+            // The term is a recruiter's typing, not a pattern. Every
+            // regex metacharacter in it is escaped so "C++" and "C#" are
+            // searched for literally instead of failing to compile.
+            .replace(/[.^$*+?()[\]{}|\\/-]/g, '\\$&');
+          params.push(skills.map((t) => `(^|[^[:alnum:]])${rx(t)}($|[^[:alnum:]])`));
           const i = params.length;
-          push(`(skills && $${i}::text[] or technical_skills && $${i}::text[])`);
+          push(`exists (
+                  select 1 from unnest(
+                    coalesce(skills, '{}'::text[]) || coalesce(technical_skills, '{}'::text[])
+                  ) as s
+                  where s ~* any($${i}::text[])
+                )`);
         }
         if (locations.length) { params.push(locations); push(`location = any($${params.length})`); }
         if (notice.length)    { params.push(notice);    push(`notice_period = any($${params.length})`); }
@@ -113,8 +148,28 @@ export default function candidateRoutes() {
                            and cc.tag = $${params.length})`);
         }
         if (q.activeWithinDays) {
+          /*
+           * THIS ONE LINE EMPTIED THE WHOLE FIND CANDIDATES SCREEN.
+           *
+           * `profile_active_days_ago` was only ever written by the demo
+           * seed. Every real candidate - imported from a board, or
+           * self-registered - has it NULL, and `NULL <= 180` is NULL,
+           * not true, so the row is dropped. The screen sends this filter
+           * on every search because its default is "active in the last 6
+           * months", so the server answered ZERO to every query anybody
+           * ever made. A recruiter searching for a skill was told "No
+           * candidates match the current search criteria" with a hundred
+           * and fifteen candidates in the table.
+           *
+           * The fallback is the row's own timestamps, which is the same
+           * answer toCandidate() gives the client, so the count in the
+           * header and the rows underneath it cannot disagree.
+           */
           params.push(Number(q.activeWithinDays));
-          push(`profile_active_days_ago <= $${params.length}`);
+          push(`coalesce(
+                  profile_active_days_ago,
+                  floor(extract(epoch from (now() - coalesce(updated_at, created_at))) / 86400)::int
+                ) <= $${params.length}`);
         }
         if (industry.length) {
           params.push(industry);

@@ -16,6 +16,20 @@ const nz = (v) => (v === null || v === undefined ? undefined : v);
 const arr = (v) => (Array.isArray(v) ? v : []);
 const numOrU = (v) => (v === null || v === undefined ? undefined : Number(v));
 
+/**
+ * Whole days between a timestamp and now, or undefined if there is none.
+ *
+ * Never negative: a clock skew that puts a row a few seconds in the
+ * future must read as "today", not as "-1 days ago", which every
+ * "active in the last N days" filter would then treat as a match.
+ */
+const daysSince = (v) => {
+  if (v === null || v === undefined) return undefined;
+  const t = v instanceof Date ? v.getTime() : Date.parse(v);
+  if (!Number.isFinite(t)) return undefined;
+  return Math.max(0, Math.floor((Date.now() - t) / 86400000));
+};
+
 /** '2 days ago' — the prototype prints job.posted verbatim. */
 export function postedLabel(days) {
   if (days === null || days === undefined) return '';
@@ -162,8 +176,28 @@ export function toCandidate(r) {
     daysSilent: numOrU(r.days_silent),
     followUpSent: !!r.follow_up_sent,
     isPrivate: !!r.is_private,
-    profileActiveDaysAgo: numOrU(r.profile_active_days_ago),
-    profileUpdatedDaysAgo: numOrU(r.profile_updated_days_ago),
+    /*
+     * HOW RECENTLY THIS PROFILE WAS TOUCHED, measured rather than stored.
+     *
+     * Both columns were only ever written by the demo seed. Every real
+     * candidate - imported from a job board, or self-registered - has
+     * had them NULL since the day they arrived, and Find Candidates
+     * reads a missing value as 999 days. Its default filter is "active
+     * in the last 6 months", so the search returned NOBODY, whatever was
+     * typed into it: a recruiter searching for a skill saw "No
+     * candidates match the current search criteria" and there were a
+     * hundred and fifteen candidates behind it.
+     *
+     * Falling back to the row's own timestamps is the honest answer to
+     * the question being asked. A candidate created this morning was
+     * active today; one whose record has not changed in a year was not.
+     * The stored column still wins where something has set it
+     * deliberately.
+     */
+    profileActiveDaysAgo: numOrU(r.profile_active_days_ago)
+      ?? daysSince(r.updated_at ?? r.created_at),
+    profileUpdatedDaysAgo: numOrU(r.profile_updated_days_ago)
+      ?? daysSince(r.updated_at ?? r.created_at),
 
     // appliedJobId / stage / matchScore are NOT columns. They are the
     // candidate's PRIMARY application, re-attached by attachPrimary()

@@ -455,15 +455,32 @@ export async function processMessage(session, { mailbox, message, rowId, provide
     }
   });
 
+  /*
+   * THE BOARD THAT ACTUALLY SENT IT.
+   *
+   * This column was the literal string 'naukri' on every row. The
+   * intake had worked out the real answer twenty lines into
+   * processMessage - detectSource() reads it off the sender - and then
+   * threw it away here, so seventeen candidates who came from Shine were
+   * filed, displayed and reported as Naukri. A recruiter deciding which
+   * board is worth paying for was reading a constant.
+   *
+   * 'naukri' stays the fallback for a message whose sender could not be
+   * placed, because that is what this mailbox has always been for, and
+   * an empty source is worse than a wrong one for anything that groups
+   * by it.
+   */
+  const board = (source && source.id) || 'naukri';
+
   const application = await withUser(ENGINE, async (cl) => {
     await cl.query(
       `insert into applications
          (id, job_id, candidate_id, recruiter_id, stage, source, import_method,
           source_message_id, imported_by, imported_at, resume_path, match_score)
-       values ($1,$2,$3,$4,'applied','naukri','recruiter_email',$5,$6,now(),$7,$8)`,
+       values ($1,$2,$3,$4,'applied',$9,'recruiter_email',$5,$6,now(),$7,$8)`,
       [applicationId, match.job.id, candidateId, mailbox.recruiter_id || null,
        message.messageId, mailbox.recruiter_id || null, c.resumeName || null,
-       scored ? scored.score : null]);
+       scored ? scored.score : null, board]);
     return (await cl.query(`select * from applications where id=$1`, [applicationId])).rows[0];
   });
 
@@ -472,10 +489,16 @@ export async function processMessage(session, { mailbox, message, rowId, provide
   await withUser(ENGINE, (cl) => cl.query(
     `select app_event($1,$2,'application.created',$3,'system',$4::jsonb)`,
     [applicationId, candidateId,
-     `Application ${reference} created for ${match.job.title} from a Naukri email`,
+     `Application ${reference} created for ${match.job.title} from a ${
+       (source && source.label) || 'Naukri'} email`,
      JSON.stringify({
        messageId: message.messageId, from: message.from, subject: message.subject,
-       receivedAt: message.receivedAt, source: 'naukri', matchedBy: match.why,
+       receivedAt: message.receivedAt, source: board,
+       sourceLabel: (source && source.label) || 'Naukri',
+       // Why this board and not another - the sender, usually - so a
+       // wrong answer can be traced instead of argued about.
+       sourceWhy: (source && source.why) || null,
+       matchedBy: match.why,
        resume: c.resumeName || null,
      })]));
 
@@ -686,13 +709,15 @@ async function importDigest(session, { mailbox, message, rowId, digest, finish, 
     if (already) { firstApplicationId = firstApplicationId || already.id; continue; }
 
     const applicationId = newId('app');
+    // The board that sent the digest, for the same reason as above.
+    const board = (source && source.id) || 'naukri';
     await withUser(ENGINE, (cl) => cl.query(
       `insert into applications
          (id, job_id, candidate_id, recruiter_id, stage, source, import_method,
           source_message_id, imported_by, imported_at)
-       values ($1,$2,$3,$4,'applied','naukri','recruiter_email',$5,$6,now())`,
+       values ($1,$2,$3,$4,'applied',$7,'recruiter_email',$5,$6,now())`,
       [applicationId, job.id, candidateId, mailbox.recruiter_id || null,
-       message.messageId, mailbox.recruiter_id || null]));
+       message.messageId, mailbox.recruiter_id || null, board]));
 
     firstApplicationId = firstApplicationId || applicationId;
 
