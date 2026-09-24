@@ -21161,53 +21161,111 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
    * is marked `approx` so a screen can say so rather than imply it is
    * certain.
    */
-  window.tlAreasOfDistrict = function (state, district) {
+  /*
+   * THE AREAS OF EVERY DISTRICT, WORKED OUT ONCE.
+   *
+   * This function used to walk every coordinate on file - about eleven
+   * hundred of them - for EACH district it was asked about, and for a
+   * place with no administrative district recorded it then walked that
+   * state's districts again to find the nearest. tlTreeHtml calls it for
+   * every district of every state, roughly seven hundred times per draw,
+   * so opening the location filter or changing the radius cost around
+   * 600 ms of pure arithmetic. The haversine was never the problem: the
+   * whole nearby-places calculation takes under two milliseconds. Doing
+   * it seven hundred times was.
+   *
+   * The same eleven hundred coordinates now produce the whole index in a
+   * single pass, and every lookup after that is a property read. The
+   * inputs are static - the coordinate table, the district table and the
+   * city-to-state map are all constants in this file - so the index is
+   * built on first use and kept.
+   */
+  var TL_AREA_INDEX = null;
+
+  function tlAreaKm(a, b) {
+    var R = 6371;
+    var rad = function (x) { return x * Math.PI / 180; };
+    var dLa = rad(b[0] - a[0]);
+    var dLo = rad(b[1] - a[1]);
+    var h = Math.sin(dLa / 2) * Math.sin(dLa / 2)
+      + Math.cos(rad(a[0])) * Math.cos(rad(b[0])) * Math.sin(dLo / 2) * Math.sin(dLo / 2);
+    return 2 * R * Math.asin(Math.sqrt(h));
+  }
+
+  function tlBuildAreaIndex() {
     var C = window.INDIA_COORDS || {};
     var CS = window.INDIA_CITY_STATE_MAP || {};
     var GEO = window.INDIA_GEO || {};
-    var here = C[district];
-    if (!here) return [];
 
-    var rad = function (x) { return x * Math.PI / 180; };
-    var km = function (a, b) {
-      var R = 6371;
-      var dLa = rad(b[0] - a[0]);
-      var dLo = rad(b[1] - a[1]);
-      var h = Math.sin(dLa / 2) * Math.sin(dLa / 2)
-        + Math.cos(rad(a[0])) * Math.cos(rad(b[0])) * Math.sin(dLo / 2) * Math.sin(dLo / 2);
-      return 2 * R * Math.asin(Math.sqrt(h));
-    };
-
-    var districts = (GEO[state] || []).filter(function (d) { return C[d]; });
-    var out = [];
-
-    Object.keys(C).forEach(function (name) {
-      if (name === district) return;
-      // A district is not an area inside another district.
-      if ((GEO[state] || []).indexOf(name) >= 0) return;
-
-      var stated = DISTRICT_OF[name];
-      if (stated) {
-        if (stated !== district) return;
-        out.push({ name: name, km: km(here, C[name]), approx: false });
-        return;
-      }
-
-      // No administrative district on file: the nearest one in this
-      // state, and only when this IS the nearest.
-      if (CS[name] !== state) return;
-      var best = null;
-      var bestKm = Infinity;
-      districts.forEach(function (d) {
-        var v = km(C[d], C[name]);
-        if (v < bestKm) { bestKm = v; best = d; }
+    /* Which districts belong to which state, and the reverse. Built once
+       so the loop below can ask both questions without searching. */
+    var isDistrictOf = {};        /* state -> { district: 1 } */
+    var stateOfDistrict = {};     /* district -> state */
+    var locatable = {};           /* state -> [districts that have coordinates] */
+    Object.keys(GEO).forEach(function (st) {
+      isDistrictOf[st] = {};
+      locatable[st] = [];
+      (GEO[st] || []).forEach(function (d) {
+        isDistrictOf[st][d] = 1;
+        stateOfDistrict[d] = st;
+        if (C[d]) locatable[st].push(d);
       });
-      if (best === district) out.push({ name: name, km: km(here, C[name]), approx: true });
     });
 
-    out.sort(function (a, b) { return a.km - b.km; });
-    return out;
+    var idx = {};
+    Object.keys(C).forEach(function (name) {
+      var here = C[name];
+      if (!here) return;
+
+      var stated = DISTRICT_OF[name];
+      var st, d;
+
+      if (stated) {
+        d = stated;
+        st = stateOfDistrict[stated];
+        if (!st) return;                   /* a district nobody lists */
+      } else {
+        st = CS[name];
+        if (!st) return;                   /* no state on file */
+        if (isDistrictOf[st] && isDistrictOf[st][name]) return;  /* it IS a district */
+        /* No administrative district recorded: the nearest one in its
+           own state, which is the rule this had before. */
+        var best = null, bestKm = Infinity;
+        locatable[st].forEach(function (cand) {
+          var v = tlAreaKm(C[cand], here);
+          if (v < bestKm) { bestKm = v; best = cand; }
+        });
+        if (!best) return;
+        d = best;
+      }
+
+      if (name === d) return;                                    /* not itself */
+      if (isDistrictOf[st] && isDistrictOf[st][name]) return;    /* not a sibling district */
+      var centre = C[d];
+      if (!centre) return;                  /* the district has no point to measure from */
+
+      var key = st + '|' + d;
+      (idx[key] = idx[key] || []).push({
+        name: name, km: tlAreaKm(centre, here), approx: !stated,
+      });
+    });
+
+    Object.keys(idx).forEach(function (k) {
+      idx[k].sort(function (a, b) { return a.km - b.km; });
+    });
+    TL_AREA_INDEX = idx;
+    return idx;
+  }
+
+  /** The places inside one district, nearest first. A property read. */
+  window.tlAreasOfDistrict = function (state, district) {
+    var idx = TL_AREA_INDEX || tlBuildAreaIndex();
+    return idx[state + '|' + district] || [];
   };
+
+  /* If the dataset is ever extended at runtime, this throws the index
+     away so the next lookup rebuilds it. */
+  window.tlResetAreaIndex = function () { TL_AREA_INDEX = null; };
 
 })();
 </script>
