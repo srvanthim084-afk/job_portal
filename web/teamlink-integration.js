@@ -4328,33 +4328,6 @@
           : '<div style="font-size:13px;color:var(--text-soft)">Nothing waiting — every email either imported or was ignored.</div>') +
 
         '<div id="tlIntakeOut" style="margin-top:12px">' + (TL.intake.lastMessage || '') + '</div>' +
-        /*
-         * ADD THE RESUMES, which the mail did not bring.
-         *
-         * A summary email carries a name, a title, a company and a
-         * location - no CV. The CVs arrive separately, and without this
-         * somebody opens each one, works out who it is, finds them here
-         * and attaches it. Dropping the folder in does that looking-up
-         * from what each resume says about itself.
-         */
-        '<div class="panel" style="padding:12px;margin-top:12px">' +
-        '<div style="font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;' +
-        'color:var(--text-soft);margin-bottom:6px">Add resumes</div>' +
-        '<div class="req-note" style="margin:0 0 8px;font-size:12px">' +
-        'The summary emails carry no attachment, so the CVs come separately. ' +
-        'Choose them here and each one is matched to the candidate it belongs to ' +
-        'by what the resume itself says &mdash; the address first, then the number, ' +
-        'then the name together with the company or the city. Anything that cannot ' +
-        'be placed is listed rather than attached to a guess.' +
-        '</div>' +
-        '<input type="file" id="tlResumeFiles" multiple accept=".pdf,.doc,.docx,.txt" ' +
-        'style="font-size:13px">' +
-        '<div style="margin-top:10px">' +
-        '<button class="btn btn-primary btn-sm" onclick="TL.intake.addResumes()">' +
-        'Match and attach</button></div>' +
-        '<div id="tlResumeOut" style="margin-top:10px"></div>' +
-        '</div>' +
-
         // Which board to read, beside the button that reads it. Three
         // plain buttons in the row that is already there - no new panel,
         // and "Both" is first because it is what a morning sync wants.
@@ -4428,6 +4401,79 @@
     });
   };
 
+  /* ------------------------------------------------------------------ *
+   * Import Resumes - its own thing, beside Import from Mail
+   * ------------------------------------------------------------------ *
+   * The two are different jobs and they arrive at different times. Mail
+   * brings the CANDIDATES - a name, a title, a company, a location - and
+   * a summary email carries no attachment. The CVs come afterwards, from
+   * a folder, a forward, a download, and a recruiter doing that is not
+   * syncing a mailbox. Burying it inside the mail window meant opening
+   * one thing to do the other.
+   *
+   * What it does not do is duplicate anything. A resume that arrives ON
+   * an email is still taken by the mail import; this is for the ones
+   * that do not.
+   */
+  TL.resumes = TL.resumes || {};
+
+  TL.resumes.open = function () {
+    intakeModalShell('Import Resumes',
+      '<div id="tlResumeBody"><div class="req-note">Loading…</div></div>');
+    return TL.resumes.refresh();
+  };
+
+  TL.resumes.refresh = function () {
+    var body = document.getElementById('tlResumeBody');
+    if (!body) return Promise.resolve();
+
+    /*
+     * How many people are waiting for one, because that is the number
+     * this screen exists to bring down - and it is the honest measure of
+     * whether the import worked.
+     */
+    var without = (DATA.candidates || []).filter(function (c) {
+      return c && !c.resumeFile;
+    }).length;
+    var total = (DATA.candidates || []).length;
+
+    body.innerHTML =
+      '<div class="req-note" style="margin:0 0 10px;font-size:12.5px">' +
+      'Each file is matched to the candidate it belongs to by what the resume ' +
+      'itself says &mdash; the <b>email address</b> first, then the <b>phone number</b>, ' +
+      'then the <b>name together with the company or the city</b>. Never the name alone, ' +
+      'and never a guess: anything that cannot be placed is listed with what was read ' +
+      'from it so you can attach it yourself.' +
+      '</div>' +
+
+      '<div class="fcr-modal-row"><span><b>' + without + '</b> of ' + total +
+      ' candidate' + (total === 1 ? '' : 's') + ' have no resume on file' +
+      '<div style="font-size:12px;color:var(--text-soft)">' +
+      'A candidate imported from a job board summary has none, because the email ' +
+      'carries none.</div></span></div>' +
+
+      '<div class="panel" style="padding:12px;margin-top:12px">' +
+      '<div style="font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;' +
+      'color:var(--text-soft);margin-bottom:8px">Choose the files</div>' +
+      '<input type="file" id="tlResumeFiles" multiple accept=".pdf,.doc,.docx,.txt" ' +
+      'style="font-size:13px">' +
+      '<div class="req-note" style="margin:8px 0 0;font-size:12px">' +
+      'PDF, DOC, DOCX or TXT. Up to 40 at a time. Each file is checked by its ' +
+      'contents, not its name, so nothing that is not a document is stored.' +
+      '</div>' +
+      '<div style="margin-top:10px">' +
+      '<button class="btn btn-primary" onclick="TL.resumes.send()">Match and attach</button>' +
+      '</div>' +
+      '<div id="tlResumeOut" style="margin-top:10px"></div>' +
+      '</div>' +
+
+      '<div style="display:flex;gap:8px;margin-top:12px">' +
+      '<button class="btn btn-ghost" onclick="fcrCloseModal()">Close</button>' +
+      '</div>';
+
+    return Promise.resolve();
+  };
+
   /**
    * Send the chosen resumes and report what happened to each.
    *
@@ -4436,7 +4482,7 @@
    * are shown with what was read from them, because that is what makes
    * them placeable by hand rather than a file to open again.
    */
-  TL.intake.addResumes = function () {
+  TL.resumes.send = function () {
     var input = document.getElementById('tlResumeFiles');
     var out = document.getElementById('tlResumeOut');
     var files = input && input.files ? input.files : [];
@@ -4468,7 +4514,6 @@
             : '') + ')</span></div>';
       }).join('');
 
-      /* The ones a person has to place, with what was read from them. */
       html += (d.unmatched || []).map(function (u) {
         var read = u.read || {};
         var bits = [read.name, read.email, read.phone, read.currentCompany, read.location]
@@ -4488,6 +4533,7 @@
       if (typeof window.toast === 'function' && r.matched) {
         window.toast(r.matched + ' resume' + (r.matched === 1 ? '' : 's') + ' attached');
       }
+      // The counts at the top are now wrong; refresh the data behind them.
       return refresh();
     }).catch(function (err) {
       if (out) {
@@ -4654,6 +4700,23 @@
       btn.onclick = function () { TL.intake.open(); };
       btn.style.marginLeft = 'auto';
       head.appendChild(btn);
+
+      /*
+       * And its own button for the resumes, beside it.
+       *
+       * Two different jobs arriving at different times: mail brings the
+       * candidates, and the CVs turn up afterwards from a folder or a
+       * forward. Putting the second inside the first meant opening one
+       * window to do the other.
+       */
+      var res = document.createElement('button');
+      res.className = 'btn btn-ghost btn-sm';
+      res.textContent = 'Import Resumes';
+      res.title = 'Add resumes and match them to the candidates they belong to';
+      res.setAttribute('data-tl-resumes', '1');
+      res.onclick = function () { TL.resumes.open(); };
+      res.style.marginLeft = '8px';
+      head.appendChild(res);
     }
 
     // The application reference, where a recruiter is already looking.
