@@ -17,9 +17,51 @@ import { join } from 'node:path';
 const db = await new PGlite();
 const DIR = 'supabase/migrations';
 
-for (const f of readdirSync(DIR).filter(f => f.endsWith('.sql')).sort()) {
+/*
+ * One migration is deliberately NOT applied here, and it matters.
+ *
+ * 0033 emptied the live portal of its demo data. It is a one-off DATA
+ * operation - it creates no table, no policy and no function - and it
+ * ran against the real database once, correctly.
+ *
+ * This suite builds a throwaway database in memory by replaying every
+ * migration, so it was replaying that purge too: 0003 created the
+ * fixtures and 0033 deleted them again. The assertions then ran against
+ * an empty world and reported things like "anon sees no jobs at all -
+ * public board is broken" about a database that had no jobs at all.
+ * Thirteen failures, not one of them about row-level security.
+ *
+ * A policy can only be tested against rows. Skipping a data-only
+ * migration changes no policy and leaves the fixtures those policies
+ * are tested with.
+ */
+const DATA_ONLY = new Set(['0033_empty_the_demo_portal.sql']);
+
+const FILES = readdirSync(DIR).filter(f => f.endsWith('.sql')).sort();
+
+for (const f of FILES) {
+  if (DATA_ONLY.has(f)) continue;
   try { await db.exec(readFileSync(join(DIR, f), 'utf8')); }
   catch (e) { console.log(`FAIL applying ${f}: ${e.message}`); process.exit(1); }
+}
+
+/*
+ * The fixtures have to exist, or nothing below means anything.
+ *
+ * Checked rather than assumed, because the failure mode when they are
+ * missing is a suite that reports security faults it has not found. If
+ * another data-only migration is added later, this says so in one line
+ * instead of thirteen misleading ones.
+ */
+const fixtures = (await db.query(
+  `select (select count(*)::int from candidates) c,
+          (select count(*)::int from jobs)       j,
+          (select count(*)::int from companies)  co`)).rows[0];
+if (!fixtures.c || !fixtures.j) {
+  console.log(`ABORT: no fixtures to test against (${fixtures.c} candidates, ${fixtures.j} jobs).`);
+  console.log('A policy can only be tested against rows. If a migration was added');
+  console.log('that deletes data, add it to DATA_ONLY at the top of this file.');
+  process.exit(1);
 }
 
 const q = async (sql) => (await db.query(sql)).rows;

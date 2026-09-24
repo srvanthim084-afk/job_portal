@@ -20928,6 +20928,19 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
     try{ st=window.tlLocState?tlLocState(key):null; }catch(e){}
     if(!st){ el.hidden=true; return; }
 
+    /* ONE LIST AT A TIME.
+
+       The picker panel draws its own nearby places, and this strip draws
+       the same places under the field. Both were visible whenever the
+       panel was open, so "19 near Tirupati" appeared twice on screen,
+       one above the other, with the same towns and the same distances.
+
+       This strip exists for when the panel is CLOSED - picking a place
+       closes the picker, and without it the towns around your choice
+       vanished the moment you made it. While the panel is open it has
+       nothing to add, so it stands down. */
+    if(st.open){ el.hidden=true; el.innerHTML=''; return; }
+
     var a=anchor(st.tags||[]);
     if(!a||typeof window.tlNearbyList!=='function'){ el.hidden=true; el.innerHTML=''; return; }
 
@@ -20966,7 +20979,11 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
   window.tlNbInlineAll=paintAll;
 
   /* every path that can change the selection repaints the strip */
-  ['tlLocPick','tlLocRemove','tlLocKm','tlTreePick','tlTreeKm','tlTreeClear','tlLocRefresh','tlLocType']
+  /* tlLocOpen and tlTreeDone are here because OPENING and CLOSING the
+     panel decide whether this strip draws at all, not just what it
+     draws. */
+  ['tlLocPick','tlLocRemove','tlLocKm','tlTreePick','tlTreeKm','tlTreeClear',
+   'tlLocRefresh','tlLocType','tlLocOpen','tlTreeDone']
     .forEach(function(fn){
       var prev=window[fn];
       if(typeof prev!=='function') return;
@@ -20986,6 +21003,15 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
     };
   }
   addEventListener('DOMContentLoaded',paintAll);
+
+  /* The panel also closes on a click OUTSIDE it, which goes through no
+     function this file can wrap - so the strip would stay hidden until
+     something else happened to repaint it. Listening on the document
+     catches that path and every other one. */
+  addEventListener('click',function(){
+    try{ requestAnimationFrame(paintAll); }catch(e){ paintAll(); }
+  },true);
+
   try{ requestAnimationFrame(paintAll); }catch(e){}
 })();
 </script>
