@@ -79,6 +79,107 @@ const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36
 const ENGINE = { userId: '', role: 'admin', profileId: null };
 
 /* ------------------------------------------------------------------ *
+ * the requirement nobody posted yet
+ * ------------------------------------------------------------------ */
+
+/**
+ * Is this string a job title, or is it something else the parser found?
+ *
+ * The role comes off a job board's own email - "Radiologist", "Duty
+ * Doctor", "Staff Nurse" - and is usually exactly what a requirement
+ * would be called. Usually is not always, and a requirement created from
+ * a misread line is worse than none: it appears in the recruiter's list,
+ * in their reports, and in the dropdown they map future candidates with.
+ *
+ * So this refuses anything that does not look like a title: too long or
+ * too short, a whole sentence, an address, or one of the words a board
+ * writes when it means "nothing here".
+ */
+const NOT_A_ROLE = new Set([
+  'not mentioned', 'not specified', 'none', 'n/a', 'na', 'other', 'others',
+  'various', 'multiple', 'any', 'unknown', 'job title blank', 'blank',
+]);
+
+export function roleTitle(raw) {
+  let t = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim();
+  if (!t) return '';
+  // A board's phrasing, not part of the job: "Hiring for an OBGY".
+  t = t.replace(/^hiring\s+for\s+/i, '').replace(/^(an?|the)\s+/i, '').trim();
+  t = t.replace(/[.,;:]+$/, '').trim();
+  if (t.length < 2 || t.length > 80) return '';
+  if (NOT_A_ROLE.has(t.toLowerCase())) return '';
+  if (/[@]|https?:\/\//i.test(t)) return '';          // an address, not a role
+  if ((t.match(/[A-Za-z]/g) || []).length < 2) return '';
+  if (t.split(' ').length > 8) return '';               // a sentence
+  return t;
+}
+
+/**
+ * The requirement this person applied to, created if it does not exist.
+ *
+ * WHY THIS EXISTS. A board tells us the role a candidate answered -
+ * Shine sends seventeen responses for "Radiologist", "Duty Doctor" and
+ * "OBGY" - and if the recruiter has not posted a requirement with that
+ * name there is nothing to attach the application to. Every one of those
+ * candidates stopped in the queue saying "no requirement matches
+ * Radiologist", which is true and leaves fifteen real people parked
+ * behind a piece of admin.
+ *
+ * IT IS CREATED AS A DRAFT, and that is the important part. A job with
+ * status 'open' is readable by the public policy - it would appear on
+ * the job board, live, because somebody applied to it. Nothing here
+ * should publish a posting. A draft is visible to the recruiter and to
+ * admin, applications attach to it and show in their lists, and
+ * publishing it stays a decision a person makes.
+ *
+ * An existing requirement always wins, whatever its status, so a second
+ * Radiologist joins the first rather than creating another.
+ */
+export async function requirementForRole(role, mailbox) {
+  const title = roleTitle(role);
+  if (!title) return null;
+
+  const recruiterId = mailbox && mailbox.recruiter_id ? mailbox.recruiter_id : null;
+
+  return withUser(ENGINE, async (c) => {
+    const owner = recruiterId
+      ? (await c.query(`select id, company_id from recruiters where id=$1`, [recruiterId])).rows[0]
+      : null;
+    const companyId = owner ? owner.company_id : null;
+
+    /*
+     * Matched on the title, case and spacing ignored, within the company
+     * that would own it. Archived ones are skipped - somebody put those
+     * away deliberately - but a draft or a closed one is the same
+     * requirement and is reused.
+     */
+    const found = (await c.query(
+      `select j.*, co.name as company_name from jobs j
+         left join companies co on co.id = j.company_id
+        where lower(btrim(j.title)) = lower(btrim($1))
+          and not j.archived
+          and ($2::text is null or j.company_id = $2 or j.company_id is null)
+        order by (j.status = 'open') desc, j.created_at asc
+        limit 1`, [title, companyId])).rows[0];
+    if (found) return { job: found, created: false };
+
+    const id = newId('j');
+    await c.query(
+      `insert into jobs (id, title, company_id, recruiter_id, status, source,
+                         openings, description)
+       values ($1,$2,$3,$4,'draft','intake',1,$5)`,
+      [id, title, companyId, recruiterId,
+       'Created automatically because a candidate applied for this role and no '
+       + 'requirement existed for it. Add the details and publish it when you are ready.']);
+
+    const job = (await c.query(
+      `select j.*, co.name as company_name from jobs j
+         left join companies co on co.id = j.company_id where j.id=$1`, [id])).rows[0];
+    return { job, created: true };
+  });
+}
+
+/* ------------------------------------------------------------------ *
  * the temporary password
  * ------------------------------------------------------------------ */
 
@@ -403,6 +504,44 @@ export async function processMessage(session, { mailbox, message, rowId, provide
     })),
     { preferRecruiterId: mailbox.recruiter_id || null });
 
+  /*
+   * NO REQUIREMENT FOR THIS ROLE? CREATE ONE.
+   *
+   * The board named the role this person applied to. If the recruiter has
+   * not posted it, the application has nothing to attach to and the
+   * candidate waits in the queue behind a piece of admin - fifteen of the
+   * seventeen Shine responses stopped exactly there, for "Radiologist",
+   * "Duty Doctor" and "OBGY".
+   *
+   * The requirement is created as a DRAFT: visible to the recruiter,
+   * applications attach to it, and it is not on the public job board
+   * until a person publishes it.
+   *
+   * Only when the role is a title worth creating. roleTitle() refuses a
+   * sentence, an address, or a board's way of writing "nothing here",
+   * because a requirement invented from a misread line ends up in the
+   * recruiter's reports and in the dropdown they map future candidates
+   * with.
+   */
+  let createdRequirement = false;
+  if (!match.job) {
+    const made = await requirementForRole(c.appliedRole, mailbox).catch((err) => {
+      console.error('[intake] the requirement could not be created:', err.message);
+      return null;
+    });
+    if (made && made.job) {
+      match.job = {
+        ...toJob(made.job), companyName: made.job.company_name, status: made.job.status,
+        recruiterId: made.job.recruiter_id, createdAt: made.job.created_at,
+        publishedAt: made.job.published_at,
+      };
+      match.why = made.created
+        ? `no requirement existed for "${match.job.title}", so one was created as a draft`
+        : `matched the existing "${match.job.title}" requirement`;
+      createdRequirement = made.created;
+    }
+  }
+
   if (!match.job) {
     /*
      * THE CV IS STORED BEFORE THE QUESTION IS ASKED.
@@ -485,6 +624,22 @@ export async function processMessage(session, { mailbox, message, rowId, provide
   });
 
   const reference = application.reference;
+
+  /*
+   * A requirement that appeared by itself has to say where it came from.
+   * A recruiter finding a draft "Radiologist" in their list tomorrow
+   * should not have to guess who made it or why.
+   */
+  if (createdRequirement) {
+    await withUser(ENGINE, (cl) => cl.query(
+      `select app_event($1,$2,'requirement.created',$3,'system',$4::jsonb)`,
+      [applicationId, candidateId,
+       `The requirement "${match.job.title}" did not exist, so it was created as a `
+       + `draft from this application. Publish it when you are ready.`,
+       JSON.stringify({ jobId: match.job.id, title: match.job.title,
+                        status: 'draft', from: (source && source.id) || 'intake' })]))
+      .catch((err) => console.error('[intake] could not record the new requirement:', err.message));
+  }
 
   await withUser(ENGINE, (cl) => cl.query(
     `select app_event($1,$2,'application.created',$3,'system',$4::jsonb)`,
@@ -911,12 +1066,24 @@ async function notifyCandidate({ candidate, job, applicationId, reference, crede
  * candidate row, `ignored` never gets that far, and `failed` threw.
  * There is nothing to duplicate by trying again.
  *
- * `processed`, `updated`, `duplicate` and `needs_mapping` are
- * deliberately absent. Those already produced a candidate or an
- * application, or are waiting on a recruiter's decision, and re-running
- * them is how one person becomes two.
+ * `needs_mapping` IS HERE NOW, and it was not before. The reasoning for
+ * leaving it out was that it is "waiting on a recruiter's decision" - but
+ * a message at needs_mapping has a candidate and NO application, and the
+ * decision it waits on is which requirement to attach it to. Since the
+ * intake can now create that requirement when a board names a role
+ * nobody has posted, reconsidering these is the whole point: fifteen
+ * Shine candidates sat there behind a requirement called "Radiologist"
+ * that did not exist.
+ *
+ * Re-running one cannot fork a person: the candidate is found again by
+ * email or mobile and updated, never created twice. It cannot duplicate
+ * an application either - there is none yet, and the application insert
+ * below checks for an existing one first.
+ *
+ * `processed`, `updated` and `duplicate` stay out. Those already
+ * produced an application, and re-running them is how one becomes two.
  */
-const RETRYABLE = new Set(['needs_review', 'ignored', 'failed']);
+const RETRYABLE = new Set(['needs_review', 'ignored', 'failed', 'needs_mapping']);
 
 /**
  * How far back to fetch, and how much.
