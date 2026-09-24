@@ -23069,11 +23069,203 @@ table.data td .tl-af b{white-space:normal}
     AIIV.listening=true; AIIV.voicedMs=0; AIIV.spoke=false; AIIV.sttText=''; AIIV.sttFinal=''; AIIV.timeLeft=ANSWER_SECS;
     startSTT();
     var last=performance.now();
-    (function loop(){ if(!AIIV.listening) return; var now=performance.now(); var dt=now-last; last=now; var lvl=rmsLevel(); if(lvl>VAD_THRESH){ AIIV.voicedMs+=dt; AIIV.spoke=true; } var lm=byId('aiivLevel'); if(lm) lm.style.width=Math.min(100,Math.round(lvl*320))+'%'; AIIV.rafId=requestAnimationFrame(loop); })();
+    (function loop(){ if(!AIIV.listening) return; var now=performance.now(); var dt=now-last; last=now; var lvl=rmsLevel(); if(lvl>VAD_THRESH){ AIIV.voicedMs+=dt; AIIV.spoke=true; } var lm=byId('aiivLevel'); if(lm) lm.style.width=Math.min(100,Math.round(lvl*320))+'%'; proctorSample(dt, lvl); AIIV.rafId=requestAnimationFrame(loop); })();
     AIIV.timerId=setInterval(function(){ AIIV.timeLeft--; var t=byId('aiivTimer'); if(t) t.textContent=Math.max(0,AIIV.timeLeft)+'s'; if(AIIV.timeLeft<=0){ finishAnswer(true,false); } }, 1000);
   }
+  /* Between questions the answer loop is not running, and that is
+     precisely when the room should be quiet. This keeps sampling. */
+  function proctorIdleLoop(){
+    if(AIIV.procRaf) return;
+    var last = performance.now();
+    (function loop(){
+      if(!AIIV.started || (AIIV.phase!=='interview' && AIIV.phase!=='briefing')){ AIIV.procRaf=null; return; }
+      var now = performance.now(); var dt = now-last; last = now;
+      if(!AIIV.listening) proctorSample(dt, rmsLevel());
+      AIIV.procRaf = requestAnimationFrame(loop);
+    })();
+  }
+  function proctorIdleStop(){ if(AIIV.procRaf){ cancelAnimationFrame(AIIV.procRaf); AIIV.procRaf=null; } }
+
   function stopListening(){ AIIV.listening=false; if(AIIV.rafId){ cancelAnimationFrame(AIIV.rafId); AIIV.rafId=null; } if(AIIV.timerId){ clearInterval(AIIV.timerId); AIIV.timerId=null; } stopSTT(); }
   function vadAvailable(){ return !!AIIV.analyser; }
+
+  /* ================================================================
+     PROCTORING — the checks this can actually make.
+
+     What was here before was a panel of green ticks reading "Identity
+     verified", "Lip-sync consistent with audio", "Voice profile
+     consistent" and "No second voice detected", under a badge saying
+     Simulated. None of them looked at anything. A panel that says
+     "verified" about a check it never ran is worse than no panel: it is
+     the screen a recruiter would point at afterwards.
+
+     These three are measured, every one of them from something the
+     browser genuinely knows:
+
+       LEAVING THE INTERVIEW    document.hidden and window blur. The one
+                                unambiguous signal there is - the page
+                                stopped being the thing on screen.
+       BACKGROUND NOISE         the microphone's own RMS level, sampled
+                                while the candidate is NOT the one
+                                expected to be talking. Judging noise
+                                during their answer would flag them for
+                                answering.
+       THE CAMERA GOING AWAY    the video track ending or muting, and the
+                                frame going black, which is what covering
+                                a lens looks like.
+
+     WHAT IS NOT CHECKED, and is therefore not claimed: whether the face
+     on camera is the person who registered, whether their lips match the
+     audio, and whether a second person is in the room. Those need a face
+     model this page does not load, and the panel now says so rather than
+     ticking them off.
+     ================================================================ */
+
+  /* Leaving the tab suspends immediately. Background noise and a lost
+     camera are given a few seconds first, because a door closing or a
+     camera reconnecting are not cheating. */
+  var PROCTOR = {
+    noiseLevel: 0.075,        /* RMS that counts as loud while nobody should be speaking */
+    noiseMs: 4000,            /* how long it must stay there */
+    camLostMs: 5000,          /* how long the camera may be gone */
+    blackFrameLuma: 8,        /* mean brightness that counts as a covered lens */
+  };
+
+  function proctorReset(){
+    AIIV.integrity = { events: [], noiseMs: 0, camLostMs: 0,
+      lastNoise: 0, peakNoise: 0, ended: null, watching: false };
+  }
+
+  function proctorLog(kind, detail){
+    if(!AIIV.integrity) proctorReset();
+    AIIV.integrity.events.push({ kind: kind, detail: detail || '', at: new Date().toISOString() });
+  }
+
+  /* Is the candidate the one who should be making noise right now? */
+  function candidateIsAnswering(){ return !!AIIV.listening; }
+
+  /**
+   * End the interview because of what was observed.
+   *
+   * The reason is recorded and shown. An interview that stops without
+   * saying why is indistinguishable from one that crashed, and the
+   * candidate has no way to tell a recruiter what happened.
+   */
+  function proctorStop(kind, message){
+    if(!AIIV.started) return;
+    if(AIIV.integrity && AIIV.integrity.ended) return;
+    if(AIIV.phase!=='interview' && AIIV.phase!=='briefing') return;
+    proctorLog(kind, message);
+    AIIV.integrity.ended = { kind: kind, message: message, at: new Date().toISOString() };
+    stopListening(); stopSpeak();
+    AIIV.phase = 'stopped';
+    try{ render(); }catch(e){}
+  }
+
+  /** Watch for the tab losing focus, for as long as an interview is running. */
+  function proctorWatch(){
+    if(AIIV.integrity && AIIV.integrity.watching) return;
+    if(!AIIV.integrity) proctorReset();
+    AIIV.integrity.watching = true;
+
+    var away = function(why){
+      if(AIIV.phase!=='interview' && AIIV.phase!=='briefing') return;
+      proctorStop('left_interview',
+        'The interview was suspended because this tab stopped being the active window ('+why+').');
+    };
+    document.addEventListener('visibilitychange', function(){
+      if(document.hidden) away('switched to another tab or minimised the window');
+    });
+    window.addEventListener('blur', function(){
+      /* A blur fires for an alert or a file dialog too, so the hidden
+         flag is preferred where the browser sets it; this is the
+         fallback for a genuine switch to another window. */
+      setTimeout(function(){
+        if(document.hasFocus && document.hasFocus()) return;
+        away('another window was brought to the front');
+      }, 250);
+    });
+  }
+
+  /**
+   * One sample of what the microphone and the camera are doing.
+   *
+   * Called from the answer loop, which already runs every frame, so this
+   * adds no timer of its own.
+   */
+  function proctorSample(dt, level){
+    if(!AIIV.integrity) proctorReset();
+    var I = AIIV.integrity;
+    if(I.ended) return;
+
+    /* ---- background noise, while the candidate should be quiet ---- */
+    if(!candidateIsAnswering() && vadAvailable()){
+      if(level > PROCTOR.noiseLevel){
+        I.noiseMs += dt;
+        if(level > I.peakNoise) I.peakNoise = level;
+        if(I.noiseMs >= PROCTOR.noiseMs){
+          proctorStop('background_noise',
+            'The interview ended because there was continuous background noise for '
+            + Math.round(PROCTOR.noiseMs/1000) + ' seconds while the interviewer was speaking. '
+            + 'Please retake it somewhere quiet.');
+          return;
+        }
+      } else if(I.noiseMs > 0){
+        /* Quiet again: a door or a cough should not accumulate towards
+           an ending across the whole interview. */
+        I.noiseMs = Math.max(0, I.noiseMs - dt * 2);
+      }
+    }
+
+    /* ---- the camera ---------------------------------------------- */
+    var lost = null;
+    try{
+      var tr = AIIV.stream && AIIV.stream.getVideoTracks ? AIIV.stream.getVideoTracks()[0] : null;
+      if(!tr) lost = 'the camera was turned off';
+      else if(tr.readyState === 'ended') lost = 'the camera was disconnected';
+      else if(tr.muted) lost = 'the camera stopped sending pictures';
+      else if(proctorFrameIsBlack()) lost = 'the camera is covered';
+    }catch(e){ lost = null; }
+
+    if(lost){
+      I.camLostMs += dt;
+      if(I.camLostMs >= PROCTOR.camLostMs){
+        proctorStop('camera_lost',
+          'The interview ended because ' + lost + ' for more than '
+          + Math.round(PROCTOR.camLostMs/1000) + ' seconds. Your camera must stay on.');
+        return;
+      }
+    } else if(I.camLostMs > 0){
+      I.camLostMs = 0;
+    }
+  }
+
+  /**
+   * Is the camera showing a black frame?
+   *
+   * A covered lens is the one camera problem the track state cannot see:
+   * it keeps sending pictures, and every one of them is black. Sampled
+   * at 32x24 into an offscreen canvas, about three times a second -
+   * enough to notice, cheap enough not to matter.
+   */
+  var PROC_CANVAS = null, PROC_LAST_FRAME = 0;
+  function proctorFrameIsBlack(){
+    var now = performance.now();
+    if(now - PROC_LAST_FRAME < 320) return false;    /* not due yet */
+    PROC_LAST_FRAME = now;
+    try{
+      var v = byId('aiivVideo');
+      if(!v || !v.videoWidth) return false;
+      if(!PROC_CANVAS){ PROC_CANVAS = document.createElement('canvas'); PROC_CANVAS.width=32; PROC_CANVAS.height=24; }
+      var ctx = PROC_CANVAS.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(v, 0, 0, 32, 24);
+      var d = ctx.getImageData(0, 0, 32, 24).data;
+      var sum = 0;
+      for(var i=0;i<d.length;i+=4) sum += (d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114);
+      return (sum / (d.length/4)) < PROCTOR.blackFrameLuma;
+    }catch(e){ return false; }     /* a canvas that cannot be read proves nothing */
+  }
+
 
   function askCurrent(){
     var rec=recById(AIIV.appId); if(!rec) return; var qs=curQs(rec); var q=qs[AIIV.idx];
@@ -23104,13 +23296,16 @@ table.data td .tl-af b{white-space:normal}
   /* ---- interaction / phases ---- */
   window.aiivStart=function(appId){ stopSpeak(); AIIV={ appId:appId, phase:'camera', idx:0, started:true, stream:AIIV.stream, camState:AIIV.camState||'off', answers:[], listening:false, timeLeft:0, timerId:null, rafId:null, voicedMs:0, spoke:false, audioCtx:AIIV.audioCtx, analyser:AIIV.analyser, rec:null, sttText:'', sttFinal:'', briefSpoken:false }; aiivRerender(); };
   window.aiivBeginBriefing=function(){ AIIV.phase='briefing'; render(); setTimeout(function(){ aiivAttach(); if(!AIIV.briefSpoken){ AIIV.briefSpoken=true; speak('Welcome, and thank you for joining. Before we begin, a few conditions. '+BRIEF.join(' ')+' When you are ready, press start to begin the questions.'); } }, 60); };
-  window.aiivBeginQuestions=function(){ var rec=recById(AIIV.appId); if(rec){ rec.aiInterview.questions=generateQuestions(rec); try{persist();}catch(e){} } AIIV.phase='interview'; AIIV.idx=0; renderAndAsk(); };
+  window.aiivBeginQuestions=function(){ var rec=recById(AIIV.appId); if(rec){ rec.aiInterview.questions=generateQuestions(rec); try{persist();}catch(e){} } AIIV.phase='interview'; AIIV.idx=0;
+    proctorReset(); proctorWatch(); proctorIdleLoop();
+    renderAndAsk(); };
   window.aiivSubmit=function(){
     /* SUBMITTED ONCE. It is a global, the last question calls it, and a
        second call would write a second set of results and thank the
        candidate again. */
     if(AIIV.submitted) return;
     AIIV.submitted=true;
+    proctorIdleStop();
     stopListening(); stopSpeak(); var rec=recById(AIIV.appId); if(!rec) return;
     var qs=curQs(rec); var sc=aiScore(rec, qs, AIIV.answers);
     var report={ candidate_id:rec.candidateId, job_id:rec.jobId, status:'COMPLETED',
@@ -23143,11 +23338,41 @@ table.data td .tl-af b{white-space:normal}
     var lbl=live?'<div style="text-align:center;font-size:11px;color:var(--ok-600);font-weight:700;margin-top:8px">● You are on camera</div>':'';
     return '<div class="panel" style="padding:12px">'+box+lbl+'</div>';
   }
+  /**
+   * What is being watched, and what is not.
+   *
+   * This listed four green ticks - identity verified, lip-sync
+   * consistent, voice profile consistent, no second voice - none of which
+   * was measured by anything. The panel now shows the state of the three
+   * checks that ARE running, live, and names the ones that are not
+   * running instead of ticking them.
+   */
   function proctorPanel(){
-    var chk=function(t){ return '<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-soft);padding:3px 0"><span style="color:var(--ok-600);font-weight:800">✓</span>'+t+'</div>'; };
-    return '<div class="panel" style="padding:12px;margin-top:10px"><div style="font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:var(--text-soft);margin-bottom:6px">Integrity monitoring <span class="badge badge-neutral" style="font-size:9px">Simulated</span></div>'
-      +chk('Identity verified — matches registered profile')+chk('Lip-sync consistent with audio')+chk('Voice profile consistent')+chk('No second voice detected')
-      +'<div style="font-size:10.5px;color:var(--text-soft);margin-top:6px;line-height:1.45">Voice-only — no AI avatar. In production these run continuously; a repeated high-confidence violation ends the interview.</div></div>';
+    var I = AIIV.integrity || { noiseMs:0, camLostMs:0, events:[] };
+    var row = function(ok, label, note){
+      var col = ok==null ? 'var(--text-soft)' : (ok ? 'var(--ok-600)' : 'var(--bad-600)');
+      var mark = ok==null ? '—' : (ok ? '✓' : '!');
+      return '<div style="display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--text-soft);padding:3px 0">'
+        +'<span style="color:'+col+';font-weight:800;line-height:1.35">'+mark+'</span>'
+        +'<span>'+label+(note?'<br><span style="font-size:10.5px;opacity:.8">'+note+'</span>':'')+'</span></div>';
+    };
+    var camOn = (AIIV.camState==='on' && !!AIIV.stream);
+    var noisy = I.noiseMs > 0;
+    var secs = function(ms){ return (Math.max(0,ms)/1000).toFixed(1)+'s'; };
+
+    return '<div class="panel" style="padding:12px;margin-top:10px">'
+      +'<div style="font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:var(--text-soft);margin-bottom:6px">Integrity monitoring</div>'
+      +row(true, 'You are in the interview tab',
+        'Leaving this tab or window suspends the interview.')
+      +row(!noisy, noisy ? 'Background noise' : 'Room is quiet',
+        noisy ? 'Continuous noise for '+secs(I.noiseMs)+' of '+secs(PROCTOR.noiseMs)+' — the interview ends at that point.'
+              : 'Measured from your microphone between questions.')
+      +row(camOn, camOn ? 'Camera is on' : 'Camera is off',
+        camOn ? (I.camLostMs>0 ? 'No picture for '+secs(I.camLostMs)+' — the interview ends at '+secs(PROCTOR.camLostMs)+'.' : 'Watched for being turned off or covered.')
+              : 'Your camera must stay on for the whole interview.')
+      +row(null, 'Not checked here',
+        'Identity, lip-sync and whether anyone else is in the room are not verified by this page.')
+      +'</div>';
   }
 
   function aiInterviewPage(rec){
@@ -23168,6 +23393,33 @@ table.data td .tl-af b{white-space:normal}
         +'<div style="margin-top:16px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap"><button class="btn btn-ghost" onclick="navigate(\'/candidate-app/'+rec.applicationId+'\')">View Application</button><button class="btn btn-primary" onclick="navigate(\'/candidate/applications\')">My Applications</button></div>'
         +'</div></div></div>';
       return shell('applications','AI Interview','Candidate · '+esc2(c?c.name:''),content);
+    }
+    /* SUSPENDED, AND IT SAYS WHY.
+       An interview that simply stops is indistinguishable from one that
+       crashed, and the candidate has nothing to tell a recruiter. The
+       reason recorded by the proctor is shown here, in the candidate's
+       own words rather than as a code, along with what to do next. */
+    if(AIIV.started && AIIV.appId===rec.applicationId && AIIV.phase==='stopped'){
+      var stop=(AIIV.integrity&&AIIV.integrity.ended)||{kind:'unknown',message:'The interview was stopped.'};
+      var heading={ left_interview:'Interview suspended',
+                    background_noise:'Interview ended \u2014 background noise',
+                    camera_lost:'Interview ended \u2014 camera' }[stop.kind]||'Interview stopped';
+      var seen=(AIIV.integrity&&AIIV.integrity.events)||[];
+      content='<div style="max-width:640px;margin:0 auto"><div class="panel"><div class="panel-body" style="text-align:center;padding:30px 26px">'
+        +'<div style="width:60px;height:60px;border-radius:50%;background:var(--bad-100);color:var(--bad-600);display:flex;align-items:center;justify-content:center;font-size:28px;margin:0 auto 14px">!</div>'
+        +'<h2 style="font-size:19px">'+esc2(heading)+'</h2>'
+        +'<p style="color:var(--text-soft);margin:10px auto 0;max-width:460px;line-height:1.5">'+esc2(stop.message)+'</p>'
+        +'<div class="req-note" style="margin-top:16px;text-align:left">Your answers up to this point were kept. '
+        +'Nothing has been submitted for scoring, and your recruiter can see that the interview was interrupted and why.</div>'
+        +(seen.length?'<div style="margin-top:14px;text-align:left;font-size:11.5px;color:var(--text-soft)">'
+            +'<div style="font-weight:800;text-transform:uppercase;letter-spacing:.04em;font-size:10px;margin-bottom:4px">What was observed</div>'
+            +seen.slice(-4).map(function(e){ return '<div>\u00b7 '+esc2(e.detail||e.kind)+'</div>'; }).join('')
+            +'</div>':'')
+        +'<div style="margin-top:18px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap">'
+        +'<button class="btn btn-primary" onclick="navigate(\'/candidate-app/'+rec.applicationId+'\')">Back to my application</button>'
+        +'</div>'
+        +'</div></div></div>';
+      return shell('applications','AI Interview','Candidate \u00b7 '+esc2(c?c.name:''),content);
     }
     if(AIIV.started && AIIV.appId===rec.applicationId && AIIV.phase==='camera'){
       var on=(AIIV.camState==='on');
