@@ -34,7 +34,8 @@ import { buildEventMessages } from '../notify/templates.js';
 import { parseMessage, matchRequirement, DEFAULT_RULES } from './parse.js';
 import { matchCandidate } from '../ai/match.js';
 import { screenApplication } from '../ai/screening.js';
-import { mailboxProvider, mailboxReadiness, newMessageId } from './mailbox.js';
+import { mailboxProvider, mailboxReadiness, newMessageId,
+         mailboxSecrets, credentialFingerprint, isAuthFailure } from './mailbox.js';
 import { looksLikeDigest, parseNaukriDigest } from './naukri.js';
 import { detectSource, rulesFor, wantedBy } from './source.js';
 import { storeAttachedResume } from './attachment.js';
@@ -711,12 +712,30 @@ export async function syncMailbox(session, mailboxId,
     });
   } catch (err) {
     await withUser(ENGINE, (c) => c.query(`select mailbox_synced($1,$2)`, [mailboxId, err.message]));
+
+    /*
+     * A REFUSED CREDENTIAL is remembered, by fingerprint, so the timer
+     * does not keep sending it. A server that simply did not answer is
+     * not - that is a network problem and retrying is exactly right.
+     */
+    if (isAuthFailure(err)) {
+      const mark = credentialFingerprint(mailbox.address, mailboxSecrets(mailbox.address).password);
+      if (mark) {
+        await withUser(ENGINE, (c) => c.query(
+          `select mailbox_auth_refused($1,$2)`, [mailboxId, mark])).catch(() => {});
+      }
+    }
+
     return {
       mailbox: mailbox.address, provider: mailbox.provider,
       error: err.code || 'fetch_failed', message: err.message,
       seen: 0, imported: 0, results: [],
     };
   }
+
+  // It answered, so whatever was remembered about a refusal is stale.
+  await withUser(ENGINE, (c) => c.query(
+    `select mailbox_auth_accepted($1)`, [mailboxId])).catch(() => {});
 
   const results = [];
   let imported = 0;
@@ -783,10 +802,37 @@ export async function syncMailbox(session, mailboxId,
 /** Every mailbox with auto-sync on. Used by the scheduler and by "Sync now". */
 export async function syncAll(session, { onlyAuto = true, board = 'all' } = {}) {
   const boxes = await withUser(ENGINE, async (c) => (await c.query(
-    `select id from email_mailboxes ${onlyAuto ? 'where auto_sync' : ''} order by created_at`)).rows);
+    `select id, address, auth_refused_fingerprint
+       from email_mailboxes ${onlyAuto ? 'where auto_sync' : ''} order by created_at`)).rows);
 
   const out = [];
   for (const b of boxes) {
+    /*
+     * A password the server has already refused is NOT sent again.
+     *
+     * This sweep runs on a timer, so without this a mailbox connected
+     * with the wrong password attempted a login every few minutes for
+     * as long as it stayed connected. Repeated failed logins are how
+     * Google locks an account, and the account belongs to the recruiter.
+     *
+     * The fingerprint is of the credential, never the credential, so
+     * changing it in the environment changes the mark and the next
+     * sweep tries again by itself. "Sync now" is not affected: a person
+     * pressing a button is asking on purpose.
+     */
+    if (onlyAuto && b.auth_refused_fingerprint) {
+      const now = credentialFingerprint(b.address, mailboxSecrets(b.address).password);
+      if (now && now === b.auth_refused_fingerprint) {
+        out.push({
+          mailboxId: b.id, mailbox: b.address, error: 'auth_refused',
+          message: 'The mail server refused this credential. It will not be sent '
+            + 'again until it is changed on the server.',
+          seen: 0, imported: 0, results: [],
+        });
+        continue;
+      }
+    }
+
     try {
       out.push(await syncMailbox(session, b.id, { board }));
     } catch (err) {
