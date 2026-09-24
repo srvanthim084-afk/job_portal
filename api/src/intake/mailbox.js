@@ -41,6 +41,57 @@ function envKey(address, suffix) {
   return `MAILBOX_${slug}_${suffix}`;
 }
 
+/**
+ * Where the big providers actually keep their IMAP server.
+ *
+ * The default was `mail.<domain>`, which is right for a company mailbox
+ * - mail.tmlink.in is exactly where the TeamLink one lives - and wrong
+ * for every consumer provider on earth. Connecting a gmail.com address
+ * produced `mail.gmail.com`, a host that does not exist, so the mailbox
+ * failed to connect AFTER somebody had gone and set the password,
+ * with an error that pointed at the network rather than at the name.
+ *
+ * Small and explicit: these are the ones a recruiter is actually likely
+ * to connect. An address on anything else still gets mail.<domain>, and
+ * an explicit HOST always wins over both.
+ */
+const IMAP_HOSTS = {
+  'gmail.com': 'imap.gmail.com',
+  'googlemail.com': 'imap.gmail.com',
+  'outlook.com': 'outlook.office365.com',
+  'hotmail.com': 'outlook.office365.com',
+  'live.com': 'outlook.office365.com',
+  'msn.com': 'outlook.office365.com',
+  'yahoo.com': 'imap.mail.yahoo.com',
+  'yahoo.in': 'imap.mail.yahoo.com',
+  'yahoo.co.in': 'imap.mail.yahoo.com',
+  'zoho.com': 'imap.zoho.com',
+  'zohomail.com': 'imap.zoho.com',
+  'icloud.com': 'imap.mail.me.com',
+  'me.com': 'imap.mail.me.com',
+  'rediffmail.com': 'imap.rediffmail.com',
+};
+
+/**
+ * What a recruiter has to know BEFORE the password will work.
+ *
+ * Gmail and Yahoo refuse an account password outright once two-factor is
+ * on, which it is by default - what they want is an app password, and
+ * being told that in advance is the difference between five minutes and
+ * an afternoon.
+ */
+const IMAP_NOTES = {
+  'imap.gmail.com':
+    'Gmail needs an APP PASSWORD, not the account password: Google Account '
+    + '→ Security → 2-Step Verification → App passwords. IMAP must also be '
+    + 'on in Gmail Settings → Forwarding and POP/IMAP.',
+  'imap.mail.yahoo.com':
+    'Yahoo needs an app password: Account Security → Generate app password.',
+  'outlook.office365.com':
+    'A Microsoft account with two-factor on needs an app password rather '
+    + 'than the account password.',
+};
+
 export function mailboxSecrets(address) {
   const pick = (suffix, fallback) =>
     process.env[envKey(address, suffix)] || process.env[`MAILBOX_${suffix}`] || fallback || '';
@@ -54,7 +105,7 @@ export function mailboxSecrets(address) {
      * mailbox almost always is. One variable fewer to set, and an
      * explicit HOST still wins when it is somewhere else.
      */
-    host: pick('HOST', domain ? `mail.${domain}` : ''),
+    host: pick('HOST', domain ? (IMAP_HOSTS[domain.toLowerCase()] || `mail.${domain}`) : ''),
     port: Number(pick('PORT', '993')),
     user: pick('USER', address),
     /*
@@ -84,7 +135,20 @@ export function mailboxReadiness(mailbox) {
     if (!s.password) {
       missing.push(`${envKey(mailbox.address, 'PASSWORD')} (or ${envKey(mailbox.address, 'TOKEN')})`);
     }
-    return { ready: missing.length === 0, missing };
+    /*
+     * The HOST it will use, and what the provider wants, are returned
+     * alongside. "Not configured" on its own tells somebody to go and
+     * set a variable; it does not tell them that Gmail will refuse
+     * their account password when they do, which is the next hour of
+     * their afternoon.
+     */
+    return {
+      ready: missing.length === 0,
+      missing,
+      host: s.host,
+      port: s.port || 993,
+      note: IMAP_NOTES[s.host] || undefined,
+    };
   }
   if (mailbox.provider === 'gmail' || mailbox.provider === 'outlook') {
     return s.token

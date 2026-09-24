@@ -51,6 +51,18 @@ const toMailbox = (r) => {
     // What an administrator must set on the SERVER before this mailbox
     // can be read. Names only - never values.
     missingConfig: ready.missing,
+    /*
+     * WHERE it will connect, and what the provider wants. Names and
+     * hostnames only; still never a value.
+     *
+     * "Not configured" told somebody to go and set a variable and
+     * nothing else - not which server it would then try, and not that
+     * Gmail refuses an account password once two-factor is on. Both of
+     * those are the difference between five minutes and an afternoon.
+     */
+    host: ready.host || undefined,
+    port: ready.port || undefined,
+    setupNote: ready.note || undefined,
     rules: r.rules || {},
   };
 };

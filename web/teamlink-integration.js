@@ -4236,9 +4236,16 @@
                 esc(b.provider) + (b.recruiterName ? ' · ' + esc(b.recruiterName) : '') +
                 (b.lastSyncAt ? ' · last read ' + new Date(b.lastSyncAt).toLocaleString('en-GB') : ' · never read') +
                 (b.autoSync ? ' · syncing automatically' : ' · automatic sync off') +
+                (b.host ? ' · ' + esc(b.host) + ':' + esc(String(b.port || 993)) : '') +
                 (b.missingConfig && b.missingConfig.length
                   ? '<br><span style="color:var(--warn-600)">Set on the server: ' +
                     esc(b.missingConfig.join(', ')) + '</span>'
+                  : '') +
+                // What the provider itself requires. Gmail will refuse an
+                // account password however correctly the variable is set,
+                // and finding that out afterwards costs an afternoon.
+                (b.setupNote
+                  ? '<br><span style="color:var(--text-soft)">' + esc(b.setupNote) + '</span>'
                   : '') +
                 (b.lastError ? '<br><span style="color:var(--bad-600)">' + esc(b.lastError) + '</span>' : '') +
                 '</div></span>' +
