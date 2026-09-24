@@ -213,6 +213,22 @@ export default function intakeRoutes() {
           where id = $1`,
         [box.id, out.ok ? 'connected' : 'disconnected', out.ok ? null : out.error]));
 
+      /*
+       * A successful test clears the "this credential was refused" mark.
+       *
+       * The automatic sweep skips a mailbox whose credential the server
+       * rejected, and works out for itself when the credential changes.
+       * But a login can start working again without the credential
+       * changing at all - the provider was having a bad hour, or somebody
+       * turned IMAP on. Proving it works by hand should release it
+       * immediately rather than leaving it skipped until something else
+       * happens to differ.
+       */
+      if (out.ok) {
+        await withUser(ENGINE, (c) => c.query(
+          `select mailbox_auth_accepted($1)`, [box.id])).catch(() => {});
+      }
+
       res.json({
         ok: out.ok,
         // The server's own words. "Authentication failed" and "host not
