@@ -19706,7 +19706,14 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
      every tab and every reload computes the SAME id for the same
      application — no race where two tabs stamp one record differently and
      a stage change made in one stops matching in the other. */
-  function uid(a){ return 'app_'+safe(a&&a.candidateId)+'__'+safe(a&&a.jobId); }
+  /* A deterministic id for a record that exists only in this browser.
+     An application the SERVER created already has one, issued by the
+     database and quoted by every later call about it, so this returns it
+     untouched. */
+  function uid(a){
+    if(a&&a.fromServer&&a.id) return a.id;
+    return 'app_'+safe(a&&a.candidateId)+'__'+safe(a&&a.jobId);
+  }
   var key=function(a){ return String(a.candidateId)+'|'+String(a.jobId); };
 
   /* ---------- 1. unique id at creation ---------- */
@@ -19748,6 +19755,7 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
       var k=key(a);
       if(seen[k]){ a.__dupe=true; return; }         /* same candidate+job twice: a real duplicate */
       seen[k]=a;
+      if(a.fromServer) return;          /* the database owns this id */
       var want=uid(a);
       if(a.id!==want){ a.id=want; changed=true; }
     });
@@ -19764,7 +19772,10 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
       if(have[k]) return;                            /* drop the in-memory duplicate */
       have[k]=true;
       var s=byKey[k];
-      if(s&&s.id&&a.id!==s.id) a.id=s.id;
+      /* Never overwrite a database id with one from localStorage: the
+         stored copy may predate the server ever seeing this application,
+         and adopting it is how the real id was being lost. */
+      if(s&&s.id&&a.id!==s.id&&!a.fromServer) a.id=s.id;
       keep.push(a);
     });
     if(keep.length!==mem.length) DATA.applications.length=0,Array.prototype.push.apply(DATA.applications,keep);

@@ -84,17 +84,59 @@ try {
 
   const jobs = (await api('get', '/jobs?limit=3')).jobs || [];
   check(jobs.length > 0, `there is a requirement to apply to (${jobs.length})`);
-  const applied = await api('post', '/applications', { jobId: jobs[0].id, candidateId });
-  applicationId = (applied.application || {}).id || applied.id;
-  check(!!applicationId, `an application exists (${applicationId})`);
 
-  await page.evaluate(() => window.TL.refresh());
-  await page.waitForTimeout(2500);
+  /*
+   * APPLIED THROUGH THE PORTAL'S OWN BUTTON, not by posting to the API.
+   *
+   * This is the path that was broken and the reason the test exists in
+   * this shape. applyToJob() posts to the server and keeps the row it
+   * gets back - and a later layer in the prototype then rewrote every
+   * application's id to a deterministic candidate+job form, throwing the
+   * database's id away. Everything afterwards quoted an application the
+   * server had never heard of: the interview was planned against a
+   * missing id, planning failed quietly, and the candidate finished an
+   * interview, saw "Completed" on their own page, and the recruiter's
+   * list still said Applied.
+   *
+   * Signing in through the form matters too - applyToJob reads
+   * STATE.session, which only an actual sign-in sets.
+   */
+  await api('post', '/auth/logout', {});
+  await page.evaluate(() => { location.hash = '#/login/candidate'; });
+  await page.waitForTimeout(1400);
+  await page.fill('input[name="email"]', EMAIL);
+  await page.fill('input[type="password"]', PASSWORD);
+  const loginBtn = await page.$('form button[type="submit"], form .btn-primary');
+  check(!!loginBtn, 'the login form has a submit button');
+  if (loginBtn) await loginBtn.click();
+  await page.waitForTimeout(3200);
+  check(await page.evaluate(() => !!(window.STATE.session && window.STATE.session.role === 'candidate')),
+    'the candidate is signed in through the form');
 
-  /* ---- the interview, through the screen -------------------------- */
-  await page.evaluate((r) => { location.hash = '#/ai-interview/' + r; }, applicationId);
+  await page.evaluate((j) => window.applyToJob(j), jobs[0].id);
+  await page.waitForTimeout(3200);
+
+  const after = await page.evaluate(() => {
+    const lc = JSON.parse(localStorage.getItem('tl_portal_lifecycle_v1') || '{}');
+    const apps = window.DATA.applications || [];
+    return {
+      localRef: Object.values(lc.apps || {}).map((r) => r.applicationId)[0] || null,
+      ids: apps.map((a) => a.id),
+    };
+  });
+  applicationId = after.ids[0];
+  check(!!applicationId, `the application came back from the server (${applicationId})`);
+  check(/^app_[a-z0-9]+$/.test(String(applicationId)),
+    `and kept the DATABASE's id rather than a locally derived one (${applicationId})`);
+  check(!!after.localRef, `the portal's own reference exists too (${after.localRef})`);
+
+  /* ---- the interview, through the screen, opened the way the
+          "Attend AI Interview" button opens it: with the local
+          reference, not the database id ------------------------------ */
+  const openWith = after.localRef || applicationId;
+  await page.evaluate((r) => { location.hash = '#/ai-interview/' + r; }, openWith);
   await page.waitForTimeout(1500);
-  await page.evaluate((r) => window.aiivStart && window.aiivStart(r), applicationId);
+  await page.evaluate((r) => window.aiivStart && window.aiivStart(r), openWith);
   await page.waitForTimeout(700);
   await page.evaluate(() => window.aiivEnableCamera && window.aiivEnableCamera());
   await page.waitForTimeout(2000);

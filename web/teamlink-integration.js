@@ -700,6 +700,17 @@
     (d.jobs || []).forEach(function (j) { TL.serverJobs[j.id] = jobToApi(j); });
     refill(DATA.candidates, d.candidates);
     refill(DATA.applications, d.applications);
+    /* EVERY ONE OF THESE CARRIES THE DATABASE'S OWN ID, and it has to
+       survive. A later layer in the prototype rewrites application ids to
+       a deterministic candidate+job form to stop two tabs stamping a
+       local record differently - a sound idea for a record that exists
+       only in this browser, and destructive for one the server issued.
+       Once the id is rewritten, every later call that quotes it fails:
+       the interview session is planned against an application the server
+       has never heard of, so a candidate finishes an interview, sees
+       "Completed" on their own page, and the recruiter's list still says
+       Applied. Marked here so that layer leaves them alone. */
+    (DATA.applications || []).forEach(function (a) { if (a) a.fromServer = true; });
     refill(DATA.interviews, d.interviews);
     refill(DATA.recruiters, d.recruiters);
     refill(DATA.clients, d.clients);
@@ -1591,6 +1602,9 @@
         { jobId: jobId, source: TL.applicationSource() })
       .then(function (res) {
         // reconcile the cache with what the server actually recorded
+        // The server's row, with the server's id - which must not be
+        // rewritten afterwards. See the note beside refill() above.
+        res.application.fromServer = true;
         DATA.applications.push(res.application);
         var job = DATA.jobById(jobId);
         if (job && typeof res.applicants === 'number') job.applicants = res.applicants;
@@ -3131,6 +3145,19 @@
       var out = prevAiivSubmit.apply(this, arguments);
       try {
         var appId = TL.__aiivAppId || (window.AIIV && window.AIIV.appId);
+
+        /*
+         * SENT ONCE PER INTERVIEW.
+         *
+         * The prototype's own aiivSubmit refuses to run twice, but this
+         * wrapper is a separate function and ran every time it was
+         * called - so a second call, from a stray click or the last
+         * question's timer landing with the Finish button, posted every
+         * answer and the finish a second time and then fell through to
+         * recordAiInterview as well. One interview, several results.
+         */
+        if (TL.__aiivSentFor === appId) return out;
+        TL.__aiivSentFor = appId;
         var found = TL.aiivRec(appId);
         var rec = found && found.rec;
         var report = rec && rec.aiInterview && rec.aiInterview.report;
@@ -3512,6 +3539,9 @@
   if (typeof prevStartForPlan === 'function') {
     window.aiivStart = function (appId) {
       TL.__aiivSession = null;
+      // A new attempt may be submitted again; the once-only guard is per
+      // interview, not for the life of the page.
+      TL.__aiivSentFor = null;
       var out = prevStartForPlan.apply(this, arguments);
       try { TL.planAiSession(appId); } catch (e) {
         console.error('TeamLink: the interview could not be planned.', e);
