@@ -15675,10 +15675,13 @@ body .cap-feedbar{bottom:0}
       if(!a) return null;             /* nothing locatable picked yet */
       const radius=chosen==='any'?20000:Number(chosen);
       if(!radius) return null;
-      const m={};
-      m[low(a.name)]=0;               /* the place itself, at zero */
-      window.tlNearbyList(a,radius,sel).forEach(p=>{ m[low(p.name)]=p.km; });
-      return {anchor:a,km:m,radius:radius,any:chosen==='any',
+      const m={}, nm={};
+      m[low(a.name)]=0; nm[low(a.name)]=a.name;   /* the place itself, at zero */
+      window.tlNearbyList(a,radius,sel).forEach(p=>{ m[low(p.name)]=p.km; nm[low(p.name)]=p.name; });
+      /* The names as the dataset spells them: the map is keyed on a
+         lowercased name so a lookup is case-insensitive, and the panel
+         has to print "MVP Colony", not "mvp colony". */
+      return {anchor:a,km:m,names:nm,radius:radius,any:chosen==='any',
               count:Object.keys(m).length};
     })();
     /* null means "no distance known for this row", which is different
@@ -15694,15 +15697,21 @@ body .cap-feedbar{bottom:0}
     };
     /* Which areas of a district are inside the radius. Without a radius
        every area belongs, which is the list's original behaviour. */
-    const areasOf=(s2,d2)=>{
-      const all=(typeof window.tlAreasOfDistrict==='function')
-        ? window.tlAreasOfDistrict(s2,d2) : [];
-      return near?all.filter(a=>kmOf(a.name)!==null):all;
-    };
+    /* THE HIERARCHY IS NOT FILTERED BY THE RADIUS. Its job is to let a
+       recruiter reach any place in India; the radius question is answered
+       in the Near by panel. Filtering here hid places a recruiter had
+       deliberately gone looking for. */
+    const areasOf=(s2,d2)=>(typeof window.tlAreasOfDistrict==='function')
+      ? window.tlAreasOfDistrict(s2,d2) : [];
 
     const row=(v,label,bold)=>`<label class="tl-row2 ${bold?'b':''}" onmousedown="event.preventDefault()">
       <input type="checkbox" ${on(v)?'checked':''} onchange="tlTreePick('${jq(key)}','${jq(v)}',this.checked)">
-      <span class="nm">${esc(label)}</span>${kmTag(v)}</label>`;
+      <span class="nm">${esc(label)}</span></label>`;
+    /* NO DISTANCE ON THESE ROWS. A district row used to carry one when a
+       radius was set, so the same town was on screen twice with two
+       different numbers - its distance from the chosen place in the Near
+       by panel, and its distance from its own district centre here. The
+       radius question is answered in one place: the Near by panel. */
 
     /* A DISTRICT, and the areas inside it.
 
@@ -15719,14 +15728,12 @@ body .cap-feedbar{bottom:0}
       const areas=areasOf(st2,d);
       if(!areas.length) return row(d,d);
       const key2=st2+'|'+d;
-      /* With a radius set the places inside it ARE the answer, so they
-         are shown rather than hidden behind a chevron somebody has to
-         find. Without one, nothing about the expander changes.
-
-         An explicit close still wins, which is why this is `!==false`
-         rather than `true`: forcing it open made the chevron dead while
-         a distance was chosen. */
-      const isOpen=near?((t2.area||{})[key2]!==false):(t2.area&&t2.area[key2]===true);
+      /* Closed until somebody opens it, radius or no radius. A radius
+         used to force every district's areas open here, which put the
+         same towns on screen twice - once with their distance from the
+         chosen place in the Near by panel and once with their distance
+         from their own district centre here. */
+      const isOpen=!!(t2.area&&t2.area[key2]===true);
       return `<div class="tl-drow">
           <button type="button" class="tl-dcar" onmousedown="event.preventDefault()"
             onclick="event.stopPropagation();tlTreeArea('${jq(k)}','${jq(st2)}','${jq(d)}',${isOpen?'true':'false'})"
@@ -15738,7 +15745,7 @@ body .cap-feedbar{bottom:0}
                one, not from the district it happens to sit in - those are
                different numbers and only the first answers "how far is
                this from Hyderabad?". */
-            const ak=near?kmOf(a.name):a.km;
+            const ak=a.km;   /* from its own district, which is what this row is */
             return `<label class="tl-row2" onmousedown="event.preventDefault()">
                <input type="checkbox" ${on(a.name)?'checked':''}
                  onchange="tlTreePick('${jq(k)}','${jq(a.name)}',this.checked)">
@@ -15750,16 +15757,42 @@ body .cap-feedbar{bottom:0}
     if(!t.noKm){
       const pill=(v,label)=>`<button type="button" class="tl-kmp ${String(st.km||'')===String(v)?'on':''}"
         onmousedown="event.preventDefault()" onclick="tlTreeKm('${jq(key)}','${v}')">${esc(label)}</button>`;
+      /* ============ THE PLACES GO HERE, UNDER THE BUTTONS ============
+         This panel had the distance buttons and a sentence, and the
+         sentence was all a recruiter got: pick Visakhapatnam, press
+         25 KM, and the panel still read "choose a distance above to list
+         the places around them" while the places themselves were
+         somewhere else entirely.
+
+         They are rows of the same <label class="tl-row2"> the rest of
+         the picker uses - same checkbox, same tlTreePick() - so ticking
+         one is indistinguishable from ticking a district and the
+         candidate search receives it exactly as it always did.
+
+         Sorted by distance, nearest first, with the chosen place itself
+         at 0 KM at the top. Every kilometre is haversine over the
+         coordinates already in the page; nothing is fetched and nothing
+         is stored. */
+      var nbRows = '';
+      if(near){
+        var mine = Object.keys(near.km).sort(function(a,b){ return near.km[a]-near.km[b]; });
+        nbRows = '<div class="tl-nblist">' + mine.map(function(k){
+          var name = near.names[k];
+          return '<label class="tl-row2'+(near.km[k]===0?' b':'')+'" onmousedown="event.preventDefault()">'
+            + '<input type="checkbox"'+(on(name)?' checked':'')
+            + ' onchange="tlTreePick(\''+jq(key)+'\',\''+jq(name)+'\',this.checked)">'
+            + '<span class="nm">'+esc(name)+'</span>'
+            + '<span class="tl-km">'+Math.round(near.km[k])+' KM</span></label>';
+        }).join('') + '</div>';
+      }
+
       h+=`<div class="grp tl-kmgrp"><b>Near by</b><div class="tl-kmrow">
         ${pill('','Exact city')}${KM.map(k=>pill(k,k+' KM')).join('')}</div>
         <div class="tl-kmnote">${near
-          ? `${near.count} place${near.count===1?'':'s'} ${near.any?'on file':'within <b>'+esc(String(st.km))+' KM</b> of <b>'+esc(near.anchor.name)+'</b>'} — listed below with their distance.`
-          : st.km?`Also showing jobs within <b>${esc(String(st.km))} KM</b> of the places you pick.`
-                 /* Exact city. It said "Only the exact places you pick",
-                    which is true and leaves somebody looking at a list
-                    with no distances on it wondering why. It now says
-                    what to press. */
-                 :'Only the exact places you pick — choose a distance above to list the places around them.'}</div></div>`;
+          ? `${near.count} place${near.count===1?'':'s'} ${near.any?'we can locate':'within <b>'+esc(String(st.km))+' KM</b> of <b>'+esc(near.anchor.name)+'</b>'} — tick any to add it.`
+          : st.km
+            ? `Pick a city or district and this lists everything within <b>${esc(String(st.km))} KM</b> of it.`
+            : 'Only the exact places you pick — choose a distance above to list the places around them.'}</div>${nbRows}</div>`;
     }
     h+=`<div class="grp"><b>Country &amp; region</b>${row(ALL,ALL,true)}${REGION_ORDER.map(r=>row(r,r)).join('')}</div>`;
     h+=`<div class="grp" style="border-bottom:0;padding-bottom:2px"><b>States &amp; districts</b></div>`;
@@ -15768,15 +15801,14 @@ body .cap-feedbar{bottom:0}
          AND their districts, without having to click a state first. The
          chevron collapses one that is in the way; Collapse all puts the
          whole list back to headings. */
-      const all=GEO[s]||[];
-      /* With a radius set, this state shows the districts inside it -
-         and stays on screen only if it has any. A state list where every
-         row is out of range is a list of things the recruiter cannot
-         pick. A district whose own centre is outside the radius is kept
-         when one of ITS areas is inside, because that area is a real
-         answer and its district is how the list reaches it. */
-      const ds=near?all.filter(d=>kmOf(d)!==null||areasOf(s,d).length):all;
-      if(near&&!ds.length) return '';
+      /* THE MAIN LIST IS NOT FILTERED BY THE RADIUS.
+         It was, and the nearby places then appeared twice on one screen -
+         once here with a distance beside them and once in the Near by
+         panel - which is the duplication this picker has been through
+         before. The radius belongs to the Near by panel; this stays the
+         full states-and-districts list it has always been, so a recruiter
+         can still pick any district while a radius is set. */
+      const ds=GEO[s]||[];
       /* A COLLAPSE IS THE RECRUITER'S AND IS NEVER OVERRIDDEN.
 
          This read `near?true:t.exp[s]!==false`, which forced every state
@@ -17256,6 +17288,13 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
 <style>
 /* distance selector, now the first section inside the location panel */
 .tl-kmgrp{ position:sticky; top:0; z-index:2; background:#fff; }
+/* The nearby places, under the distance buttons. Scrolls on its own so a
+   hundred-kilometre radius cannot push the buttons off the panel. */
+.tl-nblist{margin-top:8px;max-height:min(420px,46vh);overflow-y:auto;overscroll-behavior:contain;
+  border-top:1px solid var(--line,#e5e9f0);padding-top:6px}
+.tl-nblist .tl-row2{padding:4px 2px}
+.tl-nblist .tl-row2 .nm{font-size:12.5px}
+.tl-nblist .tl-row2.b .nm{font-weight:800}
 .tl-kmrow{ display:flex; flex-wrap:wrap; gap:6px; margin:2px 0 6px }
 .tl-kmp{ border:1px solid #dbe3ec; background:#fff; border-radius:999px; padding:5px 12px;
   font:inherit; font-size:12px; font-weight:700; color:#54637a; cursor:pointer; white-space:nowrap; line-height:1.2 }
@@ -21170,7 +21209,121 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
     'Bopal':             [23.0300, 72.4700, 'Gujarat'],
     'Maninagar':         [22.9960, 72.6020, 'Gujarat'],
     'Vastrapur':         [23.0350, 72.5290, 'Gujarat'],
-    'Naroda':            [23.0700, 72.6600, 'Gujarat']
+    'Naroda':            [23.0700, 72.6600, 'Gujarat'],
+
+    /* =================================================================
+       ANDHRA PRADESH had NOT ONE ENTRY in this table.
+
+       A recruiter picking Visakhapatnam and asking for everything within
+       25 km was shown a single place - Anakapalli, a district 23 km away
+       - because the only things near enough to find were other districts.
+       Vizag's own neighbourhoods, which is what "near Visakhapatnam"
+       means to anybody using this, were not in the dataset at all. The
+       same was true of Vijayawada, Guntur and Tirupati.
+
+       ON PRECISION, said plainly: these coordinates place each locality
+       to within about a kilometre, which is the same precision as the
+       district table they sit beside (two decimal places). That is
+       ample for a 5 km radius and it is not survey data. Nothing here is
+       a distance - every distance on screen is computed from these by
+       haversine at the moment it is drawn.
+       ================================================================= */
+
+    /* ---- Visakhapatnam ---------------------------------------------- */
+    'Gajuwaka':          [17.6800, 83.2100, 'Andhra Pradesh'],
+    'Madhurawada':       [17.7900, 83.3700, 'Andhra Pradesh'],
+    'MVP Colony':        [17.7400, 83.3300, 'Andhra Pradesh'],
+    'Seethammadhara':    [17.7400, 83.3100, 'Andhra Pradesh'],
+    'Akkayyapalem':      [17.7300, 83.3000, 'Andhra Pradesh'],
+    'Dwaraka Nagar':     [17.7280, 83.3050, 'Andhra Pradesh'],
+    'NAD':               [17.7350, 83.2300, 'Andhra Pradesh'],
+    'Gopalapatnam':      [17.7600, 83.2200, 'Andhra Pradesh'],
+    'Pendurthi':         [17.8200, 83.2100, 'Andhra Pradesh'],
+    'Simhachalam':       [17.7700, 83.2500, 'Andhra Pradesh'],
+    'Arilova':           [17.7600, 83.3300, 'Andhra Pradesh'],
+    'Rushikonda':        [17.7800, 83.3800, 'Andhra Pradesh'],
+    'Duvvada':           [17.6500, 83.1900, 'Andhra Pradesh'],
+    'Kurmannapalem':     [17.6600, 83.1800, 'Andhra Pradesh'],
+    'Aganampudi':        [17.6400, 83.1700, 'Andhra Pradesh'],
+    'Sheela Nagar':      [17.7000, 83.2200, 'Andhra Pradesh'],
+    'Anandapuram':       [17.8900, 83.4100, 'Andhra Pradesh'],
+    'Bheemili':          [17.8900, 83.4500, 'Andhra Pradesh'],
+
+    /* ---- Vijayawada -------------------------------------------------- */
+    'Benz Circle':       [16.5000, 80.6500, 'Andhra Pradesh'],
+    'Gunadala':          [16.5200, 80.6600, 'Andhra Pradesh'],
+    'Patamata':          [16.4950, 80.6700, 'Andhra Pradesh'],
+    'Gannavaram':        [16.5400, 80.8000, 'Andhra Pradesh'],
+    'Mangalagiri':       [16.4300, 80.5600, 'Andhra Pradesh'],
+    'Tadepalli':         [16.4800, 80.6000, 'Andhra Pradesh'],
+    'Poranki':           [16.4700, 80.7000, 'Andhra Pradesh'],
+    'Kanuru':            [16.4900, 80.6800, 'Andhra Pradesh'],
+    'Ibrahimpatnam AP':  [16.5800, 80.5300, 'Andhra Pradesh'],
+
+    /* ---- Guntur ------------------------------------------------------ */
+    'Brodipet':          [16.3050, 80.4350, 'Andhra Pradesh'],
+    'Lakshmipuram':      [16.3100, 80.4400, 'Andhra Pradesh'],
+    'Nallapadu':         [16.2800, 80.4000, 'Andhra Pradesh'],
+    'Tenali':            [16.2400, 80.6400, 'Andhra Pradesh'],
+
+    /* ---- Tirupati ---------------------------------------------------- */
+    'Tiruchanoor':       [13.6200, 79.4400, 'Andhra Pradesh'],
+    'Renigunta':         [13.6500, 79.5100, 'Andhra Pradesh'],
+    'Chandragiri':       [13.5800, 79.3200, 'Andhra Pradesh'],
+
+    /* ---- Kochi ------------------------------------------------------- */
+    'Kakkanad':          [10.0150, 76.3400, 'Kerala'],
+    'Edappally':         [10.0250, 76.3080, 'Kerala'],
+    'Fort Kochi':        [9.9650, 76.2420, 'Kerala'],
+    'Aluva':             [10.1080, 76.3520, 'Kerala'],
+    'Kalamassery':       [10.0600, 76.3200, 'Kerala'],
+    'Tripunithura':      [9.9450, 76.3480, 'Kerala'],
+
+    /* ---- Thiruvananthapuram ------------------------------------------ */
+    'Technopark':        [8.5570, 76.8800, 'Kerala'],
+    'Kazhakkoottam':     [8.5670, 76.8700, 'Kerala'],
+    'Kowdiar':           [8.5150, 76.9550, 'Kerala'],
+
+    /* ---- Jaipur ------------------------------------------------------ */
+    'Malviya Nagar Jaipur': [26.8560, 75.8150, 'Rajasthan'],
+    'Vaishali Nagar':    [26.9120, 75.7400, 'Rajasthan'],
+    'Mansarovar':        [26.8500, 75.7600, 'Rajasthan'],
+    'Sitapura':          [26.7800, 75.8400, 'Rajasthan'],
+
+    /* ---- Lucknow ----------------------------------------------------- */
+    'Gomti Nagar':       [26.8500, 81.0000, 'Uttar Pradesh'],
+    'Hazratganj':        [26.8540, 80.9450, 'Uttar Pradesh'],
+    'Aliganj':           [26.8900, 80.9400, 'Uttar Pradesh'],
+    'Indira Nagar Lucknow': [26.8800, 80.9900, 'Uttar Pradesh'],
+
+    /* ---- Indore and Bhopal ------------------------------------------- */
+    'Vijay Nagar Indore': [22.7500, 75.8900, 'Madhya Pradesh'],
+    'Rau':               [22.6400, 75.8100, 'Madhya Pradesh'],
+    'Arera Colony':      [23.2100, 77.4300, 'Madhya Pradesh'],
+    'MP Nagar':          [23.2330, 77.4340, 'Madhya Pradesh'],
+
+    /* ---- Patna ------------------------------------------------------- */
+    'Boring Road':       [25.6200, 85.1200, 'Bihar'],
+    'Kankarbagh':        [25.5900, 85.1600, 'Bihar'],
+    'Danapur':           [25.6300, 85.0500, 'Bihar'],
+
+    /* ---- Bhubaneswar -------------------------------------------------- */
+    'Patia':             [20.3500, 85.8200, 'Odisha'],
+    'Chandrasekharpur':  [20.3200, 85.8200, 'Odisha'],
+    'Saheed Nagar':      [20.2900, 85.8400, 'Odisha'],
+
+    /* ---- Guwahati ----------------------------------------------------- */
+    'Dispur':            [26.1400, 91.7900, 'Assam'],
+    'Beltola':           [26.1300, 91.7900, 'Assam'],
+    'Jalukbari':         [26.1500, 91.6600, 'Assam'],
+
+    /* ---- Ludhiana and Amritsar ---------------------------------------- */
+    'Model Town Ludhiana': [30.8800, 75.8400, 'Punjab'],
+    'Ranjit Avenue':     [31.6400, 74.8700, 'Punjab'],
+
+    /* ---- Chandigarh ---------------------------------------------------- */
+    'Mohali Phase 8':    [30.7100, 76.7200, 'Punjab'],
+    'Panchkula Sector 5': [30.6900, 76.8500, 'Haryana']
   };
 
   var C = window.INDIA_COORDS = window.INDIA_COORDS || {};
@@ -21208,6 +21361,46 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
    * approximation, and labelled as one where it matters.
    */
   var DISTRICT_OF = {
+    /* Andhra Pradesh - the state that had no localities at all */
+    'Gajuwaka': 'Visakhapatnam', 'Madhurawada': 'Visakhapatnam',
+    'MVP Colony': 'Visakhapatnam', 'Seethammadhara': 'Visakhapatnam',
+    'Akkayyapalem': 'Visakhapatnam', 'Dwaraka Nagar': 'Visakhapatnam',
+    'NAD': 'Visakhapatnam', 'Gopalapatnam': 'Visakhapatnam',
+    'Pendurthi': 'Visakhapatnam', 'Simhachalam': 'Visakhapatnam',
+    'Arilova': 'Visakhapatnam', 'Rushikonda': 'Visakhapatnam',
+    'Duvvada': 'Visakhapatnam', 'Kurmannapalem': 'Visakhapatnam',
+    'Aganampudi': 'Visakhapatnam', 'Sheela Nagar': 'Visakhapatnam',
+    'Anandapuram': 'Visakhapatnam', 'Bheemili': 'Visakhapatnam',
+    'Benz Circle': 'NTR', 'Gunadala': 'NTR', 'Patamata': 'NTR',
+    'Kanuru': 'NTR', 'Ibrahimpatnam AP': 'NTR',
+    'Gannavaram': 'Krishna', 'Poranki': 'Krishna',
+    'Mangalagiri': 'Guntur', 'Tadepalli': 'Guntur',
+    'Brodipet': 'Guntur', 'Lakshmipuram': 'Guntur', 'Nallapadu': 'Guntur',
+    'Tenali': 'Guntur',
+    'Tiruchanoor': 'Tirupati', 'Renigunta': 'Tirupati', 'Chandragiri': 'Tirupati',
+
+    /* Kerala */
+    'Kakkanad': 'Ernakulam', 'Edappally': 'Ernakulam', 'Fort Kochi': 'Ernakulam',
+    'Aluva': 'Ernakulam', 'Kalamassery': 'Ernakulam', 'Tripunithura': 'Ernakulam',
+    'Technopark': 'Thiruvananthapuram', 'Kazhakkoottam': 'Thiruvananthapuram',
+    'Kowdiar': 'Thiruvananthapuram',
+
+    /* Rajasthan, Uttar Pradesh, Madhya Pradesh */
+    'Malviya Nagar Jaipur': 'Jaipur', 'Vaishali Nagar': 'Jaipur',
+    'Mansarovar': 'Jaipur', 'Sitapura': 'Jaipur',
+    'Gomti Nagar': 'Lucknow', 'Hazratganj': 'Lucknow', 'Aliganj': 'Lucknow',
+    'Indira Nagar Lucknow': 'Lucknow',
+    'Vijay Nagar Indore': 'Indore', 'Rau': 'Indore',
+    'Arera Colony': 'Bhopal', 'MP Nagar': 'Bhopal',
+
+    /* Bihar, Odisha, Assam, Punjab, Haryana */
+    'Boring Road': 'Patna', 'Kankarbagh': 'Patna', 'Danapur': 'Patna',
+    'Patia': 'Khordha', 'Chandrasekharpur': 'Khordha', 'Saheed Nagar': 'Khordha',
+    'Dispur': 'Kamrup Metropolitan', 'Beltola': 'Kamrup Metropolitan',
+    'Jalukbari': 'Kamrup Metropolitan',
+    'Model Town Ludhiana': 'Ludhiana', 'Ranjit Avenue': 'Amritsar',
+    'Mohali Phase 8': 'Mohali', 'Panchkula Sector 5': 'Panchkula',
+
     /* Telangana */
     'Secunderabad': 'Hyderabad', 'Madhapur': 'Hyderabad', 'Hitech City': 'Hyderabad',
     'Gachibowli': 'Hyderabad', 'Kondapur': 'Hyderabad', 'Banjara Hills': 'Hyderabad',

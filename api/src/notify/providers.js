@@ -193,6 +193,35 @@ async function sendViaEmailJS({ to, subject, html, text, vars = {}, templateId }
   return { status: 'sent', provider: 'emailjs', ref: null };
 }
 
+/**
+ * Is this address on a domain that can never receive mail?
+ *
+ * RFC 2606 and RFC 6761 set aside example.com, example.net,
+ * example.org, and the .test, .example, .invalid and .localhost
+ * top-level domains precisely so that they can be used in documentation
+ * and testing without reaching anybody. Nothing on them has an inbox.
+ *
+ * SENDING TO ONE IS ALWAYS A MISTAKE, and not a harmless one. The mail
+ * server accepts the message, discovers there is no such domain, and
+ * returns it - so the mailbox fills with "Address not found" bounces,
+ * and a stream of them is exactly what teaches a provider to distrust
+ * the sender. Verification runs in this repository create candidates on
+ * example.com by design, and every interview and application they
+ * exercised put a real message on the wire to an address that could not
+ * exist.
+ *
+ * Recorded as `skipped` rather than `failed`: nothing went wrong, there
+ * was simply nobody to write to, and a failure would read as a fault to
+ * go and fix.
+ */
+export function isReservedTestAddress(to) {
+  const at = String(to || '').trim().toLowerCase();
+  const domain = at.slice(at.lastIndexOf('@') + 1).replace(/[>\s]+$/, '');
+  if (!domain) return false;
+  if (/^example\.(com|net|org)$/.test(domain)) return true;
+  return /\.(test|example|invalid|localhost)$/.test(domain);
+}
+
 export const emailProvider = {
   channel: 'email',
   // Any transport counts as configured. SMTP first, then EmailJS, then a
@@ -213,6 +242,10 @@ export const emailProvider = {
             : 'EMAIL_SMTP_HOST, EMAILJS_* or EMAIL_API_KEY is not set');
     }
     if (!to) return { status: 'failed', provider: 'email', error: 'no email address' };
+    if (isReservedTestAddress(to)) {
+      return { status: 'skipped_test_address', provider: 'email', to,
+               reason: 'a reserved test address cannot receive mail' };
+    }
 
     // EmailJS before the generic HTTP API, because a deployment that has
     // set it up has said which one it means.

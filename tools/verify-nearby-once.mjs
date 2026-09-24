@@ -55,17 +55,43 @@ await page.evaluate((k) => {
 }, key);
 await page.waitForTimeout(700);
 
-/** How many times each place name appears in the panel. */
+/**
+ * How many times each place appears IN THE NEAR BY LIST.
+ *
+ * Scoped to that list on purpose. The picker has two parts and always
+ * did: the states-and-districts hierarchy, which lists every district in
+ * India, and the Near by panel, which lists what is inside the chosen
+ * radius. A district is naturally in both - that is what "near" means -
+ * and counting across the whole panel calls the design a duplicate.
+ *
+ * The fault this test exists for was different and is checked below: the
+ * same nearby places drawn TWICE as two lists of the same towns. Within
+ * one list, a place must appear once.
+ */
 const nameCounts = () => page.evaluate((k) => {
   const root = document.getElementById('tlTree_' + k);
   if (!root || !root.classList.contains('on')) return {};
   const n = {};
-  root.querySelectorAll('.tl-row2 .nm').forEach((el) => {
+  root.querySelectorAll('.tl-nblist .tl-row2 .nm').forEach((el) => {
     const t = (el.textContent || '').trim();
-    if (!t || /^All\b/.test(t)) return;        /* "All - Telangana" is a heading row */
+    if (!t) return;
     n[t] = (n[t] || 0) + 1;
   });
   return n;
+}, key);
+
+/**
+ * The nearby places must be drawn in ONE place.
+ *
+ * With a radius set, the main hierarchy must not start showing distances
+ * of its own - that is the screen the complaint was about, the same towns
+ * with the same kilometres one above the other.
+ */
+const distancesOutsideNearby = () => page.evaluate((k) => {
+  const root = document.getElementById('tlTree_' + k);
+  if (!root) return 0;
+  return [...root.querySelectorAll('.tl-km')]
+    .filter((el) => !el.closest('.tl-nblist')).length;
 }, key);
 
 /** Anything that would be a second nearby section. */
@@ -91,7 +117,12 @@ check(shown > 1, `with the panel open, the places around Tirupati are listed (${
 check(dupes.length === 0,
   `and not one of them appears twice (${dupes.map(([n, v]) => n + ' x' + v).join(', ') || 'none does'})`);
 check(openCounts.Tirupati === 1,
-  `Tirupati itself appears exactly once (${openCounts.Tirupati})`);
+  `Tirupati itself appears exactly once in that list (${openCounts.Tirupati})`);
+
+/* The fault this whole file exists for: the same towns drawn twice. */
+const strays = await distancesOutsideNearby();
+check(strays === 0,
+  `and no distances are drawn outside the Near by list, so no town is listed twice (${strays})`);
 
 const sec = await sections();
 check(sec.blocks === 0, `there is no separate nearby block (${sec.blocks})`);

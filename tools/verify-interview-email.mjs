@@ -100,11 +100,31 @@ try {
    */
   const emailStatus = (res) => (res && res.delivery_status && res.delivery_status.email) || null;
 
+  /*
+   * THIS RUN'S CANDIDATE IS ON example.com, WHICH HAS NO INBOX.
+   *
+   * Earlier versions of this test asserted "sent" and got it: Gmail
+   * accepted the message, discovered example.com resolves to nothing,
+   * and bounced it back. Every run put another "Address not found" in
+   * the recruiter's real mailbox, and a stream of bounces is how a
+   * provider learns to distrust a sender. The delivery was genuine - it
+   * was proved twice against Gmail's own accepted list - and it was
+   * still the wrong thing to do on a schedule.
+   *
+   * Reserved test domains are skipped at the provider now, so what this
+   * asserts is that the pipeline REACHED the email channel and made a
+   * deliberate decision about it. For a reserved address the right
+   * decision is "skipped"; for a real one it is "sent", and the same
+   * code path produces both.
+   */
+  const reserved = /@(?:example\.(?:com|net|org)|.*\.(?:test|example|invalid|localhost))$/i.test(EMAIL);
   for (const [name, res] of [['AI_INTERVIEW_COMPLETED', completed], ['AI_SCORE_AVAILABLE', scored]]) {
     const st = emailStatus(res);
     check(!!st, `  ${name}: email was attempted (${st || 'not attempted at all'})`);
-    check(st === 'sent',
-      `  ${name}: the mail server accepted it (${st})`);
+    check(reserved ? st === 'skipped_test_address' : st === 'sent',
+      `  ${name}: ${reserved
+        ? `no mail was sent to a reserved test address (${st})`
+        : `the mail server accepted it (${st})`}`);
     check((res.channels_attempted || []).includes('email'),
       `  ${name}: email is among the channels for this event`);
   }
@@ -137,9 +157,13 @@ try {
       + ` ${String(r.to || r.recipient || '').slice(0, 44)}`
       + (r.error ? `  (${String(r.error).slice(0, 40)})` : ''));
   }
-  const mailed = about.filter((r) => String(r.channel) === 'email' && String(r.status) === 'sent');
+  /* Recorded either way: the row says which decision was made, and for a
+     reserved test address "skipped" is the right one. */
+  const mailed = about.filter((r) => String(r.channel) === 'email'
+    && /^(sent|skipped_test_address)$/.test(String(r.status)));
   check(mailed.length > 0,
-    `  and at least one of them is an email marked sent (${mailed.length})`);
+    `  and the email channel is recorded against it (${
+      mailed.map((r) => r.status).join(', ') || 'no email row'})`);
 } finally {
   /* ---- put the portal back exactly as it was ---------------------- */
   try { await api('post', '/auth/logout', {}); } catch { /* already gone */ }
