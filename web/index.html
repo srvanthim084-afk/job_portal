@@ -2383,17 +2383,60 @@ function parseResumeText(text){
     dob: extractResumeDOB(clean), noticePeriod: extractResumeNoticePeriod(clean), languages: extractResumeLanguages(clean),
   };
 }
+/**
+ * Is this address already registered?
+ *
+ * A CANDIDATE WITH NO EMAIL ADDRESS IS NORMAL and this assumed otherwise.
+ * Naukri's daily digest names the people who applied and gives no contact
+ * details at all - that is the whole reason the attached CV gets read -
+ * so every candidate imported from one has `email: null`. Reading
+ * `.toLowerCase()` off that threw "Cannot read properties of null", and
+ * the damage was out of all proportion to the typo:
+ *
+ *   - validateRegisterForm() calls this, and runs on EVERY keystroke. So
+ *     every character typed anywhere on the registration form threw
+ *     before validation finished. The Submit button never enabled and
+ *     the AI tags never cleared - the form looked like the keyboard had
+ *     stopped working.
+ *   - applying a resume's extracted email hit the same line, which is
+ *     why uploading a CV showed "Cannot read properties of null
+ *     (reading 'toLowerCase')" instead of the fields filling in.
+ *
+ * This is a HINT, not the authority. The list in the browser only holds
+ * the candidates this session is allowed to see, so it cannot know about
+ * an address belonging to somebody else's candidate; the server checks
+ * for real when the account is created. It is here to tell somebody
+ * they already have an account before they fill in the whole form.
+ */
 function candidateEmailTaken(email){
   const v = String(email||'').trim().toLowerCase();
-  return !!v && DATA.candidates.some(c=>c.email.toLowerCase()===v);
+  if(!v) return false;
+  return DATA.candidates.some(c=>String((c&&c.email)||'').toLowerCase()===v);
 }
 function mobileDigitsOf(val){
   let digits = String(val||'').replace(/\D/g,'');
   if(digits.length>10 && digits.startsWith('91')) digits = digits.slice(2);
   return digits.slice(0,10);
 }
+/**
+ * Keep the mobile field looking like "+91 98765 43210" as it is typed.
+ *
+ * THE PREFIX THIS FUNCTION WRITES IS NOT PART OF THE NUMBER, and reading
+ * the field back without removing it was eating what the candidate typed.
+ * After "9" the field says "+91 9"; the next keystroke makes it
+ * "+91 98", whose digits are "9198" - the 91 this function put there,
+ * now indistinguishable from the number - and by the tenth digit
+ * 9876543210 had turned into 9191919876. mobileDigitsOf() only drops a
+ * leading 91 once the total exceeds ten digits, which is too late: the
+ * damage happens while it is still short.
+ *
+ * So the prefix is stripped before the digits are read. A candidate who
+ * pastes "+91 98765 43210" or "919876543210" is unaffected - that is
+ * what mobileDigitsOf() still handles.
+ */
 function formatIndianMobile(el){
-  const digits = mobileDigitsOf(el.value);
+  const typed = String(el.value||'').replace(/^\s*\+\s*91\s*/, '');
+  const digits = mobileDigitsOf(typed);
   let formatted = '+91';
   if(digits.length) formatted += ' ' + digits.slice(0,5);
   if(digits.length>5) formatted += ' ' + digits.slice(5,10);
@@ -13411,12 +13454,38 @@ a.rec-nav-link{text-decoration:none}
     else if(e.key==='Enter'){ if(list[st.hi]){ tlLocPick(key,list[st.hi].val); e.preventDefault(); } }
     else if(e.key==='Backspace'&&!st.q&&st.tags.length){ st.tags.pop(); redraw(key); }
   };
+  /* CLICKING INSIDE THE PANEL IS NOT CLICKING OUTSIDE IT.
+
+     This closed the picker whenever the click was outside the FIELD, and
+     the panel is not inside the field - it is attached to <body>, so that
+     a scrolling filter rail cannot clip it. Every click on a state
+     chevron, a district, a distance button or Collapse all therefore
+     counted as "outside" and set open=false.
+
+     Nothing looked wrong on the first click, because this runs after the
+     control's own handler has already redrawn the list. From the second
+     click on, tlLocRefresh() saw open=false and stopped updating the
+     markup, so the panel stayed on screen and froze: the chevrons, the
+     distance buttons and Collapse all all appeared dead.
+
+     The mousedown version of this, closeOutside() further down, checks
+     both the field AND the panel. This one now does the same. */
   document.addEventListener('click',function(e){
     Object.keys(stores).forEach(k=>{
       const h=document.getElementById('tlLoc_'+k);
-      if(h&&!h.contains(e.target)&&stores[k].open){ stores[k].open=false; const sg=document.getElementById('tlSug_'+k); if(sg) sg.classList.remove('on'); }
+      const panel=document.getElementById('tlTree_'+k);
+      const inside=(h&&h.contains(e.target))||(panel&&panel.contains(e.target));
+      if(h&&!inside&&stores[k].open){ stores[k].open=false; const sg=document.getElementById('tlSug_'+k); if(sg) sg.classList.remove('on'); }
     });
-  });
+  },true);   /* CAPTURE. See below. */
+  /* The `true` above is load-bearing.
+     In the bubble phase this runs AFTER the clicked control's own onclick,
+     and that handler has already called tlLocRefresh(), which replaces the
+     panel's innerHTML. e.target is then a DETACHED node, so
+     panel.contains(target) is false and the click is judged to be outside
+     a panel it was plainly inside. Capturing runs it before the re-render,
+     while the target is still in the tree - which is the same reason
+     closeOutside() below captures. */
 
   /* ---------------- candidate visibility (really affects recruiter search) ---------------- */
   const VKEY='teamlink_profile_visibility_v1';
@@ -15328,11 +15397,21 @@ body .cap-feedbar{bottom:0}
      you are dropped into. */
   /* Open the areas inside one district. Independent of which STATE is
      open, so opening Hyderabad's areas does not close Telangana. */
-  window.tlTreeArea=function(key,st,d){
+  /**
+   * Open or close one district's areas.
+   *
+   * `shown` is what the chevron is currently displaying, and it is passed
+   * in rather than worked out again here. The toggle used to be
+   * `t.area[k]=!t.area[k]`, which reads an UNDEFINED default as closed -
+   * and while a radius is set the areas are displayed OPEN by default, so
+   * the first click on an open one set it to true and changed nothing.
+   * The chevron looked dead and took two clicks to close.
+   */
+  window.tlTreeArea=function(key,st,d,shown){
     const t=tstate(key);
     t.area=t.area||{};
     const k=st+'|'+d;
-    t.area[k]=!t.area[k];
+    t.area[k]=(shown===undefined)?!t.area[k]:!shown;
     tlLocRefresh(key);
   };
 
@@ -15450,11 +15529,15 @@ body .cap-feedbar{bottom:0}
       const key2=st2+'|'+d;
       /* With a radius set the places inside it ARE the answer, so they
          are shown rather than hidden behind a chevron somebody has to
-         find. Without one, nothing about the expander changes. */
-      const isOpen=near?true:(t2.area&&t2.area[key2]===true);
+         find. Without one, nothing about the expander changes.
+
+         An explicit close still wins, which is why this is `!==false`
+         rather than `true`: forcing it open made the chevron dead while
+         a distance was chosen. */
+      const isOpen=near?((t2.area||{})[key2]!==false):(t2.area&&t2.area[key2]===true);
       return `<div class="tl-drow">
           <button type="button" class="tl-dcar" onmousedown="event.preventDefault()"
-            onclick="event.stopPropagation();tlTreeArea('${jq(k)}','${jq(st2)}','${jq(d)}')"
+            onclick="event.stopPropagation();tlTreeArea('${jq(k)}','${jq(st2)}','${jq(d)}',${isOpen?'true':'false'})"
             title="${areas.length} place${areas.length===1?'':'s'} in ${esc(d)}">${isOpen?'▾':'▸'}</button>
           ${row(d,d)}
         </div>
@@ -15498,7 +15581,14 @@ body .cap-feedbar{bottom:0}
          answer and its district is how the list reaches it. */
       const ds=near?all.filter(d=>kmOf(d)!==null||areasOf(s,d).length):all;
       if(near&&!ds.length) return '';
-      const open=near?true:t.exp[s]!==false;
+      /* A COLLAPSE IS THE RECRUITER'S AND IS NEVER OVERRIDDEN.
+
+         This read `near?true:t.exp[s]!==false`, which forced every state
+         open whenever a radius was set - so with a distance chosen the
+         chevrons and Collapse all did nothing at all. States are open by
+         default either way, because `t.exp[s]` is undefined until
+         somebody folds one; the radius does not need to force it. */
+      const open=t.exp[s]!==false;
       return `<div class="tl-sthead" onmousedown="event.preventDefault()" onclick="tlTreeExpand('${jq(key)}','${jq(s)}')">
           <span class="car">${open?'▾':'▸'}</span><span>${esc(s)}</span><span class="n">${ds.length}</span></div>
         ${open?`<div class="tl-dists">${row(s,'All - '+s,true)}${ds.map(d=>distRow(key,t,s,d)).join('')}</div>`:''}`;
