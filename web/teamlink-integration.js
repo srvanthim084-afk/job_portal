@@ -1089,14 +1089,29 @@
       var password = (document.getElementById('regPassword') || {}).value || '';
       var phone = g('regMobile');
 
+      /*
+       * THE FORM IS READ NOW, WHILE IT IS STILL ON THE SCREEN.
+       *
+       * This was read after the account was created and after refresh() -
+       * by which point registration has signed the candidate in and the
+       * page has moved on, so every field lookup returned an empty string
+       * and STATE.regResumeExtras had been cleared. The profile that
+       * reached the server was therefore almost empty: a candidate who
+       * registered with a complete CV arrived with a name, an email and a
+       * phone number, and a recruiter searching by skill could not find
+       * them.
+       *
+       * Reading it here costs nothing if the registration then fails -
+       * the object is simply discarded.
+       */
+      var profile = collectRegistrationProfile();
+
       return api.post('/auth/register', {
         name: name, email: email, password: password, phone: phone,
       }).then(function (res) {
-        // Let the prototype's own function build the rich candidate object
-        // from every field on the form, then persist it to the new record.
+        // The rest of the profile, against the record that now exists.
         var candidateId = res.candidateId;
         return refresh().then(function () {
-          var profile = collectRegistrationProfile();
           if (!profile) return;
           return api.put('/candidates/' + encodeURIComponent(candidateId), profile)
             .then(function (r) {
@@ -1156,10 +1171,35 @@
    * Requirement 9: whatever could not be parsed stays editable and is
    * saved as-is rather than causing the record to be discarded.
    */
+  /**
+   * Everything the registration form and the uploaded CV between them
+   * know about this person.
+   *
+   * THIS SENT SIX FIELDS. Location, employer, job title, candidate type,
+   * years and work modes - and nothing else. The resume extractor reads
+   * seventeen: skills, education, notice period, certifications,
+   * languages, LinkedIn, GitHub, portfolio, previous employers. Those
+   * were pulled out of the CV, shown on the form for the candidate to
+   * check, and then dropped on the way to the server, which had columns
+   * waiting for every one of them. A candidate registered with a full
+   * CV and arrived in the recruiter's portal with a name, an email and a
+   * phone number - so a recruiter searching by skill could not find
+   * them, which is the whole point of the search.
+   *
+   * Only what is actually there is sent: an empty field is left off
+   * rather than sent as an empty string, so nothing overwrites a value
+   * the server already has with a blank.
+   */
   function collectRegistrationProfile() {
     var g = function (id) {
       var el = document.getElementById(id);
       return el ? String(el.value || '').trim() : '';
+    };
+    var list = function (v) {
+      return String(v || '').split(/[,;|]/)
+        .map(function (x) { return x.trim(); })
+        .filter(function (x) { return x.length > 1; })
+        .slice(0, 40);
     };
     var typeEl = document.querySelector('input[name="regCandidateType"]:checked');
     var out = {
@@ -1167,17 +1207,54 @@
       currentCompany: g('regCompany'),
       title: g('regDesignation'),
       candidateType: typeEl ? typeEl.value : undefined,
+      noticePeriod: g('regNotice'),
+      preferredLocation: g('regPrefLocation'),
+      education: g('regQualification'),
     };
+
     var exp = Number(g('regTotalExp') || 0);
     if (exp > 0) { out.expYears = exp; out.exp = exp + ' yrs'; }
+
+    var ctc = Number(String(g('regExpSalary')).replace(/[^\d.]/g, ''));
+    if (ctc > 0) out.expectedCtc = ctc;
+
+    var skills = list(g('regSkills'));
+    if (skills.length) out.skills = skills;
 
     var modes = [].slice.call(
       document.querySelectorAll('.opt-row input[type="checkbox"]:checked'))
       .map(function (cb) { return cb.value; });
     if (modes.length) out.preferredWorkModes = modes;
 
+    /*
+     * What the CV said that the form has no box for. The extractor puts
+     * these on STATE.regResumeExtras precisely because there is nowhere
+     * on the page to show them; until now that meant nowhere at all.
+     */
+    var extras = (window.STATE && window.STATE.regResumeExtras) || null;
+    if (extras) {
+      if ((extras.certifications || []).length) out.certifications = extras.certifications.slice(0, 60);
+      if ((extras.languages || []).length) out.languages = extras.languages.slice(0, 30);
+      if ((extras.previousCompanies || []).length) out.previousCompanies = extras.previousCompanies.slice(0, 40);
+      if (extras.linkedin) out.linkedin = String(extras.linkedin).slice(0, 300);
+      if (extras.github) out.github = String(extras.github).slice(0, 300);
+      if (extras.portfolio) out.portfolio = String(extras.portfolio).slice(0, 300);
+    }
+
+    /*
+     * The degree, its subject, the institute and the year, as one line -
+     * which is the shape the education column holds and what a recruiter
+     * reads. STATE.regEdu is what the education parser made of the CV.
+     */
+    var edu = (window.STATE && window.STATE.regEdu) || null;
+    if (edu && (edu.spec || edu.institute || edu.year)) {
+      var bits = [edu.degree || out.education, edu.spec, edu.institute, edu.year]
+        .filter(Boolean).join(', ');
+      if (bits) out.education = bits.slice(0, 400);
+    }
+
     Object.keys(out).forEach(function (k) {
-      if (out[k] === '' || out[k] === undefined) delete out[k];
+      if (out[k] === '' || out[k] === undefined || out[k] === null) delete out[k];
     });
     return Object.keys(out).length ? out : null;
   }

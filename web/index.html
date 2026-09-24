@@ -2323,16 +2323,81 @@ function extractResumePreviousCompanies(text){
   if(!m) return [];
   return m[1].split(/,|\n|;/).map(s=>s.trim()).filter(Boolean).slice(0,5);
 }
+/**
+ * The block under a heading, in either of the two shapes CVs use.
+ *
+ * Everything here looked for "Certifications: a, b" - a label, a colon
+ * and the value on the SAME line. Almost no real CV is written that way.
+ * They put the heading on its own line and the content underneath:
+ *
+ *     CERTIFICATIONS
+ *     Basic Life Support (BLS), Advanced Cardiac Life Support (ACLS)
+ *
+ * which returned nothing, so a nurse's certifications, languages and
+ * skills were all read as absent from a CV that listed every one of them.
+ *
+ * Both shapes are read now. The block ends at the next heading, at a
+ * blank line once something has been collected, or after six lines -
+ * whichever comes first - so a section never swallows the one below it.
+ */
+function resumeHeadingLine(t){
+  var v = String(t||'').trim();
+  if(!v || v.length > 42) return false;
+  /* A heading is short and either shouts or ends in a colon: "SKILLS",
+     "Technical Skills:", "WORK EXPERIENCE". A sentence is neither. */
+  if(/[.;]$/.test(v)) return false;
+  if(/^[A-Z0-9 &\/()'.,-]+$/.test(v) && /[A-Z]{3}/.test(v)) return true;
+  return /^[A-Za-z][A-Za-z \/&-]{2,40}:$/.test(v);
+}
+function resumeSection(text, label){
+  var lines = String(text||'').split(/\r?\n/);
+  var inline = new RegExp('^\\s*(?:'+label+')\\s*[:\\-]\\s*(.+)$', 'i');
+  var alone  = new RegExp('^\\s*(?:'+label+')\\s*:?\\s*$', 'i');
+  for(var i=0;i<lines.length;i++){
+    var line = lines[i];
+    var m = line.match(inline);
+    if(m && m[1].trim()) return m[1].trim();
+    if(alone.test(line)){
+      var out = [];
+      for(var j=i+1;j<lines.length && out.length<6;j++){
+        var t = lines[j].trim();
+        if(!t){ if(out.length) break; else continue; }
+        if(resumeHeadingLine(t)) break;
+        out.push(t);
+      }
+      if(out.length) return out.join(', ');
+    }
+  }
+  return '';
+}
+/** A comma / semicolon / newline list, tidied. */
+function resumeList(v, max){
+  return String(v||'').split(/[,;\n|]/)
+    .map(function(x){ return x.replace(/^[\s\-•*]+/, '').trim(); })
+    .filter(function(x){ return x && x.length>1 && x.length<=60; })
+    .slice(0, max||12);
+}
+
 function extractResumeCertifications(text){
   const m = text.match(new RegExp('certifications?\\s*[:\\-]\\s*(.+?)'+resumeLabelBoundary(), 'i'));
-  if(!m) return [];
-  return m[1].split(/,|\n|;/).map(s=>s.trim()).filter(Boolean).slice(0,6);
+  if(m) return resumeList(m[1], 8);
+  // The heading-on-its-own-line form, which is how most CVs write it.
+  return resumeList(resumeSection(text, 'certifications?|certificates?|licen[cs]es?'), 8);
 }
 function extractResumeLinks(text){
-  const linkedin = (text.match(/https?:\/\/(?:www\.)?linkedin\.com\/[^\s,]+/i)||[])[0]||'';
-  const github = (text.match(/https?:\/\/(?:www\.)?github\.com\/[^\s,]+/i)||[])[0]||'';
-  const all = text.match(/https?:\/\/[^\s,]+/gi) || [];
-  const portfolio = all.find(u=>!/linkedin\.com|github\.com/i.test(u)) || '';
+  /* NOBODY TYPES THE SCHEME. These required "https://" and real CVs
+     write "linkedin.com/in/meghana-rao" or "LinkedIn: github.com/x", so
+     every profile link was read as absent. The scheme is optional now,
+     and a bare domain still has to look like one. */
+  const linkedin = (text.match(/(?:https?:\/\/)?(?:www\.)?linkedin\.com\/[^\s,)\]]+/i)||[])[0]||'';
+  const github = (text.match(/(?:https?:\/\/)?(?:www\.)?github\.com\/[^\s,)\]]+/i)||[])[0]||'';
+  const all = text.match(/(?:https?:\/\/)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+\/?[^\s,)\]]*/gi) || [];
+  const portfolio = all.find(function(u){
+    if(/linkedin\.com|github\.com/i.test(u)) return false;
+    if(/@/.test(u)) return false;                        // an email address
+    if(/\.(?:pdf|docx?|png|jpe?g)$/i.test(u)) return false;
+    return /^https?:\/\//i.test(u) || /\.(?:dev|io|com|net|org|me|in|co)(?:\/|$)/i.test(u);
+  }) || '';
   return { linkedin, github, portfolio };
 }
 function extractResumeDOB(text){
@@ -2351,16 +2416,47 @@ function extractResumeNoticePeriod(text){
 }
 function extractResumeLanguages(text){
   const m = text.match(new RegExp('languages?(?:\\s+known)?\\s*[:\\-][ \\t]*(.+?)'+resumeLabelBoundary(), 'i'));
-  if(!m) return [];
-  return m[1].split(/,|\n|;/).map(s=>s.trim()).filter(Boolean).slice(0,6);
+  if(m) return resumeList(m[1], 6);
+  return resumeList(resumeSection(text, 'languages?(?:\\s+known)?|languages?\\s+spoken'), 6);
 }
 function parseResumeText(text){
   const clean = String(text||'');
   const lower = clean.toLowerCase();
-  const skills = allSkillsList().filter(s=>lower.includes(s.toLowerCase()));
+  /*
+   * WHAT THE CV LISTS, PLUS WHAT WE RECOGNISE IN ITS PROSE.
+   *
+   * This was only the second half: every skill in a fixed list that
+   * happened to appear anywhere in the text. That list is a technology
+   * list, so a nurse's CV reading "Critical Care, Patient Monitoring, IV
+   * Therapy, Wound Care, Triage" produced NO skills at all - the one
+   * field a recruiter searches on, left empty by a CV that named five.
+   *
+   * The CV's own skills section is read first and kept in the order the
+   * candidate wrote it; the recognised ones are appended for anything
+   * mentioned in prose but not listed. Compared case-insensitively so
+   * "SQL" and "sql" are one skill, not two.
+   */
+  const listed = resumeList(resumeSection(clean,
+    'skills?|key\\s*skills|core\\s+skills|technical\\s+skills|core\\s+competenc(?:y|ies)|areas?\\s+of\\s+expertise'), 24);
+  const known = allSkillsList().filter(s=>lower.includes(s.toLowerCase()));
+  const seenSkill = {};
+  const skills = listed.concat(known).filter(function(x){
+    var k = String(x).trim().toLowerCase();
+    if(!k || seenSkill[k]) return false;
+    seenSkill[k] = 1; return true;
+  }).slice(0, 30);
   let expYears = null;
-  const expMatch = clean.match(/(\d{1,2})\+?\s*(?:years?|yrs?)\s+(?:of\s+)?(?:relevant\s+|professional\s+|total\s+|work\s+)?experience/i);
-  if(expMatch) expYears = Math.max(0, Math.min(10, parseInt(expMatch[1],10)));
+  /*
+   * "6 years experience" AND "Total Experience: 6 years".
+   *
+   * Only the first was matched - the number had to come BEFORE the word -
+   * so a CV with a labelled line, which is how most of them write it,
+   * reported no experience at all and the form defaulted the candidate
+   * to zero years.
+   */
+  const expMatch = clean.match(/(\d{1,2}(?:\.\d)?)\+?\s*(?:years?|yrs?)\s+(?:of\s+)?(?:relevant\s+|professional\s+|total\s+|work\s+)?experience/i)
+    || clean.match(/(?:total\s+|overall\s+|relevant\s+|work\s+)?experience\s*[:\-]\s*(\d{1,2}(?:\.\d)?)\+?\s*(?:years?|yrs?)/i);
+  if(expMatch) expYears = Math.max(0, Math.min(10, Math.round(parseFloat(expMatch[1]))));
   const edu = (typeof window.tlParseEducation==='function') ? tlParseEducation(clean) : null;
   let qualification = edu && edu.degree ? edu.degree : '';
   if(!qualification){
