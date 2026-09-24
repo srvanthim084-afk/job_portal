@@ -219,8 +219,27 @@ await check('a thin answer draws a follow-up, a full one does not', async () => 
   must(/brief|example/i.test(thin.followUp), `unexpected follow-up: ${thin.followUp}`);
 
   const tech = questions.find((q) => q.category === 'technical');
+  /*
+   * ANSWERED WITH WHAT THIS QUESTION IS LOOKING FOR.
+   *
+   * GOOD alone is a well-formed answer to a question about test
+   * automation, and the question the server actually asks depends on the
+   * requirement it was generated from - so against a nursing or
+   * recruiting role it is a fluent answer to something nobody asked.
+   * That used to score, because an off-topic answer earned up to 24 out
+   * of 100 for its length; it scores zero now, correctly, and the
+   * assertion below would fail for the right reason on a test that never
+   * answered the question.
+   *
+   * The expected points come back with the question, so the answer is
+   * built to address it whatever the requirement happens to be.
+   */
+  const expects = (tech.expects || tech.topic || []).map(String).filter(Boolean);
+  const onTopic = expects.length
+    ? `I worked on ${expects.slice(0, 4).join(', ')} directly. ${GOOD}`
+    : GOOD;
   const full = await api('post', `/ai-interviews/${interviewId}/answer`,
-    { seq: tech.seq, transcript: GOOD });
+    { seq: tech.seq, transcript: onTopic });
   // A follow-up here is allowed, but it must be about something genuinely
   // missing rather than the length.
   if (full.followUp) {

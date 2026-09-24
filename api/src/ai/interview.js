@@ -647,15 +647,47 @@ function gradeByCoverage({ answers }) {
     const words = text.split(/\s+/).filter(Boolean);
     const expects = (a.expects || []).map((x) => String(x).toLowerCase());
     const hits = expects.filter((k) => k && text.includes(k));
-    const onTopic = hits.length > 0 || !expects.length;
+    /*
+     * A QUESTION WITH NOTHING TO CHECK AGAINST CANNOT BE MARKED.
+     *
+     * `expects` is the list of things a good answer would mention. When
+     * it is empty - which happens when the requirement it was generated
+     * from lists no skills - every answer counted as on topic and the
+     * score fell back to word count: `coverage = words.length > 8 ? 0.5
+     * : 0.25`. A candidate reciting a shopping list scored half marks,
+     * and fourteen of fifteen deliberately irrelevant answers earned
+     * something.
+     *
+     * There is no honest mark for an answer nobody can check, so it is
+     * left out of the average rather than given one. The question, the
+     * transcript and the communication mark are all still reported - a
+     * recruiter can read it and judge - and if NOTHING in the interview
+     * could be checked, aggregate() says so instead of inventing a
+     * number.
+     */
+    if (!expects.length) {
+      return { seq: a.seq, category: a.category, section: a.section, question: a.question,
+        answered: true, score: null, unscored: true, commScore: comm,
+        justification: 'Not scored — this question has no expected points to check an answer against, because the requirement it came from lists no skills.',
+        detail: { technicalRelevance: null, completeness: null, accuracy: null,
+                  communication: Math.round(comm / 10) } };
+    }
+    const onTopic = hits.length > 0;
 
     const comm = clampNum(35 + Math.min(1, words.length / 45) * 55 + (/[.,]/.test(text) ? 5 : 0));
 
     if (!onTopic) {
+      /* AN ANSWER TO A DIFFERENT QUESTION IS NOT A PARTIAL ANSWER.
+         This gave up to 24 out of 100 for saying enough words, so a
+         candidate who talked about their garden for a minute beat one
+         who answered briefly and correctly. Off topic is zero. The
+         communication mark is kept - they did speak clearly, about
+         something else - and the transcript is kept so a recruiter can
+         see what was actually said. */
       return { seq: a.seq, category: a.category, section: a.section, question: a.question,
-        answered: true, score: Math.min(24, 8 + words.length), commScore: comm,
+        answered: true, score: 0, commScore: comm, offTopic: true,
         justification: 'Off topic — the answer did not address what was asked.',
-        detail: { technicalRelevance: 1, completeness: 1, accuracy: 2,
+        detail: { technicalRelevance: 0, completeness: 0, accuracy: 0,
                   communication: Math.round(comm / 10) } };
     }
     const coverage = expects.length ? hits.length / expects.length : (words.length > 8 ? 0.5 : 0.25);
@@ -681,8 +713,12 @@ function gradeByCoverage({ answers }) {
     };
   });
 
-  return { ...aggregate(perQuestion), perQuestion, contentScored: true, engine: 'rules',
-    feedback: null };
+  const summary = aggregate(perQuestion);
+  /* `contentScored` is what the record uses to say whether the number
+     means anything. An interview where no question could be checked is
+     not a scored interview, however many were asked. */
+  return { ...summary, perQuestion, engine: 'rules', feedback: null,
+    contentScored: summary.scoredQuestions > 0 };
 }
 
 /**
@@ -697,8 +733,17 @@ function gradeByCoverage({ answers }) {
  * get asked.
  */
 function aggregate(per) {
-  const mean = (xs) => (xs.length
-    ? Math.round(xs.reduce((t, p) => t + Number(p.score), 0) / xs.length) : 0);
+  /*
+   * Only the answers that could actually be marked count towards a
+   * mean. A question with nothing to check an answer against carries
+   * score: null, and averaging that in as a zero would punish the
+   * candidate for how the requirement was written.
+   */
+  const scored = per.filter((p) => p && p.score != null && !p.unscored);
+  const mean = (xs) => {
+    const ys = xs.filter((p) => p && p.score != null && !p.unscored);
+    return ys.length ? Math.round(ys.reduce((t, p) => t + Number(p.score), 0) / ys.length) : 0;
+  };
   const bySection = (name) => mean(per.filter((p) => p.section === name));
   const byCategory = (cats) => mean(per.filter((p) => cats.includes(p.category)));
   const sectioned = per.some((p) => p.section);
@@ -714,6 +759,13 @@ function aggregate(per) {
     communication: comms.length
       ? Math.round(comms.reduce((t, p) => t + Number(p.commScore), 0) / comms.length) : 0,
     overall: mean(per),
+    /*
+     * How much of this interview could be marked at all. A recruiter
+     * reading 0% needs to know whether that is a bad interview or an
+     * unmarkable one, and those look identical without this.
+     */
+    scoredQuestions: scored.length,
+    askedQuestions: per.length,
   };
 }
 
