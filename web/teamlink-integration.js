@@ -4313,6 +4313,18 @@
           : '<div style="font-size:13px;color:var(--text-soft)">Nothing waiting — every email either imported or was ignored.</div>') +
 
         '<div id="tlIntakeOut" style="margin-top:12px">' + (TL.intake.lastMessage || '') + '</div>' +
+        // Which board to read, beside the button that reads it. Three
+        // plain buttons in the row that is already there - no new panel,
+        // and "Both" is first because it is what a morning sync wants.
+        '<div id="tlIntakeBoard" style="display:flex;gap:6px;align-items:center;margin-top:12px;flex-wrap:wrap">' +
+        '<span style="font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;' +
+        'color:var(--text-soft);margin-right:2px">Import from</span>' +
+        [['all', 'Both'], ['naukri', 'Naukri'], ['shine', 'Shine']].map(function (b) {
+          return '<button type="button" data-board="' + b[0] + '"' +
+            ' class="btn btn-sm ' + ((TL.intake.board || 'all') === b[0] ? 'btn-primary' : 'btn-ghost') + '"' +
+            " onclick=\"TL.intake.setBoard('" + b[0] + "')\">" + esc(b[1]) + '</button>';
+        }).join('') +
+        '</div>' +
         '<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">' +
         '<button class="btn btn-primary" onclick="TL.intake.sync()">Sync every mailbox now</button>' +
         '<button class="btn btn-ghost" onclick="fcrCloseModal()">Close</button>' +
@@ -4354,9 +4366,34 @@
       });
   };
 
+  /*
+   * WHICH BOARD to read.
+   *
+   * The sync always read everything, which is right most mornings and
+   * wrong when a recruiter is chasing one board: "Sync" gave no way to
+   * say "just the Shine responses", and no way to tell afterwards which
+   * of the two the candidates had come from. The API has taken a `board`
+   * since Shine was added; nothing on screen ever sent one.
+   */
+  TL.intake.board = 'all';
+  TL.intake.setBoard = function (v) {
+    TL.intake.board = v || 'all';
+    var host = document.getElementById('tlIntakeBoard');
+    if (!host) return;
+    [].forEach.call(host.querySelectorAll('button'), function (b) {
+      b.className = 'btn btn-sm ' + (b.getAttribute('data-board') === TL.intake.board
+        ? 'btn-primary' : 'btn-ghost');
+    });
+  };
+
   TL.intake.sync = function (mailboxId) {
-    intakeOut('<div class="req-note">Reading the mailbox…</div>');
-    return api.post('/intake/sync', mailboxId ? { mailboxId: mailboxId } : {})
+    var board = TL.intake.board || 'all';
+    intakeOut('<div class="req-note">Reading the mailbox'
+      + (board === 'all' ? '' : ' for ' + esc(board === 'naukri' ? 'Naukri' : 'Shine'))
+      + '…</div>');
+    var body = mailboxId ? { mailboxId: mailboxId } : {};
+    if (board !== 'all') body.board = board;
+    return api.post('/intake/sync', body)
       .then(function (r) {
         var lines = (r.synced || []).map(function (s) {
           if (s.error) {
@@ -4371,7 +4408,20 @@
             (s.duplicates ? ', ' + s.duplicates + ' already seen' : '') + '</div>';
         }).join('');
 
-        intakeOut('<div class="req-note" style="background:var(--ok-100);color:var(--ok-600)">' + lines + '</div>');
+        /*
+         * How many came from each board, and the note the API returns
+         * when a board's format has never been confirmed against a real
+         * message - pressing "Shine" and getting nothing has two
+         * explanations and this is the one that says which.
+         */
+        var tally = '';
+        if ((r.naukri || 0) + (r.shine || 0) > 0) {
+          tally = '<div style="margin-top:6px;font-size:12px">'
+            + 'Naukri ' + (r.naukri || 0) + ' · Shine ' + (r.shine || 0) + '</div>';
+        }
+        intakeOut('<div class="req-note" style="background:var(--ok-100);color:var(--ok-600)">'
+          + lines + tally + '</div>'
+          + (r.note ? '<div class="req-note" style="margin-top:6px">' + esc(r.note) + '</div>' : ''));
         if (typeof window.toast === 'function' && r.imported) {
           window.toast(r.imported + ' application' + (r.imported === 1 ? '' : 's') + ' imported', '📥');
         }
@@ -5717,19 +5767,96 @@
         '$1' + row + '$2');
 
       /*
-       * NO LOCALITY LIST HERE.
+       * THE NEARBY PLACES GO IN THE LIST, with their distance beside
+       * them, as rows of the list that is already there.
        *
-       * One was added, and it was a duplicate: the panel already lists
-       * nearby places with their distance - "NEAR PRAKASAM, ANDHRA
-       * PRADESH · 25 places within 100 km" - from data that covers the
-       * whole country, not the six metros a hand-written table could.
-       * Adding a second list meant every place appeared twice, once in
-       * each.
+       * They used to be chips in a panel of their own beside it, which
+       * meant a recruiter picking Hyderabad saw a second block appear
+       * rather than the list they were already reading filling in. This
+       * injects rows into the SAME list, built from the SAME markup the
+       * list uses for every other row - the same <label class="tl-row2">,
+       * the same checkbox, the same tlTreePick() - so ticking one is
+       * indistinguishable from ticking a district, and the candidate
+       * search receives it exactly as it always did.
        *
-       * What is kept from that change is the distance CHOICES below,
-       * which were 25/50/100/150/200 and are now 5/10/15/25/50/100 and
-       * Any Distance. The existing list does the rest, better.
+       * NOTHING HERE IS A STORED DISTANCE. Every kilometre on screen is
+       * haversine over the latitude and longitude the dataset holds, so
+       * changing the radius changes the list, and a place with no
+       * coordinates on file never appears with a made-up number.
        */
+      var anchor = null;
+      var tags = st.tags || [];
+      for (var i = tags.length - 1; i >= 0 && !anchor; i--) {
+        // A whole state has no single point to measure from.
+        if (window.INDIA_GEO && window.INDIA_GEO[tags[i]]) continue;
+        var c = null;
+        try {
+          c = (window.INDIA_COORDS || {})[tags[i]]
+            || (window.TL_LOC && TL_LOC.coordsOf ? TL_LOC.coordsOf(tags[i]) : null);
+        } catch (e) { c = null; }
+        if (c) anchor = { name: tags[i], c: c };
+      }
+
+      if (anchor && typeof window.tlNearbyList === 'function') {
+        /*
+         * "Any Distance" means every place we can locate, so the radius
+         * is the planet rather than a number somebody has to maintain.
+         * "Exact city" means the one they picked and nothing else.
+         */
+        var chosen = String(st.km || '');
+        var radius = chosen === 'any' ? 20000 : (chosen ? Number(chosen) : 0);
+
+        var near = radius ? window.tlNearbyList(anchor, radius, tags) : [];
+        var picked = function (v) {
+          return tags.some(function (t) { return String(t).toLowerCase() === String(v).toLowerCase(); });
+        };
+        var nearRow = function (name, km, isAnchor) {
+          return '<label class="tl-row2' + (isAnchor ? ' b' : '') + '"'
+            + ' onmousedown="event.preventDefault()">'
+            + '<input type="checkbox"' + (picked(name) ? ' checked' : '')
+            + " onchange=\"tlTreePick('" + q(key) + "','" + q(name) + "',this.checked)\">"
+            + '<span class="nm">' + esc(name) + '</span>'
+            // Rounded for reading, measured exactly for filtering.
+            + '<span class="tl-km">' + esc(String(Math.round(km))) + ' KM</span>'
+            + '</label>';
+        };
+
+        var rows = nearRow(anchor.name, 0, true)
+          + near.map(function (p) { return nearRow(p.name, p.km, false); }).join('');
+
+        var heading = chosen === 'any'
+          ? 'Near ' + anchor.name
+          : chosen
+            ? 'Near ' + anchor.name + ' &middot; within ' + esc(chosen) + ' KM'
+            : 'Near ' + anchor.name;
+        var note = chosen
+          ? (near.length + ' place' + (near.length === 1 ? '' : 's') + ' found')
+          : 'Choose a distance above to list the places around it.';
+
+        var block = '<div class="grp tl-nbgrp"><b>' + heading + '</b>'
+          + rows
+          + '<div class="tl-kmnote" style="padding-top:4px">' + esc(note) + '</div></div>';
+
+        /*
+         * At the top of the MAIN column, immediately above "Country &
+         * region", inside the list a recruiter is already reading.
+         *
+         * The panel is two columns - tl-main scrolls the list, tl-side
+         * holds the distance buttons - so this goes into the first, not
+         * beside it. A plain string replace rather than a pattern,
+         * because the one thing that must not happen is a silent miss
+         * that leaves the list looking untouched.
+         */
+        var COUNTRY = '<div class="grp"><b>Country &amp; region</b>';
+        if (html.indexOf(COUNTRY) >= 0) {
+          html = html.replace(COUNTRY, block + COUNTRY);
+        } else {
+          // The list is built differently from what this expects. Say so
+          // in the console rather than quietly rendering nothing.
+          try { console.warn('[TeamLink] nearby rows: the list anchor moved'); } catch (e) {}
+        }
+      }
+
       return html;
     };
     window.tlTreeHtml.__tlLocalities = true;

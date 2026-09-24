@@ -15220,6 +15220,12 @@ body .cap-feedbar{bottom:0}
 .tl-row2{display:flex;align-items:center;gap:9px;padding:6px 10px;font-size:12.8px;color:#3a4859;cursor:pointer}
 .tl-row2:hover{background:#f6f9fd}
 .tl-row2 input{margin:0;accent-color:#1d6ff2;flex:0 0 auto}
+/* The distance, on the same row as the place it belongs to. Nothing else
+   about the row changes: same height, same hover, same checkbox. */
+.tl-row2 .nm{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tl-row2 .tl-km{flex:0 0 auto;margin-left:auto;padding-left:10px;font-size:11.5px;
+  font-weight:700;color:#8a94a6;font-variant-numeric:tabular-nums}
+.tl-row2:hover .tl-km{color:#5b90e8}
 .tl-row2 .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tl-row2.b .nm{font-weight:700;color:#17222f}
 .tl-sthead{display:flex;align-items:center;gap:8px;padding:7px 10px;font-size:12.8px;font-weight:700;color:#17222f;cursor:pointer;border-top:1px solid #f4f6fa}
@@ -20593,6 +20599,181 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
 </script>
 <script>
 /* =====================================================================
+   TEAMLINK — localities, so "near Hyderabad" means Madhapur and not
+   Warangal.
+
+   THE DATA WAS THE MISSING PIECE, not the arithmetic. INDIA_COORDS
+   holds DISTRICTS - roughly seven hundred of them - and the haversine
+   that measures between them has been there all along. But a recruiter
+   hiring in Hyderabad does not think in districts: they think Madhapur,
+   Gachibowli, Hitech City, Kukatpally. None of those existed anywhere in
+   the dataset, so "nearby Hyderabad" could only answer Rangareddy,
+   Sangareddy, Warangal - correct, and useless.
+
+   These are the localities of the cities where most hiring happens, with
+   their REAL coordinates. Nothing here is a distance: every distance on
+   screen is computed from these latitudes and longitudes by the same
+   haversine the districts already use, so changing the radius changes
+   the list, and a place with no coordinates is never given a made-up
+   number.
+
+   They join the existing pool through INDIA_COORDS and the city/state
+   map, which is all the nearby list and the candidate filter read. No
+   other file knows this exists.
+   ===================================================================== */
+(function () {
+  'use strict';
+
+  /* name: [latitude, longitude, state] */
+  var L = {
+    /* ---- Hyderabad ------------------------------------------------- */
+    'Secunderabad':      [17.4399, 78.4983, 'Telangana'],
+    'Madhapur':          [17.4483, 78.3915, 'Telangana'],
+    'Hitech City':       [17.4435, 78.3772, 'Telangana'],
+    'Gachibowli':        [17.4401, 78.3489, 'Telangana'],
+    'Kondapur':          [17.4615, 78.3639, 'Telangana'],
+    'Manikonda':         [17.4028, 78.3861, 'Telangana'],
+    'Nanakramguda':      [17.4200, 78.3400, 'Telangana'],
+    'Kukatpally':        [17.4948, 78.4000, 'Telangana'],
+    'Miyapur':           [17.4924, 78.3600, 'Telangana'],
+    'Nizampet':          [17.5100, 78.3900, 'Telangana'],
+    'Banjara Hills':     [17.4156, 78.4347, 'Telangana'],
+    'Jubilee Hills':     [17.4239, 78.4738, 'Telangana'],
+    'Ameerpet':          [17.4375, 78.4483, 'Telangana'],
+    'Begumpet':          [17.4399, 78.4636, 'Telangana'],
+    'Uppal':             [17.4058, 78.5590, 'Telangana'],
+    'Dilsukhnagar':      [17.3687, 78.5247, 'Telangana'],
+    'LB Nagar':          [17.3457, 78.5522, 'Telangana'],
+    'Shamshabad':        [17.2403, 78.4294, 'Telangana'],
+    'Kompally':          [17.5405, 78.4867, 'Telangana'],
+    'Patancheru':        [17.5300, 78.2600, 'Telangana'],
+    'Ghatkesar':         [17.4500, 78.6800, 'Telangana'],
+
+    /* ---- Bangalore ------------------------------------------------- */
+    'Whitefield':        [12.9698, 77.7500, 'Karnataka'],
+    'Electronic City':   [12.8452, 77.6602, 'Karnataka'],
+    'Koramangala':       [12.9352, 77.6245, 'Karnataka'],
+    'Indiranagar':       [12.9784, 77.6408, 'Karnataka'],
+    'Marathahalli':      [12.9591, 77.6974, 'Karnataka'],
+    'HSR Layout':        [12.9116, 77.6389, 'Karnataka'],
+    'BTM Layout':        [12.9166, 77.6101, 'Karnataka'],
+    'Jayanagar':         [12.9250, 77.5938, 'Karnataka'],
+    'JP Nagar':          [12.9063, 77.5857, 'Karnataka'],
+    'Banashankari':      [12.9250, 77.5468, 'Karnataka'],
+    'Rajajinagar':       [12.9916, 77.5526, 'Karnataka'],
+    'Malleshwaram':      [13.0027, 77.5709, 'Karnataka'],
+    'Hebbal':            [13.0358, 77.5970, 'Karnataka'],
+    'Yelahanka':         [13.1007, 77.5963, 'Karnataka'],
+    'Bellandur':         [12.9304, 77.6784, 'Karnataka'],
+    'Sarjapur':          [12.8600, 77.7860, 'Karnataka'],
+    'Peenya':            [13.0280, 77.5190, 'Karnataka'],
+    'Kengeri':           [12.9081, 77.4830, 'Karnataka'],
+
+    /* ---- Chennai --------------------------------------------------- */
+    'T Nagar':           [13.0418, 80.2341, 'Tamil Nadu'],
+    'Velachery':         [12.9791, 80.2212, 'Tamil Nadu'],
+    'Adyar':             [13.0067, 80.2570, 'Tamil Nadu'],
+    'Anna Nagar':        [13.0850, 80.2101, 'Tamil Nadu'],
+    'Guindy':            [13.0067, 80.2206, 'Tamil Nadu'],
+    'Porur':             [13.0382, 80.1565, 'Tamil Nadu'],
+    'Sholinganallur':    [12.9010, 80.2279, 'Tamil Nadu'],
+    'Perungudi':         [12.9650, 80.2450, 'Tamil Nadu'],
+    'Tambaram':          [12.9249, 80.1000, 'Tamil Nadu'],
+    'Chromepet':         [12.9516, 80.1462, 'Tamil Nadu'],
+    'Ambattur':          [13.1143, 80.1548, 'Tamil Nadu'],
+    'Nungambakkam':      [13.0569, 80.2425, 'Tamil Nadu'],
+    'Egmore':            [13.0732, 80.2609, 'Tamil Nadu'],
+    'Siruseri':          [12.8250, 80.2200, 'Tamil Nadu'],
+    'Avadi':             [13.1147, 80.1098, 'Tamil Nadu'],
+
+    /* ---- Mumbai ---------------------------------------------------- */
+    'Andheri':           [19.1136, 72.8697, 'Maharashtra'],
+    'Bandra':            [19.0596, 72.8295, 'Maharashtra'],
+    'Powai':             [19.1176, 72.9060, 'Maharashtra'],
+    'Goregaon':          [19.1663, 72.8526, 'Maharashtra'],
+    'Malad':             [19.1868, 72.8484, 'Maharashtra'],
+    'Borivali':          [19.2307, 72.8567, 'Maharashtra'],
+    'Vashi':             [19.0771, 72.9986, 'Maharashtra'],
+    'Airoli':            [19.1590, 72.9990, 'Maharashtra'],
+    'Dadar':             [19.0176, 72.8440, 'Maharashtra'],
+    'Lower Parel':       [18.9960, 72.8300, 'Maharashtra'],
+    'Bandra Kurla Complex': [19.0662, 72.8690, 'Maharashtra'],
+    'Chembur':           [19.0522, 72.9005, 'Maharashtra'],
+    'Ghatkopar':         [19.0860, 72.9080, 'Maharashtra'],
+    'Mulund':            [19.1720, 72.9560, 'Maharashtra'],
+    'Kalyan':            [19.2437, 73.1355, 'Maharashtra'],
+    'Panvel':            [18.9894, 73.1175, 'Maharashtra'],
+
+    /* ---- Pune ------------------------------------------------------ */
+    'Hinjewadi':         [18.5913, 73.7389, 'Maharashtra'],
+    'Kharadi':           [18.5515, 73.9470, 'Maharashtra'],
+    'Magarpatta':        [18.5150, 73.9280, 'Maharashtra'],
+    'Viman Nagar':       [18.5679, 73.9143, 'Maharashtra'],
+    'Baner':             [18.5590, 73.7868, 'Maharashtra'],
+    'Aundh':             [18.5590, 73.8070, 'Maharashtra'],
+    'Wakad':             [18.5975, 73.7650, 'Maharashtra'],
+    'Pimpri':            [18.6298, 73.7997, 'Maharashtra'],
+    'Chinchwad':         [18.6480, 73.7600, 'Maharashtra'],
+    'Hadapsar':          [18.5089, 73.9260, 'Maharashtra'],
+    'Kothrud':           [18.5074, 73.8077, 'Maharashtra'],
+    'Katraj':            [18.4480, 73.8570, 'Maharashtra'],
+    'Chakan':            [18.7600, 73.8600, 'Maharashtra'],
+
+    /* ---- Delhi NCR -------------------------------------------------- */
+    'Connaught Place':   [28.6315, 77.2167, 'Delhi'],
+    'Greater Noida':     [28.4744, 77.5040, 'Uttar Pradesh'],
+    'Cyber City':        [28.4950, 77.0890, 'Haryana'],
+    'Dwarka':            [28.5921, 77.0460, 'Delhi'],
+    'Rohini':            [28.7495, 77.0565, 'Delhi'],
+    'Saket':             [28.5245, 77.2066, 'Delhi'],
+    'Nehru Place':       [28.5494, 77.2500, 'Delhi'],
+    'Lajpat Nagar':      [28.5677, 77.2433, 'Delhi'],
+    'Karol Bagh':        [28.6519, 77.1909, 'Delhi'],
+    'Janakpuri':         [28.6219, 77.0878, 'Delhi'],
+    'Vasant Kunj':       [28.5200, 77.1590, 'Delhi'],
+    'Okhla':             [28.5355, 77.2730, 'Delhi'],
+
+    /* ---- Kolkata ---------------------------------------------------- */
+    'Salt Lake':         [22.5800, 88.4200, 'West Bengal'],
+    'New Town':          [22.5800, 88.4700, 'West Bengal'],
+    'Rajarhat':          [22.6200, 88.4600, 'West Bengal'],
+    'Behala':            [22.4990, 88.3130, 'West Bengal'],
+    'Dum Dum':           [22.6200, 88.4200, 'West Bengal'],
+    'Garia':             [22.4600, 88.3900, 'West Bengal'],
+    'Park Street':       [22.5530, 88.3520, 'West Bengal'],
+
+    /* ---- Ahmedabad --------------------------------------------------- */
+    'SG Highway':        [23.0300, 72.5100, 'Gujarat'],
+    'Satellite':         [23.0300, 72.5200, 'Gujarat'],
+    'Bopal':             [23.0300, 72.4700, 'Gujarat'],
+    'Maninagar':         [22.9960, 72.6020, 'Gujarat'],
+    'Vastrapur':         [23.0350, 72.5290, 'Gujarat'],
+    'Naroda':            [23.0700, 72.6600, 'Gujarat']
+  };
+
+  var C = window.INDIA_COORDS = window.INDIA_COORDS || {};
+  var CS = window.INDIA_CITY_STATE_MAP = window.INDIA_CITY_STATE_MAP || {};
+
+  /*
+   * Added, never overwritten.
+   *
+   * A few of these names are also district names - Tambaram and Avadi
+   * are both - and the district's own coordinate is the one the rest of
+   * the app already agrees on. Adding beside it rather than over it
+   * keeps every existing distance exactly as it was.
+   */
+  Object.keys(L).forEach(function (name) {
+    if (!C[name]) C[name] = [L[name][0], L[name][1]];
+    if (!CS[name]) CS[name] = L[name][2];
+  });
+
+  /* So a screen can ask, rather than guessing from a name. */
+  window.INDIA_LOCALITIES = L;
+})();
+</script>
+
+<script>
+/* =====================================================================
    Pick a place, set a radius — the places inside that radius are listed
    beside it.
 
@@ -20730,10 +20911,18 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
         E(p.name)+'<i>'+p.km+'km</i></button>';
     }).join('');
     var rest=list.length-cut;
+    /*
+     * THE PLACES THEMSELVES NOW LIVE IN THE LIST, each with its distance
+     * beside it, so this panel no longer repeats them as chips - the
+     * same towns appearing twice on one screen is what it looked like
+     * before, and it read as a fault rather than a convenience.
+     *
+     * What is kept is the count and the radius, which answer "is this
+     * radius any use?" at a glance without listing anything twice.
+     */
     return '<div class="tl-nb"><b>'+list.length+' near '+E(a.name)+'</b>'+
-      '<div class="tl-nbsub">'+(auto?'within 100 km — tap to add':'within your '+E(String(r))+' KM setting')+'</div>'+
-      '<div class="tl-nbwrap">'+chips+'</div>'+
-      (rest>0?'<button type="button" class="tl-nbmore" onmousedown="event.preventDefault()" onclick="tlNearbyMore(\''+jq(key)+'\')">Show all '+list.length+'</button>':'')+
+      '<div class="tl-nbsub">'+(auto?'within 100 km'
+        :'within your '+E(String(r))+' KM setting')+' — listed on the left</div>'+
       '</div>';
   }
   window.tlNearbyHtml=html;
