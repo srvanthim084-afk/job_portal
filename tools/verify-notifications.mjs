@@ -183,6 +183,26 @@ await check('every attempt is recorded against the application', async () => {
 
 await candidate.ctx.close();
 await recruiter.ctx.close();
+/* ------------------------------------------------------------------ *
+ * take the test candidate back out
+ * ------------------------------------------------------------------ *
+ * This creates a real candidate and a real application, because a test
+ * that stubs them proves nothing about notifications. Every run used to
+ * leave that person in the portal, looking exactly like somebody who had
+ * applied. The database allows an admin to remove a candidate whose
+ * address is on a domain reserved for testing, and nothing else.
+ */
+await check('the test candidate is removed again', async () => {
+  const admin = await open();
+  await admin.api('post', '/auth/login', {
+    email: process.env.TL_ADMIN || 'admin@teamlink.com',
+    password: process.env.TL_ADMIN_PASSWORD || PASSWORD,
+    role: 'admin',
+  });
+  const gone = await admin.api('post', '/admin/purge-test-candidate', { candidateId });
+  must(gone && gone.removed === true, `not removed: ${JSON.stringify(gone)}`);
+});
+
 await browser.close();
 
 console.log(failed === 0

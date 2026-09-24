@@ -289,6 +289,29 @@ export default function intakeRoutes() {
       res.json(out);
     }));
 
+  /**
+   * POST /api/admin/purge-test-candidate
+   *
+   * Lets an acceptance test remove the candidate it created.
+   *
+   * The tests create real people on purpose - one that stubs the
+   * candidate proves nothing - and they could not clean up, because
+   * there is no route that deletes an applicant and there should not be.
+   * One was left behind per run, sitting in the recruiter's portal
+   * looking exactly like somebody who had applied.
+   *
+   * The database decides, not this handler: candidate_purge_test()
+   * refuses anything whose address is not on a domain reserved for
+   * testing, so the narrowness cannot be lost by a change here.
+   */
+  r.post('/admin/purge-test-candidate', requireAuth(), requireRole('admin'),
+    wrap(async (req, res) => {
+      const b = parse(z.object({ candidateId: z.string().trim().min(1).max(64) }), req.body);
+      const out = await withUser(req.session, async (c) => (await c.query(
+        `select candidate_purge_test($1) as out`, [b.candidateId])).rows[0].out);
+      res.json(out);
+    }));
+
   r.patch('/intake/mailboxes/:id', requireAuth(), requireRole('recruiter', 'admin'),
     wrap(async (req, res) => {
       const b = parse(z.object({

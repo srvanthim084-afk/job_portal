@@ -182,8 +182,22 @@ await check('the test data is removed again', async () => {
     `/jobs?q=${encodeURIComponent(`Trigger Test ${stamp}`)}`)).jobs || [])
     .filter((j) => j.title === `Trigger Test ${stamp}`);
   must(left.length === 0, `${left.length} test job(s) left in the portal`);
-  console.log(`        candidate ${email} remains - there is no route that`
-    + ' deletes an applicant, and there should not be');
+
+  /*
+   * And the candidate. There is no route that deletes an applicant and
+   * there should not be, so the database allows exactly this instead: an
+   * admin removing one whose address is on a domain reserved for
+   * testing. Without it every run left a person in the portal looking
+   * exactly like a real application.
+   */
+  const mine = ((await admin.api('get',
+    `/candidates?q=${encodeURIComponent(email)}&limit=5`)).candidates || [])[0];
+  if (mine) {
+    const gone = await admin.api('post', '/admin/purge-test-candidate',
+      { candidateId: mine.id });
+    must(gone && gone.removed === true,
+      `the test candidate was left behind: ${JSON.stringify(gone)}`);
+  }
 });
 
 await browser.close();

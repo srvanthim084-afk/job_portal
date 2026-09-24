@@ -245,7 +245,24 @@ try {
     `/jobs?q=${encodeURIComponent(`Screening Test ${stamp}`)}`)).jobs || [])
     .filter((j) => j.title === `Screening Test ${stamp}`);
   check(left.length === 0, 'the test requirement was removed again');
-  console.log(`      candidate ${email} remains - run tools/cleanup-verification.mjs --confirm`);
+
+  /*
+   * And the CANDIDATE, which is the part that used to be impossible.
+   *
+   * There is no route that deletes an applicant and there should not be
+   * - an ATS where a recruiter can erase somebody has no audit trail -
+   * so every run used to leave one person behind, sitting in the
+   * recruiter's portal looking exactly like a real application. The
+   * database now allows exactly this: an admin removing a candidate
+   * whose address is on a domain reserved for testing, and nothing else.
+   */
+  if (candidateId) {
+    const gone = await admin.api('post', '/admin/purge-test-candidate',
+      { candidateId: candidateId });
+    check(gone && gone.removed === true,
+      `the test candidate was removed too (${JSON.stringify(gone)})`);
+  }
+
 } catch (e) {
   console.log(`  NOTE: the test requirement was left behind (${e.message})`);
 }
