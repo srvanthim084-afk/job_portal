@@ -4584,7 +4584,7 @@ function pageRecruiterDash(section, params){
       <thead><tr><th>Candidate</th><th>Applied for</th><th>Applied on</th><th>AI Match</th><th>Stage</th><th>Action</th></tr></thead>
       <tbody>${(typeof window.sortAppsNewestFirst==='function'?sortAppsNewestFirst(apps):apps).map(a=>{ const c=DATA.candidateById(a.candidateId), j=DATA.jobById(a.jobId);
         return `<tr><td class="clickable" onclick="navigate('/recruiter/candidate-profile?id=${c.id}')">${personCell(c)}</td><td>${esc(j.title)}${(typeof window.tlCoTag==='function')?tlCoTag(j):''}</td><td style="font-size:12px;white-space:nowrap">${typeof window.appliedOnHtml==='function'?appliedOnHtml(a,c):esc(a.appliedAt||'—')}</td><td><span class="score ${scoreClass(a.matchScore)}">${a.matchScore}%</span></td><td>${stageBadge(a.stage)}</td>
-        <td class="row-actions">${a.stage==='applied'||a.stage==='ai_screening' ? `<button class="btn btn-ai btn-sm" onclick="runAIScreeningForApp('${a.id}')">Run AI Screening</button>` : ''}${['shortlisted','interview_scheduled','selected','offer_extended','rejected'].includes(a.stage)?`<button class="btn btn-primary btn-sm" onclick="sendStatusEmail('${a.id}')">Notify Candidate</button><button class="btn btn-ghost btn-sm" ${c.phone?`onclick="openStatusWhatsApp('${a.id}')"`:'disabled title="No mobile number is available for this candidate"'}>Open WhatsApp</button>`:''}<button class="btn btn-ghost btn-sm" onclick="navigate('/recruiter/candidate-profile?id=${c.id}')">View</button></td></tr>`; }).join('')}
+        <td class="row-actions">${(typeof window.tlNeedsScreening==='function'?tlNeedsScreening(a):(a.stage==='applied'||a.stage==='ai_screening')) ? `<button class="btn btn-ai btn-sm" onclick="runAIScreeningForApp('${a.id}')">Run AI Screening</button>` : (typeof window.tlScreenedTag==='function'?tlScreenedTag(a):'')}${['shortlisted','interview_scheduled','selected','offer_extended','rejected'].includes(a.stage)?`<button class="btn btn-primary btn-sm" onclick="sendStatusEmail('${a.id}')">Notify Candidate</button><button class="btn btn-ghost btn-sm" ${c.phone?`onclick="openStatusWhatsApp('${a.id}')"`:'disabled title="No mobile number is available for this candidate"'}>Open WhatsApp</button>`:''}<button class="btn btn-ghost btn-sm" onclick="navigate('/recruiter/candidate-profile?id=${c.id}')">View</button></td></tr>`; }).join('')}
       </tbody></table></div></div></div>`;
   }
 
@@ -4670,7 +4670,7 @@ function pageRecruiterDash(section, params){
         <thead><tr><th>Applied for</th><th>AI Match</th><th>Stage</th><th>Applied</th><th>Action</th></tr></thead>
         <tbody>${candApps.length ? candApps.map(a=>{ const j=DATA.jobById(a.jobId);
           return `<tr><td>${esc(j.title)}</td><td><span class="score ${scoreClass(a.matchScore)}">${a.matchScore}%</span></td><td>${stageBadge(a.stage)}</td><td style="font-size:12px;color:var(--text-soft);white-space:nowrap">${typeof window.appliedOnHtml==='function'?appliedOnHtml(a,c):esc(a.appliedAt)}</td>
-          <td class="row-actions">${a.stage==='applied'||a.stage==='ai_screening' ? `<button class="btn btn-ai btn-sm" onclick="runAIScreeningForApp('${a.id}')">Run AI Screening</button>` : `<button class="btn btn-ghost btn-sm" onclick="navigate('/recruiter/pipeline')">View in Pipeline</button>`}${['shortlisted','interview_scheduled','selected','offer_extended','rejected'].includes(a.stage)?`<button class="btn btn-primary btn-sm" onclick="sendStatusEmail('${a.id}')">Notify Candidate</button><button class="btn btn-ghost btn-sm" ${c.phone?`onclick="openStatusWhatsApp('${a.id}')"`:'disabled title="No mobile number is available for this candidate"'}>Open WhatsApp</button>`:''}</td></tr>`; }).join('') : `<tr><td colspan="5"><div class="empty-note">No applications at ${esc(co.name)} yet.</div></td></tr>`}
+          <td class="row-actions">${(typeof window.tlNeedsScreening==='function'?tlNeedsScreening(a):(a.stage==='applied'||a.stage==='ai_screening')) ? `<button class="btn btn-ai btn-sm" onclick="runAIScreeningForApp('${a.id}')">Run AI Screening</button>` : (typeof window.tlScreenedTag==='function'?tlScreenedTag(a):'')+`<button class="btn btn-ghost btn-sm" onclick="navigate('/recruiter/pipeline')">View in Pipeline</button>`}${['shortlisted','interview_scheduled','selected','offer_extended','rejected'].includes(a.stage)?`<button class="btn btn-primary btn-sm" onclick="sendStatusEmail('${a.id}')">Notify Candidate</button><button class="btn btn-ghost btn-sm" ${c.phone?`onclick="openStatusWhatsApp('${a.id}')"`:'disabled title="No mobile number is available for this candidate"'}>Open WhatsApp</button>`:''}</td></tr>`; }).join('') : `<tr><td colspan="5"><div class="empty-note">No applications at ${esc(co.name)} yet.</div></td></tr>`}
         </tbody></table></div></div></div>`;
     }
   }
@@ -4710,7 +4710,8 @@ function pageRecruiterDash(section, params){
           <div style="margin-top:12px"><span style="font-size:11px;font-weight:700;color:var(--text-soft);text-transform:uppercase">Matched skills</span><br>${overlap.map(s=>`<span class="skill-tag" style="background:var(--ok-100);color:var(--ok-600)">${esc(s)}</span>`).join('')||'<span style="font-size:12px;color:var(--text-soft)">None detected</span>'}</div>
           ${missing.length?`<div style="margin-top:8px"><span style="font-size:11px;font-weight:700;color:var(--text-soft);text-transform:uppercase">Gaps</span><br>${missing.map(s=>`<span class="skill-tag" style="background:var(--bad-100);color:var(--bad-600)">${esc(s)}</span>`).join('')}</div>`:''}
           <div style="margin-top:14px;display:flex;gap:8px">
-            <button class="btn btn-ai btn-sm" onclick="runAIScreeningForApp('${a.id}')">Run AI Screening</button>
+            <button class="btn btn-ai btn-sm" onclick="runAIScreeningForApp('${a.id}')">${
+              (typeof window.tlNeedsScreening==='function'&&!tlNeedsScreening(a))?'Screen again':'Run AI Screening'}</button>
             <button class="btn btn-ghost btn-sm" onclick="moveApplicationStage('${a.id}','shortlisted')">Shortlist manually</button>
             <button class="btn btn-danger-ghost btn-sm" onclick="rejectApplicationStage('${a.id}')">Reject</button>
           </div>
@@ -11731,11 +11732,66 @@ a.rec-nav-link{text-decoration:none}
     const t=timeOf(a,c);
     return pretty(d)+(t?', '+t:'')+' · '+relOf(a,c);
   };
+  /**
+   * Does this application still need screening?
+   *
+   * IT ASKS ABOUT THE SCORE, NOT THE STAGE. "Run AI Screening" was shown
+   * whenever the stage was 'applied' or 'ai_screening' - which is every
+   * application a human has not moved on - so a recruiter saw the button
+   * on all eighty-seven of theirs and reasonably concluded the screening
+   * had never run. It had. Every one of them already carries an AI score,
+   * written automatically when the candidate was imported and again by
+   * the sweep that runs every ten minutes.
+   *
+   * Screening IS automatic. This button is the manual retry for the ones
+   * it could not do - an unreadable CV, a failure while the scorer was
+   * down - and offering it for finished work is what hid those.
+   */
+  window.tlNeedsScreening=function(a){
+    if(!a) return false;
+    if(a.stage!=='applied'&&a.stage!=='ai_screening') return false;
+    const score=(a.aiScore!=null)?a.aiScore:a.matchScore;
+    return score==null||score==='';
+  };
+
+  /** "Screened 72%", where the work is already done. */
+  window.tlScreenedTag=function(a){
+    const score=(a&&a.aiScore!=null)?a.aiScore:(a&&a.matchScore);
+    if(score==null||score==='') return '';
+    return '<span class="tl-screened" title="Screened automatically when this application arrived">'
+      +'\u2713 Screened '+esc(String(Math.round(Number(score))))+'%</span>';
+  };
+
+  /**
+   * Which job board this application came from.
+   *
+   * A recruiter running both boards could not tell one from the other
+   * anywhere on the screen. The column has always existed and was simply
+   * never shown - and until now it was not worth showing, because the
+   * intake wrote the literal string 'naukri' on every row including the
+   * seventeen that came from Shine.
+   *
+   * It goes in the date cell rather than in a new column, so no table
+   * changes shape.
+   */
+  const TL_SOURCE_LABEL={naukri:'Naukri',shine:'Shine',portal:'Portal',
+    referral:'Referral',walkin:'Walk-in',rediscovery:'Rediscovery',external:'External'};
+  window.tlSourceTag=function(a){
+    const raw=String((a&&a.source)||'').trim();
+    if(!raw) return '';
+    const label=TL_SOURCE_LABEL[raw.toLowerCase()]||raw;
+    const how=String((a&&a.importMethod)||'')==='recruiter_email'
+      ? 'Imported from a '+label+' email' : 'Source: '+label;
+    return '<span class="tl-src tl-src-'+esc(raw.toLowerCase().replace(/[^a-z0-9]+/g,''))
+      +'" title="'+esc(how)+'">'+esc(label)+'</span>';
+  };
+
   window.appliedOnHtml=function(a,c){
     const d=appliedOnOf(a,c);
     if(!d) return esc(String((a&&a.appliedAt)||'—'));
     const t=timeOf(a,c);
-    return `<span title="Applied on ${esc(pretty(d))}${t?' at '+esc(t):''}"><b style="font-weight:700;color:var(--text)">${esc(pretty(d))}${t?`<span style="font-weight:400;color:var(--text-soft)">, ${esc(t)}</span>`:''}</b><br><span style="color:var(--text-soft)">${esc(relOf(a,c))}</span></span>`;
+    const src=(typeof window.tlSourceTag==='function')?tlSourceTag(a):'';
+    return `<span title="Applied on ${esc(pretty(d))}${t?' at '+esc(t):''}"><b style="font-weight:700;color:var(--text)">${esc(pretty(d))}${t?`<span style="font-weight:400;color:var(--text-soft)">, ${esc(t)}</span>`:''}</b><br><span style="color:var(--text-soft)">${esc(relOf(a,c))}</span>${src?'<br>'+src:''}</span>`;
   };
   /* stamp the exact moment on every new application */
   const prevApply2=window.applyToJob;
@@ -21620,6 +21676,19 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
 </script>
 
 <style>
+/* Where an application came from, and whether it has been screened.
+   Two small tags added to cells that already exist - no table changes
+   shape and no column is added. */
+.tl-src{display:inline-block;margin-top:3px;font-size:10px;font-weight:700;letter-spacing:.02em;
+  padding:1px 6px;border-radius:999px;background:#eef2f7;color:#5b6e84;border:1px solid #dde5ee}
+.tl-src-naukri{background:#fff2e8;color:#9a5116;border-color:#ffd9bd}
+.tl-src-shine{background:#eef0ff;color:#3f3f9a;border-color:#d7daff}
+.tl-src-portal{background:#eafaf1;color:#1c7a4a;border-color:#c7ecd8}
+.tl-screened{display:inline-block;font-size:11px;font-weight:700;color:#1c7a4a;
+  background:#eafaf1;border:1px solid #c7ecd8;border-radius:999px;padding:2px 9px;white-space:nowrap}
+</style>
+
+<style>
 /* the state a place belongs to, shown with the place */
 .tl-tag .tl-tst{font-style:normal;font-size:10px;font-weight:600;color:#7d8899;margin-left:5px;
   letter-spacing:.01em;white-space:nowrap}
@@ -23575,4 +23644,114 @@ table.data td .tl-af b{white-space:normal}
      exactly as supplied. This script replaces the data source; it does
      not touch the DOM, the CSS or any render function.
      ===================================================================== -->
+<style>
+/* ---------------------------------------------------------------------
+   Show the password.
+
+   Eight password boxes across the app - login, registration, both change
+   -password forms - and not one of them could be read back. Somebody
+   mistyping a password on a phone keyboard has no way to see it, and the
+   only feedback is a refused login.
+
+   The button is added by script rather than to eight bits of markup, so
+   nothing above changes and a box added later gets one too.
+   --------------------------------------------------------------------- */
+.tl-eye-wrap{position:relative;display:block}
+.tl-eye-wrap>input{padding-right:40px!important}
+.tl-eye{position:absolute;top:50%;right:6px;transform:translateY(-50%);
+  width:30px;height:30px;display:flex;align-items:center;justify-content:center;
+  border:0;background:transparent;cursor:pointer;padding:0;line-height:1;
+  color:#7d8899;border-radius:6px;font-size:15px}
+.tl-eye:hover{background:#eef2f7;color:#41506a}
+.tl-eye:focus-visible{outline:2px solid #4f46e5;outline-offset:1px}
+</style>
+<script>
+(function(){
+  'use strict';
+
+  /*
+   * THE INPUT'S TYPE IS THE ONLY THING THAT CHANGES. Nothing is read,
+   * copied, stored or sent anywhere - this reveals to the person what
+   * that person has just typed, on their own screen, and the value never
+   * leaves the field. A password box that has been revealed goes back to
+   * hidden as soon as the page re-renders, because the wrapper is rebuilt
+   * with the input.
+   */
+  var EYE = '\uD83D\uDC41';          /* an eye */
+  var HIDE = '\uD83D\uDE48';         /* see-no-evil, for "hide it again" */
+
+  function attach(input){
+    if(!input || input.dataset.tlEye === '1') return;
+    if(input.type !== 'password') return;
+
+    /* Remembered on the input itself: once the type flips to "text" the
+       selector that found it no longer matches, and without this marker
+       the button would be added a second time. */
+    input.dataset.tlEye = '1';
+
+    var wrap = document.createElement('span');
+    wrap.className = 'tl-eye-wrap';
+    input.parentNode.insertBefore(wrap, input);
+    wrap.appendChild(input);
+
+    var btn = document.createElement('button');
+    btn.type = 'button';                 /* never submits the form */
+    btn.className = 'tl-eye';
+    btn.textContent = EYE;
+    btn.setAttribute('aria-label', 'Show password');
+    btn.title = 'Show password';
+    btn.tabIndex = -1;                   /* Tab still runs field to field */
+
+    btn.addEventListener('mousedown', function(e){ e.preventDefault(); });
+    btn.addEventListener('click', function(e){
+      e.preventDefault();
+      e.stopPropagation();
+      var showing = input.type === 'text';
+      input.type = showing ? 'password' : 'text';
+      btn.textContent = showing ? EYE : HIDE;
+      var label = showing ? 'Show password' : 'Hide password';
+      btn.setAttribute('aria-label', label);
+      btn.title = label;
+      /* The caret goes back where it was: flipping the type in some
+         browsers drops it to the end, which is disorienting mid-word. */
+      try{
+        var at = input.selectionStart;
+        input.focus();
+        if(at != null) input.setSelectionRange(at, at);
+      }catch(err){ try{ input.focus(); }catch(e2){} }
+    });
+
+    wrap.appendChild(btn);
+  }
+
+  function paint(){
+    try{
+      var list = document.querySelectorAll('input[type="password"]');
+      for(var i=0;i<list.length;i++) attach(list[i]);
+    }catch(e){ /* a password box without an eye is not worth an error */ }
+  }
+  window.tlPaintPasswordEyes = paint;
+
+  /* Every screen is re-rendered from scratch, so this runs after each one
+     rather than once at load. */
+  var prevRender = window.render;
+  if(typeof prevRender === 'function'){
+    window.render = function(){
+      var out = prevRender.apply(this, arguments);
+      try{ requestAnimationFrame(paint); }catch(e){ paint(); }
+      return out;
+    };
+  }
+  /* Modals and panels are built outside render(), so watch for them too. */
+  try{
+    new MutationObserver(function(){ paint(); })
+      .observe(document.documentElement, { childList:true, subtree:true });
+  }catch(e){}
+
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', paint);
+  } else { paint(); }
+})();
+</script>
+
 <script src="teamlink-integration.js"></script>
