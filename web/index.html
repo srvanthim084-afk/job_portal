@@ -23657,6 +23657,20 @@ table.data td .tl-af b{white-space:normal}
   }
 
   /* ---- interaction / phases ---- */
+  /* LEAVING THE INTERVIEW STOPS THE VOICE.
+
+     speechSynthesis outlives the page it was started from: a question
+     or a closing line queued on the interview screen carries on
+     talking over whatever the candidate opens next, and the only way
+     to stop it is to close the tab. One listener, added once, for any
+     navigation away from an interview. */
+  if(!window.__aiivHushBound){
+    window.__aiivHushBound = true;
+    addEventListener('hashchange', function(){
+      if(String(location.hash||'').indexOf('#/ai-interview/') !== 0) stopSpeak();
+    });
+  }
+
   window.aiivStart=function(appId){ stopSpeak(); AIIV={ appId:appId, phase:'camera', idx:0, started:true, stream:AIIV.stream, camState:AIIV.camState||'off', answers:[], listening:false, timeLeft:0, timerId:null, rafId:null, voicedMs:0, spoke:false, audioCtx:AIIV.audioCtx, analyser:AIIV.analyser, rec:null, sttText:'', sttFinal:'', briefSpoken:false }; aiivRerender(); };
   window.aiivBeginBriefing=function(){ AIIV.phase='briefing'; render(); setTimeout(function(){ aiivAttach(); if(!AIIV.briefSpoken){ AIIV.briefSpoken=true; speak('Welcome, and thank you for joining. Before we begin, a few conditions. '+BRIEF.join(' ')+' When you are ready, press start to begin the questions.'); } }, 60); };
   window.aiivBeginQuestions=function(){ var rec=recById(AIIV.appId); if(rec){ rec.aiInterview.questions=generateQuestions(rec); try{persist();}catch(e){} } AIIV.phase='interview'; AIIV.idx=0;
@@ -23689,7 +23703,19 @@ table.data td .tl-af b{white-space:normal}
     addNotif(rec,'STATUS','AI Interview completed — '+rec.jobTitle,'Overall '+sc.overall+'/100 (Simulated). Shared with recruiter, BDE and client.');
     stopCam(); persist();
     if(window.exportJobPortalState) try{ exportJobPortalState(); }catch(e){}
-    speak('Thank you. Your interview is complete and your results have been submitted.');
+    /* SAID ONCE PER INTERVIEW.
+
+       aiivSubmit() already refuses to run twice, and so does the
+       wrapper that sends the result - but the thank-you is the one
+       thing a candidate HEARS, so it gets a guard of its own rather
+       than relying on every caller above it staying correct. A
+       candidate hearing "thank you, your interview is complete" three
+       times has been told the software is confused, whatever the
+       cause. */
+    if(AIIV.thanked !== AIIV.appId){
+      AIIV.thanked = AIIV.appId;
+      speak('Thank you. Your interview is complete and your results have been submitted.');
+    }
     render();
   };
 
