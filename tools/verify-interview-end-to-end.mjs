@@ -195,6 +195,41 @@ try {
       cand && cand.aiInterviewScore})`);
   check(cand && Math.round(Number(cand.aiInterviewScore)) === Math.round(Number(iv.overallPercentage)),
     'the number the recruiter sees is the number the server computed');
+
+  /* ---- AND IT IS ON THE RECRUITER'S SCREEN --------------------------- *
+   *
+   * The assertions above prove the number is in the database and comes
+   * back from the API. That is not the same as a recruiter being able to
+   * see it, and for a while it was not: the row showed the stage "AI
+   * Interview Done" and the AI MATCH percentage - which is the screening's
+   * view of the CV against the requirement, a different measure entirely -
+   * and the interview score appeared nowhere at all.
+   */
+  await api('post', '/auth/logout', {});
+  await api('post', '/auth/login', {
+    email: process.env.TL_RECRUITER || 'teamlinkmed001@tmlink.in',
+    password: process.env.TL_RECRUITER_PASSWORD || 'Teamlink@2026',
+    role: 'recruiter',
+  });
+  await page.evaluate(() => window.TL.refresh());
+  await page.waitForTimeout(2500);
+
+  for (const [label, hash] of [['Applications', '#/recruiter/applications'],
+                               ['Talent pool', '#/recruiter/candidates']]) {
+    await page.evaluate((h) => { location.hash = h; }, hash);
+    await page.waitForTimeout(2500);
+    const seen = await page.evaluate((n) => {
+      const row = [...document.querySelectorAll('tr')].find((tr) => tr.textContent.includes(n));
+      if (!row) return { found: false };
+      const tag = row.querySelector('.tl-ivscore');
+      return { found: true, text: tag ? tag.textContent.trim() : null };
+    }, 'End To End Interview');
+    check(seen.found, `  the candidate is on the ${label} screen`);
+    check(seen.found && !!seen.text,
+      `  and the interview score is shown there (${seen.text || 'nothing'})`);
+    check(seen.found && seen.text && new RegExp(`\\b${Math.round(Number(iv.overallPercentage))}%`).test(seen.text),
+      `  showing the graded number, not the match score (${seen.text})`);
+  }
 } catch (e) {
   check(false, `the interview could not be driven (${e.message})`);
 } finally {
