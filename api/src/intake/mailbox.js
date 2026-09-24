@@ -197,6 +197,9 @@ class Imap {
     this.tag = 0;
     this.buffer = '';
     this.pending = null;
+    // Set once the connection has died, and the reason. Every later
+    // command fails with it rather than writing into a dead socket.
+    this.closed = null;
   }
 
   connect() {
@@ -207,7 +210,40 @@ class Imap {
       });
       const fail = (err) => { cleanup(); reject(err); };
       const timer = setTimeout(() => fail(new Error('the mail server did not answer')), this.timeout);
-      const cleanup = () => { clearTimeout(timer); socket.removeListener('error', fail); };
+
+      /*
+       * A SOCKET ERROR AFTER THE CONNECT SUCCEEDED MUST NOT BE FATAL.
+       *
+       * `cleanup` takes the connect-time handler off, and for a while it
+       * left the socket with no 'error' listener at all. Gmail resetting
+       * the connection part-way through a long fetch then became an
+       * unhandled 'error' event - which in Node ends the PROCESS. One
+       * dropped mail connection took down the whole API, mid-request, for
+       * everybody using it, and the only trace was "Error: read
+       * ECONNRESET" where the server log should have been.
+       *
+       * This one lives as long as the socket. It fails the command in
+       * flight, so a reset becomes "the mail server dropped the
+       * connection" on one sync instead of an outage, and it keeps a
+       * listener attached forever so the event is never unhandled again.
+       */
+      const dropped = (err) => {
+        this.closed = err instanceof Error ? err
+          : new Error('the mail server dropped the connection');
+        const inFlight = this.pending;
+        this.pending = null;
+        if (inFlight) inFlight.reject(this.closed);
+      };
+
+      const cleanup = () => {
+        clearTimeout(timer);
+        socket.removeListener('error', fail);
+        socket.on('error', dropped);
+        // A close with a command still waiting is a failure too, and
+        // waiting for the command timeout to notice wastes the sync.
+        socket.on('close', () => dropped(
+          new Error('the mail server closed the connection')));
+      };
 
       socket.once('error', fail);
       /*
@@ -246,6 +282,9 @@ class Imap {
   }
 
   send(command) {
+    // Already gone: say so with the original reason rather than throwing
+    // a less useful error out of write().
+    if (this.closed) return Promise.reject(this.closed);
     const tag = `a${++this.tag}`;
     return new Promise((resolve, reject) => {
       this.pending = { tag, resolve, reject };

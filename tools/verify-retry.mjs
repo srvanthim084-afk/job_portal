@@ -175,12 +175,27 @@ if (smtpActive) {
       vars: { temporary_password: 'Sw4n-Fl4x-9912' },
     });
     const { template_params: p, accessToken, user_id } = req.body;
-    // The private key authenticates the call; it must never be a variable
-    // a template could print into the body of an email.
-    must(!JSON.stringify(p).includes(accessToken || ' never'),
-      'the private key is in the template variables');
-    must(!JSON.stringify(p).includes(user_id || ' never'),
-      'the public key is in the template variables');
+
+    /*
+     * The keys authenticate the CALL. Neither may ever be a variable a
+     * template could print into the body of an email.
+     *
+     * An unconfigured credential is stated rather than compared against a
+     * sentinel. The sentinel that used to be here was written as an
+     * escape, collapsed into a real NUL byte by the shell that wrote this
+     * file, and committed invisible - after which grep read the file as
+     * binary and stopped searching it.
+     */
+    const notLeaked = (secret, which) => {
+      if (!secret) {
+        console.log(`--    ${which} is not configured here, so there was none to leak`);
+        return;
+      }
+      must(!JSON.stringify(p).includes(secret),
+        `${which} is in the template variables`);
+    };
+    notLeaked(accessToken, 'the private key');
+    notLeaked(user_id, 'the public key');
   });
 }
 

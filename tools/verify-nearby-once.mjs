@@ -4,14 +4,20 @@
  *     node tools/verify-nearby-once.mjs      (needs the dev server on :4323)
  *
  * Two different parts of the location filter drew the same list: the
- * picker panel draws it inside its NEARBY PLACES section, and a strip
- * under the field drew the same towns again as another row of things to
- * tick. So "19 near Tirupati" appeared twice on screen, one above the
- * other, same towns, same distances, both selectable.
+ * picker panel drew it in a NEARBY PLACES section, and a strip under the
+ * field drew the same towns again as another row of things to tick. So
+ * "19 near Tirupati" appeared twice on screen, one above the other, same
+ * towns, same distances, both selectable.
  *
- * The panel is where somebody looks for them, so that is the only place
- * they appear now. This counts the VISIBLE nearby lists, because the
- * fault was never that either list was wrong.
+ * THERE IS NO SEPARATE NEARBY SECTION AT ALL NOW. The radius filters the
+ * one location list and draws each distance on the row it belongs to, so
+ * counting "how many nearby lists are visible" no longer asks anything -
+ * the answer is zero however broken the screen is.
+ *
+ * What this asks instead is the question the complaint was actually
+ * about: does any PLACE appear more than once in the panel? That holds
+ * whatever the list is made of, and it fails the moment anything starts
+ * drawing the same town twice again.
  */
 import { chromium } from 'playwright';
 
@@ -49,28 +55,68 @@ await page.evaluate((k) => {
 }, key);
 await page.waitForTimeout(700);
 
-/** Every visible "N near X / within ... tap to add" list on the page. */
+/** How many times each place name appears in the panel. */
+const nameCounts = () => page.evaluate((k) => {
+  const root = document.getElementById('tlTree_' + k);
+  if (!root || !root.classList.contains('on')) return {};
+  const n = {};
+  root.querySelectorAll('.tl-row2 .nm').forEach((el) => {
+    const t = (el.textContent || '').trim();
+    if (!t || /^All\b/.test(t)) return;        /* "All - Telangana" is a heading row */
+    n[t] = (n[t] || 0) + 1;
+  });
+  return n;
+}, key);
+
+/** Anything that would be a second nearby section. */
+const sections = () => page.evaluate((k) => {
+  const root = document.getElementById('tlTree_' + k);
+  if (!root) return { blocks: 0, near: [] };
+  return {
+    blocks: root.querySelectorAll('.tl-nb, .tl-nbin, .tl-nbgrp').length,
+    near: [...root.querySelectorAll('b')]
+      .map((n) => n.textContent.replace(/\s+/g, ' ').trim())
+      .filter((t) => /(^|\s)near\s+(?!by\b)\S/i.test(t)),
+  };
+}, key);
+
+/* A radius, so the places around Tirupati are actually drawn. */
+await page.evaluate((k) => window.tlTreeKm(k, '50'), key);
+await page.waitForTimeout(700);
+
+const openCounts = await nameCounts();
+const dupes = Object.entries(openCounts).filter(([, v]) => v > 1);
+const shown = Object.keys(openCounts).length;
+check(shown > 1, `with the panel open, the places around Tirupati are listed (${shown})`);
+check(dupes.length === 0,
+  `and not one of them appears twice (${dupes.map(([n, v]) => n + ' x' + v).join(', ') || 'none does'})`);
+check(openCounts.Tirupati === 1,
+  `Tirupati itself appears exactly once (${openCounts.Tirupati})`);
+
+const sec = await sections();
+check(sec.blocks === 0, `there is no separate nearby block (${sec.blocks})`);
+check(sec.near.length === 0, `and no "Near <place>" heading (${JSON.stringify(sec.near)})`);
+
+/* The old shape of this test, kept as the thing it was protecting: no
+   second copy of the list anywhere on the PAGE, not just in the panel. */
 const lists = () => page.evaluate(() => {
   const seen = [];
-  document.querySelectorAll('.tl-nb, .tl-nbin').forEach((el) => {
+  document.querySelectorAll('.tl-nb, .tl-nbin, .tl-nbgrp').forEach((el) => {
     if (el.hidden || !el.offsetParent) return;
-    const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
-    if (/tap to add|within/i.test(t)) seen.push(t.slice(0, 60));
+    seen.push((el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60));
   });
   return seen;
 });
-
 const whileOpen = await lists();
-check(whileOpen.length === 1,
-  `with the panel open, the nearby places are listed once (${whileOpen.length}): ${
-    whileOpen.join(' || ') || 'none'}`);
+check(whileOpen.length === 0,
+  `no nearby list is drawn beside the panel (${whileOpen.join(' || ') || 'none'})`);
 
 await page.evaluate((k) => window.tlTreeDone(k), key);
 await page.waitForTimeout(700);
 
 const whileClosed = await lists();
 check(whileClosed.length === 0,
-  `with the panel closed, no second list is left under the field (${
+  `with the panel closed, nothing is left under the field (${
     whileClosed.length}): ${whileClosed.join(' || ') || 'none'}`);
 
 /* The pick itself survives - closing the panel must not undo it. */
@@ -79,11 +125,19 @@ check(/tirupati/i.test(chip), `the place that was picked is still selected (${ch
 
 await page.evaluate((k) => window.tlLocOpen(k), key);
 await page.waitForTimeout(700);
-const reopened = await lists();
-check(reopened.length === 1,
-  `reopening the panel shows them once, in the panel (${reopened.length})`);
-check(/tirupati/i.test(reopened.join(' ')),
-  'and it is the list for the place that was picked');
+const reopenedCounts = await nameCounts();
+const reopenedDupes = Object.entries(reopenedCounts).filter(([, v]) => v > 1);
+check(Object.keys(reopenedCounts).length > 1,
+  `reopening the panel lists them again (${Object.keys(reopenedCounts).length})`);
+check(reopenedDupes.length === 0,
+  `still none of them twice (${reopenedDupes.map(([n, v]) => n + ' x' + v).join(', ') || 'none'})`);
+check(reopenedCounts.Tirupati === 1,
+  'and it is still the list measured from the place that was picked');
+
+/* Back to Exact city, so the state/district checks below see the whole
+   list rather than the 50 KM slice of it. */
+await page.evaluate((k) => { window.tlLocState(k).km = ''; window.tlLocRefresh(k); }, key);
+await page.waitForTimeout(500);
 
 /* ---- the states, and what a click does now ------------------------- */
 /*

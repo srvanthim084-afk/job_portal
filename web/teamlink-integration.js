@@ -5993,96 +5993,26 @@
         '$1' + row + '$2');
 
       /*
-       * THE NEARBY PLACES GO IN THE LIST, with their distance beside
-       * them, as rows of the list that is already there.
+       * NOTHING IS INJECTED ABOVE THE LIST ANY MORE.
        *
-       * They used to be chips in a panel of their own beside it, which
-       * meant a recruiter picking Hyderabad saw a second block appear
-       * rather than the list they were already reading filling in. This
-       * injects rows into the SAME list, built from the SAME markup the
-       * list uses for every other row - the same <label class="tl-row2">,
-       * the same checkbox, the same tlTreePick() - so ticking one is
-       * indistinguishable from ticking a district, and the candidate
-       * search receives it exactly as it always did.
+       * This used to build a "Near <place>" group and prepend it to the
+       * main column. Even reduced to rows of the same markup it was still
+       * a SECOND section: a recruiter who picked Poonch with no distance
+       * chosen got a block reading "NEAR POONCH / Poonch - 0 KM / Choose
+       * a distance above to list the places around it" sitting on top of
+       * the list they were trying to read - a heading whose only content
+       * was an instruction.
        *
-       * NOTHING HERE IS A STORED DISTANCE. Every kilometre on screen is
-       * haversine over the latitude and longitude the dataset holds, so
-       * changing the radius changes the list, and a place with no
-       * coordinates on file never appears with a made-up number.
+       * The radius now filters the ONE list, in tlTreeHtml, where the
+       * geography already is: rows outside it are not drawn and every row
+       * inside it carries its own measured distance. Nothing is prepended,
+       * nothing is duplicated, and there is no "Near ..." heading
+       * anywhere.
+       *
+       * What is kept here is the distance pills, which this wrapper still
+       * rebuilds so 'Exact city' and 'Any Distance' sit alongside the KM
+       * choices.
        */
-      var anchor = null;
-      var tags = st.tags || [];
-      for (var i = tags.length - 1; i >= 0 && !anchor; i--) {
-        // A whole state has no single point to measure from.
-        if (window.INDIA_GEO && window.INDIA_GEO[tags[i]]) continue;
-        var c = null;
-        try {
-          c = (window.INDIA_COORDS || {})[tags[i]]
-            || (window.TL_LOC && TL_LOC.coordsOf ? TL_LOC.coordsOf(tags[i]) : null);
-        } catch (e) { c = null; }
-        if (c) anchor = { name: tags[i], c: c };
-      }
-
-      if (anchor && typeof window.tlNearbyList === 'function') {
-        /*
-         * "Any Distance" means every place we can locate, so the radius
-         * is the planet rather than a number somebody has to maintain.
-         * "Exact city" means the one they picked and nothing else.
-         */
-        var chosen = String(st.km || '');
-        var radius = chosen === 'any' ? 20000 : (chosen ? Number(chosen) : 0);
-
-        var near = radius ? window.tlNearbyList(anchor, radius, tags) : [];
-        var picked = function (v) {
-          return tags.some(function (t) { return String(t).toLowerCase() === String(v).toLowerCase(); });
-        };
-        var nearRow = function (name, km, isAnchor) {
-          return '<label class="tl-row2' + (isAnchor ? ' b' : '') + '"'
-            + ' onmousedown="event.preventDefault()">'
-            + '<input type="checkbox"' + (picked(name) ? ' checked' : '')
-            + " onchange=\"tlTreePick('" + q(key) + "','" + q(name) + "',this.checked)\">"
-            + '<span class="nm">' + esc(name) + '</span>'
-            // Rounded for reading, measured exactly for filtering.
-            + '<span class="tl-km">' + esc(String(Math.round(km))) + ' KM</span>'
-            + '</label>';
-        };
-
-        var rows = nearRow(anchor.name, 0, true)
-          + near.map(function (p) { return nearRow(p.name, p.km, false); }).join('');
-
-        var heading = chosen === 'any'
-          ? 'Near ' + anchor.name
-          : chosen
-            ? 'Near ' + anchor.name + ' &middot; within ' + esc(chosen) + ' KM'
-            : 'Near ' + anchor.name;
-        var note = chosen
-          ? (near.length + ' place' + (near.length === 1 ? '' : 's') + ' found')
-          : 'Choose a distance above to list the places around it.';
-
-        var block = '<div class="grp tl-nbgrp"><b>' + heading + '</b>'
-          + rows
-          + '<div class="tl-kmnote" style="padding-top:4px">' + esc(note) + '</div></div>';
-
-        /*
-         * At the top of the MAIN column, immediately above "Country &
-         * region", inside the list a recruiter is already reading.
-         *
-         * The panel is two columns - tl-main scrolls the list, tl-side
-         * holds the distance buttons - so this goes into the first, not
-         * beside it. A plain string replace rather than a pattern,
-         * because the one thing that must not happen is a silent miss
-         * that leaves the list looking untouched.
-         */
-        var COUNTRY = '<div class="grp"><b>Country &amp; region</b>';
-        if (html.indexOf(COUNTRY) >= 0) {
-          html = html.replace(COUNTRY, block + COUNTRY);
-        } else {
-          // The list is built differently from what this expects. Say so
-          // in the console rather than quietly rendering nothing.
-          try { console.warn('[TeamLink] nearby rows: the list anchor moved'); } catch (e) {}
-        }
-      }
-
       return html;
     };
     window.tlTreeHtml.__tlLocalities = true;

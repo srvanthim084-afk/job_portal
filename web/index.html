@@ -2775,8 +2775,28 @@ function pageRegisterCandidate(){
     </div>
     <form id="registerForm" onsubmit="submitCandidateRegistration(event)">
 
+      <div class="panel ai-panel">
+        <div class="panel-head"><h2><span class="reg-section-num">1</span>Resume</h2></div>
+        <div class="panel-body">
+          <!-- FIRST, not last. This used to be section 3, underneath the
+               fields it fills in, so a candidate typed the whole form by
+               hand and then found the button that would have done it. -->
+          <div class="resume-upload-box">
+            <div style="font-size:26px">📄</div>
+            <button type="button" class="btn btn-primary" style="margin-top:10px" onclick="triggerRegisterResumeUpload()">Upload Resume (PDF / DOC / DOCX / TXT)</button>
+            <p>🤖 AI reads your resume the moment you upload it and fills the rest of this form automatically — no extra step needed.</p>
+            <p id="regFileName" style="font-weight:700;color:var(--text)"></p>
+            <p id="regResumeStatus" class="resume-status" style="display:none"></p>
+          </div>
+          <div class="reg-divider">prefer to paste text instead? (optional)</div>
+          <div class="review-field" style="margin-bottom:8px"><textarea id="regResumeText" rows="5" placeholder="Paste your resume text here — TeamLink AI will scan it for your name, contact details, skills, experience, education and more."></textarea></div>
+          <button type="button" class="btn btn-ghost btn-sm" onclick="analyzeRegisterResumeText()">🤖 Analyze with AI</button>
+          <p class="req-note">TeamLink AI only fills in fields it actually finds in your resume, and never overwrites something you've already typed — if it finds a different value for a field you've filled in, it'll show up as a clickable "AI found…" tag next to that field instead of replacing it. Everything stays editable before you submit.</p>
+        </div>
+      </div>
+
       <div class="panel">
-        <div class="panel-head"><h2><span class="reg-section-num">1</span>Personal Information</h2></div>
+        <div class="panel-head"><h2><span class="reg-section-num">2</span>Personal Information</h2></div>
         <div class="panel-body">
           <div class="review-grid">
             <div>
@@ -2793,7 +2813,7 @@ function pageRegisterCandidate(){
       </div>
 
       <div class="panel">
-        <div class="panel-head"><h2><span class="reg-section-num">2</span>Professional Information</h2></div>
+        <div class="panel-head"><h2><span class="reg-section-num">3</span>Professional Information</h2></div>
         <div class="panel-body">
           <div class="review-field">
             <label>Candidate Type *</label>
@@ -2837,22 +2857,6 @@ function pageRegisterCandidate(){
         </div>
       </div>
 
-      <div class="panel ai-panel">
-        <div class="panel-head"><h2><span class="reg-section-num">3</span>Resume</h2></div>
-        <div class="panel-body">
-          <div class="resume-upload-box">
-            <div style="font-size:26px">📄</div>
-            <button type="button" class="btn btn-primary" style="margin-top:10px" onclick="triggerRegisterResumeUpload()">Upload Resume (PDF / DOC / DOCX / TXT)</button>
-            <p>🤖 AI reads your resume the moment you upload it and fills the form above automatically — no extra step needed.</p>
-            <p id="regFileName" style="font-weight:700;color:var(--text)"></p>
-            <p id="regResumeStatus" class="resume-status" style="display:none"></p>
-          </div>
-          <div class="reg-divider">prefer to paste text instead? (optional)</div>
-          <div class="review-field" style="margin-bottom:8px"><textarea id="regResumeText" rows="5" placeholder="Paste your resume text here — TeamLink AI will scan it for your name, contact details, skills, experience, education and more."></textarea></div>
-          <button type="button" class="btn btn-ghost btn-sm" onclick="analyzeRegisterResumeText()">🤖 Analyze with AI</button>
-          <p class="req-note">TeamLink AI only fills in fields it actually finds in your resume, and never overwrites something you've already typed — if it finds a different value for a field you've filled in, it'll show up as a clickable "AI found…" tag next to that field instead of replacing it. Everything stays editable before you submit.</p>
-        </div>
-      </div>
 
       <div class="panel">
         <div class="panel-head"><h2><span class="reg-section-num">4</span>Preferences</h2></div>
@@ -15368,9 +15372,66 @@ body .cap-feedbar{bottom:0}
   window.tlTreeHtml=function(key){
     const st=tlLocState(key), t=tstate(key), sel=st.tags;
     const on=v=>sel.some(x=>low(x)===low(v));
+
+    /* ============ THE RADIUS FILTERS THIS LIST ============
+
+       There is ONE location list and this is it. A radius does not add a
+       "Near Hyderabad" section above the list - it changes which rows
+       this list draws and puts the distance beside each one. A separate
+       block was what was built first, and it was wrong twice over: the
+       recruiter got a second panel to read instead of the list they were
+       already reading, and with no distance chosen it sat there saying
+       "Poonch - 0 KM / choose a distance above", which is a section whose
+       only content is an instruction.
+
+       'Exact city' (km empty) means no radius, so no filtering and no
+       distances - the list is exactly what it has always been.
+
+       'Any Distance' means every place the dataset can locate, so the
+       radius is the planet rather than a number somebody maintains.
+
+       EVERY DISTANCE IS MEASURED, never stored: tlNearbyList() haversines
+       the latitude and longitude on file, over the whole pool - districts,
+       cities, towns and localities alike - so a place in a different
+       district that happens to be 12 km away is in the answer, and a
+       place with no coordinates is never given an invented number. */
+    const near=(function(){
+      const chosen=String(st.km||'');
+      if(!chosen) return null;                         /* Exact city */
+      if(typeof window.tlNearbyAnchor!=='function') return null;
+      if(typeof window.tlNearbyList!=='function') return null;
+      const a=window.tlNearbyAnchor(sel);
+      if(!a) return null;             /* nothing locatable picked yet */
+      const radius=chosen==='any'?20000:Number(chosen);
+      if(!radius) return null;
+      const m={};
+      m[low(a.name)]=0;               /* the place itself, at zero */
+      window.tlNearbyList(a,radius,sel).forEach(p=>{ m[low(p.name)]=p.km; });
+      return {anchor:a,km:m,radius:radius,any:chosen==='any',
+              count:Object.keys(m).length};
+    })();
+    /* null means "no distance known for this row", which is different
+       from zero and must not print as "0 KM". */
+    const kmOf=v=>{
+      if(!near) return null;
+      const d=near.km[low(v)];
+      return d===undefined?null:d;
+    };
+    const kmTag=v=>{
+      const d=kmOf(v);
+      return d===null?'':`<span class="tl-km">${Math.round(d)} KM</span>`;
+    };
+    /* Which areas of a district are inside the radius. Without a radius
+       every area belongs, which is the list's original behaviour. */
+    const areasOf=(s2,d2)=>{
+      const all=(typeof window.tlAreasOfDistrict==='function')
+        ? window.tlAreasOfDistrict(s2,d2) : [];
+      return near?all.filter(a=>kmOf(a.name)!==null):all;
+    };
+
     const row=(v,label,bold)=>`<label class="tl-row2 ${bold?'b':''}" onmousedown="event.preventDefault()">
       <input type="checkbox" ${on(v)?'checked':''} onchange="tlTreePick('${jq(key)}','${jq(v)}',this.checked)">
-      <span class="nm">${esc(label)}</span></label>`;
+      <span class="nm">${esc(label)}</span>${kmTag(v)}</label>`;
 
     /* A DISTRICT, and the areas inside it.
 
@@ -15384,23 +15445,31 @@ body .cap-feedbar{bottom:0}
        The distance beside each area is measured from the district's own
        coordinate, by haversine, at the moment it is drawn. */
     const distRow=(k,t2,st2,d)=>{
-      const areas=(typeof window.tlAreasOfDistrict==='function')
-        ? window.tlAreasOfDistrict(st2,d) : [];
+      const areas=areasOf(st2,d);
       if(!areas.length) return row(d,d);
       const key2=st2+'|'+d;
-      const isOpen=t2.area&&t2.area[key2]===true;
+      /* With a radius set the places inside it ARE the answer, so they
+         are shown rather than hidden behind a chevron somebody has to
+         find. Without one, nothing about the expander changes. */
+      const isOpen=near?true:(t2.area&&t2.area[key2]===true);
       return `<div class="tl-drow">
           <button type="button" class="tl-dcar" onmousedown="event.preventDefault()"
             onclick="event.stopPropagation();tlTreeArea('${jq(k)}','${jq(st2)}','${jq(d)}')"
             title="${areas.length} place${areas.length===1?'':'s'} in ${esc(d)}">${isOpen?'▾':'▸'}</button>
           ${row(d,d)}
         </div>
-        ${isOpen?`<div class="tl-areas">${areas.map(a=>
-            `<label class="tl-row2" onmousedown="event.preventDefault()">
+        ${isOpen?`<div class="tl-areas">${areas.map(a=>{
+            /* Measured from the place the recruiter PICKED when there is
+               one, not from the district it happens to sit in - those are
+               different numbers and only the first answers "how far is
+               this from Hyderabad?". */
+            const ak=near?kmOf(a.name):a.km;
+            return `<label class="tl-row2" onmousedown="event.preventDefault()">
                <input type="checkbox" ${on(a.name)?'checked':''}
                  onchange="tlTreePick('${jq(k)}','${jq(a.name)}',this.checked)">
                <span class="nm">${esc(a.name)}</span>
-               <span class="tl-km">${Math.round(a.km)} KM</span></label>`).join('')}</div>`:''}`;
+               <span class="tl-km">${Math.round(ak)} KM</span></label>`;
+          }).join('')}</div>`:''}`;
     };
     let h='';
     if(!t.noKm){
@@ -15408,7 +15477,10 @@ body .cap-feedbar{bottom:0}
         onmousedown="event.preventDefault()" onclick="tlTreeKm('${jq(key)}','${v}')">${esc(label)}</button>`;
       h+=`<div class="grp tl-kmgrp"><b>Near by</b><div class="tl-kmrow">
         ${pill('','Exact city')}${KM.map(k=>pill(k,k+' KM')).join('')}</div>
-        <div class="tl-kmnote">${st.km?`Also showing jobs within <b>${esc(String(st.km))} KM</b> of the places you pick.`:'Only the exact places you pick.'}</div></div>`;
+        <div class="tl-kmnote">${near
+          ? `${near.count} place${near.count===1?'':'s'} ${near.any?'on file':'within <b>'+esc(String(st.km))+' KM</b> of <b>'+esc(near.anchor.name)+'</b>'} — listed below with their distance.`
+          : st.km?`Also showing jobs within <b>${esc(String(st.km))} KM</b> of the places you pick.`
+                 :'Only the exact places you pick.'}</div></div>`;
     }
     h+=`<div class="grp"><b>Country &amp; region</b>${row(ALL,ALL,true)}${REGION_ORDER.map(r=>row(r,r)).join('')}</div>`;
     h+=`<div class="grp" style="border-bottom:0;padding-bottom:2px"><b>States &amp; districts</b></div>`;
@@ -15417,7 +15489,16 @@ body .cap-feedbar{bottom:0}
          AND their districts, without having to click a state first. The
          chevron collapses one that is in the way; Collapse all puts the
          whole list back to headings. */
-      const open=t.exp[s]!==false, ds=GEO[s]||[];
+      const all=GEO[s]||[];
+      /* With a radius set, this state shows the districts inside it -
+         and stays on screen only if it has any. A state list where every
+         row is out of range is a list of things the recruiter cannot
+         pick. A district whose own centre is outside the radius is kept
+         when one of ITS areas is inside, because that area is a real
+         answer and its district is how the list reaches it. */
+      const ds=near?all.filter(d=>kmOf(d)!==null||areasOf(s,d).length):all;
+      if(near&&!ds.length) return '';
+      const open=near?true:t.exp[s]!==false;
       return `<div class="tl-sthead" onmousedown="event.preventDefault()" onclick="tlTreeExpand('${jq(key)}','${jq(s)}')">
           <span class="car">${open?'▾':'▸'}</span><span>${esc(s)}</span><span class="n">${ds.length}</span></div>
         ${open?`<div class="tl-dists">${row(s,'All - '+s,true)}${ds.map(d=>distRow(key,t,s,d)).join('')}</div>`:''}`;
@@ -21068,6 +21149,10 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
     return null;
   }
 
+  /* The list in tlTreeHtml needs the same anchor this panel used, so it
+     is shared rather than worked out twice from the same tags. */
+  window.tlNearbyAnchor=anchorOf;
+
   window.tlNearbyList=function(anchor,radius,picked){
     if(!anchor||!radius) return [];
     var has={}; (picked||[]).forEach(function(p){ has[low(p)]=1; });
@@ -21170,24 +21255,24 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
   }
   addEventListener('hashchange',function(){ setTimeout(closeOrphanPanels,60); });
 
-  var prev=window.tlTreeHtml;
-  if(typeof prev==='function'){
-    window.tlTreeHtml=function(key){
-      var h=prev.apply(this,arguments);
-      try{
-        var block=html(key);
-        if(!block) return h;
-        var a=h.indexOf('<aside class="tl-side">');
-        if(a>=0){
-          var end=h.indexOf('</aside>',a);
-          if(end>a) return h.slice(0,end)+block+h.slice(end);
-        }
-        var i=h.indexOf('<div class="grp"><b>Country');
-        if(i<1) return h;                         /* shape changed — leave it alone */
-        return h.slice(0,i)+block+h.slice(i);
-      }catch(e){ return h; }
-    };
-  }
+  /* THE BLOCK ABOVE IS NO LONGER SLOTTED IN ANYWHERE.
+
+     It used to be appended into the side column, and it was a "Near
+     <place>" section - which is the one thing the location filter must
+     not have. With no distance chosen it read "Nearby places / Pick a
+     city and a distance above"; with one it read "54 near Poonch". Either
+     way it was a second heading beside a list that was about to answer
+     the same question.
+
+     The list itself now carries the answer: rows outside the radius are
+     not drawn, every row inside it shows its own measured distance, and
+     the note under the distance buttons says how many there are and what
+     they are measured from. Nothing is prepended and there is no second
+     section.
+
+     tlNearbyHtml() and tlNearbyList() are both still exported, because
+     tlTreeHtml uses tlNearbyList to do the measuring - that is where the
+     pool and the haversine live. */
 })();
 </script>
 

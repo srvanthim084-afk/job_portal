@@ -393,12 +393,25 @@ export default function intakeRoutes() {
         // Which job board to process. `all` is both, and the default,
         // because a recruiter pressing Sync means "get my candidates".
         board: z.enum(['all', 'naukri', 'shine']).optional(),
+        /*
+         * Give the mail this reader could not read another chance.
+         *
+         * Every improvement to the parser used to apply only to mail that
+         * had not arrived yet. Seventeen real Shine responses stayed at
+         * "No candidate name could be read from this email" after the
+         * parser that could read them existed, because the sync skips
+         * anything it has already decided on. This is how a recruiter
+         * asks for those to be looked at again; it only revisits
+         * outcomes where no candidate was created.
+         */
+        retry: z.boolean().optional(),
       }), req.body);
 
       const board = b.board || 'all';
+      const retry = b.retry === true;
       const out = b.mailboxId
-        ? [await syncMailbox(req.session, b.mailboxId, { limit: b.limit, board })]
-        : await syncAll(req.session, { onlyAuto: false, board });
+        ? [await syncMailbox(req.session, b.mailboxId, { limit: b.limit, board, retry })]
+        : await syncAll(req.session, { onlyAuto: false, board, retry });
 
       /*
        * What happened, counted per outcome.
@@ -414,18 +427,18 @@ export default function intakeRoutes() {
       /*
        * Which boards this reader has actually been proven against.
        *
-       * Naukri's shapes were built from real emails out of a live
-       * mailbox. Shine's were written from its documented format and no
-       * Shine message has ever been seen, so a recruiter pressing Sync
-       * Shine and getting nothing has two possible explanations - Shine
-       * sent nothing, or the reader does not recognise what Shine sends
-       * - and no way to tell them apart. Saying so is the difference
-       * between a quiet afternoon and a silent failure.
+       * BOTH, now. This block used to explain that Shine's shapes came
+       * from its documentation because no Shine message had ever been
+       * seen - and the mailbox held seventeen of them, all filed as
+       * unreadable. Both boards are read from real mail today, so
+       * `unverified` is normally empty and the note below does not
+       * appear.
        *
-       * `unverified` is a NOTE, not a warning to dismiss: the path runs,
-       * the parsing is the same labelled-block reader Naukri's
-       * per-candidate mails already use, and the first real Shine email
-       * either confirms it or says exactly what to change.
+       * The machinery is kept rather than deleted, because it earns its
+       * place the moment a third board is added: a recruiter pressing
+       * Sync and getting nothing needs to know whether the board sent
+       * nothing or the reader could not read it. That ambiguity is
+       * exactly what cost seventeen candidates.
        */
       const boards = Object.values(SOURCES)
         .filter((src) => board === 'all' || src.id === board)
@@ -440,6 +453,9 @@ export default function intakeRoutes() {
           ? `No ${unverified.join(' or ')} email has been read here yet, so that `
             + 'format has not been confirmed against a real message. Forward one '
             + 'to this mailbox if a response is missing.'
+          : retry && results.some((r) => r.status === 'already_processed')
+          ? 'Some messages were left alone because they already produced a '
+            + 'candidate or are waiting for a requirement to be chosen.'
           : undefined,
         synced: out,
         emailsRead: tally((x) => x.seen),
@@ -448,6 +464,8 @@ export default function intakeRoutes() {
         imported: tally((x) => x.imported),
         updated: countStatus('updated'),
         duplicates: countStatus('duplicate') + countStatus('already_processed'),
+        // How many previously unreadable messages were looked at again.
+        retried: out.reduce((n, x) => n + (x.retried || 0), 0),
         needsMapping: tally((x) => x.needsMapping),
         needsReview: tally((x) => x.needsReview),
         notAnApplication: countStatus('ignored'),

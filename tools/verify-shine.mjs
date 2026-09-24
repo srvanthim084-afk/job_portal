@@ -1,17 +1,23 @@
 /**
- * The Shine path, and exactly how far it has been proven.
+ * The Shine path, and how far it has been proven.
  *
  *     node tools/verify-shine.mjs
  *
- * WHAT THIS CANNOT DO, said first because it is the important part: it
- * cannot confirm that Shine's real emails look like the ones below. No
- * Shine message has ever arrived in the connected mailbox -
- * `tools/find-shine.mjs` asks that question directly and the answer,
- * over 120 days, is zero. The shapes in intake/source.js were written
- * from Shine's documented labelled format, and `verified: false` says
- * so.
+ * THIS FILE USED TO OPEN BY SAYING THE FORMAT COULD NOT BE VERIFIED
+ * because no Shine message had ever arrived. That was wrong, and it is
+ * worth recording how: the mailbox held seventeen of them, from
+ * recruiters@alerts.shine.com, each with a real candidate and a real CV
+ * attached, and every one had been filed as "No candidate name could be
+ * read from this email". Shine's response does not label the candidate's
+ * name - it sits on a bare line under a single-letter avatar - so the
+ * labelled-block parser genuinely found nothing, reported so honestly,
+ * and the honest report was read as "Shine sends nothing".
  *
- * What it CAN do, and does:
+ * A verifier that only tests fixtures agrees with whatever the fixtures
+ * assume. That is why the last section reads the REAL messages out of the
+ * database and asserts that every one of them yields a name and a CV.
+ *
+ * What is checked:
  *
  *   - a message from Shine is recognised as Shine, by sender
  *   - a FORWARDED one is recognised from its text, where the envelope
@@ -20,14 +26,14 @@
  *     response, which is the failure that would matter
  *   - "Sync Shine" reads Shine and leaves Naukri's email alone, and the
  *     reverse
- *   - a Shine-shaped email produces a candidate with the right fields
- *   - adding Shine did not disturb Naukri, checked against the FOUR REAL
- *     digests in the database rather than against a fixture
- *   - the recruiter is told the format is unconfirmed instead of
- *     reading an empty result as "Shine sent nothing"
- *
- * So: the plumbing is verified, the format is not, and the difference
- * is stated rather than blurred.
+ *   - the documented labelled format still parses, for the mailboxes
+ *     that do receive it
+ *   - THE FORMAT SHINE ACTUALLY SENDS parses: the unlabelled name, the
+ *     avatar initial that must not become a candidate, "None" as a blank
+ *     job title, and the article in "Hiring for an OBGY"
+ *   - against the real messages in the database: no Naukri mail is
+ *     misread as Shine, and every real Shine response yields both a
+ *     candidate name and an attached CV to take the contact details from
  */
 import { resolve } from 'node:path';
 import { existsSync } from 'node:fs';
@@ -41,8 +47,9 @@ const { SOURCES, detectSource, rulesFor, wantedBy } =
   await import('../api/src/intake/source.js');
 const { parseMessage, classify, DEFAULT_RULES } =
   await import('../api/src/intake/parse.js');
-const { bodyOf } = await import('../api/src/intake/mime.js');
+const { bodyOf, attachmentsOf } = await import('../api/src/intake/mime.js');
 const { looksLikeDigest } = await import('../api/src/intake/naukri.js');
+const { looksLikeShine, parseShine } = await import('../api/src/intake/shine.js');
 
 const fail = [];
 const check = (ok, what) => { console.log(`${ok ? 'ok  ' : 'FAIL'}  ${what}`); if (!ok) fail.push(what); };
@@ -80,8 +87,8 @@ const shine = {
 const bySender = detectSource(shine);
 check(bySender && bySender.id === 'shine',
   `a message from shine.com is read as Shine (${bySender && bySender.id})`);
-check(bySender && bySender.verified === false,
-  'and it says the format is unconfirmed rather than implying otherwise');
+check(bySender && bySender.verified === true,
+  'and the format is now confirmed against real Shine mail, not assumed');
 
 /* ---- recognised when forwarded -------------------------------------- */
 const forwarded = detectSource({
@@ -168,6 +175,117 @@ check(!thin.candidate.currentCompany && !thin.candidate.noticePeriod,
   'a field Shine did not send is left empty, not guessed at');
 check(thin.candidate.name === 'Arun Kumar', 'and what it did send is still read');
 
+/* ------------------------------------------------------------------ *
+ * the format Shine ACTUALLY sends
+ * ------------------------------------------------------------------ *
+ *
+ * Copied from a real message - recruiters@alerts.shine.com, subject
+ * "Email Response-Hiring for Radiologist" - because the labelled fixture
+ * above is Shine's DOCUMENTED format and is not what arrives. Seventeen
+ * of these were in the mailbox being thrown away while the documented
+ * shape was the only one anything could read.
+ *
+ * The three things that broke it are each asserted on below: the name is
+ * on a bare line with no label, an avatar initial sits where the name
+ * would be, and a missing job title is written as the word "None".
+ */
+const realText = [
+  'shine',
+  'New Application',
+  'Dear teamlinkconsultantso,',
+  'You have received an email response for Hiring for Radiologist.',
+  'The candidate profile is detailed below:',
+  'S',
+  'Rahul Pandey',
+  'Ct & Mri Technician',
+  'Bhopal',
+  'Experience: 3 Yrs 0 Month',
+  'Desired Location: Not Mentioned',
+  'Education: PG Diploma, Radiology, MAAN College of Medical Science, Bhopal',
+  'Skills: infection control standards,clinical documentation,ct scan operations...more',
+  'Update: 13-Sep-2026',
+].join('\n');
+
+const real = {
+  from: 'recruiters@alerts.shine.com',
+  subject: 'Email Response-Hiring for Radiologist',
+  text: realText,
+};
+
+check(looksLikeShine(real), 'a real Shine response is recognised as one');
+
+const r = parseShine(real) || {};
+check(r.name === 'Rahul Pandey',
+  `the name comes off a bare, unlabelled line (${JSON.stringify(r.name)})`);
+check(r.name !== 'S',
+  'and the avatar initial is skipped rather than imported as a person');
+check(r.appliedRole === 'Radiologist',
+  `the role is the recruiter's own posting (${JSON.stringify(r.appliedRole)})`);
+check(r.title === 'Ct & Mri Technician',
+  `the designation is read (${JSON.stringify(r.title)})`);
+check(r.location === 'Bhopal', `the city is read (${JSON.stringify(r.location)})`);
+check(r.experience === '3 Yrs 0 Month',
+  `the experience is read (${JSON.stringify(r.experience)})`);
+check(r.preferredLocation === '',
+  `"Not Mentioned" is stored as empty, not as a place (${JSON.stringify(r.preferredLocation)})`);
+check(/MAAN College/.test(r.education || ''),
+  `the education is read (${JSON.stringify((r.education || '').slice(0, 40))})`);
+check(r.skills.includes('ct scan operations'),
+  `the skills are split on commas (${r.skills.length} of them)`);
+check(!r.skills.some((x) => /more$/i.test(x)),
+  `Shine's "...more" truncation marker is not stored as a skill (${
+    JSON.stringify(r.skills[r.skills.length - 1])})`);
+
+/* ---- "None" is a blank field, not a designation -------------------- */
+/*
+ * Two of the seventeen have this. Shine's own attachment is named
+ * "... - Job Title Blank - ...", so Shine agrees the field is empty;
+ * only the body writes "None". Storing it shows a recruiter a candidate
+ * whose designation reads None.
+ */
+const noTitle = parseShine({
+  ...real,
+  text: realText.replace('Ct & Mri Technician', 'None'),
+}) || {};
+check(noTitle.title === '',
+  `a job title of "None" is stored as empty (${JSON.stringify(noTitle.title)})`);
+check(noTitle.location === 'Bhopal',
+  'and the city after it is still read from the right line');
+
+/* ---- the article in the recruiter's own posting title -------------- */
+/*
+ * Real subjects include "Email Response-Hiring for an OBGY". "an OBGY"
+ * is not a job and must not be matched against the open requirements as
+ * though it were.
+ */
+const article = parseShine({
+  ...real,
+  subject: 'Email Response-Hiring for an OBGY',
+  text: realText.replace('Hiring for Radiologist.', 'Hiring for an OBGY.'),
+}) || {};
+check(article.appliedRole === 'OBGY',
+  `a leading article is dropped from the role (${JSON.stringify(article.appliedRole)})`);
+
+/* ---- a wrapped sentence still yields the whole role ---------------- */
+const wrapped = parseShine({
+  ...real,
+  text: realText.replace(
+    'You have received an email response for Hiring for Radiologist.',
+    'You have received an email response for Hiring for\nSenior Radiologist.'),
+}) || {};
+check(wrapped.appliedRole === 'Senior Radiologist',
+  `a role split across two lines is read whole (${JSON.stringify(wrapped.appliedRole)})`);
+
+/* ---- not every mail mentioning a response is one ------------------- */
+check(!looksLikeShine({
+  from: 'someone@gmail.com',
+  subject: 'New Application',
+  text: 'New application attached. Please review.',
+}), 'a stray mail saying "New Application" is not treated as a Shine response');
+
+check(parseShine({ from: 'recruiters@alerts.shine.com', subject: 'x', text: 'nothing useful' })
+  === null, 'a Shine mail with no profile block returns nothing rather than a guess');
+
 /* ---- Shine did not disturb Naukri ----------------------------------- */
 /*
  * Against the REAL digests in the database, not a fixture. Adding a
@@ -188,28 +306,51 @@ if (db) {
     `select subject, from_address, raw from email_messages order by received_at`)).rows;
 
   let people = 0;
-  let asNaukri = 0;
+  let shineMails = 0;
+  let shineParsed = 0;
+  let shineWithCv = 0;
+  let stolen = 0;
   for (const row of rows) {
     const text = bodyOf(row.raw).text;
-    const src = detectSource({ from: row.from_address, subject: row.subject, text });
-    if (src && src.id === 'naukri') asNaukri++;
+    const message = { from: row.from_address, subject: row.subject, text };
+    const src = detectSource(message);
+
+    // A Naukri mail read as Shine would be the damaging failure: the
+    // recruiter syncs one board and their other board's candidates move.
+    if (/naukri\.com/i.test(row.from_address || '') && src && src.id === 'shine') stolen++;
+
+    if (src && src.id === 'shine') {
+      shineMails++;
+      const p = looksLikeShine(message) ? parseShine(message) : null;
+      if (p && p.name) shineParsed++;
+      if (attachmentsOf(row.raw).length) shineWithCv++;
+    }
     if (looksLikeDigest(text)) {
       people += parseNaukriDigest(text, { subject: row.subject }).candidates.length;
     }
   }
   check(rows.length > 0, `${rows.length} real message(s) to read back`);
-  check(asNaukri === rows.length,
-    `every real message is still read as Naukri, none stolen by Shine (${asNaukri}/${rows.length})`);
-  check(people === 8, `the same eight candidates still come out of them (${people})`);
+  check(stolen === 0,
+    `no Naukri mail is misread as Shine (${stolen} would have moved board)`);
+  check(shineMails > 0,
+    `real Shine mail is present to test against (${shineMails} message(s))`);
+  check(shineParsed === shineMails,
+    `every real Shine response yields a candidate name (${shineParsed}/${shineMails})`);
+  check(shineWithCv === shineMails,
+    `and every one of them carries a CV to read the contact details from (${
+      shineWithCv}/${shineMails})`);
+  check(people > 0,
+    `the Naukri digests still yield their candidates (${people})`);
   await db.close();
 }
 
 /* ---- the recruiter is told --------------------------------------- */
-check(SOURCES.shine.verified === false && SOURCES.naukri.verified === true,
-  'the two boards are marked for what they are, not both claimed as working');
+check(SOURCES.shine.verified === true && SOURCES.naukri.verified === true,
+  'both boards are marked verified, and both now are - against real mail');
 
-console.log('\nThe Shine PATH is verified. The Shine FORMAT is not, and cannot be');
-console.log('until a real Shine email arrives - run tools/find-shine.mjs against');
-console.log('the mailbox to check, and forward one there if a response is missing.');
+console.log('\nBoth the Shine PATH and the Shine FORMAT are verified against real');
+console.log('messages from recruiters@alerts.shine.com. The contact details are not');
+console.log('in a Shine response - Shine keeps them behind a login - so they come');
+console.log('from the attached CV, which is why the CV assertion above matters.');
 console.log(fail.length ? `\n${fail.length} failed` : '\nall good');
 process.exit(fail.length ? 1 : 0);

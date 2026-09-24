@@ -72,13 +72,28 @@ const setKm = async (km) => {
   await page.evaluate((k) => { window.tlLocState(k).km = ''; }, KEY);
   await page.evaluate(([k, v]) => window.tlTreeKm(k, v), [KEY, km]);
 };
+/*
+ * A row that is inside the radius, read out of the ONE list.
+ *
+ * This used to read '.tl-nbgrp .tl-row2' - the rows of a separate group
+ * prepended above the list. That group is gone: the radius now filters
+ * the list itself and draws the distance on each row that is in range, so
+ * carrying a distance IS being in range, and a selector looking for the
+ * old group would report an empty list while the screen was full.
+ *
+ * Sorted by distance, because the list's own order is geographic within
+ * an alphabetical hierarchy and the assertions below are about distance.
+ */
 const rows = () => page.evaluate((k) =>
-  [...document.querySelectorAll('#tlTree_' + k + ' .tl-nbgrp .tl-row2')].map((r) => ({
-    name: r.querySelector('.nm').textContent.trim(),
-    km: Number(String((r.querySelector('.tl-km') || {}).textContent || '').replace(/[^\d]/g, '')),
-    cls: r.className.trim(),
-    checkbox: !!r.querySelector('input[type="checkbox"]'),
-  })), KEY);
+  [...document.querySelectorAll('#tlTree_' + k + ' .tl-row2')]
+    .filter((r) => r.querySelector('.tl-km'))
+    .map((r) => ({
+      name: r.querySelector('.nm').textContent.trim(),
+      km: Number(String(r.querySelector('.tl-km').textContent || '').replace(/[^\d]/g, '')),
+      cls: r.className.trim(),
+      checkbox: !!r.querySelector('input[type="checkbox"]'),
+    }))
+    .sort((a, b) => a.km - b.km), KEY);
 
 await openPanel();
 await page.waitForTimeout(500);
@@ -108,13 +123,20 @@ const counts = await page.evaluate(() => ({
   // field - the search one and the preferences one - and each has
   // always had its own; that is not a duplicate of anything.
   panels: document.querySelectorAll('#tlTree_recAdv').length,
-  nearbyGroups: document.querySelectorAll('.tl-nbgrp').length,
+  // Must be ZERO now, not "at most one": there is no separate nearby
+  // group at all. Any heading reading "Near <a place>" is the defect.
+  nearbyGroups: document.querySelectorAll('.tl-nbgrp, .tl-nb').length,
+  nearHeadings: [...document.querySelectorAll('#tlTree_recAdv b')]
+    .map((n) => n.textContent.replace(/\s+/g, ' ').trim())
+    .filter((t) => /(^|\s)near\s+(?!by\b)\S/i.test(t)),
   chipLists: [...document.querySelectorAll('.tl-nbwrap')]
     .filter((n) => n.offsetParent && n.children.length).length,
 }));
 check(counts.panels === 1, `there is ONE location panel, not a second one (${counts.panels})`);
-check(counts.nearbyGroups <= 1,
-  `and at most one nearby list on screen (${counts.nearbyGroups})`);
+check(counts.nearbyGroups === 0,
+  `there is no separate nearby section at all (${counts.nearbyGroups})`);
+check(counts.nearHeadings.length === 0,
+  `and no "Near <place>" heading (${JSON.stringify(counts.nearHeadings)})`);
 check(counts.chipLists === 0,
   `the old chip copy of the same places is gone (${counts.chipLists})`);
 
@@ -125,8 +147,8 @@ await page.waitForTimeout(600);
 
 const at25 = await rows();
 check(at25.length > 1, `selecting Hyderabad fills the list in (${at25.length} rows)`);
-check(at25[0].name === 'Hyderabad' && at25[0].km === 0,
-  `the chosen city is first, at 0 KM (${at25[0] && at25[0].name} ${at25[0] && at25[0].km})`);
+check(at25.some((r) => r.name === 'Hyderabad' && r.km === 0),
+  'the chosen city is in the list at 0 KM');
 check(at25.every((r) => r.checkbox), 'every row is a checkbox, like every other row in the list');
 check(at25.every((r) => /tl-row2/.test(r.cls)),
   'and uses the list\'s own row markup, not a new one');
@@ -177,9 +199,27 @@ check(any.length > at50.length, `Any Distance shows everything we can locate (${
 
 await setKm('');
 await page.waitForTimeout(500);
+/*
+ * Exact city means no radius, so no place is "within range" and nothing
+ * carries a distance - the list is the ordinary states-and-districts
+ * list it has always been, and the pick is still the pick.
+ *
+ * This used to expect one row reading "Hyderabad - 0 KM", which was the
+ * separate nearby group listing the anchor. With the group gone, a
+ * distance on screen under Exact city would mean the radius filter is
+ * running when it should not be.
+ */
 const exact = await rows();
-check(exact.length === 1 && exact[0].name === 'Hyderabad',
-  `Exact city shows only the place picked (${exact.length} row(s))`);
+check(exact.length === 0,
+  `Exact city shows no distances at all (${exact.length} row(s) carry one)`);
+const exactList = await page.evaluate((k) => ({
+  states: document.querySelectorAll('#tlTree_' + k + ' .tl-sthead').length,
+  picked: (window.tlLocState(k).tags || []),
+}), KEY);
+check(exactList.states >= 36,
+  `and the whole list is back, unfiltered (${exactList.states} states)`);
+check(exactList.picked.includes('Hyderabad'),
+  `with the pick untouched (${JSON.stringify(exactList.picked)})`);
 
 /* ---- it is not a Hyderabad feature ---------------------------------- */
 for (const [city, expect] of [
@@ -218,7 +258,8 @@ check(tags.includes('Hyderabad') && tags.includes('Madhapur') && tags.includes('
  * than assumed to be the same rows as before.
  */
 const tickedNow = await page.evaluate((k) =>
-  [...document.querySelectorAll('#tlTree_' + k + ' .tl-nbgrp .tl-row2')]
+  [...document.querySelectorAll('#tlTree_' + k + ' .tl-row2')]
+    .filter((r) => r.querySelector('.tl-km'))
     .filter((r) => r.querySelector('input').checked)
     .map((r) => r.querySelector('.nm').textContent.trim()), KEY);
 check(tickedNow.includes('Madhapur') && tickedNow.includes('Gachibowli'),

@@ -70,6 +70,27 @@ export function classify(message, rules = DEFAULT_RULES) {
   if (/\b(unsubscribe|newsletter|invoice|receipt|payment due|webinar|out of office)\b/.test(subject)) {
     return { isApplication: false, confidence: 0, why: 'looks like a bulk or administrative email' };
   }
+  /*
+   * A job board telling you YOUR OWN POSTING went live.
+   *
+   * "Cardiologist is now live on Naukri" scores like an application and
+   * is the opposite of one: it is about a requirement, not a person, and
+   * there is nobody in it to import. Nine of them sat in the recruiter's
+   * queue saying "No candidate name could be read from this email" -
+   * true, and useless, because the email was never going to contain a
+   * candidate. A queue full of these is a queue nobody reads.
+   *
+   * Matched on the SHAPE of the sentence rather than on a board's name:
+   * every board sends this and they all phrase it the same way.
+   */
+  if (/\bis now live on\b|\bis live on\b|\byour (job )?(posting|ad) is (now )?live\b/i.test(subject)) {
+    return {
+      isApplication: false,
+      confidence: 0,
+      why: 'a job board confirming your posting went live - there is no candidate in it',
+    };
+  }
+
   if (/\b(no-?reply@|mailer-daemon|postmaster)\b/.test(from) && score < 4) {
     return { isApplication: false, confidence: 0, why: 'automated sender with no application content' };
   }

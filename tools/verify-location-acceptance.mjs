@@ -5,10 +5,17 @@
  *
  *   1  open the filter        states AND districts already visible
  *   2  search "Hyderabad"     found by the existing autocomplete
- *   3  select Hyderabad       the list fills with the places around it
+ *   3  select Hyderabad       the SAME list fills in - and there is no
+ *                             "Near Hyderabad" section anywhere
  *   4  choose 25 KM           every location within 25 KM, real distances
  *   5  change to 50 KM        the list expands
  *   6  select a location      the candidate search still receives it
+ *
+ * ONE LIST. The earlier attempt prepended a "Near <place>" group above
+ * the list, which with no distance chosen read "NEAR POONCH / Poonch -
+ * 0 KM / Choose a distance above to list the places around it" - a
+ * heading whose only content was an instruction. Test 3 and test 3b now
+ * fail if any "Near ..." heading exists at all.
  *
  * The radius is a GEOGRAPHIC question, not an administrative one: a
  * locality in one district that falls within range of a city in another
@@ -57,11 +64,49 @@ const setKm = async (km) => {
   await page.evaluate(([k, v]) => window.tlTreeKm(k, v), [KEY, km]);
   await page.waitForTimeout(500);
 };
+/*
+ * THE ROWS ARE READ OUT OF THE ONE LIST, by looking for a distance.
+ *
+ * This used to read '.tl-nbgrp .tl-row2' - the rows of a separate "Near
+ * <place>" group that was prepended above the list. There is no such
+ * group any more, and a selector that only matches one would pass this
+ * suite while the list itself showed nothing.
+ *
+ * A row is "in range" exactly when the list drew a distance on it, which
+ * is the same condition the filter uses, so this cannot agree with a
+ * filter that is not running.
+ */
 const nearRows = () => page.evaluate((k) =>
-  [...document.querySelectorAll('#tlTree_' + k + ' .tl-nbgrp .tl-row2')].map((r) => ({
-    name: r.querySelector('.nm').textContent.trim(),
-    km: Number(String((r.querySelector('.tl-km') || {}).textContent || '').replace(/[^\d]/g, '')),
-  })), KEY);
+  [...document.querySelectorAll('#tlTree_' + k + ' .tl-row2')]
+    .filter((r) => r.querySelector('.tl-km'))
+    .map((r) => ({
+      name: r.querySelector('.nm').textContent.trim(),
+      km: Number(String(r.querySelector('.tl-km').textContent || '').replace(/[^\d]/g, '')),
+    }))
+    .sort((a, b) => a.km - b.km), KEY);
+
+/* Anything that would be a second section, or a "Near ..." heading. */
+const sections = () => page.evaluate((k) => {
+  const root = document.getElementById('tlTree_' + k);
+  if (!root) return { near: [], groups: [], nbgrp: 0, nb: 0 };
+  const text = (n) => n.textContent.replace(/\s+/g, ' ').trim();
+  return {
+    /*
+     * "Near <a place>", which must not exist - and NOT "Near by", which
+     * is the existing label on the distance buttons and has to stay. The
+     * first version of this check matched both and failed on the thing it
+     * was protecting.
+     *
+     * Both shapes the removed section used are caught: "Near Poonch" and
+     * "54 near Poonch".
+     */
+    near: [...root.querySelectorAll('b')].map(text)
+      .filter((t) => /(^|\s)near\s+(?!by\b)\S/i.test(t)),
+    groups: [...root.querySelectorAll('.grp > b')].map(text),
+    nbgrp: root.querySelectorAll('.tl-nbgrp').length,
+    nb: root.querySelectorAll('.tl-nb').length,
+  };
+}, KEY);
 
 /* ================= TEST 1 - open it, districts already there ========= */
 console.log('\nTEST 1 - open the filter');
@@ -101,9 +146,43 @@ await page.evaluate((k) => window.tlTreePick(k, 'Hyderabad', true), KEY);
 await setKm('25');
 
 const at25 = await nearRows();
-check(at25.length > 1, `the list fills with the places around it (${at25.length})`);
-check(at25[0] && at25[0].name === 'Hyderabad' && at25[0].km === 0,
-  `Hyderabad itself is first, at 0 KM (${at25[0] && at25[0].name} ${at25[0] && at25[0].km})`);
+check(at25.length > 1, `the SAME list now shows the places around it (${at25.length})`);
+check(at25.some((r) => r.name === 'Hyderabad' && r.km === 0),
+  'Hyderabad itself is in the list at 0 KM');
+
+/*
+ * NO SECOND SECTION. This is the requirement the previous attempt got
+ * wrong: picking a place produced a "NEAR POONCH" group above the list,
+ * and with no distance chosen its only content was "Choose a distance
+ * above to list the places around it".
+ */
+const sec = await sections();
+check(sec.near.length === 0,
+  `there is no "Near ..." heading anywhere (${JSON.stringify(sec.near)})`);
+check(sec.nbgrp === 0 && sec.nb === 0,
+  `and no nearby block is injected into the panel (${sec.nbgrp} + ${sec.nb})`);
+check(sec.groups.some((g) => /Country/.test(g)) && sec.groups.some((g) => /Near by/.test(g)),
+  `the existing groups are the ones that are there (${sec.groups.join(' | ')})`);
+
+/*
+ * A place picked and no distance chosen: the list must be the ordinary
+ * list, not a heading telling the recruiter to choose a distance.
+ */
+console.log('\nTEST 3b - a place picked, Exact city');
+await page.evaluate((k) => { window.tlLocState(k).km = ''; }, KEY);
+await page.evaluate((k) => window.tlLocRefresh(k), KEY);
+await page.waitForTimeout(400);
+const exact = await sections();
+const exactRows = await nearRows();
+check(exact.near.length === 0,
+  `still no "Near ..." heading with Exact city (${JSON.stringify(exact.near)})`);
+check(exactRows.length === 0,
+  `Exact city shows no nearby places at all (${exactRows.length})`);
+const exactStates = await page.evaluate((k) =>
+  document.querySelectorAll('#tlTree_' + k + ' .tl-sthead').length, KEY);
+check(exactStates >= 36,
+  `and the full states-and-districts list is back (${exactStates} states)`);
+await setKm('25');
 
 /* ================= TEST 4 - 25 KM, real distances ==================== */
 console.log('\nTEST 4 - 25 KM');
@@ -168,7 +247,15 @@ check(tags.includes('Hyderabad') && tags.includes('Madhapur') && tags.includes('
   `the selection reaches the search unchanged (${JSON.stringify(tags)})`);
 
 /* ================= the UI is the UI ================================== */
+/*
+ * With Exact city, so the whole list is on screen. Counting checkboxes
+ * while a 25 KM filter is applied counts the filtered list and would
+ * fail for the right reason at the wrong moment.
+ */
 console.log('\nthe existing UI');
+await page.evaluate((k) => { window.tlLocState(k).km = ''; }, KEY);
+await page.evaluate((k) => window.tlLocRefresh(k), KEY);
+await page.waitForTimeout(400);
 const ui = await page.evaluate(() => ({
   panels: document.querySelectorAll('#tlTree_recAdv').length,
   pills: [...document.querySelectorAll('#tlTree_recAdv .tl-kmp')].map((n) => n.textContent.trim()),
