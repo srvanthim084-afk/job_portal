@@ -108,7 +108,26 @@ export function scoreApplication({ job, candidate, settings = DEFAULTS }) {
     : 0;
 
   const threshold = Number(settings.autoShortlistThreshold) || 80;
-  const verdict = score >= threshold ? 'shortlist'
+
+  /*
+   * A SCORE THAT COULD NOT LOOK AT SKILLS DOES NOT SHORTLIST BY ITSELF.
+   *
+   * Dropping the unassessable dimension from the average is right - it
+   * stops a candidate being marked down for something nobody asked them
+   * about - but it also means a requirement with no skills listed hands
+   * out high scores cheaply: experience, location and education are all
+   * a person is measured on, and most people clear them. Forty-two
+   * applications moved straight to Shortlisted on an 82% that had never
+   * compared a single skill, against a requirement that lists none.
+   *
+   * Automatic shortlisting is the one verdict that MOVES somebody
+   * without a human, so it needs the dimension that actually decides
+   * whether they can do the job. Without it the best this can honestly
+   * say is "worth a look", which puts the candidate and the score in
+   * front of a recruiter and leaves the decision where it belongs.
+   */
+  const skillsAssessed = !(b.skills && b.skills.stated === false);
+  const verdict = (score >= threshold && skillsAssessed) ? 'shortlist'
     : score >= threshold - 15 ? 'review'
     : 'hold';
 

@@ -4338,15 +4338,31 @@ function runAIScreeningForApp(appId){
 function moveCandidateStage(candId, newStageId){ moveApplicationStage('primary__'+candId, newStageId); }
 function rejectCandidateStage(candId){ moveApplicationStage('primary__'+candId, 'rejected'); }
 function runAIScreeningFor(candId){ runAIScreeningForApp('primary__'+candId); }
+/**
+ * Invite this candidate to their AI interview.
+ *
+ * THIS USED TO MAKE THE SCORE UP. It waited nine hundred milliseconds,
+ * set the stage to "AI Interview Done" and wrote
+ * matchScore + Math.random()*10 - 5 as the interview result, then
+ * announced "AI Interview complete - score 87/100". Nobody was
+ * interviewed, nothing was asked, and the number went onto the
+ * candidate's record where the recruiter, the BDE and the client all
+ * read it as a real result.
+ *
+ * A real interview is a thing the CANDIDATE does: the server plans the
+ * questions, records each answer, grades the transcripts and writes the
+ * score back. All this can do from here is ask them to take it, which is
+ * what the invitation already does.
+ */
 function simulateAIInterview(candId){
   const cand = DATA.candidateById(candId);
-  toast('TeamLink AI Interview in progress for '+cand.name+'…','🎙️');
-  setTimeout(()=>{
-    cand.stage = 'ai_interview_done';
-    cand.aiInterviewScore = Math.max(55, Math.min(98, cand.matchScore + (Math.round(Math.random()*10)-5)));
-    toast('AI Interview complete — score '+cand.aiInterviewScore+'/100', '✅');
-    render();
-  }, 900);
+  if(!cand) return;
+  if(typeof window.TL!=='undefined' && TL.inviteToAiInterview){
+    TL.inviteToAiInterview(candId);
+    return;
+  }
+  toast('An AI interview is taken by the candidate — send '+cand.name.split(' ')[0]
+    +' their invitation from the application, and the score appears here when they finish.', 'ℹ️');
 }
 /* AI Candidate Rediscovery — invite a candidate found elsewhere in the database to a new role */
 function inviteToApply(candId, jobId){
@@ -5032,9 +5048,15 @@ function pageRecruiterDash(section, params){
 }
 function aiInterviewCard(c){
   const t = DATA.aiInterviewTranscripts && DATA.aiInterviewTranscripts[c.id];
-  const score = c.aiInterviewScore || (t?t.overall:null) || Math.max(55,c.matchScore-6);
+  /* NO SCORE IS NOT A LOW SCORE.
+     This fell back to matchScore - 6 when neither an interview result nor
+     a transcript existed, so a candidate who had never been interviewed
+     was shown with an interview score anyway - on a card headed
+     "completed AI interviews". */
+  const score = (c.aiInterviewScore!=null) ? c.aiInterviewScore : (t && t.overall!=null ? t.overall : null);
   return `<div class="ai-card">
-    <h3>${personCell(c)}<span class="tagai badge badge-ai" style="margin-left:auto">Score ${score}/100</span></h3>
+    <h3>${personCell(c)}<span class="tagai badge ${score==null?'badge-neutral':'badge-ai'}" style="margin-left:auto">${
+      score==null ? 'Not interviewed yet' : 'Score '+score+'/100'}</span></h3>
     ${t? `
     <div class="kv">${t.competencies.map(k=>`<div class="item"><div class="k">${esc(k.name)}</div><div class="v">${k.score}/10</div></div>`).join('')}</div>
     <div class="transcript">${t.qa.map(x=>`<div class="tline q"><b>AI Interviewer</b>${esc(x.q)}</div><div class="tline a"><b>${esc(c.name.split(' ')[0])}</b>${esc(x.a)}</div>`).join('')}</div>
@@ -5069,10 +5091,11 @@ DATA.aiInterviewTranscripts = {
       {q:'How do you validate a dataset before it reaches a client-facing dashboard?', a:'Row-count and null checks against the source system, a reconciliation total against last month\'s report, and a peer review of any new DAX measure before publishing.'},
       {q:'A client disputes a number on your dashboard. What\'s your first move?', a:'Trace it back to the raw source query, confirm the filter context matches what they expected, and walk them through the logic rather than just restating the number.'} ] },
 };
-DATA.candidateById('cand1').aiInterviewScore = 91;
-DATA.candidateById('cand3').aiInterviewScore = 86;
-DATA.candidateById('cand5').aiInterviewScore = 94;
-DATA.candidateById('cand9').aiInterviewScore = 88;
+/* The four interview scores that used to be written here belonged to
+   the demo candidates cand1, cand3, cand5 and cand9. This portal has no
+   demo candidates, so the lines wrote scores onto records that do not
+   exist - and would have put an interview result on somebody's profile
+   that nobody ever sat. */
 
 /* =====================================================================
    TEAMLINK — qualification & follow-up state (drives the AI WhatsApp
