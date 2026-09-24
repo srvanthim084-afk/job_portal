@@ -111,9 +111,13 @@ export async function storeAttachedResume({ candidateId, applicationId, attachme
      */
     let parsed = null;
     let parseError = null;
+    let text = null;
     try {
       const doc = await extractResumeText(file.buffer, file.filename);
       const out = extractFields(doc.text);
+      // Kept so the screening can read what the CV actually says rather
+      // than only the fields the extractor recognised.
+      text = String(doc.text || '').slice(0, 200_000);
       parsed = {
         parser: doc.parser,
         chars: doc.chars,
@@ -132,7 +136,7 @@ export async function storeAttachedResume({ candidateId, applicationId, attachme
                 resume_size=$4, resume_uploaded_at=now(),
                 resume_parsed_at=$6, resume_parser=$7, resume_chars=$8,
                 resume_fields_detected=$9, resume_parse_confidence=$10,
-                resume_parse_error=$11
+                resume_parse_error=$11, resume_text=$12
           where id=$5`,
         [stored.displayName, stored.path, stored.mime, stored.size, candidateId,
          parsed ? new Date() : null,
@@ -140,7 +144,7 @@ export async function storeAttachedResume({ candidateId, applicationId, attachme
          parsed ? parsed.chars : null,
          parsed ? parsed.found : null,
          parsed ? parsed.confidence : null,
-         parseError]);
+         parseError, text]);
 
       if (parsed) await applyExtractedFields(c, candidateId, parsed.fields);
     });

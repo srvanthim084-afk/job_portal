@@ -84,8 +84,53 @@ const STOP_TITLE = new Set([
  * profile listing forty skills should not score highly on a job that
  * needs three of them it does not have.
  */
+/*
+ * Is this skill actually named in that text?
+ *
+ * On WORD BOUNDARIES, not as a substring. Across a whole CV a substring
+ * test is worse than useless: "java" is inside "javascript", "r" is
+ * inside everything, and "go" is inside "google". A recruiter reading
+ * the same page would not count any of those, and neither does this.
+ *
+ * The separators are deliberately wide - a resume writes "Node.js",
+ * "C++", "React/Redux" and "Spring Boot," and all of them should match
+ * the skill they name.
+ */
+const SKILL_BOUNDARY = new RegExp('[a-z0-9+#.]', 'i');
+function names(text, skill) {
+  if (!text || !skill || skill.length < 2) return false;
+  let from = 0;
+  for (;;) {
+    const at = text.indexOf(skill, from);
+    if (at < 0) return false;
+    const before = at > 0 ? text[at - 1] : '';
+    const after = text[at + skill.length] || '';
+    if (!SKILL_BOUNDARY.test(before) && !SKILL_BOUNDARY.test(after)) return true;
+    from = at + 1;
+  }
+}
+
 export function scoreSkills(job, cand) {
   const need = [...new Set((job.skills || []).map(canonical).filter(Boolean))];
+  /*
+   * How each needed skill might be SPELLED in prose.
+   *
+   * canonical() folds "Node.js" to "nodejs" so that two profiles writing
+   * it differently still match - but a CV writes it with the dot, and
+   * "nodejs" is not in "node.js". So the resume is searched for both the
+   * folded form and the spaced one, against text folded the same way.
+   * Without this a requirement for Node.js or Spring Boot found nothing
+   * in a resume that named it on every page.
+   */
+  const spelling = new Map();
+  for (const raw of (job.skills || [])) {
+    const key = canonical(raw);
+    if (!key) continue;
+    const forms = spelling.get(key) || new Set();
+    forms.add(key);
+    forms.add(skillKey(raw));
+    spelling.set(key, forms);
+  }
   const have = new Set([
     ...(cand.technicalSkills || []), ...(cand.skills || []),
   ].map(canonical).filter(Boolean));
@@ -94,11 +139,26 @@ export function scoreSkills(job, cand) {
 
   const matched = need.filter((s) => have.has(s));
 
-  // A skill named in the summary or a project counts, but only as
-  // corroboration: it is written prose, not a claim on the profile.
-  const blob = norm([cand.summary, cand.title, cand.currentCompany,
-    JSON.stringify(cand.projects || [])].join(' '));
-  const implied = need.filter((s) => !have.has(s) && s.length > 2 && blob.includes(s));
+  /*
+   * THE RESUME COUNTS AS EVIDENCE.
+   *
+   * It used to be the profile's own prose and nothing else, so a CV that
+   * spent two pages on Spring Boot contributed nothing unless somebody
+   * had also typed "Spring Boot" into a skills field. That is the
+   * opposite of how a recruiter reads: they open the CV and look for
+   * what the client asked for, and they find it in a project, under a
+   * previous employer, in a line about what was built.
+   *
+   * Still corroboration rather than a claim - half weight, the same as
+   * the summary - because prose saying a word is weaker than a profile
+   * asserting a skill. What it is not any more is invisible.
+   */
+  // Folded the same way the skills are, so "Node.js" in a CV and
+  // "nodejs" on a requirement are looking at each other.
+  const blob = skillKey([cand.summary, cand.title, cand.currentCompany,
+    JSON.stringify(cand.projects || []), cand.resumeText || ''].join(' '));
+  const implied = need.filter((s) => !have.has(s)
+    && [...(spelling.get(s) || [s])].some((form) => names(blob, form)));
 
   const coverage = (matched.length + implied.length * 0.5) / need.length;
   return {

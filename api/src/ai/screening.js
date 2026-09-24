@@ -137,11 +137,32 @@ export async function screenApplication(applicationId, { actor = 'system', force
   });
 
   if (!ctx || !ctx.job || !ctx.cand) return null;
-  if (!force && ctx.app.ai_score != null) return null;      // already screened
 
+  /*
+   * Already screened - unless the resume has arrived since.
+   *
+   * A score is computed the moment an application exists, which is
+   * usually before anybody has attached a CV: the candidate uploads five
+   * minutes later, or a recruiter does it next morning. The score on
+   * screen was then worked out from a record with no resume behind it
+   * and never changed, so the CV might as well not have been sent.
+   */
+  const screenedAt = ctx.app.ai_screened_at ? new Date(ctx.app.ai_screened_at) : null;
+  const resumeAt = ctx.cand.resume_uploaded_at ? new Date(ctx.cand.resume_uploaded_at) : null;
+  const resumeIsNewer = !!(resumeAt && screenedAt && resumeAt > screenedAt);
+  if (!force && ctx.app.ai_score != null && !resumeIsNewer) return null;
+
+  /*
+   * The resume goes in beside the profile, and NOT through toCandidate().
+   *
+   * toCandidate() is the shape every API response is built from, so
+   * putting the text there would return somebody's whole CV to every
+   * screen that lists candidates. It is read here, server-side, by the
+   * one thing that needs it.
+   */
   const result = scoreApplication({
     job: { ...toJob(ctx.job), companyName: ctx.job.company_name },
-    candidate: toCandidate(ctx.cand),
+    candidate: { ...toCandidate(ctx.cand), resumeText: ctx.cand.resume_text || '' },
     settings,
   });
 
@@ -176,6 +197,9 @@ export async function screenApplication(applicationId, { actor = 'system', force
           set ai_score = $2,
               match_score = coalesce(match_score, $2),
               stage = $3,
+              -- So "was this score worked out before the resume arrived?"
+              -- has an answer, which is what decides a re-screen.
+              ai_screened_at = now(),
               updated_at = now()
         where id = $1`,
       [applicationId, result.score, nextStage]);

@@ -415,6 +415,32 @@ export default function aiInterviewRoutes() {
       return row;
     });
 
+    /* ------------------------------------------------------------------ *
+     * And the RECRUITER hears about it.
+     *
+     * Everything above tells the candidate. Until now that was the whole
+     * of it: the application stayed at "Interview Scheduled" the morning
+     * after the interview happened, the score lived only inside
+     * ai_interviews where no pipeline screen reads it, and the only way
+     * for a recruiter to find out was to open each candidate and look.
+     *
+     * Through a definer function, because the person who just finished
+     * the interview is the CANDIDATE, and a candidate must not be able to
+     * write their own stage or their recruiter's notifications.
+     * ------------------------------------------------------------------ */
+    let recorded = null;
+    if (saved.application_id) {
+      try {
+        recorded = await withUser(req.session, async (c) => (await c.query(
+          `select ai_interview_recorded($1,$2) as out`,
+          [saved.application_id, saved.overall_percentage])).rows[0].out);
+      } catch (err) {
+        // The interview itself is saved and scored either way; failing
+        // to announce it must not lose it.
+        console.error('[interview] the result could not be recorded:', err.message);
+      }
+    }
+
     // Two events, because they answer different questions for the
     // candidate: "did my interview go through" and "what did I get". The
     // interview finishing was previously silent on every channel including
@@ -435,6 +461,9 @@ export default function aiInterviewRoutes() {
       aiInterview: toAi(saved),
       engine: graded.engine,
       perQuestion: graded.perQuestion,
+      // What the recruiter's side of this now says, so the caller can
+      // report it rather than assume it happened.
+      recruiter: recorded,
       notify: { completed, scored },
     });
   }));

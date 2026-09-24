@@ -21,6 +21,12 @@ import { extractResumeText } from '../resume/extract.js';
 import { extractFields, parseConfidence } from '../resume/fields.js';
 import { applyExtractedFields } from '../resume/apply.js';
 import { toCandidate } from '../shapes.js';
+import { screenApplication } from '../ai/screening.js';
+
+/* The screening runs as the engine: it reads a job and a candidate that
+   the uploader may not be entitled to see, and it is the same identity
+   that screens an application when it is created. */
+const ENGINE_SESSION = { userId: '', role: 'admin', profileId: null };
 
 // Memory storage so the buffer can be inspected BEFORE anything touches
 // disk — a file is never written until its magic bytes check out.
@@ -76,9 +82,13 @@ export default function uploadRoutes() {
        * ---------------------------------------------------------------- */
       let parsed = null;
       let parseError = null;
+      let resumeText = null;
       try {
         const doc = await extractResumeText(req.file.buffer, req.file.originalname);
         const out = extractFields(doc.text);
+        // Kept so the screening can read the CV itself, not only the
+        // fields the extractor recognised in it.
+        resumeText = String(doc.text || '').slice(0, 200_000);
         parsed = {
           parser: doc.parser,
           chars: doc.chars,
@@ -97,7 +107,7 @@ export default function uploadRoutes() {
                   resume_size=$4, resume_uploaded_at=now(),
                   resume_parsed_at=$6, resume_parser=$7, resume_chars=$8,
                   resume_fields_detected=$9, resume_parse_confidence=$10,
-                  resume_parse_error=$11
+                  resume_parse_error=$11, resume_text=$12
             where id=$5 returning *`,
           [stored.displayName, stored.path, stored.mime, stored.size, candidateId,
            parsed ? new Date() : null,
@@ -105,7 +115,7 @@ export default function uploadRoutes() {
            parsed ? parsed.chars : null,
            parsed ? parsed.found : null,
            parsed ? parsed.confidence : null,
-           parseError]);
+           parseError, resumeText]);
 
         if (parsed) await applyExtractedFields(c, candidateId, parsed.fields);
         if (!upd.rowCount) {
@@ -118,7 +128,35 @@ export default function uploadRoutes() {
         return fresh.rows[0] || upd.rows[0];
       });
 
+      /* ---------------------------------------------------------------- *
+       * The score is worked out again, now there is a resume to read.
+       *
+       * A candidate is screened the moment they apply, which is almost
+       * always BEFORE they attach a CV - so the number on the recruiter's
+       * screen was computed from a record with nothing behind it, and
+       * uploading the resume changed nothing. That is the opposite of
+       * what uploading a resume is for.
+       *
+       * Every open application of theirs, and after the response is
+       * decided rather than before: a screening that fails must not fail
+       * the upload, because the file is safely stored either way.
+       * ---------------------------------------------------------------- */
+      const rescreened = [];
+      try {
+        const apps = await withUser(ENGINE_SESSION, async (c) => (await c.query(
+          `select id from applications where candidate_id=$1
+             and stage not in ('rejected','joined')`, [candidateId])).rows);
+        for (const a of apps) {
+          // eslint-disable-next-line no-await-in-loop
+          const out = await screenApplication(a.id, { actor: 'system', force: true });
+          if (out) rescreened.push({ applicationId: a.id, score: out.score });
+        }
+      } catch (err) {
+        console.error('[uploads] re-screening failed:', err.message);
+      }
+
       res.status(201).json({
+        rescreened,
         candidate: toCandidate(cand),
         resume: {
           fileName: stored.displayName,
@@ -173,9 +211,13 @@ export default function uploadRoutes() {
 
     let parsed = null;
     let parseError = null;
+    let reparsedText = null;
     try {
       const doc = await extractResumeText(buffer, row.resume_file || '');
       const out = extractFields(doc.text);
+      // A re-parse refreshes what the screening reads, not just the
+      // fields on the profile.
+      reparsedText = String(doc.text || '').slice(0, 200_000);
       parsed = {
         parser: doc.parser, chars: doc.chars, fields: out.fields, found: out.found,
         confidence: parseConfidence({ fields: out.fields, chars: doc.chars }),
@@ -189,14 +231,14 @@ export default function uploadRoutes() {
         `update candidates
             set resume_parsed_at=$1, resume_parser=$2, resume_chars=$3,
                 resume_fields_detected=$4, resume_parse_confidence=$5,
-                resume_parse_error=$6
+                resume_parse_error=$6, resume_text=$8
           where id=$7 returning *`,
         [parsed ? new Date() : null,
          parsed ? parsed.parser : null,
          parsed ? parsed.chars : null,
          parsed ? parsed.found : null,
          parsed ? parsed.confidence : null,
-         parseError, candidateId]);
+         parseError, candidateId, reparsedText]);
       if (parsed) await applyExtractedFields(c, candidateId, parsed.fields);
       const again = await c.query(`select * from candidates where id=$1`, [candidateId]);
       return again.rows[0] || upd.rows[0];
