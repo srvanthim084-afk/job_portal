@@ -323,12 +323,52 @@ export function matchCandidate(job, cand, { threshold = DEFAULT_THRESHOLD } = {}
   const education = scoreEducation(job, cand);
   const preferences = scorePreferences(job, cand);
 
-  const score = skills.score + experience.score + role.score
-              + location.score + education.score + preferences.score;
+  /*
+   * A REQUIREMENT THAT LISTS NO SKILLS MUST NOT COST THE CANDIDATE 40%.
+   *
+   * The score is a sum out of a hundred, and skills are forty of it. When
+   * the requirement states none - which is true of every real requirement
+   * in this account: Staff Nurse, Cardiologist, Emergency Physician and
+   * Human Resource Recruiter all have an empty skills list - scoreSkills
+   * returns zero, the highest reachable score becomes sixty, and every
+   * candidate lands on the same low number. Eighty-seven applications all
+   * scored 34%, which reads as "none of these people are any good" and
+   * actually means "nobody wrote down what the job needs".
+   *
+   * So the weight of anything that could not be assessed is taken out of
+   * the denominator rather than out of the candidate. The score then
+   * answers the question it appears to answer - how well this person fits
+   * what the requirement ACTUALLY SAYS - and `basis` records what that
+   * was, so a 70% against a requirement with no skills is not mistaken
+   * for a 70% against one with six.
+   */
+  const assessed = [
+    ['skills', skills, WEIGHTS.skills, skills.stated !== false],
+    ['experience', experience, WEIGHTS.experience, true],
+    ['role', role, WEIGHTS.role, true],
+    ['location', location, WEIGHTS.location, true],
+    ['education', education, WEIGHTS.education, true],
+    ['preferences', preferences, WEIGHTS.preferences, true],
+  ];
+  const usable = assessed.filter((x) => x[3]);
+  const earned = usable.reduce((n, x) => n + (x[1].score || 0), 0);
+  const possible = usable.reduce((n, x) => n + x[2], 0);
+  const score = possible ? Math.round((earned / possible) * 100) : 0;
 
   const breakdown = { skills, experience, role, location, education, preferences };
   const out = {
     score,
+    /*
+     * What the score was measured against, and what it could not be.
+     * Named rather than implied: a recruiter comparing two numbers needs
+     * to know when one of them was computed over less.
+     */
+    basis: {
+      weighed: usable.map((x) => x[0]),
+      skipped: assessed.filter((x) => !x[3]).map((x) => x[0]),
+      outOf: possible,
+      earned,
+    },
     threshold,
     matchedSkills: skills.matched,
     breakdown,

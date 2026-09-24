@@ -2486,6 +2486,60 @@
    * 10. Notifications
    * ------------------------------------------------------------------ */
 
+  /* ------------------------------------------------------------------ *
+   * "Run AI Screening" screens.
+   *
+   * The prototype's version ran a setTimeout, moved the application to
+   * Shortlisted using the score that was already on the row, and told the
+   * recruiter "AI screening passed (34% match)". It called nothing and
+   * computed nothing - it was a stand-in from before there was a scorer,
+   * and it was still the thing the button did.
+   *
+   * This asks the server to screen it again and repaints with whatever
+   * comes back. The server decides the stage, as it does for the
+   * automatic pass; the browser no longer has an opinion about it.
+   * ------------------------------------------------------------------ */
+  var prevRunAI = window.runAIScreeningForApp;
+  window.runAIScreeningForApp = function (appId) {
+    var id = String(appId || '');
+    // "primary__<candidateId>" is the prototype's way of saying "that
+    // person's main application"; resolve it to a real application id.
+    if (id.indexOf('primary__') === 0) {
+      var candId = id.slice('primary__'.length);
+      var app = (DATA.applications || []).filter(function (a) {
+        return a.candidateId === candId && a.primary;
+      })[0] || (DATA.applications || []).filter(function (a) {
+        return a.candidateId === candId;
+      })[0];
+      if (!app) return typeof prevRunAI === 'function' ? prevRunAI.apply(this, arguments) : undefined;
+      id = app.id;
+    }
+
+    if (typeof toast === 'function') toast('Screening…', '\uD83E\uDD16');
+    return api.post('/applications/' + encodeURIComponent(id) + '/screen', {})
+      .then(function (res) {
+        var local = (DATA.applications || []).filter(function (a) { return a.id === id; })[0];
+        if (local) {
+          if (res && res.score != null) { local.aiScore = res.score; local.matchScore = res.score; }
+          if (res && res.stage) local.stage = res.stage;
+        }
+        if (typeof toast === 'function') {
+          toast(res && res.score != null
+            ? 'Screened: ' + Math.round(res.score) + '% match'
+            : 'Screened', '\u2705');
+        }
+        if (typeof window.render === 'function') window.render();
+        return res;
+      })
+      .catch(function (err) {
+        // Said plainly. A screening that did not happen must not look
+        // like one that did.
+        if (typeof toast === 'function') {
+          toast('Could not screen this application: ' + (err && err.message ? err.message : 'unknown error'), '\u26A0\uFE0F');
+        }
+      });
+  };
+
   TL.markNotificationRead = function (id) {
     return api.put('/notifications/' + encodeURIComponent(id) + '/read', {})
       .then(function (res) {

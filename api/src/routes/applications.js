@@ -372,6 +372,38 @@ export default function applicationRoutes() {
    * were attempted, what happened on each, and the shared expiry. Built
    * from a view so the summary cannot drift from the rows it derives from.
    */
+  /**
+   * POST /applications/:id/screen — screen this one again, now.
+   *
+   * SCREENING IS AUTOMATIC and this is not how it normally happens: every
+   * application is scored when it is created, when its resume arrives,
+   * and by a sweep every ten minutes. This is the manual retry for the
+   * ones that could not be done - an unreadable CV, or a failure while
+   * the scorer was down - and for a requirement whose skills have since
+   * been filled in.
+   *
+   * IT EXISTS BECAUSE THE BUTTON HAD NOTHING TO CALL. "Run AI Screening"
+   * ran a setTimeout in the browser that moved the application to
+   * Shortlisted using the score already on the row, and announced "AI
+   * screening passed (34% match)". Nothing was screened and no score was
+   * recomputed; it was the prototype's stand-in, still wired up.
+   *
+   * `force` because the point of pressing it is to redo work.
+   */
+  r.post('/applications/:id/screen', requireAuth(),
+    requireRole('recruiter', 'bde', 'admin'), wrap(async (req, res) => {
+      // RLS decides whether this application is theirs to touch; asking
+      // for it as the caller is what enforces that.
+      const mine = await withUser(req.session, async (c) => (await c.query(
+        `select id from applications where id=$1`, [req.params.id])).rows[0]);
+      if (!mine) throw notFound('That application does not exist.');
+
+      const out = await screenApplication(req.params.id,
+        { actor: req.session.userId || 'recruiter', force: true });
+      if (!out) throw badRequest('That application could not be screened.');
+      res.json(out);
+    }));
+
   r.get('/applications/:id/notifications', requireAuth(), wrap(async (req, res) => {
     const out = await withUser(req.session, async (c) => {
       const s = await c.query(

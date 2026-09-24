@@ -66,15 +66,46 @@ export function scoreApplication({ job, candidate, settings = DEFAULTS }) {
     return Math.max(0, Math.min(1, v / max));
   };
 
+  /*
+   * A DIMENSION THE REQUIREMENT DID NOT STATE IS NOT A ZERO.
+   *
+   * `stated: false` means the requirement lists no skills at all - which
+   * is true of every real requirement in this account: Staff Nurse,
+   * Cardiologist, Emergency Physician and Human Resource Recruiter were
+   * all posted with an empty skills list. Scoring that as zero and then
+   * dividing by the full weight punishes the candidate for something
+   * nobody asked them about. Skills carry the largest weight, so
+   * forty-three of eighty-seven applications came out at exactly 34%,
+   * which reads as "none of these people are any good" and means "nobody
+   * wrote down what the job needs".
+   *
+   * So an unassessable dimension is dropped from BOTH sides of the
+   * average. The score then answers the question it appears to answer:
+   * how well this person fits what the requirement actually says.
+   *
+   * The other three always produce something - an unstated experience
+   * band or location scores half rather than nothing - so only skills
+   * can be missing in this sense.
+   */
   const parts = [
-    { key: 'skills', unit: unit('skills', 40), weight: Number(settings.weightSkills) || 0 },
-    { key: 'experience', unit: unit('experience', 20), weight: Number(settings.weightExperience) || 0 },
-    { key: 'education', unit: unit('education', 5), weight: Number(settings.weightEducation) || 0 },
-    { key: 'location', unit: unit('location', 15), weight: Number(settings.weightLocation) || 0 },
+    { key: 'skills', unit: unit('skills', 40), weight: Number(settings.weightSkills) || 0,
+      assessable: !(b.skills && b.skills.stated === false) },
+    { key: 'experience', unit: unit('experience', 20), weight: Number(settings.weightExperience) || 0,
+      assessable: true },
+    { key: 'education', unit: unit('education', 5), weight: Number(settings.weightEducation) || 0,
+      assessable: true },
+    { key: 'location', unit: unit('location', 15), weight: Number(settings.weightLocation) || 0,
+      assessable: true },
   ];
 
-  const totalWeight = parts.reduce((t, p) => t + p.weight, 0) || 1;
-  const score = Math.round(parts.reduce((t, p) => t + p.unit * p.weight, 0) / totalWeight * 100);
+  const weighed = parts.filter((p) => p.assessable && p.weight > 0);
+  // Every dimension unassessable, or all weights zero: there is nothing
+  // to say, and 0 is the honest answer rather than a number made up from
+  // an empty average.
+  const totalWeight = weighed.reduce((t, p) => t + p.weight, 0);
+  const score = totalWeight
+    ? Math.round(weighed.reduce((t, p) => t + p.unit * p.weight, 0) / totalWeight * 100)
+    : 0;
 
   const threshold = Number(settings.autoShortlistThreshold) || 80;
   const verdict = score >= threshold ? 'shortlist'

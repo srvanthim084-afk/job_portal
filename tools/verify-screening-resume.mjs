@@ -264,7 +264,18 @@ try {
   }
 
 } catch (e) {
-  console.log(`  NOTE: the test requirement was left behind (${e.message})`);
+  /*
+   * A FAILED CLEANUP IS A FAILED RUN.
+   *
+   * This used to print a NOTE and exit zero, so two runs whose cleanup
+   * broke left "Screening Test 1790224297436" and "Screening Test
+   * 1790228846024" sitting in the recruiter's requirement list, in the
+   * job dropdown, and in every screenshot - while the suite reported
+   * "all good". Test data that survives into a live portal is worse than
+   * a failing test, because nobody goes looking for it.
+   */
+  check(false, `CLEANUP FAILED - test data was left in the portal (${e.message})`);
+  console.log('  Remove it with: the requirement titled "Screening Test ' + stamp + '"');
 }
 
 await browser.close();

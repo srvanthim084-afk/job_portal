@@ -11754,12 +11754,29 @@ a.rec-nav-link{text-decoration:none}
     return score==null||score==='';
   };
 
-  /** "Screened 72%", where the work is already done. */
+  /**
+   * "Screened 72%", where the work is already done.
+   *
+   * AND WHAT THE NUMBER COULD NOT LOOK AT. Skills are the largest part of
+   * the score, and a requirement posted with an empty skills list has
+   * none to compare against - so the score is worked out from experience,
+   * location and education alone. That is the honest thing to do with
+   * what was written down, but a bare "100%" invites a recruiter to trust
+   * a match nobody has actually checked the skills for. The tag says so,
+   * and says it where the number is rather than in a help page.
+   */
   window.tlScreenedTag=function(a){
     const score=(a&&a.aiScore!=null)?a.aiScore:(a&&a.matchScore);
     if(score==null||score==='') return '';
-    return '<span class="tl-screened" title="Screened automatically when this application arrived">'
-      +'\u2713 Screened '+esc(String(Math.round(Number(score))))+'%</span>';
+    let job=null;
+    try{ job=DATA.jobById(a&&a.jobId); }catch(e){ job=null; }
+    const noSkills=!!job&&!((job.skills||[]).length);
+    const title=noSkills
+      ? 'Screened on experience, location and education. This requirement lists no skills, so none were compared.'
+      : 'Screened automatically when this application arrived';
+    return '<span class="tl-screened'+(noSkills?' tl-screened-partial':'')+'" title="'+esc(title)+'">'
+      +'\u2713 Screened '+esc(String(Math.round(Number(score))))+'%'
+      +(noSkills?'<i>no skills on the requirement</i>':'')+'</span>';
   };
 
   /**
@@ -15619,7 +15636,11 @@ body .cap-feedbar{bottom:0}
         <div class="tl-kmnote">${near
           ? `${near.count} place${near.count===1?'':'s'} ${near.any?'on file':'within <b>'+esc(String(st.km))+' KM</b> of <b>'+esc(near.anchor.name)+'</b>'} — listed below with their distance.`
           : st.km?`Also showing jobs within <b>${esc(String(st.km))} KM</b> of the places you pick.`
-                 :'Only the exact places you pick.'}</div></div>`;
+                 /* Exact city. It said "Only the exact places you pick",
+                    which is true and leaves somebody looking at a list
+                    with no distances on it wondering why. It now says
+                    what to press. */
+                 :'Only the exact places you pick — choose a distance above to list the places around them.'}</div></div>`;
     }
     h+=`<div class="grp"><b>Country &amp; region</b>${row(ALL,ALL,true)}${REGION_ORDER.map(r=>row(r,r)).join('')}</div>`;
     h+=`<div class="grp" style="border-bottom:0;padding-bottom:2px"><b>States &amp; districts</b></div>`;
@@ -21686,6 +21707,12 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
 .tl-src-portal{background:#eafaf1;color:#1c7a4a;border-color:#c7ecd8}
 .tl-screened{display:inline-block;font-size:11px;font-weight:700;color:#1c7a4a;
   background:#eafaf1;border:1px solid #c7ecd8;border-radius:999px;padding:2px 9px;white-space:nowrap}
+/* Scored without the largest dimension, because the requirement lists no
+   skills. Amber rather than green: the number is real, and it is not the
+   whole picture. */
+.tl-screened-partial{color:#8a5a12;background:#fff4e8;border-color:#ffe2c4}
+.tl-screened-partial>i{display:block;font-style:normal;font-size:9.5px;font-weight:600;
+  opacity:.85;letter-spacing:.01em;margin-top:1px}
 </style>
 
 <style>
