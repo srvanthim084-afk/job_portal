@@ -1220,7 +1220,8 @@ function stageBadge(stageId){
   if(stageId==='registered') return `<span class="badge badge-neutral">Not applied yet</span>`;
   const meta = DATA.stageMeta(stageId);
   const map = { applied:'badge-neutral', ai_screening:'badge-ai', shortlisted:'badge-brand', interview_scheduled:'badge-brand',
-    ai_interview_done:'badge-ai', client_review:'badge-warn', offer_extended:'badge-ok', selected:'badge-ok', rejected:'badge-bad' };
+    ai_interview_done:'badge-ai', client_review:'badge-warn', offer_extended:'badge-ok', selected:'badge-ok', rejected:'badge-bad',
+    with_bde:'badge-brand', hold:'badge-warn', joined:'badge-ok' };
   return `<span class="badge ${map[stageId]||'badge-neutral'}">${esc(meta.label)}</span>`;
 }
 function jobStatusBadge(job){
@@ -4936,7 +4937,12 @@ DATA.candidateById('cand2').daysSilent = 2;   // Rohit Malhotra — interview sc
 /* =====================================================================
    TEAMLINK — client dashboard
    ===================================================================== */
-const CLIENT_VISIBLE_STAGES = ['shortlisted','interview_scheduled','ai_interview_done','client_review','offer_extended','selected','rejected'];
+// 'joined' is here and 'with_bde'/'hold' are not, on purpose: a client
+// should see that their candidate started, and should not see a profile
+// that is still with our BDE and has not reached them yet. The server
+// enforces the same list from stages.client_visible (migration 0042);
+// this one only decides what the client's own screen draws.
+const CLIENT_VISIBLE_STAGES = ['shortlisted','interview_scheduled','ai_interview_done','client_review','offer_extended','selected','joined','rejected'];
 function clientDecision(candId, decision){
   const cand = DATA.candidateById(candId);
   const map = { select:'selected', reject:'rejected', offer:'offer_extended', review:'client_review' };

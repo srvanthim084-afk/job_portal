@@ -293,7 +293,8 @@ export default function applicationRoutes() {
       }), req.body);
 
       const out = await withUser(req.session, async (c) => {
-        const valid = await c.query(`select id, label from stages where id=$1`, [stage]);
+        const valid = await c.query(
+          `select id, label, notify_candidate from stages where id=$1`, [stage]);
         if (!valid.rowCount) throw badRequest(`"${stage}" is not a valid pipeline stage.`);
 
         // The note travels with the move, not after it. The trigger on
@@ -316,35 +317,52 @@ export default function applicationRoutes() {
             : notFound('That application no longer exists.');
         }
         const app = upd.rows[0];
+        const tellThem = valid.rows[0].notify_candidate !== false;
 
         const job = await c.query(
           `select j.title, co.name as company from jobs j
              left join companies co on co.id=j.company_id where j.id=$1`, [app.job_id]);
         const label = valid.rows[0].label;
 
-        await c.query(
-          `select notify_create($1,$2,'candidate','APPLICATION_STATUS',$3,$4,$5,$6,$7,null,$8)`,
-          [newId('ntf'), app.candidate_id,
-           `Application ${label}`,
-           `Your application for ${job.rows[0]?.title || 'a role'} at ${job.rows[0]?.company || 'the company'} is now ${label}.`,
-           app.job_id, app.id, app.candidate_id,
-           JSON.stringify({ stage, label })]);
+        /*
+         * Some stages are ours, not the candidate's.
+         *
+         * "Your application has moved to With BDE" means nothing to the
+         * person receiving it and describes how we work internally; "you
+         * are on Hold" is worse, because it is the kind of sentence that
+         * loses somebody who was only ever waiting a week. The stage row
+         * says which, so the decision is visible in the pipeline rather
+         * than buried in a condition here.
+         */
+        if (tellThem) {
+          await c.query(
+            `select notify_create($1,$2,'candidate','APPLICATION_STATUS',$3,$4,$5,$6,$7,null,$8)`,
+            [newId('ntf'), app.candidate_id,
+             `Application ${label}`,
+             `Your application for ${job.rows[0]?.title || 'a role'} at ${job.rows[0]?.company || 'the company'} is now ${label}.`,
+             app.job_id, app.id, app.candidate_id,
+             JSON.stringify({ stage, label })]);
+        }
 
-        return { application: toApplication(app), label };
+        return { application: toApplication(app), label, tellThem };
       });
 
       // The stage move now reaches the candidate on every channel they
       // have, not only in the portal. Out of band and after the commit: a
       // stage change is a database fact, and an SMS gateway has no
       // business rolling it back.
-      const notify = await dispatchEvent(req.session, 'STAGE_CHANGED', {
-        applicationId: req.params.id,
-        stage: out.application.stage,
-        stageLabel: out.label,
-        note: note || null,
-      });
+      const notify = out.tellThem
+        ? await dispatchEvent(req.session, 'STAGE_CHANGED', {
+            applicationId: req.params.id,
+            stage: out.application.stage,
+            stageLabel: out.label,
+            note: note || null,
+          })
+        // Said plainly rather than left as an empty result, so a
+        // recruiter asking "did they get told?" has an answer.
+        : { event: 'STAGE_CHANGED', skipped: 'internal stage', delivery_status: {} };
 
-      res.json({ application: out.application, notify });
+      res.json({ application: out.application, notify, notified: out.tellThem });
     }));
 
   /**

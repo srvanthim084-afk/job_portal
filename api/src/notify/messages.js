@@ -152,6 +152,32 @@ export const MESSAGES = {
     cta: (c) => ({ label: 'Explore Available Jobs', url: c.jobsUrl || c.portalUrl }),
   },
 
+  STAGE_JOINED: {
+    subject: (c) => `Welcome Aboard – ${c.jobTitle}`,
+    /*
+     * The last message of the process, and the only one that is not
+     * about what happens next.
+     *
+     * "Selected" is a decision and "Joined" is the outcome, which is why
+     * they are separate stages and why this does not repeat the offer
+     * wording. Somebody who started this morning does not need to be
+     * told the terms again; they need to know we know they arrived, and
+     * who to speak to if something is wrong on day one.
+     */
+    body: (c) => 'We are delighted to confirm that you have joined '
+      + `${c.company} for the ${c.jobTitle} position.\n\nCongratulations, `
+      + 'and thank you for choosing to build your career with us.',
+    facts: (c) => [
+      ['Position', c.jobTitle],
+      ['Company', c.company && c.company !== 'the company' ? c.company : ''],
+      ['Joining Date', c.joiningDate],
+      ['Location', c.location],
+    ],
+    instruction: () => 'If anything is unclear in your first few days, please '
+      + 'contact our recruitment team and we will help you settle in.',
+    cta: (c) => ({ label: 'Open Candidate Portal', url: c.portalUrl }),
+  },
+
   OFFER_EXTENDED: {
     subject: (c) => `Offer Letter Available – ${c.jobTitle}`,
     body: (c) => 'Congratulations!\n\nYour offer letter for the '

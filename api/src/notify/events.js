@@ -71,6 +71,22 @@ async function send(session, event, ctx) {
    * Rejected read very differently and a single template for all three
    * is how a rejection ends up congratulating somebody.
    */
+  /*
+   * A stage that is ours says nothing, whoever asked.
+   *
+   * The route already refuses to announce an internal move, but it is
+   * not the only caller: the retry sweep re-sends the message for the
+   * stage an application is at NOW, so an application that failed its
+   * shortlist email and has since gone on Hold would have been told
+   * about the Hold days later, by a sweep nobody was watching. The
+   * question is answered here, once, for every path.
+   */
+  if (event === 'STAGE_CHANGED' && meta.stage) {
+    const tellThem = await withUser(session, async (c) => (await c.query(
+      `select stage_notifies_candidate($1) as ok`, [meta.stage])).rows[0].ok);
+    if (!tellThem) return { event, delivery_status: {}, skipped: 'internal stage' };
+  }
+
   const houseEvent = event === 'STAGE_CHANGED' && meta.stage
     ? `STAGE_${String(meta.stage).toUpperCase()}`
     : event;

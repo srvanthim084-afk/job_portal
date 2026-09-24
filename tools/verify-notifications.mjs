@@ -23,6 +23,20 @@ import { chromium } from 'playwright';
 const BASE = process.env.TL_URL || 'http://localhost:4323/';
 const PASSWORD = process.env.TL_PASSWORD || 'TeamLink@2026';
 
+/*
+ * The account this signs in with.
+ *
+ * recruiter@teamlink.com was a seeded demo login and went when the demo
+ * data did, so this failed at the first step and the seven checks after
+ * it failed with "ApiFailure" - which reads like the notifications are
+ * broken when what was broken was the password this file types.
+ */
+const RECRUITER = {
+  email: process.env.TL_RECRUITER || 'teamlinkmed001@tmlink.in',
+  password: process.env.TL_RECRUITER_PASSWORD || 'Teamlink@2026',
+  role: 'recruiter',
+};
+
 let failed = 0;
 const check = async (name, fn) => {
   try { await fn(); console.log(`  PASS  ${name}`); }
@@ -69,12 +83,12 @@ await check('a candidate applies', async () => {
   // It must be a job the RECRUITER can manage, or the stage moves later on
   // are refused by row-level security and the failure looks like a
   // notification bug instead of a test picking the wrong company.
-  jobId = await candidate.page.evaluate(() => {
-    const rec = DATA.recruiters.find((r) => r.email === 'recruiter@teamlink.com');
+  jobId = await candidate.page.evaluate((email) => {
+    const rec = (DATA.recruiters || []).find((r) => r.email === email);
     const j = DATA.jobs.find((x) => x.status === 'open' && x.companyId === (rec || {}).companyId)
            || DATA.jobs.find((x) => x.status === 'open');
     return j ? j.id : null;
-  });
+  }, RECRUITER.email);
   must(jobId, 'no open job');
   const app = await candidate.api('post', '/applications', { jobId, source: 'portal' });
   applicationId = app.application.id;
@@ -82,10 +96,9 @@ await check('a candidate applies', async () => {
 });
 
 await check('the recruiter signs in', async () => {
-  const ok = await recruiter.page.evaluate(([pw]) =>
-    window.TL.api.post('/auth/login',
-      { email: 'recruiter@teamlink.com', password: pw, role: 'recruiter' })
-      .then(() => true, () => false), [PASSWORD]);
+  const ok = await recruiter.page.evaluate((login) =>
+    window.TL.api.post('/auth/login', login)
+      .then(() => true, () => false), RECRUITER);
   must(ok, 'the recruiter could not sign in');
 });
 
