@@ -294,7 +294,7 @@ export default function applicationRoutes() {
 
       const out = await withUser(req.session, async (c) => {
         const valid = await c.query(
-          `select id, label, notify_candidate from stages where id=$1`, [stage]);
+          `select id, label, candidate_label, notify_candidate from stages where id=$1`, [stage]);
         if (!valid.rowCount) throw badRequest(`"${stage}" is not a valid pipeline stage.`);
 
         // The note travels with the move, not after it. The trigger on
@@ -323,6 +323,19 @@ export default function applicationRoutes() {
           `select j.title, co.name as company from jobs j
              left join companies co on co.id=j.company_id where j.id=$1`, [app.job_id]);
         const label = valid.rows[0].label;
+        /*
+         * WHAT THE CANDIDATE IS TOLD IT IS CALLED.
+         *
+         * The notification below, and the email and SMS that follow it,
+         * quoted the INTERNAL label - so a move to client_review sent the
+         * candidate "Your application is now Client Review". That is the
+         * one word they must never see: it tells them we are an agency
+         * placing them elsewhere and invites the question we cannot
+         * answer. The stages table carries their wording (0051), and it
+         * is used for everything they read. The recruiter's own screens
+         * still use `label`.
+         */
+        const candidateLabel = valid.rows[0].candidate_label || label;
 
         /*
          * Some stages are ours, not the candidate's.
@@ -338,13 +351,13 @@ export default function applicationRoutes() {
           await c.query(
             `select notify_create($1,$2,'candidate','APPLICATION_STATUS',$3,$4,$5,$6,$7,null,$8)`,
             [newId('ntf'), app.candidate_id,
-             `Application ${label}`,
-             `Your application for ${job.rows[0]?.title || 'a role'} at ${job.rows[0]?.company || 'the company'} is now ${label}.`,
+             `Application ${candidateLabel}`,
+             `Your application for ${job.rows[0]?.title || 'a role'} at ${job.rows[0]?.company || 'the company'} is now ${candidateLabel}.`,
              app.job_id, app.id, app.candidate_id,
-             JSON.stringify({ stage, label })]);
+             JSON.stringify({ stage, label: candidateLabel })]);
         }
 
-        return { application: toApplication(app), label, tellThem };
+        return { application: toApplication(app), label, candidateLabel, tellThem };
       });
 
       // The stage move now reaches the candidate on every channel they
@@ -355,7 +368,8 @@ export default function applicationRoutes() {
         ? await dispatchEvent(req.session, 'STAGE_CHANGED', {
             applicationId: req.params.id,
             stage: out.application.stage,
-            stageLabel: out.label,
+            // Their wording, not ours — this reaches email and SMS.
+            stageLabel: out.candidateLabel,
             note: note || null,
           })
         // Said plainly rather than left as an empty result, so a

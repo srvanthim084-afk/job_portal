@@ -100,6 +100,42 @@ const clean = (s) => String(s || '').replace(/\s+/g, ' ').trim();
  * so they are the best source. The free-text description is mined only when
  * those are empty.
  */
+/**
+ * True for a description that is about the RECORD rather than the work.
+ *
+ * Requirements that arrive from a job board, or that the intake creates
+ * because a candidate applied for a role nobody had posted, carry a
+ * provenance note in place of a description - "Imported requirement for
+ * the Naukri response sync.", "Created automatically because a candidate
+ * applied for this role...". Every requirement in this account has one.
+ *
+ * jobTopics used to mine those notes, so the interview opened with "The
+ * role asks for imported requirement for the Naukri response sync.
+ * Describe your experience with that" - asked of a cardiologist - and
+ * then marked the answer against the words "imported", "naukri" and
+ * "sync". A candidate who talked about cardiology matched none of them,
+ * was ruled off topic, and scored zero. That is most of where a 10%
+ * interview score came from.
+ *
+ * Matched on the opening, not on a whole sentence, because the notes are
+ * written in one place and edited over time. A recruiter who writes a
+ * real description is unaffected: none of these read like a sentence
+ * about a job.
+ */
+const HOUSEKEEPING = [
+  /^imported (requirement|role|job)\b/i,
+  /^created automatically\b/i,
+  /^auto[- ]created\b/i,
+  /^(add|fill in) the details and publish\b/i,
+  /^no description\b/i,
+  /^(n\/?a|tbd|tba)\b/i,
+];
+
+function isHousekeeping(line) {
+  const t = clean(line);
+  return !t || HOUSEKEEPING.some((rx) => rx.test(t));
+}
+
 export function jobTopics(job) {
   const out = [];
   const push = (text, kind) => {
@@ -111,7 +147,10 @@ export function jobTopics(job) {
   for (const r of job.responsibilities || []) push(r, 'responsibility');
 
   if (out.length < 4 && job.desc) {
-    for (const line of String(job.desc).split(/[\n•·]|(?<=\.)\s+/)) push(line, 'description');
+    for (const line of String(job.desc).split(/[\n•·]|(?<=\.)\s+/)) {
+      if (isHousekeeping(line)) continue;
+      push(line, 'description');
+    }
   }
   return out.slice(0, 12);
 }
@@ -279,19 +318,63 @@ export function planFromJob({ job, candidate, count = BLUEPRINT_TOTAL }) {
       // interview this is, and every interview must be about ONE job.
       question: `Thanks for joining the interview for the ${job.title} role. ` +
                 'Please introduce yourself and tell me about your professional background.',
-      expects: ['experience', 'background', 'role', 'years'],
+      expects: ['experience|worked|working|career', 'background|history|journey',
+                 'role|position|job|post', 'years|year|months'],
       source: `introduction: ${job.title}`,
     },
     {
       question: 'Please walk me through your resume — your education, your experience, ' +
                 'the projects you have worked on and your key skills.',
-      expects: ['education', 'project', 'skill', 'experience'],
+      expects: ['education|degree|qualified|qualification|studied|graduated|mbbs|bsc|msc',
+                 'project|work|case|assignment', 'skill|strength|good at|trained',
+                 'experience|worked|working|years'],
       source: 'introduction',
     },
   ];
 
-  // 5 · from the job description — never about technology the role does not mention
+  /*
+   * 5 · from the requirement itself.
+   *
+   * ORDER MATTERS, AND IT USED TO BE THE WRONG WAY ROUND. The free-text
+   * description was mined first and the role's own skills list only got
+   * whatever slots were left - so a requirement with ten skills and one
+   * line of boilerplate produced questions about the boilerplate. The
+   * skills list is the structured, deliberate part of a requirement; the
+   * description is prose that may be anything. Skills first, and a gap
+   * between the role and the resume first of all, because that is the
+   * question a recruiter most needs asked.
+   */
   const jd = [];
+  for (const skill of gaps) {
+    if (jd.length >= 5) break;
+    if (jd.some((q) => q.question.toLowerCase().includes(String(skill).toLowerCase()))) continue;
+    jd.push({
+      question: `The role asks for ${skill}, which I could not find on your resume. ` +
+                'What is your experience with it?',
+      /* The skill itself, then three ways of showing the claim is real:
+         that they have done it, that they did it themselves, and where
+         they came by it. Each is a list of alternatives because a nurse
+         describing four years of ward work should not lose marks for
+         never using the word "experience". */
+      expects: [String(skill).toLowerCase(),
+        'experience|worked|working|years|daily|day to day|routinely|shift',
+        'used|use|handled|performed|perform|carried out|managed|did|doing',
+        'learn|learnt|learned|trained|training|residency|course|taught|qualified'],
+      source: `gap: ${skill} required but not evidenced on the resume`,
+    });
+  }
+  for (const skill of jobSkills) {
+    if (jd.length >= 5) break;
+    if (jd.some((q) => q.question.toLowerCase().includes(String(skill).toLowerCase()))) continue;
+    jd.push({
+      question: `How would you use ${skill} in this role, and where have you used it before?`,
+      expects: [String(skill).toLowerCase(),
+        'project|case|work|ward|department|hospital|clinic|assignment',
+        'example|instance|time when|for instance|such as|recently'],
+      source: `required skill: ${skill}`,
+    });
+  }
+  // Only now the description's own requirements and responsibilities.
   for (const t of topics) {
     if (jd.length >= 5) break;
     const subject = trimLead(t.text);
@@ -302,27 +385,6 @@ export function planFromJob({ job, candidate, count = BLUEPRINT_TOTAL }) {
         : `The role asks for ${lowerFirst(subject)}. Describe your experience with that, with a concrete example.`,
       expects: keywordsOf(subject),
       source: `${t.kind}: ${t.text}`,
-    });
-  }
-  // A requirement the resume does not evidence is the most useful question
-  // a recruiter can have asked, so gaps fill the remaining JD slots first.
-  for (const skill of gaps) {
-    if (jd.length >= 5) break;
-    if (jd.some((q) => q.question.toLowerCase().includes(String(skill).toLowerCase()))) continue;
-    jd.push({
-      question: `The role asks for ${skill}, which I could not find on your resume. ` +
-                'What is your experience with it?',
-      expects: [String(skill).toLowerCase(), 'experience', 'used', 'learn'],
-      source: `gap: ${skill} required but not evidenced on the resume`,
-    });
-  }
-  for (const skill of jobSkills) {
-    if (jd.length >= 5) break;
-    if (jd.some((q) => q.question.toLowerCase().includes(String(skill).toLowerCase()))) continue;
-    jd.push({
-      question: `How would you use ${skill} in this role, and where have you used it before?`,
-      expects: [String(skill).toLowerCase(), 'project', 'example'],
-      source: `required skill: ${skill}`,
     });
   }
 
@@ -336,7 +398,10 @@ export function planFromJob({ job, candidate, count = BLUEPRINT_TOTAL }) {
     if (resume.length >= 3) break;
     resume.push({
       question: `You mentioned "${project}" on your resume. Can you explain your role in that project?`,
-      expects: ['built', 'owned', 'designed', 'responsible'],
+      expects: ['built|made|created|developed|carried out',
+                 'owned|led|ran|managed|handled|my part',
+                 'designed|planned|set up|structured',
+                 'responsible|responsibilit|accountable|in charge'],
       source: `resume: project "${project}"`,
     });
     if (resume.length < 5) {
@@ -378,11 +443,23 @@ export function planFromJob({ job, candidate, count = BLUEPRINT_TOTAL }) {
   // 3 · behavioural
   const behavioral = [
     { question: 'Tell me about a difficult problem you faced at work or in a project, and how you solved it.',
-      expects: ['problem', 'approach', 'solved', 'result'], source: 'behavioural' },
+      expects: ['problem|issue|difficulty|trouble|challenge|went wrong|complication',
+                'approach|method|plan|worked out|went about|steps|tried',
+                'solved|fixed|resolved|sorted|dealt with|managed|handled',
+                'result|outcome|end|after that|worked|improved|recovered'],
+      source: 'behavioural' },
     { question: 'Tell me about a time you had to work with someone whose approach was different from yours.',
-      expects: ['listen', 'perspective', 'agree', 'outcome'], source: 'behavioural' },
+      expects: ['listen|heard|understood|asked|talked|discussed|spoke',
+                'perspective|point of view|their way|opinion|reason|side',
+                'agree|agreement|compromise|middle|common ground|settled|decided together',
+                'outcome|result|worked|end|since then|patient|team'],
+      source: 'behavioural' },
     { question: 'Describe a time you had to learn something new quickly. How did you handle it?',
-      expects: ['learn', 'quickly', 'applied', 'result'], source: 'behavioural' },
+      expects: ['learn|learnt|learned|picked up|taught|studied|trained|read up',
+                'quickly|fast|short notice|overnight|within|days|urgent',
+                'applied|used|put into practice|did it|started|practised|practiced',
+                'result|outcome|worked|able|confident|since|competent'],
+      source: 'behavioural' },
   ];
 
   /* ---- every section must reach its count ----------------------------- */
@@ -401,46 +478,73 @@ export function planFromJob({ job, candidate, count = BLUEPRINT_TOTAL }) {
   const RESUME_FALLBACK = [
     { question: 'Walk me through the most substantial piece of work on your resume — ' +
                 'what was it, and what was your part in it?',
-      expects: ['built', 'owned', 'role', 'project'],
+      expects: ['built|made|created|developed|carried out|ran|delivered',
+                'owned|led|managed|in charge|my part|responsible|handled',
+                'role|position|job|post|department|ward',
+                'project|case|work|assignment|study|audit|rotation'],
       source: 'resume: no project named on the resume' },
     { question: 'Which of the skills on your resume are you strongest in, and where did you use it?',
-      expects: ['skill', 'used', 'project', 'built'],
+      expects: ['skill|strength|strongest|good at|best at|trained in|expert',
+                'used|use|applied|performed|practised|practiced|doing',
+                'project|case|work|ward|clinic|department|hospital',
+                'built|made|developed|improved|set up|delivered'],
       source: 'resume: skills not itemised on the resume' },
     { question: 'Tell me about your education and how it prepared you for this kind of work.',
-      expects: ['degree', 'studied', 'learn', 'applied'],
+      expects: ['degree|mbbs|bsc|msc|md|ms|diploma|bachelor|master|qualification|nursing',
+                'studied|study|college|university|institute|school|trained|course',
+                'learn|learnt|learned|taught|covered|grounding|basics',
+                'applied|apply|use|used|helped|prepared|practice|practise'],
       source: 'resume: education not detailed on the resume' },
     { question: 'What have you spent most of your time on in your current or most recent role?',
-      expects: ['day', 'own', 'responsible', 'work'],
+      expects: ['day|daily|shift|routine|most of my time|mainly|mostly',
+                'own|my|myself|personally|independently',
+                'responsible|responsibilit|in charge|handle|cover|look after',
+                'work|duties|cases|patients|tasks|ward|clinic'],
       source: 'resume: no current role on the resume' },
     { question: 'What is something you built or contributed to that you are proud of, and why?',
-      expects: ['built', 'proud', 'result', 'impact'],
+      expects: ['built|made|created|developed|set up|delivered',
+                 'proud|pleased|satisfying|best', 'result|outcome|difference',
+                 'impact|improved|reduced|saved|helped'],
       source: 'resume: not enough detail on the resume' },
   ];
 
   const JD_FALLBACK = [
     { question: `What do you understand this ${job.title} role to involve, ` +
                 'and which part of it are you strongest at?',
-      expects: ['role', 'experience', 'strong'],
+      expects: ['role|position|job|responsibilit', 'experience|worked|done|handled',
+                 'strong|strength|best|confident|good at'],
       source: 'requirement: the job description is brief' },
     { question: `What experience do you have that is closest to this ${job.title} role?`,
-      expects: ['experience', 'similar', 'role'],
+      expects: ['experience|worked|done|handled', 'similar|same|close|comparable|like',
+                 'role|position|job|department'],
       source: 'requirement: the job description is brief' },
     { question: 'Which tools and technologies do you work with day to day?',
-      expects: ['tool', 'used', 'work'],
+      expects: ['tool|software|system|equipment|machine|technology|platform',
+                 'used|use|worked|operate|handle', 'work|daily|day to day|routine'],
       source: 'required skill: none listed on the job' },
     { question: 'How do you decide an approach when a task can be done more than one way?',
-      expects: ['approach', 'trade', 'decide', 'why'],
+      expects: ['approach|method|way|option', 'trade|balance|weigh|compare|pros',
+                 'decide|decision|chose|choose|judged', 'why|because|reason|since'],
       source: 'responsibility: the job description is brief' },
     { question: 'What would you want to know about this role before you started?',
-      expects: ['question', 'team', 'expect', 'scope'],
+      expects: ['question|ask|know|clarify', 'team|colleagues|who|reporting',
+                 'expect|expectation|target|shift', 'scope|remit|duties|responsibilit'],
       source: 'requirement: the job description is brief' },
   ];
 
   const BEHAVIORAL_FALLBACK = [
     { question: 'Tell me about a time you made a mistake at work. What did you do about it?',
-      expects: ['mistake', 'fixed', 'learn', 'told'], source: 'behavioural' },
+      expects: ['mistake|error|wrong|missed|failed|slipped|oversight',
+                 'fixed|corrected|resolved|sorted|repaired|put right|redid',
+                 'learn|lesson|takeaway|realised|realized|since then|now I',
+                 'told|informed|escalated|raised|flagged|owned|admitted'],
+      source: 'behavioural' },
     { question: 'Describe a time you had to deliver under a tight deadline.',
-      expects: ['deadline', 'priorit', 'delivered', 'result'], source: 'behavioural' },
+      expects: ['deadline|time pressure|short notice|urgent|tight',
+                 'priorit|planned|organised|organized|scheduled|triaged',
+                 'delivered|finished|completed|shipped|handed over|on time',
+                 'result|outcome|impact|worked|succeeded'],
+      source: 'behavioural' },
   ];
 
   const topUp = (pool, spare, want) => {
@@ -481,6 +585,81 @@ const lowerFirst = (s) => {
   if (/[A-Z]/.test(first.slice(1))) return s;
   return s[0].toLowerCase() + s.slice(1);
 };
+
+/* ------------------------------------------------------------------ *
+ * matching an answer against what the question expected
+ * ------------------------------------------------------------------ */
+
+/**
+ * A word reduced to its root, so that one idea is one token.
+ *
+ * WHY THIS EXISTS. `expects` was checked with `answer.includes(term)` -
+ * a literal substring test on the whole term. "ECG Interpretation" was
+ * therefore only ever satisfied by a candidate who said those two words
+ * in that order; "I interpret ECGs every morning" matched nothing, was
+ * ruled off topic, and scored zero. Every real answer failed this test
+ * and the published score was near zero regardless of what was said.
+ *
+ * One suffix is stripped and the result cut to five characters, which
+ * makes interpret / interpreting / interpretation one token, and
+ * document / documented / documentation another. It is deliberately
+ * crude: this is a keyword scorer, and a crude stem is the difference
+ * between it working and not working. It is not a claim to understand
+ * the answer.
+ */
+function stem(word) {
+  const w = String(word).toLowerCase().replace(/[^a-z0-9+#.]/g, '');
+  if (!w) return '';
+  const base = w
+    .replace(/(?:isations?|izations?|ations?|ising|izing)$/, '')
+    .replace(/(?:ments?|ions?|ings?|edly|ed|es|ly|er|ors?|s)$/, '');
+  const root = base.length >= 3 ? base : w;
+  return root.length > 5 ? root.slice(0, 5) : root;
+}
+
+/** Words too common to be evidence of anything. */
+const NOISE = new Set(['the', 'and', 'for', 'with', 'that', 'this', 'have', 'has',
+  'was', 'were', 'are', 'you', 'your', 'from', 'will', 'would', 'about', 'their',
+  'them', 'they', 'what', 'when', 'which', 'been', 'into', 'more', 'also', 'very',
+  'some', 'such', 'than', 'then', 'there', 'these', 'those', 'over', 'each']);
+
+/** Every root present in a piece of text. */
+function stemsOf(text) {
+  const out = new Set();
+  for (const w of String(text).toLowerCase().split(/[^a-z0-9+#.]+/)) {
+    if (!w || w.length < 3 || NOISE.has(w)) continue;
+    const st = stem(w);
+    if (st) out.add(st);
+  }
+  return out;
+}
+
+/**
+ * Did the answer address this expectation?
+ *
+ * An expectation may offer alternatives separated by `|`, because the
+ * same thing is said many ways: an answer about owning a mistake is no
+ * less an answer for saying "error" instead of "mistake". The
+ * alternatives are written at the question, where they can be read
+ * alongside it, rather than in a synonym table somewhere else.
+ *
+ * A single-word expectation needs that word's root. A phrase needs half
+ * of its roots, at least one of which must carry meaning - so "ECG
+ * interpretation" is met by an answer about reading ECGs, and not by one
+ * that merely contains the word "experience".
+ */
+function expectationMet(expectation, answerStems) {
+  for (const alt of String(expectation).split('|')) {
+    const need = String(alt).toLowerCase().split(/[^a-z0-9+#.]+/)
+      .filter((w) => w && w.length >= 3 && !NOISE.has(w))
+      .map(stem).filter(Boolean);
+    if (!need.length) continue;
+    const hit = need.filter((w) => answerStems.has(w));
+    if (!hit.length) continue;
+    if (hit.length >= Math.max(1, Math.ceil(need.length / 2))) return true;
+  }
+  return false;
+}
 
 /** The words a strong answer to this requirement would plausibly contain. */
 function keywordsOf(text) {
@@ -645,8 +824,15 @@ function gradeByCoverage({ answers }) {
         justification: 'No spoken response — scored 0.' };
     }
     const words = text.split(/\s+/).filter(Boolean);
-    const expects = (a.expects || []).map((x) => String(x).toLowerCase());
-    const hits = expects.filter((k) => k && text.includes(k));
+    const expects = (a.expects || []).map((x) => String(x).toLowerCase()).filter(Boolean);
+
+    /* Declared here because the unmarkable-question branch below reports
+       it too. It used to be declared after that branch and read inside
+       it, which threw a ReferenceError and lost the whole interview. */
+    const comm = clampNum(35 + Math.min(1, words.length / 45) * 55 + (/[.,]/.test(text) ? 5 : 0));
+
+    const answerStems = stemsOf(text);
+    const hits = expects.filter((k) => expectationMet(k, answerStems));
     /*
      * A QUESTION WITH NOTHING TO CHECK AGAINST CANNOT BE MARKED.
      *
@@ -672,10 +858,24 @@ function gradeByCoverage({ answers }) {
         detail: { technicalRelevance: null, completeness: null, accuracy: null,
                   communication: Math.round(comm / 10) } };
     }
-    const onTopic = hits.length > 0;
-
-    const comm = clampNum(35 + Math.min(1, words.length / 45) * 55 + (/[.,]/.test(text) ? 5 : 0));
-
+    /*
+     * WHAT COUNTS AS ON TOPIC.
+     *
+     * A single match used to be enough, which let padding through. "It
+     * depends really, you know how it is, various things, it varies a lot
+     * day to day" matched the phrase "day to day" in one expectation,
+     * cleared the off-topic test, and scored 39% for saying nothing.
+     *
+     * Two of the expected points, or the only one there was. Any single
+     * point can be hit by accident - a paragraph about gardening contains
+     * "reading", which is one of the ways of saying you learnt something -
+     * and a question that expects four things is not addressed by one of
+     * them. Two independent hits is not proof of a good answer; it is the
+     * least that distinguishes an answer from a coincidence, and how good
+     * it is beyond that is what the coverage score below is for.
+     */
+    const onTopic = expects.length >= 1
+      && hits.length >= Math.min(2, expects.length);
     if (!onTopic) {
       /* AN ANSWER TO A DIFFERENT QUESTION IS NOT A PARTIAL ANSWER.
          This gave up to 24 out of 100 for saying enough words, so a
@@ -693,6 +893,11 @@ function gradeByCoverage({ answers }) {
     const coverage = expects.length ? hits.length / expects.length : (words.length > 8 ? 0.5 : 0.25);
     const depth = Math.min(1, words.length / 50);
     const score = clampNum(coverage * 62 + depth * 28 + 6, 15, 98);
+    /* An expectation carries its alternatives - "fixed|corrected|
+       resolved|sorted" - which is right for matching and wrong for
+       reading. The report showed the whole pipe-separated string back to
+       the recruiter. Only the first, canonical word is shown. */
+    const plain = (k) => String(k).split('|')[0].trim();
     const missed = expects.filter((k) => !hits.includes(k));
 
     return {
@@ -707,8 +912,8 @@ function gradeByCoverage({ answers }) {
       },
       justification:
         `Covered ${hits.length}/${expects.length || '?'} expected points` +
-        (hits.length ? ` (${hits.slice(0, 4).join(', ')})` : '') +
-        (missed.length ? `; missed ${missed.slice(0, 3).join(', ')}` : '') +
+        (hits.length ? ` (${hits.slice(0, 4).map(plain).join(', ')})` : '') +
+        (missed.length ? `; missed ${missed.slice(0, 3).map(plain).join(', ')}` : '') +
         `. ${words.length < 15 ? 'Answer was brief.' : 'Explanation had reasonable depth.'}`,
     };
   });

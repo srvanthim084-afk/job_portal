@@ -115,6 +115,11 @@ async function deskFor(who, tag) {
 }
 
 let deskA, deskB;
+/* Everything this run creates, so the cleanup at the bottom can take it
+   back out again. Declared here rather than collected at the end,
+   because a check that fails half way still has to be undone. */
+const draftIds = [];
+let isoCandidateId = null;
 await check('each recruiter gets a requirement, a candidate and an application', async () => {
   deskA = await deskFor(A, 'A');
   deskB = await deskFor(B, 'B');
@@ -187,6 +192,7 @@ await check("another recruiter's UNPUBLISHED requirement is not readable", async
     title: `Isolation draft ${stamp}`, companyId: COMPANY,
     location: 'Hyderabad', skills: ['Java'], status: 'draft',
   })).job;
+  draftIds.push(draft.id);
 
   const leak = await refused(A, 'get', `/jobs/${draft.id}`);
   must(!leak, leak);
@@ -232,8 +238,9 @@ await check('the public job board still works, signed out', async () => {
 await check('a candidate still sees their own applications', async () => {
   const cand = await open();
   const email = `iso.cand.${stamp}@example.test`;
-  await cand.api('post', '/auth/register',
+  const reg = await cand.api('post', '/auth/register',
     { name: `Iso Candidate ${stamp}`, email, password: 'IsoCand@2026' });
+  isoCandidateId = reg.candidateId;
   const open1 = (await cand.api('get', '/jobs?limit=20')).jobs
     .find((j) => j.status === 'open' && !j.paused && !j.archived);
   if (!open1) { console.log('        (no open job to apply to - skipped)'); return; }
@@ -241,6 +248,49 @@ await check('a candidate still sees their own applications', async () => {
   const { applications = [] } = await cand.api('get', '/applications?limit=20');
   must(applications.length >= 1, 'a candidate cannot see their own application');
 });
+
+/* ------------------------------------------------------------------ *
+ * put the database back
+ *
+ * THIS WAS MISSING AND IT MATTERED. Every run left two recruiters and
+ * three requirements behind, so after three runs the board carried nine
+ * requirements called "Isolation A/B/draft ..." owned by accounts nobody
+ * could sign in as - and the FIRST OPEN JOB on the board became one of
+ * them. `verify:notifications` applies to whatever is at the top, so it
+ * began applying to another recruiter's requirement, every stage move
+ * after that was correctly refused, and a suite about notifications
+ * failed because of leftovers from a suite about isolation.
+ *
+ * It runs whether the checks passed or failed. A failed run leaves the
+ * most mess, which is exactly when cleanup is skipped if it is put
+ * behind a success.
+ * ------------------------------------------------------------------ */
+try {
+  let jobsGone = 0;
+  let candsGone = 0;
+  const purge = async (candidateId) => {
+    if (!candidateId) return;
+    await admin.api('post', '/admin/purge-test-candidate', { candidateId })
+      .then(() => { candsGone += 1; }, () => {});
+  };
+  const dropJob = async (id) => {
+    if (!id) return;
+    await admin.api('del', `/jobs/${id}`).then(() => { jobsGone += 1; }, () => {});
+  };
+
+  for (const desk of [deskA, deskB].filter(Boolean)) {
+    await purge(desk.candidateId);      // takes the application and the login too
+    await dropJob(desk.jobId);
+  }
+  for (const id of draftIds) await dropJob(id);
+  await purge(isoCandidateId);
+
+  console.log(`  cleaned up: ${jobsGone} requirement(s), ${candsGone} candidate(s)`);
+  console.log('  the two throwaway recruiter logins have no delete route — remove them with:');
+  console.log('    node tools/purge-verify-leftovers.mjs --confirm');
+} catch (err) {
+  console.log(`  cleanup did not finish: ${err.message}`);
+}
 
 await browser.close();
 console.log(failed

@@ -26,6 +26,36 @@ import { deflateRawSync, inflateRawSync } from 'node:zlib';
  * ------------------------------------------------------------------ */
 
 /** Read one member out of a zip by name. */
+/**
+ * Every entry name in the archive.
+ *
+ * Needed because a workbook does not have to contain
+ * `xl/worksheets/sheet1.xml`. Delete the first sheet in Excel and the
+ * one that remains is still called sheet2.xml; some exporters number
+ * from 0; Google Sheets and a few Indian job boards emit names of their
+ * own. Guessing three fixed names and giving up is how a perfectly good
+ * workbook came back as "has no readable worksheet".
+ */
+function zipNames(buf) {
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= 0 && i > buf.length - 66000; i--) {
+    if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) return [];
+  const count = buf.readUInt16LE(eocd + 10);
+  let p = buf.readUInt32LE(eocd + 16);
+  const names = [];
+  for (let n = 0; n < count; n++) {
+    if (p + 46 > buf.length || buf.readUInt32LE(p) !== 0x02014b50) break;
+    const nameLen = buf.readUInt16LE(p + 28);
+    const extraLen = buf.readUInt16LE(p + 30);
+    const commentLen = buf.readUInt16LE(p + 32);
+    names.push(buf.slice(p + 46, p + 46 + nameLen).toString('utf8'));
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return names;
+}
+
 function readZipEntry(buf, wanted) {
   // Walk the central directory backwards from the end-of-central-directory
   // record; scanning local headers forwards breaks on data descriptors.
@@ -65,7 +95,7 @@ function readZipEntry(buf, wanted) {
 }
 
 /** Build a zip from {name, data} members. Deflate, no directories. */
-function makeZip(files) {
+export function makeZip(files) {
   const CRC = (() => {
     const t = new Int32Array(256);
     for (let n = 0; n < 256; n++) {
@@ -262,6 +292,22 @@ export function readSheet(buf) {
   // The legacy binary format is not a zip and cannot be read here. Say so
   // precisely rather than failing with "corrupt".
   if (buf[0] === 0xd0 && buf[1] === 0xcf) {
+    /*
+     * A PASSWORD-PROTECTED .xlsx IS ALSO A CFB FILE, and telling
+     * somebody to "save it as .xlsx" when it already is one, and is
+     * merely encrypted, sends them round in a circle. Excel writes
+     * "EncryptedPackage" into the container, so the two are
+     * distinguishable and are worth distinguishing.
+     */
+    const head = buf.slice(0, Math.min(buf.length, 8192)).toString('latin1');
+    if (head.replace(/\u0000/g, '').indexOf('EncryptedPackage') >= 0) {
+      const err = new Error(
+        'That workbook is password-protected, so it cannot be read. Open it in '
+        + 'Excel, remove the password under File -> Info -> Protect Workbook, '
+        + 'and save it again.');
+      err.code = 'ENCRYPTED_FILE';
+      throw err;
+    }
     const err = new Error(
       'That is a legacy Excel 97-2003 file (.xls). Open it in Excel and use '
       + 'Save As -> Excel Workbook (.xlsx), or Save As -> CSV.');
@@ -276,17 +322,48 @@ export function readSheet(buf) {
 
   const strings = sharedStrings(buf);
 
-  let sheetXml = readZipEntry(buf, 'xl/worksheets/sheet1.xml');
-  if (!sheetXml) {
-    // Some producers name the first sheet differently; find any worksheet.
-    for (const n of ['xl/worksheets/sheet01.xml', 'xl/worksheets/Sheet1.xml']) {
-      sheetXml = readZipEntry(buf, n);
-      if (sheetXml) break;
-    }
-  }
-  if (!sheetXml) throw new Error('That workbook has no readable worksheet.');
+  /*
+   * THE FIRST SHEET WITH SOMETHING IN IT, not the one called "sheet1".
+   *
+   * Three fixed names were tried and the workbook was declared
+   * unreadable if none of them existed. A workbook whose first sheet was
+   * deleted has no sheet1.xml at all, and a workbook whose first tab is
+   * a cover page has one that is empty - both are ordinary files that a
+   * recruiter would expect to import.
+   *
+   * The archive is listed instead, the worksheets are taken in their
+   * natural order, and the first one that actually contains rows wins.
+   */
+  const sheetNames = zipNames(buf)
+    .filter((n) => /^xl\/worksheets\/[^/]+\.xml$/i.test(n))
+    .sort((a, b) => {
+      const num = (x) => Number((/(\d+)\.xml$/i.exec(x) || [])[1] || 1e9);
+      return num(a) - num(b) || a.localeCompare(b);
+    });
 
-  const xml = sheetXml.toString('utf8');
+  if (!sheetNames.length) {
+    const err = new Error('That workbook has no worksheet in it.');
+    err.code = 'NO_WORKSHEET';
+    throw err;
+  }
+
+  let sheetXml = null;
+  let xml = '';
+  for (const name of sheetNames) {
+    const data = readZipEntry(buf, name);
+    if (!data) continue;
+    const candidate = data.toString('utf8');
+    /* A sheet with no <row> is a cover page or a leftover tab. Keep
+       looking; fall back to the first readable one if every sheet is
+       empty, so the "no rows" message below is what the caller sees. */
+    if (!sheetXml) { sheetXml = data; xml = candidate; }
+    if (/<row[\s>]/.test(candidate)) { sheetXml = data; xml = candidate; break; }
+  }
+  if (!sheetXml) {
+    const err = new Error('That workbook has no readable worksheet.');
+    err.code = 'NO_WORKSHEET';
+    throw err;
+  }
   const rows = [];
 
   for (const rowXml of xml.match(/<row[^>]*>[\s\S]*?<\/row>/g) || []) {

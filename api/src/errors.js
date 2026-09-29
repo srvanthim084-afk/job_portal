@@ -19,6 +19,11 @@ export const CODES = {
   FORBIDDEN:           'FORBIDDEN',
   NOT_FOUND:           'NOT_FOUND',
   DUPLICATE_APPLICATION: 'DUPLICATE_APPLICATION',
+  // A candidate is being entered by hand whose email or mobile already
+  // belongs to somebody. Not an error the recruiter cannot pass - the
+  // form offers to open the existing record or to go on deliberately -
+  // so it carries the matches in `details.duplicates`.
+  DUPLICATE_CANDIDATE: 'DUPLICATE_CANDIDATE',
   JOB_UNAVAILABLE:     'JOB_UNAVAILABLE',
   EMAIL_TAKEN:         'EMAIL_TAKEN',
   UPLOAD_FAILED:       'UPLOAD_FAILED',

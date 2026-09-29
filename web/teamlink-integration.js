@@ -670,11 +670,40 @@
       exp: j.exp, pay: j.pay, type: j.type, postingKind: j.postingKind,
       department: j.department, education: j.education,
       easyApply: !!j.easyApply, featured: !!j.featured,
+      /* 0072. `gender` is null when nobody stated one, which is what
+         every job posted before the field existed carries. */
+      gender: j.gender || null, accommodation: !!j.accommodation,
       salaryMin: j.salaryMin == null ? null : Number(j.salaryMin),
       salaryMax: j.salaryMax == null ? null : Number(j.salaryMax),
       skills: j.skills || [], desc: j.desc || '',
       responsibilities: j.responsibilities || [], requirements: j.requirements || [],
       status: j.status === 'closed' ? 'closed' : (j.status === 'draft' ? 'draft' : 'open'),
+
+      /*
+       * 0083. The walk-in's date, time, venue and contact, and the
+       * internship's duration, type and stipend.
+       *
+       * These were collected by the posting forms, merged into the
+       * object in the browser, and then not sent - so a walk-in
+       * survived until the next reload with its date in the
+       * description and nowhere else. Only sent when the posting
+       * actually has them, so a full-time role does not write nine
+       * nulls over columns it has no opinion about.
+       */
+      ...(j.walkinDate || j.walkinVenue || j.walkinContact ? {
+        walkinDate: j.walkinDate || '',
+        walkinFrom: j.walkinFrom || '',
+        walkinTo: j.walkinTo || '',
+        walkinVenue: j.walkinVenue || '',
+        walkinContact: j.walkinContact || '',
+        walkinPhone: j.walkinPhone || '',
+      } : {}),
+      ...(j.internshipDuration || j.internshipType || j.stipend != null ? {
+        internshipDuration: j.internshipDuration || '',
+        internshipType: j.internshipType === 'Unpaid' ? 'Unpaid'
+          : (j.internshipType === 'Paid' ? 'Paid' : ''),
+        ...(j.stipend != null && j.stipend !== '' ? { stipend: Number(j.stipend) } : {}),
+      } : {}),
     };
   }
 
@@ -749,10 +778,67 @@
     // the session the SERVER says we have — not what localStorage claimed
     TL.session = payload.session;
     if (payload.session) {
-      STATE.session = { role: payload.session.role, id: payload.session.id };
+      STATE.session = {
+        role: payload.session.role,
+        id: payload.session.id,
+        /* Whether they are still on a password somebody else generated.
+           Carried on the session so the gate survives a refresh. */
+        mustChangePassword: !!payload.session.mustChangePassword,
+      };
     } else {
       STATE.session = null;
     }
+  }
+
+  /**
+   * The sample saved searches, taken out wherever they are.
+   *
+   * WHY THIS IS HERE AND NOT IN index.html. A seeder in index.html once
+   * wrote five made-up searches - "React Developers — Bengaluru" and
+   * four others, credited to "TeamLink Demo Data" - into localStorage on
+   * first load. That seeder is gone, but this shim MIRRORS localStorage
+   * to /api/prefs, so the five were copied to the server the day they
+   * were written and `loadPrefs()` hands them back on every single boot.
+   *
+   * A cleanup in index.html therefore removed them and watched them
+   * reappear on the next reload: it ran BEFORE this restore, and the
+   * restore overwrote it from the database. The only place that can
+   * actually finish the job is immediately AFTER the restore, writing
+   * back through the normal path so the server copy is corrected too.
+   *
+   * It touches nothing else. A search the recruiter saved has no
+   * `sample` flag, no `sample_` id and is credited to them by name.
+   */
+  var SEARCH_KEY = 'teamlink_saved_candidate_searches';
+  function isSampleSearch(x) {
+    return !!(x && (x.sample === true
+      || /^sample_/.test(String(x.id || ''))
+      || x.by === 'TeamLink Demo Data'));
+  }
+  function dropSampleSearches() {
+    try {
+      var raw = mem[SEARCH_KEY];
+      if (raw == null) return;
+      var all = JSON.parse(raw);
+      if (!Array.isArray(all)) return;
+      var kept = all.filter(function (x) { return !isSampleSearch(x); });
+      if (kept.length === all.length) return;
+
+      mem[SEARCH_KEY] = JSON.stringify(kept);
+      /*
+       * The pref is written DIRECTLY rather than through the shim's
+       * setItem, because setItem returns early while TL.ready is false -
+       * "boot-time replay, not a user action" - and this runs during
+       * boot. Going through it would have corrected the copy in this tab
+       * and left the database exactly as it was, which is the bug being
+       * fixed rather than the fix.
+       */
+      api.put('/prefs/' + encodeURIComponent(SEARCH_KEY), { value: kept })
+        .then(function () {
+          console.log('[TeamLink] removed ' + (all.length - kept.length)
+            + ' sample saved search(es) left by an earlier build');
+        }, function () { /* offline: the next boot tries again */ });
+    } catch (e) { /* storage blocked, or a value that is not a list */ }
   }
 
   function loadPrefs() {
@@ -762,6 +848,7 @@
       Object.keys(prefs).forEach(function (k) {
         try { mem[k] = JSON.stringify(prefs[k]); } catch (e) {}
       });
+      dropSampleSearches();
     }).catch(function () { /* a cold prefs table is not an error */ });
   }
 
@@ -1117,8 +1204,24 @@
        */
       var profile = collectRegistrationProfile();
 
+      /*
+       * The four required preferences go with the REGISTRATION, not with
+       * the profile PUT that follows it. The server refuses a
+       * registration without them, so they have to be in the request it
+       * refuses - and a rejection then names the field, instead of
+       * creating an account and failing to complete it afterwards.
+       */
+      var modes = [].slice.call(
+        document.querySelectorAll('#regWorkModeGroup input[type="checkbox"]:checked'))
+        .map(function (cb) { return cb.value; });
+      var salary = Number(String(g('regExpSalary')).replace(/[^\d.]/g, ''));
+
       return api.post('/auth/register', {
         name: name, email: email, password: password, phone: phone,
+        preferredLocation: g('regPrefLocation'),
+        expectedCtc: isFinite(salary) ? salary : undefined,
+        noticePeriod: g('regNotice'),
+        preferredWorkModes: modes,
       }).then(function (res) {
         // The rest of the profile, against the record that now exists.
         var candidateId = res.candidateId;
@@ -1340,6 +1443,10 @@
    */
   var FIELD_INPUT = {
     name: 'regName', email: 'regEmail', password: 'regPassword', phone: 'regMobile',
+    /* Section 4. Without these the server's per-field answer had nowhere
+       to go and fell back to one sentence for all of them. */
+    preferredLocation: 'regPrefLocation', expectedCtc: 'regExpSalary',
+    noticePeriod: 'regNotice', preferredWorkModes: 'regWorkModeGroup',
   };
 
   /**
@@ -1689,6 +1796,9 @@
       email: f.email || '',
       phone: f.phone || '',
       location: f.location || '',
+      /* Mandatory on the registration form and never carried across, so
+         a candidate whose resume states it was still asked to type it. */
+      preferredLocation: f.preferredLocation || '',
       qualification: f.qualification || '',
       currentCompany: f.currentCompany || '',
       jobTitle: f.title || '',
@@ -1702,6 +1812,10 @@
       linkedin: f.linkedin || '',
       github: f.github || '',
       portfolio: f.portfolio || '',
+      /* A name the parser could only GUESS at, from the email, when the
+         document stated none. Carried across so the form can offer it as
+         a question; it is never written into the field by anything. */
+      nameSuggestion: f.nameSuggestion || '',
     };
   }
 
@@ -4771,11 +4885,27 @@
               esc(s.message || s.error) +
               (s.missing ? ' (set ' + esc((s.missing || []).join(', ')) + ')' : '') + '</div>';
           }
-          return '<div><b>' + esc(s.mailbox) + '</b>: read ' + s.seen + ', imported ' + s.imported +
+          /*
+           * "read 50, imported 0" READS AS A FAILURE AND USUALLY IS NOT.
+           *
+           * A mailbox that has already been synced has nothing new in
+           * it, so zero is the correct and expected answer - but next to
+           * the word "imported" it looks like the import broke, and a
+           * recruiter goes hunting for candidates that were brought in
+           * days ago and are already in the pool.
+           *
+           * So a sync that found nothing new says that in words, and
+           * every other count is still itemised underneath.
+           */
+          var nothingNew = !s.imported && s.duplicates === s.seen && s.seen > 0;
+          var head = nothingNew
+            ? 'read ' + s.seen + ' — nothing new since the last sync'
+            : 'read ' + s.seen + ', imported ' + s.imported;
+          return '<div><b>' + esc(s.mailbox) + '</b>: ' + head +
             (s.needsMapping ? ', ' + s.needsMapping + ' awaiting a requirement' : '') +
             (s.needsReview ? ', ' + s.needsReview + ' needing review' : '') +
             (s.ignored ? ', ' + s.ignored + ' ignored' : '') +
-            (s.duplicates ? ', ' + s.duplicates + ' already seen' : '') + '</div>';
+            (s.duplicates && !nothingNew ? ', ' + s.duplicates + ' already seen' : '') + '</div>';
         }).join('');
 
         /*
@@ -4993,9 +5123,27 @@
    * on a table that fits.
    */
   function addTopScrollbars() {
+    /*
+     * STAND DOWN WHERE teamlink-table-scroll.js IS DOING THIS.
+     *
+     * That module arrived later, does the same job with a pinned first
+     * column and a remembered scroll position, and on the candidate
+     * portal now puts its bar at the FOOT of the window instead. With
+     * both running, a wide table grew two scrollbars - and on the
+     * candidate screens they would have been at opposite ends of it.
+     *
+     * Checked per table rather than globally, so a wrapper the other
+     * module does not manage still gets a bar from here.
+     */
     var wraps = document.querySelectorAll('.tbl-wrap, .fcr-table-wrap, .table-scroll');
     for (var i = 0; i < wraps.length; i++) {
       var wrap = wraps[i];
+      if (wrap.classList.contains('tlts-w')
+          || (wrap.parentNode && wrap.parentNode.querySelector('.tlts-bar'))) {
+        var mine = wrap.previousElementSibling;
+        if (mine && mine.classList && mine.classList.contains('tl-scroll-top')) mine.remove();
+        continue;
+      }
       var overflows = wrap.scrollWidth > wrap.clientWidth + 2;
       var existing = wrap.previousElementSibling;
       var bar = existing && existing.classList
@@ -6192,9 +6340,27 @@
     var original = window.tlTreeKm;
     window.tlTreeKm = function (key) {
       window.__tlLocActiveKey = key;
+      window.__tlKmRedrew = false;
       var out = original.apply(this, arguments);
       try {
-        if (typeof window.tlLocRefresh === 'function') window.tlLocRefresh(key);
+        /*
+         * ONLY IF THE RADIUS HANDLER DID NOT ALREADY REDRAW.
+         *
+         * This refresh existed because tlTreeKm used to record the
+         * choice and leave the panel alone. It now redraws the Near by
+         * group itself - six kilobytes, under a millisecond - and this
+         * unconditional call put the full eight-hundred-row rebuild
+         * straight back on top of it, so pressing a distance still cost
+         * four hundred milliseconds and the fast path bought nothing.
+         *
+         * The flag is set by the handler when it has done the work.
+         * When it has not - a field with no distance pills, or anything
+         * that leaves no group to replace - this still runs, so the
+         * panel can never be left stale.
+         */
+        if (!window.__tlKmRedrew && typeof window.tlLocRefresh === 'function') {
+          window.tlLocRefresh(key);
+        }
       } catch (e) { /* the radius still applied */ }
       return out;
     };

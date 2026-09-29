@@ -26,6 +26,13 @@ import { existsSync } from 'node:fs';
 import { chromium } from 'playwright';
 import { EVENT_FOR_STAGE } from '../api/src/routes/notifications.js';
 
+/* The recruiter this deployment actually has. The demo login these
+   checks signed in as went with the demo data, and every failure it
+   caused read as a broken feature. */
+import { login as tlLogin } from './lib/logins.mjs';
+const RECRUITER_LOGIN = tlLogin('recruiter');
+
+
 // The outbound-payload section below needs the real provider configuration.
 const envFile = resolve(process.cwd(), process.env.ENV_FILE || '.env');
 if (existsSync(envFile) && typeof process.loadEnvFile === 'function') {
@@ -279,7 +286,7 @@ console.log('\nthe address it actually went to');
 await check("a send records the candidate's own address, not a fixed one", async () => {
   const recX = await open();
   await recX.api('post', '/auth/login',
-    { email: 'recruiter@teamlink.com', password: PASSWORD, role: 'recruiter' });
+    { email: RECRUITER_LOGIN.email, password: RECRUITER_LOGIN.password, role: 'recruiter' });
 
   const list = (await recX.api('get', '/applications?limit=25')).applications || [];
   const app = list.find((a) => a.stage && a.stage !== 'rejected');
@@ -352,7 +359,7 @@ await check('the queue is bounded, so one outage cannot flood a provider', async
 await check('only an admin can run the sweep', async () => {
   const rec2 = await open();
   await rec2.api('post', '/auth/login',
-    { email: 'recruiter@teamlink.com', password: PASSWORD, role: 'recruiter' });
+    { email: RECRUITER_LOGIN.email, password: RECRUITER_LOGIN.password, role: 'recruiter' });
   let code = null;
   try { await rec2.api('post', '/notifications/retry', {}); }
   catch (e) { code = e.code; }
@@ -367,7 +374,7 @@ console.log('\nsending one candidate their update');
 
 const rec = await open();
 await rec.api('post', '/auth/login',
-  { email: 'recruiter@teamlink.com', password: PASSWORD, role: 'recruiter' });
+  { email: RECRUITER_LOGIN.email, password: RECRUITER_LOGIN.password, role: 'recruiter' });
 
 const { applications = [] } = await rec.api('get', '/applications?limit=25');
 const target = applications.find((a) => a.stage && a.stage !== 'rejected');

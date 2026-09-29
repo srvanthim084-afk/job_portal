@@ -1,0 +1,1146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TeamLink Accounts — Invoice</title>
+<style>
+/* =====================================================================
+   TeamLink Accounts — Invoice
+
+   A placement consultancy bills a client when a candidate JOINS, not when
+   they are shortlisted, so this screen is organised around joinings that
+   have turned into money and joinings that have not. The amber card at
+   the top is the second kind: somebody started work and nobody has raised
+   a bill for them yet. It sits above the headline numbers on purpose,
+   because it is the only thing on this page that is losing money while
+   you read it.
+
+   Navy for structure, gold for the one action that starts a billing
+   cycle. Everything else is white cards on a cool grey field.
+   ===================================================================== */
+:root{
+  --navy:#1c2b4a;
+  --navy-700:#16223b;
+  --navy-300:#41577f;
+  --gold:#e0a815;
+  --gold-600:#c8930c;
+  --gold-100:#fdf4dd;
+  --amber:#b7791f;
+  --amber-bg:#fffbeb;
+  --amber-line:#f0c96b;
+
+  --ink:#1b2432;
+  --ink-soft:#66738a;
+  --ink-faint:#93a0b4;
+  --line:#e4e9f0;
+  --line-soft:#eef2f7;
+  --field:#f7f9fc;
+  --bg:#f2f5f9;
+
+  --ok:#11794d;
+  --ok-bg:#e8f6ee;
+  --warn:#9a6b06;
+  --warn-bg:#fdf3dc;
+  --bad:#b4292b;
+  --bad-bg:#fdecec;
+  --cool:#2a5fa8;
+  --cool-bg:#eaf1fb;
+
+  --r:12px;
+  --shadow:0 1px 2px rgba(22,34,59,.06), 0 4px 14px rgba(22,34,59,.05);
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg);
+  color:var(--ink);
+  font:14px/1.5 "Inter","Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+button{font:inherit;cursor:pointer}
+input,select{font:inherit;color:inherit}
+h1,h2,h3{margin:0;font-weight:700;letter-spacing:-.01em}
+.num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
+
+.wrap{max-width:1420px;margin:0 auto;padding:0 22px 64px}
+
+/* ---- header ------------------------------------------------------- */
+.top{background:var(--navy);color:#fff;padding:20px 0 26px;margin-bottom:-14px}
+.top .wrap{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap}
+.crumb{font-size:12px;color:#9fb0cc;letter-spacing:.02em;margin-bottom:5px}
+.crumb b{color:#dbe5f3;font-weight:600}
+.top h1{font-size:25px;color:#fff;line-height:1.15}
+/* Named for what it is, not for where it sits. This was .sub, which is
+   also the class on the account cards inside an expanded row - so the
+   header's description inherited their white card background and sat in
+   a white box on the navy bar. */
+.top .lede{font-size:13px;color:#a9b9d3;margin-top:5px;max-width:58ch}
+.top .acts{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding-top:6px}
+
+.btn{border:1px solid transparent;border-radius:9px;padding:8px 14px;font-size:13px;font-weight:600;
+  display:inline-flex;align-items:center;gap:7px;white-space:nowrap;transition:.12s}
+.btn-gold{background:var(--gold);color:#31250a;border-color:var(--gold)}
+.btn-gold:hover{background:var(--gold-600);border-color:var(--gold-600)}
+.btn-ghost-d{background:rgba(255,255,255,.07);color:#e8eefa;border-color:rgba(255,255,255,.22)}
+.btn-ghost-d:hover{background:rgba(255,255,255,.14)}
+.btn-line{background:#fff;color:#3e4b60;border-color:var(--line)}
+.btn-line:hover{background:var(--field);border-color:#cfd8e6}
+.btn-navy{background:var(--navy);color:#fff;border-color:var(--navy)}
+.btn-navy:hover{background:var(--navy-700)}
+.btn-sm{padding:5px 10px;font-size:12px;border-radius:7px}
+
+.bell{position:relative;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.22);
+  color:#e8eefa;border-radius:9px;width:36px;height:34px;display:grid;place-items:center;font-size:15px}
+.bell:hover{background:rgba(255,255,255,.14)}
+.bell .dot{position:absolute;top:-5px;right:-5px;background:var(--gold);color:#31250a;border-radius:999px;
+  min-width:17px;height:17px;padding:0 4px;font-size:10px;font-weight:800;display:grid;place-items:center;
+  border:2px solid var(--navy)}
+
+/* ---- cards -------------------------------------------------------- */
+.card{background:#fff;border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow)}
+.card + .card{margin-top:14px}
+.pad{padding:16px 18px}
+
+/* ---- filters ------------------------------------------------------ */
+.filters{margin-top:24px}
+.filters .head{display:flex;align-items:center;gap:12px;padding:13px 18px;border-bottom:1px solid var(--line-soft);flex-wrap:wrap}
+.filters .head h2{font-size:14px}
+.filters .head .hint{font-size:12px;color:var(--ink-faint)}
+.filters .head .reset{margin-left:auto}
+.grid-f{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:11px;padding:15px 18px}
+.f{display:flex;flex-direction:column;gap:4px;min-width:0}
+.f label{font-size:10.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint)}
+.f select,.f input{width:100%;border:1px solid var(--line);background:var(--field);border-radius:8px;
+  padding:8px 10px;font-size:13px}
+.f select:focus,.f input:focus{outline:none;border-color:var(--navy-300);background:#fff;
+  box-shadow:0 0 0 3px rgba(28,43,74,.09)}
+.f.on select,.f.on input{border-color:var(--navy);background:#fff;font-weight:600}
+.f.search{grid-column:span 2}
+
+.badges{display:flex;gap:10px;flex-wrap:wrap;padding:0 18px 16px}
+.badge{flex:1 1 150px;background:var(--field);border:1px solid var(--line-soft);border-radius:10px;padding:10px 13px}
+.badge .k{font-size:10.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint)}
+.badge .v{font-size:17px;font-weight:700;margin-top:3px}
+.badge.gst{background:var(--cool-bg);border-color:#cfe0f7}
+.badge.tds{background:var(--gold-100);border-color:#f2dfa6}
+
+/* ---- unbilled notice ---------------------------------------------- */
+.notice{margin-top:14px;background:var(--amber-bg);border:1px solid var(--amber-line);border-left:4px solid var(--gold);
+  border-radius:var(--r);padding:15px 18px}
+.notice .l1{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.notice .l1 h3{font-size:14.5px;color:#7c5a06}
+.notice .l1 .why{font-size:12.5px;color:#8a6a1c}
+.notice .l1 .go{margin-left:auto}
+.mini{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-top:13px}
+.mini .t{background:#fff;border:1px solid var(--amber-line);border-radius:9px;padding:10px 12px}
+.mini .t .k{font-size:10.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--amber)}
+.mini .t .v{font-size:17px;font-weight:700;margin-top:2px;color:#6b4e05}
+.mini .t .s{font-size:11.5px;color:#93752c;margin-top:1px}
+
+/* ---- headline stats ------------------------------------------------ */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(198px,1fr));gap:12px;margin-top:14px}
+.stat{background:#fff;border:1px solid var(--line);border-radius:var(--r);padding:14px 16px;box-shadow:var(--shadow);
+  position:relative;overflow:hidden}
+.stat::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--navy-300)}
+.stat.good::before{background:var(--ok)}
+.stat.warn::before{background:var(--gold)}
+.stat.bad::before{background:var(--bad)}
+.stat .k{font-size:10.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint)}
+.stat .v{font-size:23px;font-weight:700;margin-top:5px;letter-spacing:-.02em}
+.stat .s{font-size:11.5px;color:var(--ink-soft);margin-top:3px}
+
+/* ---- aging --------------------------------------------------------- */
+.aging{margin-top:14px;padding:14px 18px}
+.aging .hd{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:11px}
+.aging .hd h2{font-size:14px}
+.aging .hd .hint{font-size:12px;color:var(--ink-faint)}
+.chips{display:flex;gap:9px;flex-wrap:wrap}
+.chip{background:#fff;border:1px solid var(--line);border-radius:10px;padding:9px 13px;text-align:left;min-width:132px;
+  transition:.12s}
+.chip:hover{border-color:#c2cee0;background:var(--field)}
+.chip.on{border-color:var(--navy);background:var(--navy);color:#fff}
+.chip .k{font-size:11px;font-weight:700;letter-spacing:.02em;display:flex;align-items:center;gap:6px}
+.chip .n{background:var(--line-soft);color:var(--ink-soft);border-radius:999px;padding:0 6px;font-size:10.5px;font-weight:800}
+.chip.on .n{background:rgba(255,255,255,.22);color:#fff}
+.chip .v{font-size:15px;font-weight:700;margin-top:4px}
+.chip.zero{opacity:.5}
+.chip.red:not(.on) .v{color:var(--bad)}
+.tdsline{margin-top:12px;padding-top:11px;border-top:1px dashed var(--line);font-size:12.5px;color:var(--ink-soft);
+  display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.tdsline b{color:var(--ink)}
+
+/* ---- table --------------------------------------------------------- */
+.tblcard{margin-top:14px;overflow:hidden}
+.tblhd{display:flex;align-items:center;gap:12px;padding:13px 18px;border-bottom:1px solid var(--line-soft);flex-wrap:wrap}
+.tblhd h2{font-size:14px}
+.tblhd .hint{font-size:12px;color:var(--ink-faint)}
+.tblhd .right{margin-left:auto;display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.tblhd select{border:1px solid var(--line);background:var(--field);border-radius:8px;padding:6px 9px;font-size:12.5px}
+.colmenu{position:relative}
+.colpop{position:absolute;right:0;top:calc(100% + 6px);background:#fff;border:1px solid var(--line);
+  border-radius:10px;box-shadow:0 10px 30px rgba(22,34,59,.16);padding:8px;min-width:190px;z-index:30;display:none}
+.colpop.open{display:block}
+.colpop label{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;font-size:12.5px;cursor:pointer}
+.colpop label:hover{background:var(--field)}
+
+.scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;min-width:900px}
+thead th{background:var(--field);text-align:left;font-size:10.5px;font-weight:800;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--ink-faint);padding:10px 14px;border-bottom:1px solid var(--line);
+  white-space:nowrap;position:sticky;top:0;z-index:2}
+thead th.r,tbody td.r{text-align:right}
+tbody td{padding:12px 14px;border-bottom:1px solid var(--line-soft);font-size:13px;vertical-align:middle}
+tbody tr.row{cursor:pointer}
+tbody tr.row:hover{background:#fbfcfe}
+tbody tr.row.open{background:var(--cool-bg)}
+tbody tr.grp td{background:var(--navy);color:#fff;font-weight:700;font-size:12px;letter-spacing:.03em;
+  text-transform:uppercase;padding:8px 14px}
+tbody tr.grp .gsum{float:right;font-weight:600;text-transform:none;letter-spacing:0;color:#c3d2ea}
+.inv-no{font-weight:700;letter-spacing:.01em}
+.inv-no .caret{color:var(--ink-faint);font-size:10px;margin-right:6px;display:inline-block;width:9px}
+tr.open .inv-no .caret{transform:rotate(90deg)}
+.cl{font-weight:600}
+.cl .dept{display:block;font-size:11.5px;color:var(--ink-faint);font-weight:400;margin-top:1px}
+.pill{display:inline-block;border-radius:999px;padding:2px 9px;font-size:11px;font-weight:700;white-space:nowrap}
+.pill.ok{background:var(--ok-bg);color:var(--ok)}
+.pill.warn{background:var(--warn-bg);color:var(--warn)}
+.pill.bad{background:var(--bad-bg);color:var(--bad)}
+.pill.cool{background:var(--cool-bg);color:var(--cool)}
+.pill.grey{background:var(--line-soft);color:var(--ink-soft)}
+td.acts{white-space:nowrap}
+td.acts .btn{margin-right:5px}
+
+/* ---- expanded row -------------------------------------------------- */
+tr.detail td{background:#fafcff;border-bottom:1px solid var(--line);padding:0}
+.det{padding:16px 18px 18px}
+.people{margin-bottom:14px}
+.people .lbl{font-size:10.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);
+  margin-bottom:7px}
+.person{display:flex;gap:11px;align-items:center;background:#fff;border:1px solid var(--line);border-radius:9px;
+  padding:9px 12px;margin-bottom:7px;flex-wrap:wrap}
+.av{width:31px;height:31px;border-radius:999px;background:var(--navy);color:#fff;display:grid;place-items:center;
+  font-size:11.5px;font-weight:700;flex:none}
+.person .nm{font-weight:600}
+.person .mt{font-size:11.5px;color:var(--ink-faint)}
+.person .rt{margin-left:auto;text-align:right}
+.person .rt .a{font-weight:700}
+.person .rt .b{font-size:11.5px;color:var(--ink-faint)}
+
+.two{display:grid;grid-template-columns:1fr 1fr;gap:13px}
+.sub{background:#fff;border:1px solid var(--line);border-radius:10px;padding:13px 15px}
+.sub h4{margin:0 0 10px;font-size:12.5px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:var(--navy)}
+.kv{display:flex;justify-content:space-between;gap:12px;padding:6px 0;font-size:13px;border-bottom:1px dashed var(--line-soft)}
+.kv:last-child{border-bottom:0}
+.kv .k{color:var(--ink-soft)}
+.kv .v{font-weight:600;text-align:right}
+.kv.total{border-top:1px solid var(--line);border-bottom:0;margin-top:5px;padding-top:9px;font-size:14px}
+.kv.total .v{font-weight:800}
+.kv .v.neg{color:var(--bad)}
+.kv .v.pos{color:var(--ok)}
+
+/* ---- modals -------------------------------------------------------- */
+.scrim{position:fixed;inset:0;background:rgba(18,26,42,.55);display:none;align-items:flex-start;justify-content:center;
+  padding:32px 16px;overflow:auto;z-index:100}
+.scrim.open{display:flex}
+.modal{background:#fff;border-radius:14px;width:100%;max-width:820px;box-shadow:0 24px 70px rgba(10,16,30,.4)}
+.modal.sm{max-width:430px}
+.mhd{display:flex;align-items:center;gap:12px;padding:15px 20px;border-bottom:1px solid var(--line)}
+.mhd h3{font-size:15px}
+.mhd .x{margin-left:auto;background:var(--field);border:1px solid var(--line);border-radius:8px;width:30px;height:30px;
+  font-size:15px;color:var(--ink-soft);display:grid;place-items:center}
+.mhd .x:hover{background:#eef2f7}
+.mbd{padding:20px}
+.mft{display:flex;gap:9px;justify-content:flex-end;padding:14px 20px;border-top:1px solid var(--line);background:var(--field);
+  border-radius:0 0 14px 14px;flex-wrap:wrap}
+
+/* ---- printable invoice --------------------------------------------- */
+.doc{border:1px solid #c9d2e0;border-radius:6px;overflow:hidden;font-size:12.5px;color:#1b2432}
+.doc .dh{background:var(--navy);color:#fff;padding:15px 18px;display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap}
+.doc .dh .logo{font-size:17px;font-weight:800;letter-spacing:-.02em}
+.doc .dh .logo span{color:var(--gold)}
+.doc .dh .meta{margin-left:auto;text-align:right;font-size:11.5px;color:#bccbe4;line-height:1.7}
+.doc .dh .meta b{color:#fff}
+.doc .tag{display:inline-block;border:1px solid var(--gold);color:var(--gold);border-radius:5px;padding:1px 8px;
+  font-size:10.5px;font-weight:800;letter-spacing:.09em;margin-top:6px}
+.doc .parties{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid #d7deea}
+.doc .parties>div{padding:13px 18px}
+.doc .parties>div+div{border-left:1px solid #d7deea}
+.doc .parties .lbl{font-size:10px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:#8d99ad;margin-bottom:5px}
+.doc .parties .nm{font-weight:700;margin-bottom:2px}
+.doc .parties .ln{color:#54617a;line-height:1.6}
+.doc table{min-width:0;width:100%}
+.doc thead th{background:#eef2f8;color:#465570;position:static;font-size:10px;padding:8px 12px;border-bottom:1px solid #d7deea}
+.doc tbody td{padding:10px 12px;border-bottom:1px solid #edf1f6;font-size:12.5px}
+.doc tfoot td{padding:7px 12px;font-size:12.5px}
+.doc tfoot tr.gt td{border-top:2px solid var(--navy);font-weight:800;font-size:13.5px;background:#f6f8fc}
+.words{padding:11px 18px;border-top:1px solid #d7deea;border-bottom:1px solid #d7deea;background:#fbfcfe;font-size:12px}
+.words b{text-transform:capitalize}
+.doc .foot{display:grid;grid-template-columns:1.25fr 1fr}
+.doc .foot>div{padding:14px 18px}
+.doc .foot>div+div{border-left:1px solid #d7deea;text-align:right;display:flex;flex-direction:column;justify-content:space-between}
+.doc .foot .lbl{font-size:10px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:#8d99ad;margin-bottom:6px}
+.doc .bank div{line-height:1.75;color:#3a465c}
+.doc .sig{margin-top:40px;border-top:1px solid #9aa6bb;padding-top:6px;font-size:11.5px;color:#54617a;display:inline-block;
+  min-width:190px}
+.doc .note{padding:10px 18px;background:#f6f8fc;border-top:1px solid #d7deea;font-size:11px;color:#6b7891}
+
+.fld{margin-bottom:13px}
+.fld label{display:block;font-size:11px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;
+  color:var(--ink-faint);margin-bottom:5px}
+.fld input,.fld select{width:100%;border:1px solid var(--line);background:var(--field);border-radius:8px;padding:9px 11px;font-size:14px}
+.fld input:focus,.fld select:focus{outline:none;border-color:var(--navy-300);background:#fff;box-shadow:0 0 0 3px rgba(28,43,74,.09)}
+.fld .help{font-size:11.5px;color:var(--ink-faint);margin-top:4px}
+.recap{background:var(--field);border:1px solid var(--line-soft);border-radius:9px;padding:11px 13px;margin-bottom:15px}
+
+.empty{padding:40px 18px;text-align:center;color:var(--ink-faint);font-size:13.5px}
+.empty b{color:var(--ink);display:block;margin-bottom:4px;font-size:14.5px}
+
+@media (max-width:860px){
+  .two{grid-template-columns:1fr}
+  .doc .parties,.doc .foot{grid-template-columns:1fr}
+  .doc .parties>div+div,.doc .foot>div+div{border-left:0;border-top:1px solid #d7deea;text-align:left}
+  .f.search{grid-column:span 1}
+  .top .acts{margin-left:0;width:100%}
+}
+@media print{
+  body{background:#fff}
+  .top,.filters,.notice,.stats,.aging,.tblcard,.mhd,.mft{display:none!important}
+  .scrim{position:static;display:block;padding:0;background:#fff;overflow:visible}
+  .modal{box-shadow:none;max-width:none}
+  .mbd{padding:0}
+  .doc{border:0}
+}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <div>
+      <div class="crumb">TeamLink Accounts / <b>Invoice</b></div>
+      <h1>Invoice</h1>
+      <div class="lede">Every candidate who has joined, what they were billed for, and what is still to come in — with the joinings nobody has raised a bill for yet called out first.</div>
+    </div>
+    <div class="acts">
+      <button class="bell" title="3 notifications" onclick="alert('Notifications\n\n· 1 joining is still without an invoice number\n· TL/26-27/0104 is 96 days overdue\n· TDS certificate for TL/26-27/0101 has not arrived')">🔔<span class="dot">3</span></button>
+      <button class="btn btn-gold" onclick="alert('Opens the joining form: candidate, client, department, role, date of joining and the agreed fee. The invoice number is drawn from the series once the joining is confirmed.')">+ New join</button>
+      <button class="btn btn-ghost-d" onclick="openPay(null)">+ Payment</button>
+      <button class="btn btn-ghost-d" onclick="alert('Import from Excel\n\nExpected columns: Invoice no, Invoice date, Client, Department, Section, Role, Candidate, Billing type, Fee before GST, GST charged, TDS %, Amount received.')">⭱ Import Excel</button>
+      <button class="btn btn-ghost-d" onclick="exportExcel()">⭳ Excel</button>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <!-- ---- filters ---- -->
+  <section class="card filters">
+    <div class="head">
+      <h2>Filters</h2>
+      <span class="hint" id="fhint">showing all 11 invoices</span>
+      <button class="btn btn-line btn-sm reset" onclick="resetAll()">Reset all</button>
+    </div>
+    <div class="grid-f" id="grid-f"></div>
+    <div class="badges" id="badges"></div>
+  </section>
+
+  <!-- ---- unbilled joinings ---- -->
+  <section class="notice" id="notice"></section>
+
+  <!-- ---- headline ---- -->
+  <section class="stats" id="stats"></section>
+
+  <!-- ---- aging ---- -->
+  <section class="card aging">
+    <div class="hd">
+      <h2>Aging</h2>
+      <span class="hint">Counted on what is still outstanding, from the day payment fell due — not from the invoice date.</span>
+    </div>
+    <div class="chips" id="chips"></div>
+    <div class="tdsline" id="tdsline"></div>
+  </section>
+
+  <!-- ---- invoices ---- -->
+  <section class="card tblcard">
+    <div class="tblhd">
+      <h2>Invoices</h2>
+      <span class="hint">Click a row to see who is on it.</span>
+      <div class="right">
+        <label style="font-size:11.5px;color:var(--ink-faint);font-weight:700;letter-spacing:.04em;text-transform:uppercase">Group by</label>
+        <select id="groupBy" onchange="setGroup(this.value)">
+          <option value="none">Invoice</option>
+          <option value="client">Client</option>
+          <option value="dept">Department</option>
+          <option value="recruiter">Recruiter</option>
+          <option value="month">Invoice month</option>
+        </select>
+        <div class="colmenu">
+          <button class="btn btn-line btn-sm" onclick="toggleCols(event)">Columns ▾</button>
+          <div class="colpop" id="colpop"></div>
+        </div>
+      </div>
+    </div>
+    <div class="scroll">
+      <table id="tbl">
+        <thead><tr id="thead"></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<!-- ---- printable invoice ---- -->
+<div class="scrim" id="docScrim" onclick="if(event.target===this)closeDoc()">
+  <div class="modal">
+    <div class="mhd">
+      <h3>Printable invoice</h3>
+      <button class="x" onclick="closeDoc()">✕</button>
+    </div>
+    <div class="mbd" id="docBody"></div>
+    <div class="mft">
+      <button class="btn btn-line" onclick="closeDoc()">Close</button>
+      <button class="btn btn-line" onclick="alert('The PDF is written to the client folder and attached to the invoice record.')">Download PDF</button>
+      <button class="btn btn-navy" onclick="window.print()">Print</button>
+    </div>
+  </div>
+</div>
+
+<!-- ---- record a payment ---- -->
+<div class="scrim" id="payScrim" onclick="if(event.target===this)closePay()">
+  <div class="modal sm">
+    <div class="mhd">
+      <h3>Record a payment</h3>
+      <button class="x" onclick="closePay()">✕</button>
+    </div>
+    <div class="mbd" id="payBody"></div>
+    <div class="mft">
+      <button class="btn btn-line" onclick="closePay()">Cancel</button>
+      <button class="btn btn-gold" onclick="savePay()">Save payment</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* =====================================================================
+   MONEY
+   ---------------------------------------------------------------------
+   Every figure on this page is derived from four numbers per invoice -
+   the fee before GST, whether GST was charged, the TDS rate the client
+   deducts, and what has actually come in. Nothing is stored twice, so
+   the headline cards, the aging chips and the expanded row cannot drift
+   apart from each other.
+
+       before GST    the placement fee that was agreed
+     + GST 18%       9% CGST + 9% SGST, when the client is billed it
+     = after GST     the face value of the invoice
+     - TDS           the client withholds this and pays it to the
+                     department on our behalf; it is deducted on the
+                     fee, never on the GST
+     = receivable    what should actually reach the bank
+     - received      what has
+     = pending       what is chased
+   ===================================================================== */
+
+const GST_RATE = 0.18;
+const TODAY = new Date(2026, 8, 25);          // 25 Sep 2026
+const TERMS_DAYS = 30;                         // net 30 on every client
+
+/* ---- Indian formatting --------------------------------------------- */
+
+const inr = (n) => '₹' + Math.round(n).toLocaleString('en-IN');
+const inr2 = (n) => '₹' + Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+/** 1234567 -> "12.35 L", 12345678 -> "1.23 Cr" — for the headline cards. */
+function shortInr(n) {
+  const a = Math.abs(n);
+  if (a >= 1e7) return '₹' + (n / 1e7).toFixed(2) + ' Cr';
+  if (a >= 1e5) return '₹' + (n / 1e5).toFixed(2) + ' L';
+  return inr(n);
+}
+
+/**
+ * Rupees in words, the Indian way — crore, lakh, thousand.
+ *
+ * A GST invoice has to carry the amount in words, and a western
+ * grouping ("one million two hundred") is not what a client's accounts
+ * department will accept.
+ */
+const ONES = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
+  'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'];
+const TENS = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+
+function under100(n) {
+  if (n < 20) return ONES[n];
+  return TENS[Math.floor(n / 10)] + (n % 10 ? ' ' + ONES[n % 10] : '');
+}
+function under1000(n) {
+  const h = Math.floor(n / 100), r = n % 100;
+  return (h ? ONES[h] + ' hundred' + (r ? ' and ' : '') : '') + (r ? under100(r) : '');
+}
+function words(n) {
+  n = Math.round(n);
+  if (!n) return 'zero';
+  const parts = [];
+  const cr = Math.floor(n / 1e7); n %= 1e7;
+  const lk = Math.floor(n / 1e5); n %= 1e5;
+  const th = Math.floor(n / 1000); n %= 1000;
+  if (cr) parts.push(under1000(cr) + ' crore');
+  if (lk) parts.push(under1000(lk) + ' lakh');
+  if (th) parts.push(under1000(th) + ' thousand');
+  if (n) parts.push(under1000(n));
+  return parts.join(' ');
+}
+const rupeesInWords = (n) => {
+  const whole = Math.floor(n), paise = Math.round((n - whole) * 100);
+  return words(whole) + ' rupees' + (paise ? ' and ' + under100(paise) + ' paise' : '') + ' only';
+};
+
+/* ---- dates ---------------------------------------------------------- */
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const d = (iso) => { const [y, m, day] = iso.split('-').map(Number); return new Date(y, m - 1, day); };
+const fmtDate = (iso) => { const t = d(iso); return `${String(t.getDate()).padStart(2, '0')} ${MONTHS[t.getMonth()]} ${t.getFullYear()}`; };
+const addDays = (date, n) => new Date(date.getFullYear(), date.getMonth(), date.getDate() + n);
+const daysBetween = (a, b) => Math.round((b - a) / 86400000);
+const monthKey = (iso) => { const t = d(iso); return `${MONTHS[t.getMonth()]} ${t.getFullYear()}`; };
+
+/* ---- the book ------------------------------------------------------- */
+
+const CLIENTS = {
+  svit:  { name: 'Sri Venkateswara Institute of Technology', city: 'Tirupati, Andhra Pradesh',
+           gstin: '37AABCS4721K1ZP', addr: 'Alipiri Road, Tirupati 517502' },
+  gitam: { name: 'GITAM Deemed University', city: 'Visakhapatnam, Andhra Pradesh',
+           gstin: '37AAATG1234M1Z8', addr: 'Rushikonda, Visakhapatnam 530045' },
+  mrce:  { name: 'Malla Reddy College of Engineering', city: 'Hyderabad, Telangana',
+           gstin: '36AADCM9087Q1ZR', addr: 'Maisammaguda, Dhulapally, Secunderabad 500100' },
+  anurag:{ name: 'Anurag University', city: 'Hyderabad, Telangana',
+           gstin: '36AAECA5512H1ZK', addr: 'Venkatapur, Ghatkesar, Hyderabad 500088' },
+  viit:  { name: "Vignan's Institute of Information Technology", city: 'Visakhapatnam, Andhra Pradesh',
+           gstin: '37AAAJV7781L1ZD', addr: 'Duvvada, Vadlapudi, Visakhapatnam 530049' },
+  kmc:   { name: 'Kakatiya Medical College', city: 'Warangal, Telangana',
+           gstin: '36AAAGK3390P1ZW', addr: 'Rangashaipet, Warangal 506007' },
+};
+
+/*
+ * Eleven invoices across six institutions. Spread across four months so
+ * every aging bucket has something in it, with two fully settled, three
+ * part-paid and one long overdue — which is what an accounts screen has
+ * to be able to show without being set up for it.
+ */
+const INVOICES = [
+  { no: 'TL/26-27/0096', date: '2026-05-28', client: 'svit', dept: 'Engineering', section: 'Teaching',
+    role: 'Assistant Professor', billing: 'Percentage of CTC', gst: true, tds: 10, recruiter: 'Sravanthi M',
+    received: 0, sent: '2026-05-29', tdsCert: null,
+    people: [
+      { name: 'Anusha Reddy', role: 'Assistant Professor — CSE', ctc: 780000, pct: 8.333, joined: '2026-05-20' },
+      { name: 'Kiran Varma', role: 'Assistant Professor — ECE', ctc: 720000, pct: 8.333, joined: '2026-05-22' },
+    ] },
+  { no: 'TL/26-27/0099', date: '2026-06-12', client: 'gitam', dept: 'Management', section: 'Teaching',
+    role: 'Associate Professor', billing: 'Percentage of CTC', gst: true, tds: 10, recruiter: 'Praveen K',
+    received: 118000, sent: '2026-06-12', tdsCert: '2026-08-14',
+    people: [
+      { name: 'Dr. Meenakshi Rao', role: 'Associate Professor — Finance', ctc: 1450000, pct: 8.333, joined: '2026-06-01' },
+    ] },
+  { no: 'TL/26-27/0101', date: '2026-06-24', client: 'mrce', dept: 'Engineering', section: 'Non-teaching',
+    role: 'Lab Technician', billing: 'Flat fee per joining', gst: true, tds: 10, recruiter: 'Sravanthi M',
+    received: 0, sent: '2026-06-25', tdsCert: null,
+    people: [
+      { name: 'Ramesh Naidu', role: 'Lab Technician — Mechanical', ctc: 312000, flat: 35000, joined: '2026-06-18' },
+      { name: 'Sai Teja', role: 'Lab Technician — Civil', ctc: 288000, flat: 35000, joined: '2026-06-18' },
+      { name: 'Lavanya B', role: 'Lab Assistant — Chemistry', ctc: 264000, flat: 30000, joined: '2026-06-20' },
+    ] },
+  /* The one that has gone properly bad: raised in May, due in June, still
+     unpaid in September. It is the reason the 90+ chip exists. */
+  { no: 'TL/26-27/0104', date: '2026-05-22', client: 'kmc', dept: 'Medical', section: 'Teaching',
+    role: 'Senior Resident', billing: 'Percentage of CTC', gst: true, tds: 10, recruiter: 'Anitha G',
+    received: 0, sent: '2026-05-23', tdsCert: null,
+    people: [
+      { name: 'Dr. Harsha Vardhan', role: 'Senior Resident — Radiology', ctc: 1680000, pct: 8.333, joined: '2026-05-14' },
+    ] },
+  { no: 'TL/26-27/0108', date: '2026-07-09', client: 'anurag', dept: 'Administration', section: 'Non-teaching',
+    role: 'Placement Officer', billing: 'Flat fee per joining', gst: true, tds: 10, recruiter: 'Praveen K',
+    received: 82600, sent: '2026-07-09', tdsCert: '2026-09-02',
+    people: [
+      { name: 'Naveen Chowdary', role: 'Placement Officer', ctc: 660000, flat: 70000, joined: '2026-07-01' },
+    ] },
+  { no: 'TL/26-27/0110', date: '2026-07-21', client: 'viit', dept: 'Science', section: 'Teaching',
+    role: 'Assistant Professor', billing: 'Percentage of CTC', gst: true, tds: 10, recruiter: 'Anitha G',
+    received: 0, sent: '2026-07-22', tdsCert: null,
+    people: [
+      { name: 'Swapna Kumari', role: 'Assistant Professor — Physics', ctc: 690000, pct: 8.333, joined: '2026-07-13' },
+      { name: 'Vikram Shetty', role: 'Assistant Professor — Maths', ctc: 660000, pct: 8.333, joined: '2026-07-15' },
+    ] },
+  { no: 'TL/26-27/0113', date: '2026-08-04', client: 'gitam', dept: 'Engineering', section: 'Teaching',
+    role: 'Professor', billing: 'Percentage of CTC', gst: true, tds: 10, recruiter: 'Sravanthi M',
+    received: 0, sent: '2026-08-05', tdsCert: null,
+    people: [
+      { name: 'Dr. Srikanth Babu', role: 'Professor — Data Science', ctc: 2100000, pct: 8.333, joined: '2026-07-27' },
+    ] },
+  { no: 'TL/26-27/0116', date: '2026-08-18', client: 'svit', dept: 'Administration', section: 'Non-teaching',
+    role: 'Accounts Executive', billing: 'Flat fee per joining', gst: false, tds: 10, recruiter: 'Praveen K',
+    received: 45000, sent: '2026-08-19', tdsCert: null,
+    people: [
+      { name: 'Priyanka Sharma', role: 'Accounts Executive', ctc: 420000, flat: 50000, joined: '2026-08-10' },
+    ] },
+  { no: 'TL/26-27/0119', date: '2026-08-29', client: 'mrce', dept: 'Management', section: 'Teaching',
+    role: 'Assistant Professor', billing: 'Monthly retainer', gst: true, tds: 10, recruiter: 'Anitha G',
+    received: 0, sent: null, tdsCert: null,
+    people: [
+      { name: 'Retainer — Aug 2026', role: 'Two campuses, all open roles', ctc: 0, flat: 125000, joined: '2026-08-01' },
+    ] },
+  { no: 'TL/26-27/0122', date: '2026-09-08', client: 'anurag', dept: 'Science', section: 'Teaching',
+    role: 'Lecturer', billing: 'Percentage of CTC', gst: true, tds: 10, recruiter: 'Sravanthi M',
+    received: 0, sent: '2026-09-09', tdsCert: null,
+    people: [
+      { name: 'Divya Prasad', role: 'Lecturer — Biotechnology', ctc: 540000, pct: 8.333, joined: '2026-09-01' },
+      { name: 'Mohan Krishna', role: 'Lecturer — Microbiology', ctc: 516000, pct: 8.333, joined: '2026-09-02' },
+    ] },
+  { no: 'TL/26-27/0124', date: '2026-09-17', client: 'viit', dept: 'Engineering', section: 'Non-teaching',
+    role: 'Librarian', billing: 'Flat fee per joining', gst: true, tds: 10, recruiter: 'Praveen K',
+    received: 0, sent: null, tdsCert: null,
+    people: [
+      { name: 'Gayathri N', role: 'Assistant Librarian', ctc: 396000, flat: 45000, joined: '2026-09-11' },
+    ] },
+];
+
+/*
+ * The joining that has not been billed. This is the whole reason for the
+ * amber card: the candidate started work on the 14th, the fee is agreed,
+ * and no invoice number has been drawn.
+ */
+const UNBILLED = [
+  { name: 'Ashwin Menon', role: 'Assistant Professor — AI & ML', client: 'kmc',
+    dept: 'Medical', section: 'Teaching', joined: '2026-09-14', ctc: 840000, pct: 8.333,
+    recruiter: 'Anitha G' },
+];
+
+const NEXT_NUMBER = 'TL/26-27/0125';
+
+/* ---- derived -------------------------------------------------------- */
+
+const feeOf = (p) => (p.flat != null ? p.flat : Math.round(p.ctc * p.pct / 100));
+
+/** Everything about one invoice that is arithmetic rather than data. */
+function calc(inv) {
+  const before = inv.people.reduce((t, p) => t + feeOf(p), 0);
+  const gst = inv.gst ? Math.round(before * GST_RATE) : 0;
+  const after = before + gst;
+  /* TDS is withheld on the fee, not on the tax. Deducting it on the
+     GST-inclusive value is the single most common way one of these
+     screens ends up ₹4,000 out on every line. */
+  const tds = Math.round(before * inv.tds / 100);
+  const receivable = after - tds;
+  const received = inv.received;
+  const pending = Math.max(0, receivable - received);
+  const due = addDays(d(inv.date), TERMS_DAYS);
+  const age = daysBetween(d(inv.date), TODAY);
+  const overdueBy = daysBetween(due, TODAY);
+  const status = pending === 0 ? 'Paid'
+    : received > 0 ? 'Part paid'
+    : overdueBy > 0 ? 'Overdue'
+    : 'Awaiting';
+  const bucket = pending === 0 ? null
+    : overdueBy <= 0 ? 'notdue'
+    : overdueBy <= 30 ? '0-30'
+    : overdueBy <= 60 ? '31-60'
+    : overdueBy <= 90 ? '61-90'
+    : '90+';
+  return { before, gst, after, tds, receivable, received, pending, due, age, overdueBy, status, bucket };
+}
+
+const ALL = INVOICES.map((inv) => ({ ...inv, c: calc(inv), cl: CLIENTS[inv.client] }));
+
+/* ---- filter state ---------------------------------------------------- */
+
+const F = { client: '', period: '', dept: '', section: '', role: '', person: '', gst: '', status: '', q: '' };
+let BUCKET = 'all';
+let GROUP = 'none';
+const OPEN = new Set();
+
+const COLS = [
+  { k: 'no', t: 'Invoice no', on: true, lock: true },
+  { k: 'date', t: 'Invoice date', on: true },
+  { k: 'client', t: 'Client', on: true, lock: true },
+  { k: 'billing', t: 'Billing type', on: true },
+  { k: 'before', t: 'Before GST', on: true, r: true },
+  { k: 'after', t: 'After GST', on: true, r: true },
+  { k: 'pending', t: 'Pending', on: false, r: true },
+  { k: 'recruiter', t: 'Recruiter', on: false },
+  { k: 'age', t: 'Age', on: true },
+  { k: 'acts', t: 'Actions', on: true, lock: true },
+];
+
+const uniq = (f) => [...new Set(ALL.map(f))].sort();
+
+/** Does this invoice survive the filters, optionally ignoring one? */
+function keep(inv, skip) {
+  const on = (k) => k !== skip && F[k];
+  if (on('client') && inv.client !== F.client) return false;
+  if (on('period') && monthKey(inv.date) !== F.period) return false;
+  if (on('dept') && inv.dept !== F.dept) return false;
+  if (on('section') && inv.section !== F.section) return false;
+  if (on('role') && inv.role !== F.role) return false;
+  if (on('gst') && String(inv.gst) !== F.gst) return false;
+  if (on('status') && inv.c.status !== F.status) return false;
+  if (on('person') && !inv.people.some((p) => p.name === F.person)) return false;
+  if (on('q')) {
+    const hay = [inv.no, inv.cl.name, inv.dept, inv.section, inv.role, inv.billing, inv.recruiter,
+      ...inv.people.map((p) => p.name + ' ' + p.role)].join(' ').toLowerCase();
+    if (!hay.includes(F.q.trim().toLowerCase())) return false;
+  }
+  if (skip !== '__bucket' && BUCKET !== 'all' && inv.c.bucket !== BUCKET) return false;
+  return true;
+}
+
+const shown = () => ALL.filter((i) => keep(i, null));
+
+/* ---- rendering ------------------------------------------------------- */
+
+const $ = (id) => document.getElementById(id);
+const esc = (t) => String(t == null ? '' : t).replace(/[&<>"']/g, (c) =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function drawFilters() {
+  const sel = (k, label, opts, fmt) => {
+    const pool = ALL.filter((i) => keep(i, k));
+    const n = {};
+    pool.forEach((i) => {
+      const v = fmt.val(i);
+      (Array.isArray(v) ? v : [v]).forEach((x) => { n[x] = (n[x] || 0) + 1; });
+    });
+    return `<div class="f ${F[k] ? 'on' : ''}"><label>${esc(label)}</label>
+      <select onchange="setF('${k}',this.value)">
+        <option value="">All (${pool.length})</option>
+        ${opts.map((o) => `<option value="${esc(o.v)}"${F[k] === o.v ? ' selected' : ''}>${esc(o.t)} (${n[o.v] || 0})</option>`).join('')}
+      </select></div>`;
+  };
+
+  $('grid-f').innerHTML = [
+    sel('client', 'Client', Object.keys(CLIENTS).map((k) => ({ v: k, t: CLIENTS[k].name })), { val: (i) => i.client }),
+    sel('period', 'Period', uniq((i) => monthKey(i.date)).map((v) => ({ v, t: v })), { val: (i) => monthKey(i.date) }),
+    sel('dept', 'Department', uniq((i) => i.dept).map((v) => ({ v, t: v })), { val: (i) => i.dept }),
+    sel('section', 'Section', uniq((i) => i.section).map((v) => ({ v, t: v })), { val: (i) => i.section }),
+    sel('role', 'Role', uniq((i) => i.role).map((v) => ({ v, t: v })), { val: (i) => i.role }),
+    sel('person', 'Employee name',
+      [...new Set(ALL.flatMap((i) => i.people.map((p) => p.name)))].sort().map((v) => ({ v, t: v })),
+      { val: (i) => i.people.map((p) => p.name) }),
+    sel('gst', 'GST charged', [{ v: 'true', t: 'GST charged' }, { v: 'false', t: 'No GST' }], { val: (i) => String(i.gst) }),
+    sel('status', 'Status', ['Paid', 'Part paid', 'Awaiting', 'Overdue'].map((v) => ({ v, t: v })), { val: (i) => i.c.status }),
+    `<div class="f search ${F.q ? 'on' : ''}"><label>Search</label>
+      <input value="${esc(F.q)}" placeholder="Invoice no, client, candidate, recruiter…" oninput="setF('q',this.value)"></div>`,
+  ].join('');
+
+  const s = shown();
+  const sum = (f) => s.reduce((t, i) => t + f(i), 0);
+  $('badges').innerHTML = `
+    <div class="badge gst"><div class="k">Total GST</div><div class="v num">${inr(sum((i) => i.c.gst))}</div></div>
+    <div class="badge"><div class="k">Before GST</div><div class="v num">${inr(sum((i) => i.c.before))}</div></div>
+    <div class="badge"><div class="k">After GST</div><div class="v num">${inr(sum((i) => i.c.after))}</div></div>
+    <div class="badge tds"><div class="k">TDS</div><div class="v num">${inr(sum((i) => i.c.tds))}</div></div>`;
+
+  $('fhint').textContent = s.length === ALL.length
+    ? `showing all ${ALL.length} invoices`
+    : `showing ${s.length} of ${ALL.length} invoices`;
+}
+
+function drawNotice() {
+  const n = UNBILLED.length;
+  const fee = UNBILLED.reduce((t, p) => t + feeOf(p), 0);
+  const withGst = Math.round(fee * (1 + GST_RATE));
+  $('notice').innerHTML = `
+    <div class="l1">
+      <h3>⚠️ ${n} joining${n === 1 ? ' has' : 's have'} no invoice number yet</h3>
+      <span class="why">${esc(UNBILLED.map((p) => p.name + ' — ' + CLIENTS[p.client].name).join('; '))},
+        joined ${esc(fmtDate(UNBILLED[0].joined))}. The fee is agreed; nothing has been raised.</span>
+      <button class="btn btn-gold btn-sm go" onclick="alert('Raises ${NEXT_NUMBER} for ${esc(UNBILLED[0].name)} and marks the joining as billed.')">Raise invoice</button>
+    </div>
+    <div class="mini">
+      <div class="t"><div class="k">Candidates waiting</div><div class="v num">${n}</div><div class="s">joined, not billed</div></div>
+      <div class="t"><div class="k">Fee not yet billed</div><div class="v num">${inr(fee)}</div><div class="s">before GST</div></div>
+      <div class="t"><div class="k">Would invoice for</div><div class="v num">${inr(withGst)}</div><div class="s">after 18% GST</div></div>
+      <div class="t"><div class="k">Next number in series</div><div class="v num" style="font-size:15px">${NEXT_NUMBER}</div><div class="s">2026–27 series</div></div>
+    </div>`;
+}
+
+function drawStats() {
+  const s = shown();
+  const people = s.reduce((t, i) => t + i.people.filter((p) => p.ctc > 0).length, 0);
+  const clients = new Set(s.map((i) => i.client)).size;
+  const after = s.reduce((t, i) => t + i.c.after, 0);
+  const got = s.reduce((t, i) => t + i.c.received, 0);
+  const pend = s.reduce((t, i) => t + i.c.pending, 0);
+  const late = s.filter((i) => i.c.overdueBy > 0 && i.c.pending > 0);
+  const lateAmt = late.reduce((t, i) => t + i.c.pending, 0);
+
+  const card = (cls, k, v, sub) =>
+    `<div class="stat ${cls}"><div class="k">${k}</div><div class="v num">${v}</div><div class="s">${sub}</div></div>`;
+
+  $('stats').innerHTML = [
+    card('', 'Total candidates', people, `placed across ${s.length} invoice${s.length === 1 ? '' : 's'}`),
+    card('', 'Total clients', clients, 'institutions billed'),
+    card('', 'Total amount', shortInr(after), 'invoiced after GST'),
+    card('good', 'Amount received', shortInr(got), got ? `${Math.round(got / after * 100)}% of the book` : 'nothing in yet'),
+    card('warn', 'Pending amount', shortInr(pend), 'net of TDS withheld'),
+    card(late.length ? 'bad' : '', 'Overdue invoices', late.length, late.length ? `${shortInr(lateAmt)} past ${TERMS_DAYS} days` : 'nothing past due'),
+  ].join('');
+}
+
+const BUCKETS = [
+  { k: 'all', t: 'All' },
+  { k: 'notdue', t: 'Not due yet' },
+  { k: '0-30', t: '0–30 days' },
+  { k: '31-60', t: '31–60 days' },
+  { k: '61-90', t: '61–90 days' },
+  { k: '90+', t: '90+ days' },
+];
+
+function drawAging() {
+  /* Counted against the filters but NOT against the bucket itself, so a
+     chip always shows what it would give you rather than what is on
+     screen now. */
+  const pool = ALL.filter((i) => keep(i, '__bucket'));
+  $('chips').innerHTML = BUCKETS.map((b) => {
+    const rows = b.k === 'all' ? pool.filter((i) => i.c.pending > 0) : pool.filter((i) => i.c.bucket === b.k);
+    const amt = rows.reduce((t, i) => t + i.c.pending, 0);
+    const red = b.k === '61-90' || b.k === '90+';
+    return `<button class="chip ${BUCKET === b.k ? 'on' : ''} ${rows.length ? '' : 'zero'} ${red ? 'red' : ''}"
+        onclick="setBucket('${b.k}')">
+      <div class="k">${b.t}<span class="n">${rows.length}</span></div>
+      <div class="v num">${inr(amt)}</div></button>`;
+  }).join('');
+
+  const outstanding = pool.filter((i) => i.c.pending > 0);
+  const tds = outstanding.reduce((t, i) => t + i.c.tds, 0);
+  const certs = outstanding.filter((i) => !i.tdsCert).length;
+  $('tdsline').innerHTML = `<span>TDS to collect:</span> <b class="num">${inr(tds)}</b>
+    <span>withheld by clients on unpaid invoices — reclaimable once the certificate arrives.</span>
+    <span class="pill ${certs ? 'warn' : 'ok'}">${certs ? certs + ' certificate' + (certs === 1 ? '' : 's') + ' outstanding' : 'all certificates received'}</span>`;
+}
+
+const ageCell = (c) => {
+  if (c.pending === 0) return '<span class="pill ok">Settled</span>';
+  if (c.overdueBy <= 0) return `<span class="pill cool">Due in ${-c.overdueBy}d</span>`;
+  const cls = c.overdueBy > 60 ? 'bad' : 'warn';
+  return `<span class="pill ${cls}">${c.overdueBy}d over</span>`;
+};
+
+const statusPill = (s) => {
+  const cls = s === 'Paid' ? 'ok' : s === 'Part paid' ? 'cool' : s === 'Overdue' ? 'bad' : 'grey';
+  return `<span class="pill ${cls}">${s}</span>`;
+};
+
+function cell(inv, k) {
+  const c = inv.c;
+  switch (k) {
+    case 'no': return `<td class="inv-no"><span class="caret">▶</span>${esc(inv.no)}<div style="font-weight:400;font-size:11.5px;color:var(--ink-faint);margin-left:15px">${statusPill(c.status)}</div></td>`;
+    case 'date': return `<td class="num" style="white-space:nowrap">${fmtDate(inv.date)}</td>`;
+    case 'client': return `<td class="cl">${esc(inv.cl.name)}<span class="dept">${esc(inv.dept)} · ${esc(inv.section)} · ${esc(inv.role)}</span></td>`;
+    case 'billing': return `<td>${esc(inv.billing)}${inv.gst ? '' : '<div style="font-size:11.5px;color:var(--ink-faint)">no GST charged</div>'}</td>`;
+    case 'before': return `<td class="r num">${inr(c.before)}</td>`;
+    case 'after': return `<td class="r num">${inr(c.after)}</td>`;
+    case 'pending': return `<td class="r num" style="${c.pending ? 'color:var(--bad);font-weight:600' : 'color:var(--ok)'}">${c.pending ? inr(c.pending) : '—'}</td>`;
+    case 'recruiter': return `<td>${esc(inv.recruiter)}</td>`;
+    case 'age': return `<td style="white-space:nowrap">${ageCell(c)}<div style="font-size:11px;color:var(--ink-faint);margin-top:2px">${c.age}d old</div></td>`;
+    case 'acts': return `<td class="acts">
+        <button class="btn btn-line btn-sm" onclick="event.stopPropagation();toggle('${inv.no}')">Account</button>
+        <button class="btn btn-line btn-sm" onclick="event.stopPropagation();openDoc('${inv.no}')">Invoice</button>
+        <button class="btn btn-navy btn-sm" onclick="event.stopPropagation();openPay('${inv.no}')">Payment</button></td>`;
+    default: return '<td></td>';
+  }
+}
+
+function detail(inv) {
+  const c = inv.c, cols = COLS.filter((x) => x.on).length;
+  const people = inv.people.map((p) => `
+    <div class="person">
+      <div class="av">${esc(p.name.split(/\s+/).filter((w) => /[A-Za-z]/.test(w[0])).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || '₹')}</div>
+      <div><div class="nm">${esc(p.name)}</div><div class="mt">${esc(p.role)}${p.ctc ? ' · joined ' + fmtDate(p.joined) : ''}</div></div>
+      <div class="rt"><div class="a num">${inr(feeOf(p))}</div>
+        <div class="b">${p.flat != null ? 'flat fee' : `${p.pct}% of ${inr(p.ctc)} CTC`}</div></div>
+    </div>`).join('');
+
+  const row = (k, v, cls) => `<div class="kv"><span class="k">${k}</span><span class="v ${cls || ''}">${v}</span></div>`;
+
+  return `<tr class="detail"><td colspan="${cols}"><div class="det">
+    <div class="people">
+      <div class="lbl">${inv.people.length} ${inv.people.length === 1 ? 'candidate' : 'candidates'} on this invoice</div>
+      ${people}
+    </div>
+    <div class="two">
+      <div class="sub">
+        <h4>What this invoice is made of</h4>
+        ${row('Fee before GST', `<span class="num">${inr2(c.before)}</span>`)}
+        ${row(inv.gst ? 'GST @ 18% (9% CGST + 9% SGST)' : 'GST', inv.gst ? `<span class="num">${inr2(c.gst)}</span>` : '<span style="color:var(--ink-faint)">not charged</span>')}
+        ${row('Value after GST', `<span class="num">${inr2(c.after)}</span>`)}
+        ${row(`TDS deducted by client @ ${inv.tds}%`, `<span class="num">− ${inr2(c.tds)}</span>`, 'neg')}
+        ${row('Amount receivable', `<span class="num">${inr2(c.receivable)}</span>`)}
+        ${row('Received so far', `<span class="num">${c.received ? inr2(c.received) : '—'}</span>`, c.received ? 'pos' : '')}
+        <div class="kv total"><span class="k">Still pending</span>
+          <span class="v num ${c.pending ? 'neg' : 'pos'}">${c.pending ? inr2(c.pending) : 'Settled in full'}</span></div>
+      </div>
+      <div class="sub">
+        <h4>Dates &amp; papers</h4>
+        ${row('Invoice date', fmtDate(inv.date))}
+        ${row('Payment due', `${String(c.due.getDate()).padStart(2, '0')} ${MONTHS[c.due.getMonth()]} ${c.due.getFullYear()} <span style="color:var(--ink-faint);font-weight:400">· net ${TERMS_DAYS}</span>`)}
+        ${row('Age', `${c.age} days since raised ${ageCell(c)}`)}
+        ${row('Sent to client', inv.sent
+          ? `<span class="pill ok">Sent ${fmtDate(inv.sent)}</span>`
+          : '<span class="pill bad">Not sent</span>')}
+        ${row('TDS certificate', inv.tdsCert
+          ? `<span class="pill ok">Received ${fmtDate(inv.tdsCert)}</span>`
+          : c.tds ? `<span class="pill warn">Awaited — ${inr(c.tds)}</span>` : '—')}
+        ${row('Recruiter', esc(inv.recruiter))}
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-line btn-sm" onclick="openDoc('${inv.no}')">Printable invoice</button>
+          <button class="btn btn-line btn-sm" onclick="openPay('${inv.no}')">Record a payment</button>
+          ${inv.sent ? '' : `<button class="btn btn-gold btn-sm" onclick="alert('Emails ${esc(inv.no)} to ${esc(inv.cl.name)} and stamps the sent date.')">Send to client</button>`}
+        </div>
+      </div>
+    </div>
+  </div></td></tr>`;
+}
+
+const GROUPERS = {
+  none: null,
+  client: (i) => i.cl.name,
+  dept: (i) => i.dept,
+  recruiter: (i) => i.recruiter,
+  month: (i) => monthKey(i.date),
+};
+
+function drawTable() {
+  const cols = COLS.filter((c) => c.on);
+  $('thead').innerHTML = cols.map((c) => `<th class="${c.r ? 'r' : ''}">${c.t}</th>`).join('');
+
+  const rows = shown();
+  if (!rows.length) {
+    $('tbody').innerHTML = `<tr><td colspan="${cols.length}"><div class="empty">
+      <b>No invoice matches these filters</b>There are ${ALL.length} on the book in total — try clearing one.</div></td></tr>`;
+    return;
+  }
+
+  const one = (inv) => `<tr class="row ${OPEN.has(inv.no) ? 'open' : ''}" onclick="toggle('${inv.no}')">
+      ${cols.map((c) => cell(inv, c.k)).join('')}</tr>${OPEN.has(inv.no) ? detail(inv) : ''}`;
+
+  const g = GROUPERS[GROUP];
+  if (!g) { $('tbody').innerHTML = rows.map(one).join(''); return; }
+
+  const buckets = new Map();
+  rows.forEach((i) => {
+    const k = g(i);
+    if (!buckets.has(k)) buckets.set(k, []);
+    buckets.get(k).push(i);
+  });
+  $('tbody').innerHTML = [...buckets.entries()].map(([k, list]) => {
+    const after = list.reduce((t, i) => t + i.c.after, 0);
+    const pend = list.reduce((t, i) => t + i.c.pending, 0);
+    return `<tr class="grp"><td colspan="${cols.length}">${esc(k)}
+      <span class="gsum">${list.length} invoice${list.length === 1 ? '' : 's'} ·
+        ${inr(after)} billed · ${pend ? inr(pend) + ' pending' : 'all settled'}</span></td></tr>`
+      + list.map(one).join('');
+  }).join('');
+}
+
+function drawCols() {
+  $('colpop').innerHTML = COLS.map((c, i) => `<label>
+    <input type="checkbox" ${c.on ? 'checked' : ''} ${c.lock ? 'disabled' : ''} onchange="setCol(${i},this.checked)">
+    ${c.t}${c.lock ? ' <span style="color:var(--ink-faint);font-size:11px">(always)</span>' : ''}</label>`).join('');
+}
+
+function draw() { drawFilters(); drawNotice(); drawStats(); drawAging(); drawTable(); }
+
+/* ---- actions --------------------------------------------------------- */
+
+function setF(k, v) { F[k] = v; draw(); }
+function setBucket(k) { BUCKET = (BUCKET === k && k !== 'all') ? 'all' : k; draw(); }
+function setGroup(v) { GROUP = v; drawTable(); }
+function setCol(i, on) { COLS[i].on = on; OPEN.clear(); drawTable(); }
+function toggle(no) { OPEN.has(no) ? OPEN.delete(no) : OPEN.add(no); drawTable(); }
+function toggleCols(e) { e.stopPropagation(); $('colpop').classList.toggle('open'); }
+document.addEventListener('click', () => $('colpop').classList.remove('open'));
+
+function resetAll() {
+  Object.keys(F).forEach((k) => { F[k] = ''; });
+  BUCKET = 'all'; GROUP = 'none'; OPEN.clear();
+  $('groupBy').value = 'none';
+  draw();
+}
+
+function exportExcel() {
+  const rows = shown();
+  const head = ['Invoice no', 'Invoice date', 'Client', 'Department', 'Section', 'Role', 'Recruiter',
+    'Billing type', 'GST charged', 'Before GST', 'GST', 'After GST', 'TDS', 'Receivable', 'Received', 'Pending', 'Status'];
+  const body = rows.map((i) => [i.no, i.date, i.cl.name, i.dept, i.section, i.role, i.recruiter, i.billing,
+    i.gst ? 'Yes' : 'No', i.c.before, i.c.gst, i.c.after, i.c.tds, i.c.receivable, i.c.received, i.c.pending, i.c.status]);
+  const csv = [head, ...body].map((r) => r.map((v) =>
+    /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : v).join(',')).join('\n');
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = url; a.download = `teamlink-invoices-${rows.length}.csv`; a.click();
+  URL.revokeObjectURL(url);
+}
+
+/* ---- printable invoice ------------------------------------------------ */
+
+function openDoc(no) {
+  const inv = ALL.find((i) => i.no === no); if (!inv) return;
+  const c = inv.c;
+  const half = Math.round(c.gst / 2);
+  /* SAC 998513 — "contract staffing services". A placement invoice that
+     goes out without the accounting code is one the client's GST return
+     cannot absorb, and it comes straight back. */
+  const lines = inv.people.map((p, n) => `
+    <tr>
+      <td class="num">${n + 1}</td>
+      <td><b>${esc(p.name)}</b><div style="color:#66738a;font-size:11.5px">${esc(p.role)}${p.ctc ? ' · joined ' + fmtDate(p.joined) : ''}</div></td>
+      <td class="num">998513</td>
+      <td class="num" style="text-align:right">${p.ctc ? inr(p.ctc) : '—'}</td>
+      <td class="num" style="text-align:right">${p.flat != null ? 'Flat' : p.pct + '%'}</td>
+      <td class="num" style="text-align:right">${inr2(feeOf(p))}</td>
+    </tr>`).join('');
+
+  $('docBody').innerHTML = `
+  <div class="doc">
+    <div class="dh">
+      <div>
+        <div class="logo">TeamLink<span>◆</span> Consultants</div>
+        <div style="font-size:11.5px;color:#bccbe4;margin-top:4px;line-height:1.7">
+          Plot 42, Road No. 12, Banjara Hills, Hyderabad 500034<br>
+          GSTIN 36AAFCT8821J1ZV · PAN AAFCT8821J · SAC 998513
+        </div>
+        <div class="tag">Tax Invoice</div>
+      </div>
+      <div class="meta">
+        Invoice no <b>${esc(inv.no)}</b><br>
+        Invoice date <b>${fmtDate(inv.date)}</b><br>
+        Payment due <b>${String(c.due.getDate()).padStart(2, '0')} ${MONTHS[c.due.getMonth()]} ${c.due.getFullYear()}</b><br>
+        Place of supply <b>${esc(inv.cl.city.split(',').pop().trim())}</b>
+      </div>
+    </div>
+
+    <div class="parties">
+      <div>
+        <div class="lbl">Billed to</div>
+        <div class="nm">${esc(inv.cl.name)}</div>
+        <div class="ln">${esc(inv.cl.addr)}<br>GSTIN ${esc(inv.cl.gstin)}</div>
+      </div>
+      <div>
+        <div class="lbl">For</div>
+        <div class="nm">${esc(inv.dept)} — ${esc(inv.role)}</div>
+        <div class="ln">${esc(inv.section)} staff · ${esc(inv.billing)}<br>Handled by ${esc(inv.recruiter)}</div>
+      </div>
+    </div>
+
+    <table>
+      <thead><tr>
+        <th style="width:34px">#</th><th>Candidate placed</th><th style="width:78px">SAC</th>
+        <th style="width:120px;text-align:right">Annual CTC</th>
+        <th style="width:74px;text-align:right">Rate</th>
+        <th style="width:124px;text-align:right">Amount</th>
+      </tr></thead>
+      <tbody>${lines}</tbody>
+      <tfoot>
+        <tr><td colspan="5" style="text-align:right;color:#66738a">Sub-total (taxable value)</td>
+            <td class="num" style="text-align:right;font-weight:700">${inr2(c.before)}</td></tr>
+        ${inv.gst ? `
+        <tr><td colspan="5" style="text-align:right;color:#66738a">CGST @ 9%</td>
+            <td class="num" style="text-align:right">${inr2(half)}</td></tr>
+        <tr><td colspan="5" style="text-align:right;color:#66738a">SGST @ 9%</td>
+            <td class="num" style="text-align:right">${inr2(c.gst - half)}</td></tr>`
+        : `<tr><td colspan="5" style="text-align:right;color:#66738a">GST</td>
+            <td class="num" style="text-align:right">Not charged</td></tr>`}
+        <tr><td colspan="5" style="text-align:right;color:#66738a">Less: TDS u/s 194J @ ${inv.tds}% on taxable value</td>
+            <td class="num" style="text-align:right;color:#b4292b">− ${inr2(c.tds)}</td></tr>
+        <tr class="gt"><td colspan="5" style="text-align:right">Balance due</td>
+            <td class="num" style="text-align:right">${inr2(c.receivable - c.received)}</td></tr>
+        ${c.received ? `<tr><td colspan="5" style="text-align:right;color:#11794d">Already received</td>
+            <td class="num" style="text-align:right;color:#11794d">${inr2(c.received)}</td></tr>` : ''}
+      </tfoot>
+    </table>
+
+    <div class="words">Amount in words: <b>${rupeesInWords(c.receivable - c.received)}</b></div>
+
+    <div class="foot">
+      <div class="bank">
+        <div class="lbl">Bank details</div>
+        <div>
+          Account name &nbsp;<b>TeamLink Consultants</b><br>
+          Account no &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>50200071944318</b><br>
+          IFSC &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>HDFC0001042</b><br>
+          Branch &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>Banjara Hills, Hyderabad</b>
+        </div>
+      </div>
+      <div>
+        <div>
+          <div class="lbl">For TeamLink Consultants</div>
+          <div style="font-size:11.5px;color:#66738a">Certified that the particulars given above are true and correct.</div>
+        </div>
+        <div class="sig">Authorised signatory</div>
+      </div>
+    </div>
+
+    <div class="note">TDS is deducted on the taxable value only, not on GST. Please send the Form 16A certificate for the quarter in which payment is made. Interest at 1.5% per month applies on amounts outstanding beyond the due date.</div>
+  </div>`;
+  $('docScrim').classList.add('open');
+}
+function closeDoc() { $('docScrim').classList.remove('open'); }
+
+/* ---- record a payment -------------------------------------------------- */
+
+let PAYING = null;
+
+function openPay(no) {
+  PAYING = no ? ALL.find((i) => i.no === no) : null;
+  const c = PAYING && PAYING.c;
+  const iso = `${TODAY.getFullYear()}-${String(TODAY.getMonth() + 1).padStart(2, '0')}-${String(TODAY.getDate()).padStart(2, '0')}`;
+  $('payBody').innerHTML = `
+    ${PAYING ? `<div class="recap">
+      <div style="font-weight:700">${esc(PAYING.no)} · ${esc(PAYING.cl.name)}</div>
+      <div style="font-size:12.5px;color:var(--ink-soft);margin-top:3px">
+        Receivable ${inr(c.receivable)} · received ${c.received ? inr(c.received) : 'nothing yet'} ·
+        <b style="color:${c.pending ? 'var(--bad)' : 'var(--ok)'}">${c.pending ? inr(c.pending) + ' pending' : 'settled'}</b>
+      </div></div>` : `
+      <div class="fld"><label>Invoice</label>
+        <select id="payInv">
+          <option value="">Choose an invoice…</option>
+          ${ALL.filter((i) => i.c.pending > 0).map((i) =>
+            `<option value="${i.no}">${i.no} — ${i.cl.name} (${inr(i.c.pending)} pending)</option>`).join('')}
+        </select></div>`}
+    <div class="fld"><label>Amount received</label>
+      <input id="payAmt" type="number" min="0" step="1" placeholder="0"
+        value="${c && c.pending ? c.pending : ''}">
+      <div class="help">${PAYING ? 'Pre-filled with the full amount pending. Change it for a part payment.' : 'Net of the TDS the client has withheld.'}</div></div>
+    <div class="fld"><label>Payment date</label><input id="payDate" type="date" value="${iso}"></div>
+    <div class="fld"><label>Reference number</label>
+      <input id="payRef" placeholder="NEFT / UTR / cheque number">
+      <div class="help">Goes on the receipt and on the client's statement.</div></div>`;
+  $('payScrim').classList.add('open');
+}
+function closePay() { $('payScrim').classList.remove('open'); PAYING = null; }
+
+function savePay() {
+  const inv = PAYING || ALL.find((i) => i.no === ($('payInv') && $('payInv').value));
+  const amt = Number($('payAmt').value || 0);
+  const ref = ($('payRef').value || '').trim();
+  if (!inv) { alert('Choose which invoice this payment is against.'); return; }
+  if (!(amt > 0)) { alert('Enter the amount received.'); return; }
+  if (!ref) { alert('Enter the reference number — it is what reconciles this against the bank statement.'); return; }
+
+  /* The book is the single source of every figure on the page, so a
+     payment is written there and everything redraws from it. */
+  inv.received = Math.min(inv.c.receivable, inv.received + amt);
+  inv.c = calc(inv);
+  closePay();
+  draw();
+  alert(`${inr(amt)} recorded against ${inv.no} (ref ${ref}).\n\n`
+    + (inv.c.pending ? `${inr(inv.c.pending)} still pending.` : 'This invoice is now settled in full.'));
+}
+
+/* ---- go ---------------------------------------------------------------- */
+
+drawCols();
+draw();
+</script>
+</body>
+</html>

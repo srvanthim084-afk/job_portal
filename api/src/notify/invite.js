@@ -56,18 +56,41 @@ export async function inviteCandidate(candidate, opts = {}) {
     `select do_not_contact from candidates where id = $1`, [candidate.id])).rows[0]);
   if (person && person.do_not_contact) { out.reason = 'do not contact'; return out; }
 
-  /* ---- the account ------------------------------------------------- */
+  /* ---- the account ------------------------------------------------- *
+   *
+   * THE LOGIN IS THE ADDRESS WHEN THERE IS ONE, AND THE NUMBER WHEN
+   * THERE IS NOT.
+   *
+   * `users.email` is not nullable and is the unique key, so an account
+   * for somebody who has only a phone still needs a value in it. That
+   * value is synthesised from the number and is NEVER shown to anybody,
+   * never mailed, and never presented as their address: they sign in by
+   * typing their phone number, which auth_find_login resolves (0071).
+   *
+   * The `.invalid` domain is reserved by RFC 2606 and is already on this
+   * application's own list of addresses that must never be written to,
+   * so a stray "send them an email" can never reach it by accident.
+   */
+  const digits10 = String(candidate.phone || '').replace(/\D/g, '').slice(-10);
+  const loginEmail = candidate.email
+    || (digits10.length === 10 ? `${digits10}@phone.invalid` : null);
+
   let credentials = null;
-  if (candidate.email) {
+  if (loginEmail) {
     const password = temporaryPassword();
     const hash = await hashPassword(password);
     const account = await withUser(ENGINE, async (c) => (await c.query(
       `select candidate_portal_account($1,$2,$3) as out`,
-      [candidate.id, candidate.email, hash])).rows[0].out);
+      [candidate.id, loginEmail, hash])).rows[0].out);
 
     if (account.created) {
       out.accountCreated = true;
-      credentials = { email: candidate.email, password };
+      /*
+       * What they TYPE to sign in, which is the number when there is no
+       * address - printing a `@phone.invalid` login on a message would
+       * be worse than printing nothing.
+       */
+      credentials = { email: candidate.email || digits10, password };
     } else {
       // They can already sign in. Tell them they are in the database,
       // but do not hand out a password that is not theirs.
@@ -156,7 +179,12 @@ export async function inviteCandidate(candidate, opts = {}) {
 export async function resendCredentials(candidate, opts = {}) {
   const out = { sent: false, delivery: {} };
   if (!candidate || !candidate.id) return out;
-  if (!candidate.email) { out.reason = 'no email address'; return out; }
+  /* A way to reach them, not one particular way: somebody whose login is
+     their phone number is reissued over SMS or WhatsApp. */
+  if (!candidate.email && !candidate.phone) {
+    out.reason = 'no email address or phone number';
+    return out;
+  }
 
   const person = await withUser(ENGINE, async (c) => (await c.query(
     `select c.do_not_contact, c.user_id, u.email as login_email
@@ -167,7 +195,19 @@ export async function resendCredentials(candidate, opts = {}) {
   if (!person.user_id) { out.reason = 'no account to reset'; return out; }
 
   const password = temporaryPassword();
-  const loginEmail = person.login_email || candidate.email;
+
+  /*
+   * WHAT THEY TYPE, not what the database stores.
+   *
+   * An account created for somebody with no email address carries a
+   * synthesised `<number>@phone.invalid` login (see inviteCandidate);
+   * printing that on a message would tell them to type an address that
+   * does not exist. They sign in with the number.
+   */
+  const storedLogin = String(person.login_email || '');
+  const loginEmail = /@phone\.invalid$/i.test(storedLogin)
+    ? String(candidate.phone || '').replace(/\D/g, '').slice(-10)
+    : (storedLogin || candidate.email);
 
   const base = String(config.publicOrigin || '').replace(/\/$/, '');
   const portalUrl = `${base}/#/login/candidate`;
@@ -235,10 +275,29 @@ export async function resendCredentials(candidate, opts = {}) {
   }
 
   const hash = await hashPassword(password);
-  await withUser(ENGINE, (c) => c.query(
-    `update users set password_hash = $2, must_change_password = true,
-                      password_set_at = now()
-      where id = $1`, [person.user_id, hash]));
+
+  /*
+   * THROUGH THE DEFINER FUNCTION. The direct UPDATE that used to be here
+   * matched no row-level-security policy on `users`, so it affected zero
+   * rows and raised nothing: this function emailed somebody a brand new
+   * temporary password, wrote it nowhere, and returned success. The
+   * password in that message had never worked. See 0070.
+   *
+   * Every session is ended here - no token is kept - because reissuing
+   * credentials is precisely the moment you want whoever held the old
+   * ones signed out.
+   */
+  const stored = await withUser(ENGINE, async (c) => (await c.query(
+    `select auth_set_password($1,$2,true,null) as ok`,
+    [person.user_id, hash])).rows[0]);
+
+  if (!stored || stored.ok !== true) {
+    /* Said plainly. The message has already gone, so the person now
+       holds a password that does not work, and somebody has to know. */
+    out.reason = 'the new password could not be stored';
+    out.sent = false;
+    console.error('[invite] the reissued password was not stored for user', person.user_id);
+  }
 
   return out;
 }

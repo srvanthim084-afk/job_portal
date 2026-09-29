@@ -25,6 +25,7 @@
  *     undoes a created candidate.
  */
 import { randomBytes } from 'node:crypto';
+import { buildJobDescription, suggestSkills } from '../ai/jd.js';
 import { withUser } from '../db.js';
 import { config } from '../config.js';
 import { hashPassword } from '../auth.js';
@@ -163,14 +164,58 @@ export async function requirementForRole(role, mailbox) {
         limit 1`, [title, companyId])).rows[0];
     if (found) return { job: found, created: false };
 
+    /*
+     * A REAL DESCRIPTION, NOT A NOTE TO OURSELVES.
+     *
+     * This used to store "Created automatically because a candidate
+     * applied for this role... publish it when you are ready" IN THE
+     * DESCRIPTION - the field a candidate reads on the job page. Four
+     * requirements were sitting on the board like that, and because they
+     * were also left as drafts, no candidate could see them at all. The
+     * recruiter saw eight jobs and the candidate site showed four, which
+     * is exactly what was reported.
+     *
+     * Now the JD is written from the title the candidate applied for, the
+     * same way every other posting gets one.
+     */
     const id = newId('j');
+
+    /*
+     * SKILLS, because a requirement with none matches nobody.
+     *
+     * Every auto-created requirement went in with `skills = '{}'`, and
+     * skills are what the matcher scores on - so seven live requirements
+     * ("Radiologist", "Physiology", "Neonatologist" and the rest) scored
+     * zero against every candidate in the database, including the very
+     * person whose application created them. They are drawn from the
+     * title's family, the same list a recruiter gets offered when posting
+     * by hand; nothing is invented beyond that.
+     *
+     * They are also handed to buildJobDescription, which turns a
+     * one-sentence opener into a description that says what the work is.
+     */
+    const skills = suggestSkills({ title });
+    const jd = buildJobDescription({ title, postingKind: 'job', skills });
+
+    /*
+     * PUBLISHED, because a requirement nobody can see is not a
+     * requirement. It is switched off with INTAKE_PUBLISH_REQUIREMENTS=false
+     * for a desk that would rather check each one first - in which case it
+     * stays a draft, with a proper description either way.
+     */
+    const publish = String(process.env.INTAKE_PUBLISH_REQUIREMENTS ?? 'true')
+      .toLowerCase() !== 'false';
+
     await c.query(
       `insert into jobs (id, title, company_id, recruiter_id, status, source,
-                         openings, description)
-       values ($1,$2,$3,$4,'draft','intake',1,$5)`,
+                         openings, description, responsibilities, requirements,
+                         skills, published_at)
+       values ($1,$2,$3,$4,$5,'intake',1,$6,$7,$8,$9,$10)`,
       [id, title, companyId, recruiterId,
-       'Created automatically because a candidate applied for this role and no '
-       + 'requirement existed for it. Add the details and publish it when you are ready.']);
+       publish ? 'open' : 'draft',
+       jd.description, jd.responsibilities, jd.requirements,
+       jd.skills && jd.skills.length ? jd.skills : skills,
+       publish ? new Date() : null]);
 
     const job = (await c.query(
       `select j.*, co.name as company_name from jobs j
@@ -191,19 +236,50 @@ export async function requirementForRole(role, mailbox) {
  * than they are typed wrong, and a candidate who cannot log in does not
  * email support, they give up.
  */
+/**
+ * A temporary password: twelve characters, upper and lower case and
+ * digits, from a cryptographically secure source.
+ *
+ * WHY THE ALPHABET IS SHORT. I, l, 1, O and 0 are left out. This is read
+ * off a screen and typed by hand, often from a phone, and a password
+ * somebody cannot transcribe is a support call rather than a login.
+ *
+ * WHY REJECTION SAMPLING. `randomBytes(1)[0] % 57` is not uniform - the
+ * first few characters of the alphabet come up measurably more often,
+ * because 256 does not divide by 57. Bytes that fall in the short tail
+ * are discarded and redrawn instead, which costs nothing here and makes
+ * every character equally likely.
+ *
+ * WHY THE SHUFFLE IS FISHER-YATES. The previous version shuffled with
+ * `sort(() => random ? 1 : -1)`, which is not a shuffle: an inconsistent
+ * comparator gives whatever order the engine's sort happens to produce,
+ * heavily favouring some arrangements. Here the three guaranteed
+ * characters would have stayed near the front.
+ */
 export function temporaryPassword() {
   const upper = 'ABCDEFGHJKMNPQRSTUVWXYZ';
   const lower = 'abcdefghijkmnpqrstuvwxyz';
   const digits = '23456789';
   const all = upper + lower + digits;
-  const pick = (set) => set[randomBytes(1)[0] % set.length];
 
-  // Shape: TL@ + 5 characters, with at least one of each class, which
-  // satisfies the server's own password rule without being a puzzle.
-  let body = pick(upper) + pick(lower) + pick(digits);
-  while (body.length < 5) body += pick(all);
-  body = body.split('').sort(() => (randomBytes(1)[0] % 2 ? 1 : -1)).join('');
-  return `TL@${body}`;
+  /* Uniform over [0, n), by discarding the values that would skew it. */
+  const below = (n) => {
+    const ceiling = Math.floor(256 / n) * n;
+    for (;;) {
+      const b = randomBytes(1)[0];
+      if (b < ceiling) return b % n;
+    }
+  };
+  const pick = (set) => set[below(set.length)];
+
+  const chars = [pick(upper), pick(lower), pick(digits)];
+  while (chars.length < 12) chars.push(pick(all));
+
+  for (let i = chars.length - 1; i > 0; i -= 1) {
+    const j = below(i + 1);
+    const t = chars[i]; chars[i] = chars[j]; chars[j] = t;
+  }
+  return chars.join('');
 }
 
 /* ------------------------------------------------------------------ *
@@ -750,11 +826,19 @@ export async function processMessage(session, { mailbox, message, rowId, provide
     credentials,
   });
 
+  /* "Sent" is a claim, so it is only made when something was sent. With
+     INTAKE_NOTIFY_CANDIDATES off nothing leaves the building, and the
+     timeline has to say so rather than listing three channels under the
+     word "sent". */
+  const channelLine = Object.entries(delivery)
+    .filter(([ch]) => ch !== 'paused')
+    .map(([ch, st]) => `${ch}: ${st}`).join(', ');
   await withUser(ENGINE, (cl) => cl.query(
     `select app_event($1,$2,'candidate.notified',$3,'system',$4::jsonb)`,
     [applicationId, candidateId,
-     `Registration message sent - ${Object.entries(delivery)
-       .map(([ch, st]) => `${ch}: ${st}`).join(', ')}`,
+     delivery.paused
+       ? `No registration message was sent - ${delivery.paused}`
+       : `Registration message sent - ${channelLine}`,
      JSON.stringify(delivery)]));
 
   if (warnings.length) {
@@ -824,11 +908,44 @@ async function importDigest(session, { mailbox, message, rowId, digest, finish, 
    * recoverable mistake.
    */
   const wanted = String(digest.jobTitle || '').toLowerCase().trim();
-  const job = wanted
+  let job = wanted
     ? shaped.find((j) => String(j.title || '').toLowerCase().trim() === wanted)
       || shaped.find((j) => String(j.title || '').toLowerCase().includes(wanted))
       || shaped.find((j) => wanted.includes(String(j.title || '').toLowerCase().trim()))
     : null;
+
+  /*
+   * A DIGEST FOR A ROLE NOBODY POSTED USED TO IMPORT NOBODY.
+   *
+   * A single application whose role has no requirement creates one and
+   * the candidate arrives (see requirementForRole, used further up). A
+   * DIGEST did not: it looked for a matching title, found none, set
+   * `job` to null, and counted everybody in the email as "awaiting a
+   * requirement" — so a summary listing six responses for a role the
+   * desk had not posted yet imported six people as nothing at all.
+   *
+   * That is the gap behind "the sync says thirty and I can see three":
+   * the emails were read and understood, the candidates were named, and
+   * they stopped one step short of existing.
+   *
+   * The same function is used here, so a digest behaves exactly as a
+   * single application does — including its caution: requirementForRole
+   * refuses a title that looks like a sentence or an address, so a
+   * misread subject line still cannot invent a requirement.
+   */
+  if (!job && wanted) {
+    const made = await requirementForRole(digest.jobTitle, mailbox).catch((err) => {
+      console.error('[intake] the requirement could not be created for a digest:', err.message);
+      return null;
+    });
+    if (made && made.job) {
+      job = {
+        ...toJob(made.job), companyName: made.job.company_name, status: made.job.status,
+        recruiterId: made.job.recruiter_id, createdAt: made.job.created_at,
+        publishedAt: made.job.published_at,
+      };
+    }
+  }
 
   const out = { imported: 0, duplicates: 0, unmapped: 0, candidates: [] };
   let firstCandidateId = null;
@@ -1043,9 +1160,43 @@ function intakeMayNotify() {
 
 async function notifyCandidate({ candidate, job, applicationId, reference, credentials }) {
   if (!intakeMayNotify()) {
+    /*
+     * THE PAUSE IS RECORDED, NOT SILENT.
+     *
+     * The paragraph above says the outbound message "is recorded as
+     * paused with the reason, so nobody later mistakes it for a
+     * delivery" - and it was not recorded at all. An imported candidate
+     * showed no communications whatsoever, which reads as "nothing was
+     * ever tried" rather than "we deliberately did not write to them",
+     * and those are different facts to a recruiter deciding whether to
+     * pick up the phone.
+     *
+     * `not_applicable` is the schema's word for a channel that was not
+     * used, and the reason goes in `error` where the portal shows it.
+     */
+    const reason = 'INTAKE_NOTIFY_CANDIDATES is not set, so imported candidates are not written to';
+    for (const channel of ['email', 'sms', 'whatsapp']) {
+      const to = channel === 'email' ? candidate.email : candidate.phone;
+      await withUser(ENGINE, (c) => c.query(
+        `select record_delivery($1,$2,$3,$4,$5,$6,$7,$8,$9,now(),null)`,
+        [applicationId, candidate.id, job.id, channel, 'not_applicable',
+         to || null, 'paused', null, reason]))
+        .catch((err) => console.error('[intake] pause not recorded:', err.message));
+    }
+
+    /* The in-app notification still happens: it is not an outbound
+       message to anybody, it is the candidate's own portal, and it is
+       how they find the application once they sign in. */
+    await withUser(ENGINE, (c) => c.query(
+      `select notify_create($1,$2,'candidate','APPLICATION_IMPORTED',$3,$4,$5,$6,$7,null,$8::jsonb)`,
+      [newId('ntf'), candidate.id, 'Your application has been registered',
+       `Application ${reference} for ${job.title}. Complete your profile to continue.`,
+       job.id, applicationId, candidate.id, JSON.stringify({ reference })]))
+      .catch(() => {});
+
     return {
-      email: 'not_configured', sms: 'not_configured', whatsapp: 'not_configured',
-      paused: 'INTAKE_NOTIFY_CANDIDATES is not set, so imported candidates are not written to',
+      email: 'not_applicable', sms: 'not_applicable', whatsapp: 'not_applicable',
+      paused: reason,
     };
   }
   const base = config.publicOrigin.replace(/\/$/, '');

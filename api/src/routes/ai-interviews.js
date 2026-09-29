@@ -19,13 +19,23 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { withUser } from '../db.js';
 import { wrap, badRequest, notFound, forbidden, ApiError } from '../errors.js';
-import { requireAuth } from '../auth.js';
+import { requireAuth, requireRole } from '../auth.js';
 import { planInterview, followUp, evaluate, interviewEngine, BLUEPRINT_TOTAL }
   from '../ai/interview.js';
 import { toJob, toCandidate } from '../shapes.js';
 import { dispatchEvent } from '../notify/events.js';
 
 const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
+
+/*
+ * The identity the integrity routes use for the two `security definer`
+ * functions in migration 0059, and for writing the audit trail.
+ *
+ * WHOSE INTERVIEW IT IS is decided BEFORE this is used, by loading the
+ * row under the caller's own session - so this widens what can be
+ * written, never what can be reached.
+ */
+const ENGINE_SESSION = { userId: '', role: 'admin', profileId: null };
 
 /**
  * An AI interview must be completed within two days of being scheduled.
@@ -212,6 +222,25 @@ export default function aiInterviewRoutes() {
 
       if (!app) throw badRequest('You have no application to interview for.');
 
+      /*
+       * A SUSPENDED INTERVIEW CANNOT BE WALKED AROUND BY STARTING A NEW ONE.
+       *
+       * Suspending the session and then letting the same candidate press
+       * "Start interview" again would make the whole rule cosmetic. The
+       * suspension stands until a recruiter reopens it, which issues a
+       * fresh interview row and a fresh link (migration 0059).
+       */
+      const stopped = (await c.query(
+        `select id from ai_interviews
+          where application_id=$1 and candidate_id=$2 and status='suspended'
+          order by suspended_at desc limit 1`,
+        [app.id, req.session.profileId])).rows[0];
+      if (stopped) {
+        throw new ApiError(423, 'INTERVIEW_SUSPENDED',
+          'Your interview for this role was suspended and the recruitment team is '
+          + 'reviewing the session. You cannot start it again until a recruiter reopens it.');
+      }
+
       const job = (await c.query(`select * from jobs where id=$1`, [app.job_id])).rows[0];
       if (!job) throw notFound('That job no longer exists.');
       const cand = (await c.query(`select * from candidates where id=$1`,
@@ -289,7 +318,24 @@ export default function aiInterviewRoutes() {
           'This interview has passed its deadline and can no longer be completed. ' +
           'Please contact the recruiter if you need it reopened.');
       }
-      if (iv.status !== 'in_progress') throw badRequest('That interview is already finished.');
+      /*
+       * SUSPENDED IS NOT FINISHED, and it does not say so.
+       *
+       * A first integrity warning moves the status to `warning_issued`
+       * and the candidate carries on answering - that is the whole point
+       * of a two-strike rule, and refusing their next answer as "already
+       * finished" would make strike one behave like strike two. A
+       * SUSPENDED interview is refused, in its own words, because
+       * "finished" would tell them the opposite of what happened.
+       */
+      if (iv.status === 'suspended') {
+        throw new ApiError(423, 'INTERVIEW_SUSPENDED',
+          'This interview has been suspended and the recruitment team will review '
+          + 'the session. It cannot be continued until a recruiter reopens it.');
+      }
+      if (iv.status !== 'in_progress' && iv.status !== 'warning_issued') {
+        throw badRequest('That interview is already finished.');
+      }
 
       const row = (await c.query(
         `select * from ai_interview_answers where ai_interview_id=$1 and seq=$2`,
@@ -358,6 +404,15 @@ export default function aiInterviewRoutes() {
 
     if (loaded.iv.status === 'completed') {
       return res.json({ alreadyFinished: true, aiInterviewId: loaded.iv.id });
+    }
+    /* A suspended session is not submitted for scoring. The answers up
+       to the suspension are kept and a recruiter reviews them; turning
+       them into a score would be this system deciding an integrity
+       question it is explicitly not allowed to decide. */
+    if (loaded.iv.status === 'suspended') {
+      throw new ApiError(423, 'INTERVIEW_SUSPENDED',
+        'This interview was suspended and cannot be submitted. The recruitment team '
+        + 'will review the session.');
     }
     if (loaded.iv.status === 'expired' ||
         (loaded.iv.expires_at && new Date(loaded.iv.expires_at) < new Date())) {
@@ -548,6 +603,273 @@ export default function aiInterviewRoutes() {
     });
     res.json({ used: !!used });
   }));
+
+  /* ================================================================== *
+   * Interview integrity — the two-strike rule
+   *
+   * The browser watches; the SERVER counts. A strike counter that lives
+   * in the page is a strike counter a reload clears, so the browser's
+   * only job is to say "I am confident I saw a second person", and this
+   * decides whether that is a warning or the end of the session.
+   *
+   * WHAT THE BROWSER IS TRUSTED FOR. That it saw something, and how
+   * confident it was. It is not trusted for the count, the status, the
+   * message shown, or whether the interview may continue - all four come
+   * back from the database, in one locked statement.
+   * ================================================================== */
+
+  /**
+   * POST /api/ai-interviews/:id/integrity
+   *
+   * One CONFIRMED detection. The page is expected to have applied its
+   * own confidence threshold and confirmation window before calling
+   * this (§5); a detector that fires on every uncertain frame produces
+   * warnings that mean nothing, and the brief is explicit that reliable
+   * detection matters more than aggressive warning.
+   */
+  r.post('/ai-interviews/:id/integrity', requireAuth(), wrap(async (req, res) => {
+    const b = parse(z.object({
+      type: z.enum(['additional_person', 'additional_voice']),
+      confidence: z.number().min(0).max(1),
+      evidence: z.record(z.any()).optional(),
+    }), req.body);
+
+    /* WHOSE INTERVIEW IS IT. Loaded under the caller's own rights, with
+       the candidate id checked explicitly, because the function below is
+       `security definer` and cannot answer that question itself. */
+    const iv = await withUser(req.session, async (c) => (await c.query(
+      `select id, status, integrity_status, integrity_strikes
+         from ai_interviews where id=$1 and candidate_id=$2`,
+      [req.params.id, req.session.profileId])).rows[0]);
+    if (!iv) throw notFound('That interview could not be found.');
+
+    /* Evidence, minus anything that could carry a picture of a room or a
+       recording of a voice into a jsonb column. What is kept is what a
+       recruiter can act on: which detector, how many faces, how long it
+       persisted, how many samples agreed. */
+    const ev = b.evidence || {};
+    const evidence = {
+      detector: String(ev.detector || 'browser').slice(0, 60),
+      faces: Number.isFinite(Number(ev.faces)) ? Number(ev.faces) : undefined,
+      sustainedMs: Number.isFinite(Number(ev.sustainedMs)) ? Number(ev.sustainedMs) : undefined,
+      samples: Number.isFinite(Number(ev.samples)) ? Number(ev.samples) : undefined,
+      agreeing: Number.isFinite(Number(ev.agreeing)) ? Number(ev.agreeing) : undefined,
+      pitchHz: Number.isFinite(Number(ev.pitchHz)) ? Math.round(Number(ev.pitchHz)) : undefined,
+      baselineHz: Number.isFinite(Number(ev.baselineHz)) ? Math.round(Number(ev.baselineHz)) : undefined,
+      questionSeq: Number.isFinite(Number(ev.questionSeq)) ? Number(ev.questionSeq) : undefined,
+      note: ev.note ? String(ev.note).slice(0, 300) : undefined,
+    };
+
+    const out = await withUser(ENGINE_SESSION, async (c) => (await c.query(
+      `select * from interview_integrity_report($1,$2,$3,$4::jsonb)`,
+      [iv.id, b.type, b.confidence, JSON.stringify(evidence)])).rows[0]);
+
+    res.json({
+      strike: Number(out.strike_no),
+      of: 2,
+      action: out.action,                 // 'warn' | 'suspend' | 'suspended'
+      message: out.message,
+      interviewStatus: out.interview_status,
+      integrityStatus: out.integrity_status,
+      mayContinue: out.action === 'warn',
+    });
+  }));
+
+  /**
+   * GET /api/ai-interviews/integrity
+   *
+   * Every interview with something to look at, for the recruiter's
+   * Interview Integrity list. RLS narrows it to their own desk.
+   *
+   * Declared BEFORE `/ai-interviews/:id/integrity` because Express
+   * matches in order and `integrity` would otherwise be read as an id.
+   */
+  r.get('/ai-interviews/integrity', requireAuth(),
+    requireRole('recruiter', 'bde', 'admin'), wrap(async (req, res) => {
+      const rows = await withUser(req.session, async (c) => (await c.query(
+        `select i.id, i.candidate_id, i.application_id, i.job_id, i.status,
+                i.integrity_status, i.integrity_strikes, i.suspended_at,
+                i.suspend_reason, i.reopened_at,
+                c.name as candidate_name, j.title as job_title,
+                (select count(*) from ai_interview_flags f
+                  where f.interview_id = i.id and f.review_status = 'open'
+                    and f.strike_no is not null) as open_flags
+           from ai_interviews i
+           join candidates c on c.id = i.candidate_id
+           left join jobs j on j.id = i.job_id
+          where i.integrity_strikes > 0
+          order by coalesce(i.suspended_at, i.started_at, i.created_at) desc
+          limit 100`)).rows);
+
+      res.json({
+        interviews: rows.map((x) => ({
+          id: x.id,
+          candidateId: x.candidate_id,
+          candidateName: x.candidate_name,
+          applicationId: x.application_id,
+          jobId: x.job_id,
+          jobTitle: x.job_title || '',
+          status: x.status,
+          integrityStatus: x.integrity_status,
+          strikes: Number(x.integrity_strikes || 0),
+          suspendedAt: x.suspended_at,
+          suspendReason: x.suspend_reason,
+          reopenedAt: x.reopened_at,
+          openFlags: Number(x.open_flags || 0),
+        })),
+      });
+    }));
+
+  /**
+   * GET /api/ai-interviews/:id/integrity
+   *
+   * The recruiter's Interview Integrity section (§7), and the candidate's
+   * own read of what they were shown. RLS decides which of the two this
+   * is; a candidate gets the same flags without the recruiter's notes.
+   */
+  r.get('/ai-interviews/:id/integrity', requireAuth(), wrap(async (req, res) => {
+    const staff = ['recruiter', 'bde', 'admin'].includes(req.session.role);
+
+    const out = await withUser(req.session, async (c) => {
+      const iv = (await c.query(
+        `select id, status, integrity_status, integrity_strikes, suspended_at,
+                suspend_reason, reopened_at, reopen_reason, candidate_id,
+                application_id, job_id
+           from ai_interviews where id=$1`, [req.params.id])).rows[0];
+      if (!iv) return null;
+      const flags = (await c.query(
+        `select id, flag_type, description, severity, strike_no, confidence,
+                confidence_band, detector, warning_message, status_after,
+                review_status, recruiter_notes, reviewed_at, occurred_at, evidence
+           from ai_interview_flags
+          where interview_id=$1 and strike_no is not null
+          order by strike_no, occurred_at`, [req.params.id])).rows;
+      return { iv, flags };
+    });
+    if (!out) throw notFound('That interview could not be found.');
+
+    /* Reading an integrity record is itself an event worth having on
+       file - §35 of the interview brief asks for it, and a privacy
+       review asks who looked. */
+    if (staff) {
+      await withUser(ENGINE_SESSION, (c) => c.query(
+        `insert into ai_interview_audit (interview_id, candidate_id, action, detail, actor_id, actor_role)
+         values ($1,$2,'integrity.viewed','{}'::jsonb,$3,$4)`,
+        [out.iv.id, out.iv.candidate_id, req.session.userId || null, req.session.role]))
+        .catch(() => { /* a failed audit write must not hide the record */ });
+    }
+
+    res.json({
+      interviewId: out.iv.id,
+      status: out.iv.status,
+      integrityStatus: out.iv.integrity_status,
+      strikes: Number(out.iv.integrity_strikes || 0),
+      suspendedAt: out.iv.suspended_at,
+      suspendReason: out.iv.suspend_reason,
+      reopenedAt: out.iv.reopened_at,
+      reopenReason: out.iv.reopen_reason,
+      violations: out.flags.map((f) => ({
+        id: Number(f.id),
+        no: f.strike_no,
+        type: f.flag_type === 'additional_person' ? 'Additional Person' : 'Additional Voice',
+        at: f.occurred_at,
+        /* The word, and the number behind it. A recruiter reads "High";
+           an argument about whether the threshold is right needs 0.91. */
+        confidence: f.confidence_band || 'low',
+        confidenceValue: f.confidence == null ? null : Number(f.confidence),
+        outcome: f.status_after === 'suspended' ? 'Interview Suspended' : 'Warning',
+        warningShown: f.warning_message,
+        detector: f.detector,
+        evidence: staff ? f.evidence : undefined,
+        reviewStatus: f.review_status,
+        recruiterNotes: staff ? f.recruiter_notes : undefined,
+        reviewedAt: f.reviewed_at,
+      })),
+    });
+  }));
+
+  /**
+   * POST /api/ai-interviews/:id/integrity/:flagId/review
+   *
+   * A recruiter's note and verdict on one violation. The flag itself -
+   * what was detected, when, how confident - is never editable; this
+   * writes only what a person concluded about it.
+   */
+  r.post('/ai-interviews/:id/integrity/:flagId/review', requireAuth(),
+    requireRole('recruiter', 'bde', 'admin'), wrap(async (req, res) => {
+      const b = parse(z.object({
+        reviewStatus: z.enum(['open', 'reviewed', 'dismissed', 'upheld']).optional(),
+        notes: z.string().max(4000).optional(),
+      }), req.body);
+
+      const row = await withUser(req.session, async (c) => (await c.query(
+        `update ai_interview_flags
+            set review_status  = coalesce($3, review_status),
+                recruiter_notes = coalesce($4, recruiter_notes),
+                reviewed_by = $5, reviewed_at = now()
+          where id = $1 and interview_id = $2
+          returning id, review_status, recruiter_notes, reviewed_at`,
+        [Number(req.params.flagId), req.params.id,
+         b.reviewStatus || null, b.notes === undefined ? null : b.notes,
+         req.session.userId || null])).rows[0]);
+      if (!row) throw notFound('That violation could not be found.');
+
+      await withUser(ENGINE_SESSION, (c) => c.query(
+        `insert into ai_interview_audit (interview_id, action, detail, actor_id, actor_role)
+         values ($1,'integrity.reviewed',$2::jsonb,$3,$4)`,
+        [req.params.id,
+         JSON.stringify({ flagId: Number(req.params.flagId), reviewStatus: b.reviewStatus }),
+         req.session.userId || null, req.session.role])).catch(() => {});
+
+      res.json({
+        violation: {
+          id: Number(row.id), reviewStatus: row.review_status,
+          recruiterNotes: row.recruiter_notes, reviewedAt: row.reviewed_at,
+        },
+      });
+    }));
+
+  /**
+   * POST /api/ai-interviews/:id/reopen
+   *
+   * §2 and §7: a suspended interview stays suspended until an authorised
+   * person says otherwise. Reopening issues a NEW session id, so the link
+   * the candidate already has cannot be used to walk back into the
+   * session that was stopped.
+   */
+  r.post('/ai-interviews/:id/reopen', requireAuth(),
+    requireRole('recruiter', 'admin'), wrap(async (req, res) => {
+      const b = parse(z.object({
+        reason: z.string().trim().min(1).max(1000),
+        rescheduleAt: z.string().trim().max(40).optional(),
+      }), req.body);
+
+      /* Under the recruiter's own rights first: RLS decides whether this
+         interview is theirs to reopen. */
+      const seen = await withUser(req.session, async (c) => (await c.query(
+        `select id, status from ai_interviews where id=$1`, [req.params.id])).rows[0]);
+      if (!seen) throw notFound('That interview could not be found.');
+
+      const when = b.rescheduleAt ? new Date(b.rescheduleAt) : null;
+      if (when && Number.isNaN(when.getTime())) {
+        throw badRequest('Please check the highlighted fields and try again.',
+          { rescheduleAt: 'That is not a valid date and time.' });
+      }
+
+      const iv = await withUser(ENGINE_SESSION, async (c) => (await c.query(
+        `select * from interview_integrity_reopen($1,$2,$3,$4)`,
+        [req.params.id, b.reason, req.session.userId || null, when])).rows[0]);
+
+      res.json({
+        interview: {
+          id: iv.id, status: iv.status, integrityStatus: iv.integrity_status,
+          scheduledAt: iv.scheduled_at, reopenedAt: iv.reopened_at,
+        },
+        note: when
+          ? 'The interview was rescheduled and a new link was issued.'
+          : 'The interview was reopened and a new link was issued.',
+      });
+    }));
 
   return r;
 }

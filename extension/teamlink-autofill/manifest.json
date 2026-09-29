@@ -1,0 +1,58 @@
+{
+  "manifest_version": 3,
+  "name": "TeamLink AutoFill",
+  "version": "0.1.0",
+  "description": "Fills external job application forms from your TeamLink profile. Never submits anything for you.",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "cookies"
+  ],
+  "host_permissions": [
+    "https://*.myworkdayjobs.com/*",
+    "https://*.wd1.myworkdayjobs.com/*",
+    "https://*.wd3.myworkdayjobs.com/*",
+    "https://*.wd5.myworkdayjobs.com/*",
+    "https://boards.greenhouse.io/*",
+    "https://job-boards.greenhouse.io/*",
+    "https://*.greenhouse.io/*",
+    "https://jobs.lever.co/*",
+    "https://*.lever.co/*",
+    "https://*.icims.com/*",
+    "http://localhost/*",
+    "http://localhost:4323/*",
+    "http://127.0.0.1:4323/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "TeamLink AutoFill",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.myworkdayjobs.com/*",
+        "https://boards.greenhouse.io/*",
+        "https://job-boards.greenhouse.io/*",
+        "https://jobs.lever.co/*",
+        "https://*.icims.com/*"
+      ],
+      "js": [
+        "content/fields.js",
+        "content/adapters/generic.js",
+        "content/adapters/greenhouse.js",
+        "content/adapters/lever.js",
+        "content/adapters/workday.js",
+        "content/adapters/icims.js",
+        "content/content.js"
+      ],
+      "css": [
+        "content/styles.css"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

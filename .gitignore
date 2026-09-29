@@ -16,6 +16,14 @@ api/var/
 #     npm run ui:capture baseline
 ui-snapshots/
 
+# The place index under var/places/ is DERIVED too — 21MB of villages,
+# built from the GeoNames India dump (CC-BY 4.0). Without it the location
+# filter falls back to the 1,244 places in web/index.html and says so;
+# with it, Chittoor at 25 km lists 859 villages instead of one. Rebuild:
+#     curl -LO https://download.geonames.org/export/dump/IN.zip
+#     unzip IN.zip
+#     node tools/build-place-index.mjs IN.txt
+
 # OS noise
 Thumbs.db
 .DS_Store

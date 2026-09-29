@@ -52,6 +52,103 @@ const bulk = multer({
 export default function uploadRoutes() {
   const r = Router();
 
+  /**
+   * POST /api/uploads/candidate-document
+   *
+   * A file that is not the resume - a cover letter, a degree
+   * certificate, a payslip, a relieving letter. The manual entry form
+   * offers "Other Documents" and there was nowhere for them to go.
+   *
+   * SAME VALIDATION AS THE RESUME, deliberately: storeResume() checks
+   * the magic bytes, the extension and the size before a byte is
+   * written, and a second upload path with weaker rules is how a
+   * validated upload stops meaning anything. It is NOT parsed and it
+   * does NOT touch any resume_* column - this is a filing cabinet, not
+   * a second CV.
+   */
+  r.post('/uploads/candidate-document', requireAuth(),
+    requireRole('recruiter', 'bde', 'admin'),
+    (req, res, next) => upload.single('document')(req, res, (err) => {
+      if (!err) return next();
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        const mb = Math.round(config.maxUploadBytes / 1024 / 1024);
+        return next(new ApiError(413, CODES.FILE_TOO_LARGE,
+          `That file is too large. The limit is ${mb}MB.`));
+      }
+      return next(new ApiError(400, CODES.UPLOAD_FAILED, 'That file could not be uploaded.'));
+    }),
+    wrap(async (req, res) => {
+      if (!req.file) {
+        throw badRequest(`Please choose a file to upload (${ALLOWED_EXT.join(', ').toUpperCase()}).`);
+      }
+      const candidateId = req.body?.candidateId;
+      if (!candidateId) throw badRequest('No candidate specified.');
+
+      const kind = String(req.body?.kind || 'other').slice(0, 40);
+
+      const stored = await storeResume({
+        candidateId,
+        buffer: req.file.buffer,
+        originalName: req.file.originalname,
+      });
+
+      /* Written under the CALLER's rights, so RLS refuses a document
+         filed against somebody else's candidate rather than this route
+         having to re-derive who owns them. */
+      const row = await withUser(req.session, async (c) => {
+        const seen = await c.query(`select 1 from candidates where id=$1`, [candidateId]);
+        if (!seen.rowCount) throw notFound('That candidate could not be found.');
+        const { rows } = await c.query(
+          `insert into candidate_documents
+             (candidate_id, kind, file_name, storage_path, mime, size, uploaded_by)
+           values ($1,$2,$3,$4,$5,$6,$7) returning *`,
+          [candidateId, kind, stored.displayName, stored.path,
+           stored.mime, stored.size, req.session.userId || null]);
+
+        /* A profile photo is a document like any other AND the one the
+           candidate record points at, so the pointer is set here rather
+           than leaving the photo columns (migration 0057) permanently
+           empty while the file sits in the cabinet. Images only - a PDF
+           filed as a photo would put a broken <img> on the profile. */
+        if (kind === 'photo' && /^image\//.test(String(stored.mime || ''))) {
+          await c.query(
+            `update candidates set photo_file=$1, photo_storage_path=$2, photo_mime=$3
+              where id=$4`,
+            [stored.displayName, stored.path, stored.mime, candidateId]);
+        }
+        return rows[0];
+      });
+
+      res.status(201).json({
+        document: {
+          id: Number(row.id),
+          kind: row.kind,
+          fileName: row.file_name,
+          size: Number(row.size),
+          uploadedAt: row.created_at,
+        },
+      });
+    }));
+
+  /**
+   * GET /api/candidates/:id/documents — what is on file, resume aside.
+   */
+  r.get('/candidates/:id/documents', requireAuth(), wrap(async (req, res) => {
+    if (req.session.role === 'candidate' && req.session.profileId !== req.params.id) {
+      throw forbidden('You can only see your own documents.');
+    }
+    const rows = await withUser(req.session, async (c) => (await c.query(
+      `select id, kind, file_name, mime, size, created_at
+         from candidate_documents where candidate_id=$1
+        order by created_at desc limit 100`, [req.params.id])).rows);
+    res.json({
+      documents: rows.map((d) => ({
+        id: Number(d.id), kind: d.kind, fileName: d.file_name,
+        mime: d.mime, size: Number(d.size), uploadedAt: d.created_at,
+      })),
+    });
+  }));
+
   r.post('/uploads/resume', requireAuth(),
     (req, res, next) => upload.single('resume')(req, res, (err) => {
       if (!err) return next();

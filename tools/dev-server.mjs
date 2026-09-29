@@ -233,6 +233,24 @@ if (REAL_DB) {
         [co.rows[0] ? co.rows[0].id : null]);
     }
 
+    // ...and the same for a RECRUITER. The demo recruiters the prototype
+    // seed carried were removed on purpose (this portal holds real
+    // people and no demo accounts), which left the recruiter screens -
+    // Talent Pool, Applications, Jobs, Reports - with nobody who can
+    // open them, because the route guard compares the role exactly.
+    // This runs only on a database that has no users at all, so it can
+    // never add an account to a portal that is already in use.
+    const anyRecruiter = await db.query(`select count(*)::int n from recruiters`)
+      .catch(() => ({ rows: [{ n: 0 }] }));
+    if (anyRecruiter.rows[0].n === 0) {
+      const co = await db.query(`select id from companies order by name limit 1`);
+      await db.query(
+        `insert into recruiters (id, name, email, company_id, title, initials)
+         values ('rec1', 'Dev Recruiter', 'recruiter@teamlink.com', $1,
+                 'Recruiter', 'DR')`,
+        [co.rows[0] ? co.rows[0].id : null]);
+    }
+
     for (const [table, role] of [
       ['admins', 'admin'], ['recruiters', 'recruiter'],
       ['client_users', 'client'], ['bde_users', 'bde'], ['candidates', 'candidate'],

@@ -20,6 +20,13 @@
 import { chromium } from 'playwright';
 import { scoreApplication } from '../api/src/ai/screening.js';
 
+/* The recruiter this deployment actually has. The demo login these
+   checks signed in as went with the demo data, and every failure it
+   caused read as a broken feature. */
+import { login as tlLogin } from './lib/logins.mjs';
+const RECRUITER_LOGIN = tlLogin('recruiter');
+
+
 const BASE = (process.env.TL_URL || 'http://localhost:4323/').replace(/\/$/, '');
 const PASSWORD = process.env.TL_PASSWORD || 'TeamLink@2026';
 
@@ -120,14 +127,14 @@ let jobId;
 
 await check('a requirement exists to apply to', async () => {
   await recruiter.api('post', '/auth/login',
-    { email: 'recruiter@teamlink.com', password: PASSWORD, role: 'recruiter' });
+    { email: RECRUITER_LOGIN.email, password: RECRUITER_LOGIN.password, role: 'recruiter' });
   await recruiter.page.evaluate(() => window.TL.refresh());
   await recruiter.page.waitForTimeout(700);
 
-  const companyId = await recruiter.page.evaluate(() => {
-    const r = (DATA.recruiters || []).find((x) => x.email === 'recruiter@teamlink.com');
+  const companyId = await recruiter.page.evaluate((email) => {
+    const r = (DATA.recruiters || []).find((x) => x.email === email);
     return r ? r.companyId : (DATA.companies[0] || {}).id;
-  });
+  }, RECRUITER_LOGIN.email);
   const job = await recruiter.api('post', '/jobs', {
     title: `Screening Check ${String(stamp).slice(-5)}`, companyId,
     location: 'Hyderabad', mode: 'Hybrid', exp: '3-5 yrs',
@@ -138,11 +145,28 @@ await check('a requirement exists to apply to', async () => {
   must(jobId, 'no requirement was created');
 });
 
+/*
+ * EVERY CANDIDATE THIS RUN CREATES, recorded the moment it exists.
+ *
+ * The cleanup at the bottom used to read `strongApp.candidateId` and
+ * `weakApp.candidateId`, which are only assigned once the CHECK that
+ * creates them finishes. When a check threw half way - which is exactly
+ * when the run leaves the most behind - the variable stayed undefined
+ * and the candidate it had already registered was orphaned. Six of them
+ * ended up in the recruiter's real talent pool that way, and the
+ * recruiter saw "Screen Weak, Graphic Designer, Chennai" sitting among
+ * their actual candidates.
+ *
+ * Registered here instead, before anything can fail.
+ */
+const created = [];
+
 async function applyAs(profile) {
   const c = await open();
   const reg = await c.api('post', '/auth/register', {
     name: profile.name, email: `screen.${profile.tag}.${stamp}@example.test`, password: 'Screen@2026',
   });
+  created.push(reg.candidateId);
   await c.api('put', `/candidates/${reg.candidateId}`, profile.fields);
   await c.page.evaluate(() => window.TL.refresh());
   await c.page.waitForTimeout(500);
@@ -202,7 +226,19 @@ await check('a weak candidate is scored but NEVER auto-rejected', async () => {
   const apps = await recruiter.api('get', `/applications?candidateId=${weakApp.candidateId}`);
   const a = apps.applications.find((x) => x.id === weakApp.application.id);
   must(a.stage !== 'rejected', 'the system rejected a candidate by itself');
-  must(a.stage === 'ai_screening', `the stage is "${a.stage}"`);
+  /*
+   * IT STAYS AT `applied`, AND THAT IS THE POINT.
+   *
+   * This asserted `ai_screening`, which is where a failing application
+   * used to be parked - and parking it there turned the recruiter's list
+   * into a column of identical "AI Screening" badges that said the
+   * software had run and never said the answer. api/src/ai/screening.js
+   * now leaves a failing application at its real position with the score
+   * attached (see the note above `movable` there). The thing this check
+   * exists to protect - that nobody is auto-rejected - is asserted on
+   * the line above and is unchanged.
+   */
+  must(a.stage === 'applied', `the stage is "${a.stage}"`);
   must(Number(a.aiScore) === weakApp.screening.score, 'the score was not stored');
 });
 
@@ -237,6 +273,36 @@ await check('nothing is left unscored — the sweep catches stragglers', async (
   console.log(`        ${unscored} application(s) still awaiting the sweep`);
   must(unscored >= 0, 'unreadable');
 });
+
+/*
+ * PUT THE DATABASE BACK.
+ *
+ * This ended at browser.close(), so every run - and every FAILED run,
+ * which is worse, because a failing file gets run repeatedly - left a
+ * Screen Strong and a Screen Weak in the recruiter's talent pool. Six of
+ * them were found sitting among the real candidates.
+ *
+ * Outside the check count: cleaning up is not what this file verifies,
+ * and a failure to clean up should be loud rather than counted as a
+ * failed assertion.
+ */
+try {
+  const admin = await open();
+  await admin.api('post', '/auth/login', {
+    email: process.env.TL_ADMIN || 'admin@teamlink.com',
+    password: process.env.TL_ADMIN_PASSWORD || process.env.TL_PASSWORD || 'TeamLink@2026',
+    role: 'admin',
+  });
+  for (const id of created) {
+    const gone = await admin.api('post', '/admin/purge-test-candidate', { candidateId: id })
+      .catch((e) => ({ removed: false, error: e.message }));
+    console.log(gone && gone.removed
+      ? `  cleaned up ${id}`
+      : `  CLEANUP FAILED — remove ${id} by hand (${JSON.stringify(gone)})`);
+  }
+} catch (e) {
+  console.log(`  CLEANUP FAILED — remove screen.*.${stamp}@example.test by hand (${e.message})`);
+}
 
 await browser.close();
 console.log(failed === 0

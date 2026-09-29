@@ -79,6 +79,35 @@ export function toJob(r) {
     salaryMin: numOrU(r.salary_min),
     salaryMax: numOrU(r.salary_max),
     postingKind: nz(r.posting_kind),
+    /* Stated on the advert and filterable, rather than a sentence buried
+       in the description. `gender` is null on every job posted before
+       0072 and stays null - nobody said, and guessing is worse. */
+    gender: nz(r.gender),
+    accommodation: !!r.accommodation,
+
+    /*
+     * 0083. What makes a walk-in a walk-in and an internship an
+     * internship. Present ONLY when the posting has them, so a
+     * full-time role does not come back carrying nine empty keys and
+     * a card cannot render an empty 'Walk-in date:' line.
+     */
+    ...(r.walkin_date || r.walkin_venue || r.walkin_contact ? {
+      walkinDate: nz(r.walkin_date),
+      walkinFrom: nz(r.walkin_from),
+      walkinTo: nz(r.walkin_to),
+      walkinTime: [nz(r.walkin_from), nz(r.walkin_to)].filter(Boolean).join(' - ') || undefined,
+      walkinVenue: nz(r.walkin_venue),
+      walkinContact: nz(r.walkin_contact),
+      walkinPhone: nz(r.walkin_phone),
+    } : {}),
+
+    ...(r.internship_duration || r.internship_type || r.stipend != null ? {
+      internshipDuration: nz(r.internship_duration),
+      internshipType: nz(r.internship_type),
+      /* Only meaningful when it is a paid one; an unpaid internship
+         has no stipend rather than a stipend of zero. */
+      stipend: r.internship_type === 'Unpaid' ? undefined : numOrU(r.stipend),
+    } : {}),
     // applicants is DERIVED server-side (DATA-MAPPING §3.2) — the prototype
     // used to increment a stored counter that drifted on every refresh.
     applicants: Number(r.applicants || 0),
@@ -94,7 +123,21 @@ export function toJob(r) {
   return j;
 }
 
-export function toCandidate(r) {
+/**
+ * @param r      the candidates row
+ * @param opts   `{ staff: true }` when the reader is a recruiter, BDE or
+ *               admin. Default false, so a caller that says nothing gets
+ *               the safe shape rather than the fuller one.
+ */
+export function toCandidate(r, opts = {}) {
+  /*
+   * `rows.map(toCandidate)` passes the INDEX as the second argument, and
+   * several callers do exactly that. Reading `.staff` off a number
+   * happens to give undefined, so the safe shape is what comes back -
+   * but relying on that is one refactor away from a leak, so anything
+   * that is not an options object is treated as no options at all.
+   */
+  const staff = !!opts && typeof opts === 'object' && opts.staff === true;
   return {
     id: r.id,
     name: r.name,
@@ -103,6 +146,11 @@ export function toCandidate(r) {
     // it uses, and certainly not a password - just the one fact a
     // recruiter needs to answer "can they see their own profile?".
     hasPortalAccount: !!r.user_id,
+    /* Where the PERSON is, as distinct from where any one of their
+       applications is. Sourced, spoken to, interested, invited,
+       registered — see migration 0048. */
+    poolStatus: nz(r.pool_status) || 'sourced',
+    importId: nz(r.import_id),
     phone: nz(r.phone),
     location: nz(r.location),
     gender: nz(r.gender),
@@ -171,7 +219,80 @@ export function toCandidate(r) {
     // Asked not to be called. Carried to the screen so the button is not
     // offered in the first place, rather than refused after the click.
     doNotContact: !!r.do_not_contact,
+    /* 0074. How many times they have put off filling the profile in, and
+       when they last did. On the record rather than in the browser, so
+       saying "later" on a phone is still "later" on a borrowed laptop. */
+    onboardingLaterCount: Number(r.profile_onboarding_later_count || 0),
+    onboardingDismissedAt: r.profile_onboarding_dismissed_at
+      ? new Date(r.profile_onboarding_dismissed_at).toISOString() : undefined,
     preferredLanguage: nz(r.preferred_language),
+
+    /* ---- what the manual entry form records (migration 0057) ---------
+     *
+     * Additive, and nullable to a row: every candidate that existed
+     * before the form did reads these as '' or undefined, exactly as it
+     * reads every other optional field here. Nothing on screen is
+     * required to show them; they are carried so that what a recruiter
+     * typed can be read back rather than only stored.
+     */
+    dateOfBirth: nz(r.date_of_birth),
+    altPhone: nz(r.alt_phone),
+    altEmail: nz(r.alt_email),
+    state: nz(r.state),
+    district: nz(r.district),
+    address: nz(r.address),
+    pincode: nz(r.pincode),
+    nationality: nz(r.nationality),
+    relevantExpYears: numOrU(r.relevant_exp_years),
+    employmentType: nz(r.employment_type),
+    availableFrom: nz(r.available_from),
+    immediateJoiner: !!r.immediate_joiner,
+    jobStatus: nz(r.job_status),
+    jobChangeReason: nz(r.job_change_reason),
+    preferredShift: nz(r.preferred_shift),
+    willingToRelocate: r.willing_to_relocate === null ? undefined : !!r.willing_to_relocate,
+    relocationLocation: nz(r.relocation_location),
+    softSkills: arr(r.soft_skills),
+    tools: arr(r.tools),
+    source: nz(r.source),
+    sourceDetails: nz(r.source_details),
+    /* 0075. When this person entered the pool — reported beside where
+       they came from, because "Job Board, two years ago" and "Job Board,
+       yesterday" are not the same fact. */
+    addedOn: r.created_at ? new Date(r.created_at).toISOString() : undefined,
+    hiringType: nz(r.hiring_type),
+    priority: nz(r.priority),
+    availability: nz(r.availability),
+    candidateReference: nz(r.candidate_reference),
+    referredBy: nz(r.referred_by),
+    assignedRecruiterId: nz(r.assigned_recruiter_id),
+    resumeVersion: nz(r.resume_version),
+    resumeSource: nz(r.resume_source),
+    coverLetter: nz(r.cover_letter),
+    emailOptIn: r.email_opt_in === undefined ? true : !!r.email_opt_in,
+    smsOptIn: r.sms_opt_in === undefined ? true : !!r.sms_opt_in,
+    preferredContactMethod: nz(r.preferred_contact_method),
+    candidateNotes: nz(r.candidate_notes),
+    /*
+     * RECRUITER NOTES AND INTERNAL REMARKS ARE STAFF-ONLY.
+     *
+     * `GET /candidates/:id` and `GET /auth/me` both hand a candidate
+     * their own row through this function, so anything listed
+     * unconditionally here is something the candidate reads about
+     * themselves. "Internal remarks" that the subject can read are not
+     * internal. They appear only when the caller says the reader is
+     * staff, and the default is that they are not - so a caller that
+     * forgets to ask leaks nothing.
+     */
+    ...(staff ? {
+      recruiterNotes: nz(r.recruiter_notes),
+      internalRemarks: nz(r.internal_remarks),
+    } : {}),
+    tags: arr(r.tags),
+    entryMethod: nz(r.entry_method),
+    photoFile: nz(r.photo_file),
+    /* Agreed on a call, not booked in a diary - see migration 0058. */
+    interviewPrefs: r.interview_prefs || undefined,
 
     daysSilent: numOrU(r.days_silent),
     followUpSent: !!r.follow_up_sent,
@@ -364,6 +485,33 @@ export function toPerson(r) {
  * Returns only the NON-primary applications, which is exactly what
  * DATA.applications should hold.
  */
+/**
+ * Education and work history rows, as the candidate portal reads them.
+ *
+ * Two callers need the identical shape - the single-candidate GET and the
+ * bootstrap payload the portal renders from - and when they disagreed the
+ * profile page silently showed nothing for rows that were in the
+ * database. Kept here so there is one answer.
+ */
+export function toEducationRecord(e) {
+  return {
+    qualification: e.qualification || '', specialization: e.specialization || '',
+    institution: e.institution || '',
+    passingYear: e.passing_year == null ? undefined : Number(e.passing_year),
+    score: e.score || '', educationType: e.education_type || '',
+  };
+}
+
+export function toExperienceRecord(e) {
+  return {
+    company: e.company || '', jobTitle: e.job_title || '',
+    startDate: e.start_date || '', endDate: e.end_date || '',
+    currentlyWorking: !!e.currently_working, location: e.location || '',
+    employmentType: e.employment_type || '', responsibilities: e.responsibilities || '',
+    leavingReason: e.leaving_reason || '',
+  };
+}
+
 export function attachPrimary(candidates, applications) {
   const byId = new Map(candidates.map((c) => [c.id, c]));
   const extra = [];
@@ -384,14 +532,70 @@ export function attachPrimary(candidates, applications) {
       extra.push(a);
     }
   }
-  // A candidate who registered but never applied shows as 'registered',
-  // which stageBadge() renders as "Not applied yet" (prototype.html:1213).
+  /*
+   * A CANDIDATE WITH APPLICATIONS IS NOT "NOT APPLIED YET".
+   *
+   * 'registered' renders as "Not applied yet" (stageBadge), and it used
+   * to be given to every candidate without a PRIMARY application. Nothing
+   * marks an application primary any more - the flag belongs to the
+   * prototype's one-application-per-candidate model, and applications now
+   * arrive from the portal, from Easy Apply and from two job boards. So
+   * in this deployment not one of a hundred and eighteen applications was
+   * primary, and all hundred and twenty-nine candidates read "Not applied
+   * yet" - including people who had applied, been screened, been
+   * shortlisted and finished an AI interview.
+   *
+   * When there is no primary, the candidate's stage is taken from the
+   * application that has got the FURTHEST, which is what a recruiter
+   * means by "where is this person up to". 'registered' now means what it
+   * says: no applications at all.
+   */
+  const byCandidate = new Map();
+  for (const a of applications) {
+    const list = byCandidate.get(a.candidateId) || [];
+    list.push(a);
+    byCandidate.set(a.candidateId, list);
+  }
+
   for (const c of candidates) {
-    if (!c.appliedJobId) {
-      c.appliedJobId = null;
-      c.stage = 'registered';
-      c.matchScore = c.matchScore ?? 0;
-    }
+    if (c.appliedJobId) continue;               // a real primary already set it
+    /*
+     * appliedJobId is deliberately left null. It is what makes the
+     * candidate screen synthesise a 'primary__<id>' row on top of
+     * DATA.applications, so filling it in here would show one
+     * application twice. Only the stage and the score are borrowed.
+     */
+    c.appliedJobId = null;
+    const best = furthestAlong(byCandidate.get(c.id));
+    c.stage = best ? best.stage : 'registered';
+    c.matchScore = best ? (best.matchScore ?? 0) : (c.matchScore ?? 0);
   }
   return extra;
+}
+
+/*
+ * How far down the pipeline each stage is.
+ *
+ * Hold and Rejected are absent on purpose: neither is progress, and a
+ * candidate rejected for one role and shortlisted for another is
+ * shortlisted, not rejected. They are used only when every application a
+ * candidate has is in one of those states.
+ */
+const PROGRESS = {
+  applied: 10, ai_screening: 20, shortlisted: 30, with_bde: 35,
+  interview_scheduled: 40, ai_interview_done: 50, client_review: 60,
+  offer_extended: 70, selected: 80, joined: 90,
+};
+
+/** The application that best answers "where is this person up to?". */
+function furthestAlong(apps) {
+  if (!apps || !apps.length) return null;
+  const live = apps.filter((a) => PROGRESS[a.stage] != null);
+  if (live.length) {
+    return live.reduce((best, a) =>
+      (PROGRESS[a.stage] > PROGRESS[best.stage] ? a : best));
+  }
+  // Everything is on hold or closed: the most recent of them.
+  return apps.reduce((best, a) =>
+    (String(a.appliedAt || '') > String(best.appliedAt || '') ? a : best));
 }

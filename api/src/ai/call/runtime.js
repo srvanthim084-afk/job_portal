@@ -16,6 +16,7 @@ import { config } from '../../config.js';
 import { toCandidate, toJob } from '../../shapes.js';
 import { telephony, speechToText } from '../../telephony/index.js';
 import { dispatchEvent } from '../../notify/events.js';
+import { blockedByAllowlist } from '../../notify/providers.js';
 import {
   plan, startConversation, openingTurn, nextTurn, callResult, summarise, atsAction, parseWhen,
 } from './agent.js';
@@ -122,6 +123,26 @@ export async function queueCall(session, {
  * and whether now is a reasonable time, which is what a person does.
  */
 export async function startCall(sessionId) {
+  /*
+   * THE MASTER SWITCH, CHECKED BEFORE ANYTHING ELSE.
+   *
+   * Separate from the allowlist on purpose, and checked first. The
+   * allowlist answers "may we ring THIS number"; this answers "may we
+   * ring anyone at all", and the second question needs an answer that
+   * does not depend on the first being right. A campaign over a hundred
+   * and thirty-nine sourced candidates is one button, and the cost of
+   * being wrong is a hundred and thirty-nine telephones ringing.
+   *
+   * Default OFF. Outbound calling turns on by somebody deciding to set
+   * OUTBOUND_CALLS_ENABLED=true, which is a deliberate act, rather than
+   * by a default nobody reviewed.
+   */
+  if (String(process.env.OUTBOUND_CALLS_ENABLED || '').toLowerCase() !== 'true') {
+    await withUser(ENGINE, (c) => c.query(
+      `select ai_call_status($1,'failed',$2,null)`, [sessionId, 'blocked']));
+    throw new Error('outbound calling is switched off (OUTBOUND_CALLS_ENABLED is not true)');
+  }
+
   const ctx = await loadContext(sessionId);
   if (!ctx) throw new Error('no such call session');
 
@@ -148,6 +169,31 @@ export async function startCall(sessionId) {
   await withUser(ENGINE, (c) => c.query(
     `select ai_call_event($1,'plan',null,$2::jsonb,null)`,
     [sessionId, JSON.stringify({ objective: p.objective, known: p.known, needed: p.needed })]));
+
+  /*
+   * THE OUTBOUND ALLOWLIST, CHECKED AT THE LAST POSSIBLE MOMENT.
+   *
+   * The database already refuses do-not-contact, no number and a call
+   * already in progress. This is the different question: is this number
+   * one we are permitted to ring AT ALL right now. While OUTBOUND_ALLOWLIST
+   * names any number, it names every number that may be dialled, and a
+   * campaign over a hundred and thirty-nine sourced candidates cannot
+   * reach a single one of them by accident.
+   *
+   * Here rather than in queueCall() on purpose: queuing is bookkeeping,
+   * dialling is the thing that rings somebody's telephone, and this must
+   * sit in front of the dialling however the call was queued.
+   */
+  const barred = blockedByAllowlist('ai_call', ctx.session.to_number);
+  if (barred) {
+    await withUser(ENGINE, (c) => c.query(
+      `select ai_call_status($1,'failed',$2,null)`, [sessionId, 'blocked']));
+    await withUser(ENGINE, (c) => c.query(
+      `select ai_call_event($1,'blocked',null,$2::jsonb,null)`,
+      [sessionId, JSON.stringify({ reason: barred.error })]));
+    live.delete(sessionId);
+    throw new Error(barred.error);
+  }
 
   let placed;
   try {

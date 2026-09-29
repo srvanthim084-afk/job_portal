@@ -26,6 +26,13 @@
  */
 import { chromium } from 'playwright';
 
+/* The recruiter this deployment actually has. The demo login these
+   checks signed in as went with the demo data, and every failure it
+   caused read as a broken feature. */
+import { login as tlLogin } from './lib/logins.mjs';
+const RECRUITER_LOGIN = tlLogin('recruiter');
+
+
 const BASE = (process.env.TL_URL || 'http://localhost:4323/').replace(/\/$/, '');
 const PASSWORD = process.env.TL_PASSWORD || 'TeamLink@2026';
 const stamp = Date.now();
@@ -55,7 +62,7 @@ const open = async () => {
 
 const rec = await open();
 await rec.api('post', '/auth/login',
-  { email: 'recruiter@teamlink.com', password: PASSWORD, role: 'recruiter' });
+  { email: RECRUITER_LOGIN.email, password: RECRUITER_LOGIN.password, role: 'recruiter' });
 
 /** Unique every run, so a rerun is not a collision with the last one. */
 const one = { email: `imp.one.${stamp}@example.test`, phone: `+91 7${String(stamp).slice(-9)}` };
@@ -75,7 +82,7 @@ let imported = [];
 console.log('\nimporting two people from a spreadsheet');
 
 await check('both rows arrive as candidates', async () => {
-  const out = await rec.api('post', '/candidates/import', { text: csv });
+  const out = await rec.api('post', '/candidates/import', { text: csv, invite: true });
   imported = out.detail.imported;
   must(out.imported === 2, `${out.imported} imported, ${out.updated} updated, ${out.skipped} skipped`);
   must(out.invited === 2, `${out.invited} marked for an invitation`);
@@ -142,7 +149,7 @@ console.log('\nnobody is written to twice');
 
 await check('importing the same file again sends nothing', async () => {
   const before = (await invitesFor(imported[0].id)).invites.length;
-  await rec.api('post', '/candidates/import', { text: csv });
+  await rec.api('post', '/candidates/import', { text: csv, invite: true });
   await new Promise((r) => setTimeout(r, 5000));
   const after = (await invitesFor(imported[0].id)).invites.length;
   must(after === before,
@@ -157,8 +164,13 @@ console.log('\nsomebody who asked not to be contacted');
 await check('a do-not-contact candidate is never invited', async () => {
   const email = `imp.dnc.${stamp}@example.test`;
   const phone = `+91 9${String(stamp).slice(-9)}`;
+  /* invite: true throughout this check. Importing no longer sends
+     credentials on its own - a sourcing list is not an invitation - so a
+     test about who gets messaged has to ask for messages to be sent, or
+     it passes by sending nothing and proves nothing. */
   const first = await rec.api('post', '/candidates/import', {
     text: `Name,Email,Phone\nDo Not Contact ${stamp},${email},${phone}`,
+    invite: true,
   });
   const id = first.detail.imported[0].id;
 
@@ -169,6 +181,7 @@ await check('a do-not-contact candidate is never invited', async () => {
 
   await rec.api('post', '/candidates/import', {
     text: `Name,Email,Phone\nDo Not Contact ${stamp},${email},${phone}`,
+    invite: true,
   });
   await new Promise((r) => setTimeout(r, 4000));
   const after = (await invitesFor(id)).invites.length;

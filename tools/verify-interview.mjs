@@ -25,6 +25,12 @@ import { chromium } from 'playwright';
 const BASE = process.env.TL_URL || 'http://localhost:4323/';
 const PASSWORD = process.env.TL_PASSWORD || 'TeamLink@2026';
 
+/* The accounts this deployment actually has. The demo recruiter, BDE and
+   client this file used to sign in as were deleted with the demo data,
+   and the checks below reported that as a broken feature. */
+import { login, noAccountNote } from './lib/logins.mjs';
+const RECRUITER = login('recruiter');
+
 let failed = 0;
 const check = async (name, fn) => {
   try { await fn(); console.log(`  PASS  ${name}`); }
@@ -57,12 +63,12 @@ await check('a candidate applies, so there is something to interview for', async
   await page.waitForTimeout(600);
   // A job the RECRUITER can manage, so the visibility check later is about
   // the score being shared and not about which company owns the job.
-  jobId = await page.evaluate(() => {
-    const rec = DATA.recruiters.find((r) => r.email === 'recruiter@teamlink.com');
+  jobId = await page.evaluate((recruiterEmail) => {
+    const rec = DATA.recruiters.find((r) => r.email === recruiterEmail);
     const j = DATA.jobs.find((x) => x.status === 'open' && x.companyId === (rec || {}).companyId)
            || DATA.jobs.find((x) => x.status === 'open');
     return j ? j.id : null;
-  });
+  }, RECRUITER.email);
   must(jobId, 'there is no open job to apply to');
 
   const app = await api('post', '/applications', { jobId, source: 'portal' });
@@ -332,7 +338,19 @@ await check('the candidate sees their own score, linked to the application', asy
   must(mine.jobId === jobId, 'the score is not attached to the job');
 });
 
-for (const [role, emailAddr] of [['recruiter', 'recruiter@teamlink.com'], ['bde', 'bde@teamlink.com']]) {
+for (const role of ['recruiter', 'bde']) {
+  const acct = login(role);
+  if (!acct) {
+    /* NOT A FAILURE. There is nobody in this role to sign in as, which
+       is a fact about the deployment and not about the score being
+       shared. Saying "could not sign in as bde" made it look like the
+       feature was broken. */
+    console.log(`  SKIP  the ${role} sees the same score from the database`);
+    console.log(`        ${noAccountNote(role)}`);
+    continue;
+  }
+  const emailAddr = acct.email;
+  const rolePassword = acct.password;
   // eslint-disable-next-line no-loop-func
   await check(`the ${role} sees the same score from the database`, async () => {
     const c2 = await browser.newContext();
@@ -342,7 +360,7 @@ for (const [role, emailAddr] of [['recruiter', 'recruiter@teamlink.com'], ['bde'
     try {
       const ok = await p2.evaluate(([em, pw, r]) =>
         window.TL.api.post('/auth/login', { email: em, password: pw, role: r })
-          .then(() => true, () => false), [emailAddr, PASSWORD, role]);
+          .then(() => true, () => false), [emailAddr, rolePassword, role]);
       if (!ok) throw new Error(`could not sign in as ${role}`);
 
       const rows = await p2.evaluate(() =>
@@ -353,6 +371,38 @@ for (const [role, emailAddr] of [['recruiter', 'recruiter@teamlink.com'], ['bde'
         `the ${role} sees a different score`);
     } finally { await c2.close(); }
   });
+}
+
+/* ------------------------------------------------------------------ *
+ * put the database back
+ * ------------------------------------------------------------------ */
+/*
+ * THIS USED TO BE MISSING, and it showed. Every run of this file left an
+ * "Interview Tester" behind with its applications, and after a few runs
+ * the recruiter's candidate list had seven of them sitting among the real
+ * people - which is exactly the demo data this project is not allowed to
+ * have. A verifier that dirties the database it is verifying is worse
+ * than no verifier.
+ *
+ * Outside the checks, and outside the pass/fail count: cleaning up is not
+ * a thing being tested, and a failure to clean up must be loud rather
+ * than counted as a test failure.
+ */
+try {
+  await api('post', '/auth/logout', {});
+  await api('post', '/auth/login', {
+    email: process.env.TL_ADMIN || 'admin@teamlink.com',
+    password: process.env.TL_ADMIN_PASSWORD || process.env.TL_PASSWORD || 'TeamLink@2026',
+    role: 'admin',
+  });
+  const gone = await api('post', '/admin/purge-test-candidate', { candidateId });
+  if (gone && gone.removed) {
+    console.log(`\n  cleaned up: ${email}`);
+  } else {
+    console.log(`\n  CLEANUP FAILED — remove ${email} by hand (${JSON.stringify(gone)})`);
+  }
+} catch (e) {
+  console.log(`\n  CLEANUP FAILED — remove ${email} by hand (${e.message})`);
 }
 
 await browser.close();

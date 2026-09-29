@@ -15,6 +15,11 @@
  */
 import { chromium } from 'playwright';
 
+/* The recruiter this deployment actually has. */
+import { login as tlLogin } from './lib/logins.mjs';
+const RECRUITER_LOGIN = tlLogin('recruiter');
+
+
 const BASE = process.env.TL_URL || 'http://127.0.0.1:4323/';
 const PASSWORD = process.env.TL_PASSWORD || 'TeamLink@2026';
 
@@ -73,8 +78,8 @@ await check('a wrong password is rejected through the form', async () => {
 
 await check('CLICKING sign in actually signs in', async () => {
   await goto('#/login/recruiter');
-  await page.fill('.auth-form input[name="email"]', 'recruiter@teamlink.com');
-  await page.fill('.auth-form input[name="password"]', PASSWORD);
+  await page.fill('.auth-form input[name="email"]', RECRUITER_LOGIN.email);
+  await page.fill('.auth-form input[name="password"]', RECRUITER_LOGIN.password);
   await page.click('.auth-form button[type="submit"]');
   await page.waitForTimeout(2500);
   const s = await page.evaluate(() => STATE.session);

@@ -28,8 +28,45 @@ const jobSchema = z.object({
   salaryMax: z.number().nonnegative().optional().nullable(),
   type: z.string().trim().max(40).optional(),
   hiringType: z.string().trim().max(40).optional(),
-  postingKind: z.enum(['job', 'walkin', 'internship']).optional(),
+  /*
+   * Who the role is open to, and whether the employer houses them.
+   *
+   * `gender` is OPTIONAL rather than required, deliberately: twenty-five
+   * jobs predate this field and an update to any one of them - closing
+   * it, changing the pay - would otherwise be refused for not answering
+   * a question nobody asked when it was posted. The form requires it for
+   * anything new; the API refuses a value that is neither.
+   */
+  gender: z.union([z.enum(['Female', 'Male']), z.literal(''), z.null()]).optional()
+    .transform((v) => (v === '' || v === null ? null : v)),
+  accommodation: z.union([z.boolean(), z.string().max(8)]).optional()
+    .transform((v) => (v === undefined ? undefined
+      : v === true || v === 'true' || v === 'on' || v === '1' || v === 'Yes' || v === 'yes')),
+  /* BULK POSTING HAS ALWAYS SENT A FOURTH VALUE. The Manage Jobs screen,
+     the saved-search list and the posting-type badge all read
+     postingKind === 'bulkHiring', but it was missing from this enum - so
+     every bulk-posted job failed validation, the browser kept it in
+     memory, and it vanished on the next reload. The recruiter saw the
+     jobs until they refreshed and candidates never saw them at all.
+     The column itself has no constraint; this was the only thing
+     rejecting them. */
+  postingKind: z.enum(['job', 'walkin', 'internship', 'bulkHiring']).optional(),
   openings: z.number().int().min(1).max(9999).optional(),
+
+  /* 0083. What makes a walk-in a walk-in and an internship an
+     internship. Optional on every posting, because a full-time role
+     has none of them - the posting type decides which are asked for,
+     and the form does that. */
+  walkinDate:    z.string().trim().max(60).optional().or(z.literal('')),
+  walkinFrom:    z.string().trim().max(40).optional().or(z.literal('')),
+  walkinTo:      z.string().trim().max(40).optional().or(z.literal('')),
+  walkinVenue:   z.string().trim().max(400).optional().or(z.literal('')),
+  walkinContact: z.string().trim().max(120).optional().or(z.literal('')),
+  walkinPhone:   z.string().trim().max(32).optional().or(z.literal('')),
+
+  internshipDuration: z.string().trim().max(40).optional().or(z.literal('')),
+  internshipType:     z.enum(['Paid', 'Unpaid']).optional().or(z.literal('')),
+  stipend:            z.coerce.number().min(0).max(100000000).optional(),
   source: z.string().trim().max(80).optional(),
   department: z.string().trim().max(80).optional(),
   education: z.string().trim().max(120).optional(),
@@ -58,6 +95,11 @@ function parse(schema, body) {
 /** Same shape as the prototype's generated ids, so nothing on screen changes. */
 const newJobId = () => 'j_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
 
+import {
+  buildJobDescription, buildStructuredJd, buildWalkinPack, buildInternshipPack,
+  suggestSkills, isKnownStub,
+} from '../ai/jd.js';
+
 const COLS = {
   title: 'title', companyId: 'company_id', location: 'location', mode: 'mode',
   exp: 'exp_label', pay: 'pay_label', salaryMin: 'salary_min', salaryMax: 'salary_max',
@@ -65,6 +107,16 @@ const COLS = {
   openings: 'openings', source: 'source', department: 'department', education: 'education',
   easyApply: 'easy_apply', featured: 'featured', skills: 'skills', desc: 'description',
   responsibilities: 'responsibilities', requirements: 'requirements', status: 'status',
+  /* 0072. Both go through the same map as everything else, so create and
+     update persist them without either route knowing they exist. */
+  gender: 'gender', accommodation: 'accommodation',
+  /* 0083. Same route in: create and update persist them without
+     either one knowing they exist. */
+  walkinDate: 'walkin_date', walkinFrom: 'walkin_from', walkinTo: 'walkin_to',
+  walkinVenue: 'walkin_venue', walkinContact: 'walkin_contact',
+  walkinPhone: 'walkin_phone',
+  internshipDuration: 'internship_duration', internshipType: 'internship_type',
+  stipend: 'stipend',
 };
 
 export default function jobRoutes() {
@@ -135,6 +187,47 @@ export default function jobRoutes() {
     const body = parse(jobSchema, req.body);
     const id = (req.body && req.body.id) || newJobId();
 
+    /*
+     * THE DESCRIPTION IS WRITTEN HERE, FOR EVERY WAY IN.
+     *
+     * Five screens create jobs - the post form, bulk paste, walk-in,
+     * internship, and the requirement raised automatically when somebody
+     * applies for a role nobody posted - and each supplied a different
+     * description or none at all. Bulk sent "Opening for Staff Nurse at
+     * our team."; the automatic one sent a note addressed to the
+     * recruiter, sitting in the field a candidate reads. Doing it here
+     * means one JD for all of them, and a sixth screen added later gets
+     * it without knowing this exists.
+     *
+     * A DESCRIPTION SOMEBODY ACTUALLY WROTE IS LEFT ALONE. Past
+     * WRITTEN_JD_CHARS it is treated as the recruiter's own words and not
+     * touched. Below that it is treated as a stub or a logistics line -
+     * a walk-in's venue and date, an internship's duration - and is kept
+     * VERBATIM as the closing note of the generated JD, so nothing a
+     * screen supplied is ever lost.
+     */
+    const WRITTEN_JD_CHARS = 400;
+    const original = String(body.desc || '').trim();
+    if (original.length < WRITTEN_JD_CHARS) {
+      const generated = buildJobDescription({
+        title: body.title, location: body.location, skills: body.skills,
+        exp: body.exp, education: body.education, openings: body.openings,
+        postingKind: body.postingKind || body.type,
+        /* Kept unless it is one of OUR stubs. A short note is not a job
+           description, but it is often the only place a walk-in venue or an
+           internship stipend is recorded - discarding it on LENGTH threw
+           both away. */
+        note: isKnownStub(original) ? '' : original,
+      });
+      body.desc = generated.description;
+      if (!Array.isArray(body.responsibilities) || body.responsibilities.length < 2) {
+        body.responsibilities = generated.responsibilities;
+      }
+      if (!Array.isArray(body.requirements) || body.requirements.length < 2) {
+        body.requirements = generated.requirements;
+      }
+    }
+
     const job = await withUser(req.session, async (c) => {
       const cols = ['id'], vals = [id], ph = ['$1'];
       for (const [k, col] of Object.entries(COLS)) {
@@ -160,6 +253,74 @@ export default function jobRoutes() {
 
     res.status(201).json({ job: toJob(job), alerting: alerts });
   }));
+
+  /**
+   * POST /api/jobs/describe — write a JD without creating anything.
+   *
+   * Bulk posting shows the recruiter what will be published BEFORE it is,
+   * so the description has to exist before the job does. Nothing is
+   * written by this route; it is the same generator the create route
+   * uses, exposed so the preview and the stored record cannot disagree.
+   *
+   * Takes one posting or a list, and answers in the same shape.
+   */
+  r.post('/jobs/describe', requireAuth(), requireRole('recruiter', 'bde', 'admin'),
+    wrap(async (req, res) => {
+      const list = Array.isArray(req.body?.jobs) ? req.body.jobs
+        : req.body?.job ? [req.body.job]
+        : req.body?.title ? [req.body] : null;
+      if (!list || !list.length) throw badRequest('Send a job, or a list of jobs.');
+      if (list.length > 200) throw badRequest('Send at most 200 jobs in one request.');
+
+      const out = list.map((j) => {
+        /* A walk-in answers different questions - where, when, what to
+           carry - so it gets its own sections rather than a vacancy JD
+           with the venue buried in a paragraph. */
+        if (String(j.kind || j.postingKind || '').toLowerCase().includes('walk')) {
+          const w = buildWalkinPack({
+            title: j.title, department: j.department, location: j.location,
+            date: j.date, startTime: j.startTime, endTime: j.endTime, venue: j.venue,
+            exp: j.exp, qualification: j.qualification || j.education,
+            pay: j.pay, skills: j.skills,
+          });
+          return { title: j.title || '', kind: 'walkin', ...w };
+        }
+        /* An internship answers "what will I learn and what happens
+           next", which a vacancy JD has no section for. */
+        if (String(j.kind || j.postingKind || '').toLowerCase().includes('intern')) {
+          const p = buildInternshipPack({
+            title: j.title, department: j.department, location: j.location,
+            duration: j.duration, stipend: j.stipend, workMode: j.workMode,
+            internshipType: j.internshipType,
+            qualification: j.qualification || j.education,
+            openings: j.openings, skills: j.skills,
+          });
+          return { title: j.title || '', kind: 'internship', ...p };
+        }
+        const jd = buildStructuredJd({
+          title: j.title, department: j.department, location: j.location,
+          skills: j.skills, exp: j.exp, expMin: j.expMin, expMax: j.expMax,
+          qualification: j.qualification || j.education,
+          openings: j.openings, postingKind: j.postingKind || j.type,
+        });
+        return {
+          title: j.title || '',
+          summary: jd.summary,
+          about: jd.about,
+          responsibilities: jd.responsibilities,
+          qualifications: jd.qualifications,
+          skills: jd.skills,
+          preferredSkills: jd.preferredSkills,
+          description: jd.description,
+          /* Offered only when the caller asked; an empty list is the
+             honest answer for a role we have no vocabulary for. */
+          suggestedSkills: j.suggestSkills ? suggestSkills(j) : [],
+          family: jd.family,
+        };
+      });
+
+      res.json({ jobs: out });
+    }));
 
   /** Edit. Updates in place — never inserts, never changes the id. */
   r.put('/jobs/:id', requireAuth(), requireRole('recruiter', 'admin'), wrap(async (req, res) => {

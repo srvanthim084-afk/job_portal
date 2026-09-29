@@ -56,7 +56,20 @@ async function open() {
 }
 
 const CHANNELS = ['email', 'sms', 'whatsapp', 'ivr'];
-const RECORDED = ['sent', 'delivered', 'failed', 'not_configured', 'pending'];
+/*
+ * Every outcome that counts as "the attempt is on the record".
+ *
+ * `skipped_test_address` belongs here and was missing. The email
+ * provider refuses to post mail to a reserved test domain, which is
+ * correct and deliberate - this suite registers
+ * notify.<timestamp>@example.test precisely so no real inbox is
+ * touched. The dispatcher still records the attempt with that reason,
+ * so the thing being checked - that every channel was tried and the
+ * outcome written down - is satisfied. Leaving it out made the guard
+ * that protects real people look like a broken notification.
+ */
+const RECORDED = ['sent', 'delivered', 'failed', 'not_configured', 'pending',
+  'skipped_test_address', 'skipped_no_address'];
 
 /** Every channel must have been ATTEMPTED and its outcome recorded. */
 function assertAttempted(notify, where) {
@@ -80,15 +93,32 @@ await check('a candidate applies', async () => {
   await candidate.page.evaluate(() => window.TL.refresh());
   await candidate.page.waitForTimeout(500);
 
-  // It must be a job the RECRUITER can manage, or the stage moves later on
-  // are refused by row-level security and the failure looks like a
-  // notification bug instead of a test picking the wrong company.
-  jobId = await candidate.page.evaluate((email) => {
-    const rec = (DATA.recruiters || []).find((r) => r.email === email);
-    const j = DATA.jobs.find((x) => x.status === 'open' && x.companyId === (rec || {}).companyId)
-           || DATA.jobs.find((x) => x.status === 'open');
-    return j ? j.id : null;
-  }, RECRUITER.email);
+  /*
+   * IT MUST BE A JOB THE RECRUITER CAN MANAGE, and asking the CANDIDATE's
+   * page which one that is cannot work: a candidate cannot see
+   * `DATA.recruiters` at all, so the lookup found nobody and fell back to
+   * "the first open job", which is whatever happens to be at the top of
+   * the board. Once another recruiter owned that one, every stage move
+   * below was correctly refused by row-level security and reported as a
+   * notification bug.
+   *
+   * So the recruiter is signed in FIRST and asked which requirements are
+   * theirs. That is the only view that can answer the question.
+   */
+  const recruiterOk = await recruiter.page.evaluate((cred) =>
+    window.TL.api.post('/auth/login', cred).then(() => true, () => false), RECRUITER);
+  must(recruiterOk, 'the recruiter could not sign in');
+  await recruiter.page.evaluate(() => window.TL.refresh());
+  await recruiter.page.waitForTimeout(500);
+
+  jobId = await recruiter.page.evaluate(() => {
+    const mine = (DATA.jobs || []).filter((x) => x.status === 'open'
+      && !x.paused && !x.archived
+      /* Not one of the verify suite's own requirements: those belong to
+         throwaway recruiters and are exactly the rows that broke this. */
+      && !/^Isolation [AB] /.test(String(x.title || '')));
+    return mine.length ? mine[0].id : null;
+  });
   must(jobId, 'no open job');
   const app = await candidate.api('post', '/applications', { jobId, source: 'portal' });
   applicationId = app.application.id;
@@ -96,10 +126,11 @@ await check('a candidate applies', async () => {
 });
 
 await check('the recruiter signs in', async () => {
-  const ok = await recruiter.page.evaluate((login) =>
-    window.TL.api.post('/auth/login', login)
-      .then(() => true, () => false), RECRUITER);
-  must(ok, 'the recruiter could not sign in');
+  /* Already signed in above, because choosing the job needed their view.
+     Confirmed here rather than done again. */
+  const who = await recruiter.page.evaluate(() =>
+    window.TL.api.get('/auth/me').then((r) => (r.session || {}).role, () => null));
+  must(who === 'recruiter', `the recruiter is not signed in (role: ${who})`);
 });
 
 /* ------------------------------------------------------------------ *

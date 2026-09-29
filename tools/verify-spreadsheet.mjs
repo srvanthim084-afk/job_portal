@@ -20,6 +20,13 @@ import { writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { inflateRawSync } from 'node:zlib';
 import { writeSheet, readSheet, readCsv } from '../api/src/xlsx.js';
 
+/* The recruiter this deployment actually has. The demo login these
+   checks signed in as went with the demo data, and every failure it
+   caused read as a broken feature. */
+import { login as tlLogin } from './lib/logins.mjs';
+const RECRUITER_LOGIN = tlLogin('recruiter');
+
+
 const BASE = (process.env.TL_URL || 'http://localhost:4323/').replace(/\/$/, '');
 const PASSWORD = process.env.TL_PASSWORD || 'TeamLink@2026';
 
@@ -147,7 +154,7 @@ const api = async (m, p, b) => {
 
 const stamp = Date.now();
 await api('post', '/auth/login',
-  { email: 'recruiter@teamlink.com', password: PASSWORD, role: 'recruiter' });
+  { email: RECRUITER_LOGIN.email, password: RECRUITER_LOGIN.password, role: 'recruiter' });
 await page.evaluate(() => window.TL.refresh());
 await page.waitForTimeout(700);
 

@@ -27,6 +27,11 @@
  */
 import { chromium } from 'playwright';
 
+/* The recruiter this deployment actually has. */
+import { login as tlLogin } from './lib/logins.mjs';
+const RECRUITER_LOGIN = tlLogin('recruiter');
+
+
 const BASE = (process.env.TL_URL || 'http://localhost:4323/').replace(/\/$/, '');
 const PASSWORD = process.env.TL_PASSWORD || 'TeamLink@2026';
 
@@ -43,7 +48,11 @@ const must = (c, m) => { if (!c) throw new Error(m); };
 const browser = await chromium.launch();
 const errors = [];
 
-async function signIn(email, role) {
+/* The password is a parameter because the two accounts this deployment
+   has do not share one - the recruiter's and the administrator's differ
+   by a capital letter, and signing everybody in with `PASSWORD` sent the
+   recruiter in with the admin's. */
+async function signIn(email, role, password) {
   const page = await (await browser.newContext({ viewport: { width: 1440, height: 1100 } })).newPage();
   page.on('pageerror', (e) => errors.push(`${role}: ${e.message}`));
   page.on('console', (m) => {
@@ -62,7 +71,7 @@ async function signIn(email, role) {
     return r.v;
   };
 
-  await api('post', '/auth/login', { email, password: PASSWORD, role });
+  await api('post', '/auth/login', { email, password: password || PASSWORD, role });
   await page.evaluate(() => window.TL.refresh());
   await page.waitForTimeout(700);
   return { page, api };
@@ -78,7 +87,7 @@ const open = async (who, tab) => {
  * ------------------------------------------------------------------ */
 console.log('\nthe tab, on the screen that already exists');
 
-const rec = await signIn('recruiter@teamlink.com', 'recruiter');
+const rec = await signIn(RECRUITER_LOGIN.email, 'recruiter', RECRUITER_LOGIN.password);
 
 await check("the prototype's own tabs are all still there", async () => {
   await open(rec, 'ivr');

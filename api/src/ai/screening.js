@@ -25,7 +25,7 @@
  */
 import { withUser } from '../db.js';
 import { toJob, toCandidate } from '../shapes.js';
-import { matchCandidate } from './match.js';
+import { matchCandidate, WEIGHTS } from './match.js';
 
 const ENGINE = { userId: '', role: 'admin', profileId: null };
 
@@ -87,14 +87,23 @@ export function scoreApplication({ job, candidate, settings = DEFAULTS }) {
    * band or location scores half rather than nothing - so only skills
    * can be missing in this sense.
    */
+  /*
+   * The divisor is the matcher's OWN weight for that dimension, read
+   * from the matcher. It used to be written here as 40, 20, 5 and 15 -
+   * a copy of those weights, in a second file, with nothing to keep the
+   * two in step. Rebalancing the matcher so that skills lead silently
+   * broke this: a skills score of 50 was divided by 40 and clamped, and
+   * an experience score of 15 was divided by 20 and could never exceed
+   * three quarters. Both files now read one definition.
+   */
   const parts = [
-    { key: 'skills', unit: unit('skills', 40), weight: Number(settings.weightSkills) || 0,
+    { key: 'skills', unit: unit('skills', WEIGHTS.skills), weight: Number(settings.weightSkills) || 0,
       assessable: !(b.skills && b.skills.stated === false) },
-    { key: 'experience', unit: unit('experience', 20), weight: Number(settings.weightExperience) || 0,
+    { key: 'experience', unit: unit('experience', WEIGHTS.experience), weight: Number(settings.weightExperience) || 0,
       assessable: true },
-    { key: 'education', unit: unit('education', 5), weight: Number(settings.weightEducation) || 0,
+    { key: 'education', unit: unit('education', WEIGHTS.education), weight: Number(settings.weightEducation) || 0,
       assessable: true },
-    { key: 'location', unit: unit('location', 15), weight: Number(settings.weightLocation) || 0,
+    { key: 'location', unit: unit('location', WEIGHTS.location), weight: Number(settings.weightLocation) || 0,
       assessable: true },
   ];
 
@@ -103,9 +112,25 @@ export function scoreApplication({ job, candidate, settings = DEFAULTS }) {
   // to say, and 0 is the honest answer rather than a number made up from
   // an empty average.
   const totalWeight = weighed.reduce((t, p) => t + p.weight, 0);
-  const score = totalWeight
+  const weightedScore = totalWeight
     ? Math.round(weighed.reduce((t, p) => t + p.unit * p.weight, 0) / totalWeight * 100)
     : 0;
+
+  /*
+   * THE SAME SKILLS CEILING THE MATCHER APPLIES.
+   *
+   * This rescales the matcher's dimensions with the admin's weights and
+   * then produces its own number, so the matcher's ceiling - which is not
+   * a dimension but a limit on the total - was being discarded. That put
+   * two different answers on screen for the same pairing: an alert saying
+   * 20% and a screening score saying 58%, for a candidate with none of
+   * the skills the requirement names.
+   *
+   * The ceiling is read from the matcher rather than recomputed, so there
+   * is one rule and one place it is written down.
+   */
+  const ceiling = m.basis && m.basis.ceiling;
+  const score = Number.isFinite(ceiling) ? Math.min(weightedScore, ceiling) : weightedScore;
 
   const threshold = Number(settings.autoShortlistThreshold) || 80;
 
@@ -245,7 +270,15 @@ export async function screenApplication(applicationId, { actor = 'system', force
     await c.query(
       `update applications
           set ai_score = $2,
-              match_score = coalesce(match_score, $2),
+              /* THE MATCH SCORE IS RE-COMPUTED, NOT PRESERVED.
+                 This was coalesce(match_score, $2), so the first number
+                 ever written stuck forever: re-screening a hundred and
+                 seventeen applications after the requirements finally
+                 listed their skills changed nothing on screen, because
+                 every row already had a match score from before the
+                 skills existed. A re-screen exists precisely to replace
+                 a score that was computed on less. */
+              match_score = $2,
               stage = $3,
               -- So "was this score worked out before the resume arrived?"
               -- has an answer, which is what decides a re-screen.

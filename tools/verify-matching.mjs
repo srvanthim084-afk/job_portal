@@ -22,6 +22,13 @@
 import { chromium } from 'playwright';
 import { matchCandidate, matchJob } from '../api/src/ai/match.js';
 
+/* The recruiter this deployment actually has. The demo login these
+   checks signed in as went with the demo data, and every failure it
+   caused read as a broken feature. */
+import { login as tlLogin } from './lib/logins.mjs';
+const RECRUITER_LOGIN = tlLogin('recruiter');
+
+
 const BASE = (process.env.TL_URL || 'http://localhost:4323/').replace(/\/$/, '');
 const PASSWORD = process.env.TL_PASSWORD || 'TeamLink@2026';
 
@@ -218,17 +225,17 @@ await check('a candidate with a real profile exists to be matched', async () => 
 
 await check('publishing a requirement matches the profiles already in the database', async () => {
   await recruiter.api('post', '/auth/login',
-    { email: 'recruiter@teamlink.com', password: PASSWORD, role: 'recruiter' });
+    { email: RECRUITER_LOGIN.email, password: RECRUITER_LOGIN.password, role: 'recruiter' });
   // Read the recruiter's own company from the SERVER: before this the
   // page holds the public bootstrap, whose demo rows point at companies
   // this database may not have.
   await recruiter.page.evaluate(() => window.TL.refresh());
   await recruiter.page.waitForTimeout(800);
 
-  const companyId = await recruiter.page.evaluate(() => {
-    const rec = (DATA.recruiters || []).find((r) => r.email === 'recruiter@teamlink.com');
+  const companyId = await recruiter.page.evaluate((email) => {
+    const rec = (DATA.recruiters || []).find((r) => r.email === email);
     return rec ? rec.companyId : (DATA.companies[0] || {}).id;
-  });
+  }, RECRUITER_LOGIN.email);
   must(companyId, 'the recruiter has no company to post against');
 
   const created = await recruiter.api('post', '/jobs', {
@@ -381,6 +388,37 @@ await check('a candidate can see why they were contacted; a stranger cannot', as
   const theirs = await candidate.api('get', `/job-matches?candidateId=${bystanderId}`);
   must(theirs.jobMatches.length === 0, 'a candidate read another profile’s match rows');
 });
+
+/*
+ * PUT THE DATABASE BACK.
+ *
+ * This file used to end at browser.close(), so every run left Arjun
+ * Matcher and Meera Frontend in the recruiter's talent pool - and because
+ * the checks above can fail early, a broken run left them behind too.
+ * They were found sitting among a hundred and twenty-eight real people.
+ *
+ * Outside the check count on purpose: cleaning up is not one of the
+ * things being verified, and failing to clean up should be loud rather
+ * than counted as a failed assertion.
+ */
+try {
+  const admin = await open();
+  await admin.api('post', '/auth/login', {
+    email: process.env.TL_ADMIN || 'admin@teamlink.com',
+    password: process.env.TL_ADMIN_PASSWORD || process.env.TL_PASSWORD || 'TeamLink@2026',
+    role: 'admin',
+  });
+  for (const id of [candidateId, bystanderId].filter(Boolean)) {
+    const gone = await admin.api('post', '/admin/purge-test-candidate', { candidateId: id })
+      .catch((e) => ({ removed: false, error: e.message }));
+    console.log(gone && gone.removed
+      ? `  cleaned up ${id}`
+      : `  CLEANUP FAILED — remove ${id} by hand (${JSON.stringify(gone)})`);
+  }
+} catch (e) {
+  console.log(`  CLEANUP FAILED — remove match.${stamp}@example.test and `
+    + `bystander.${stamp}@example.test by hand (${e.message})`);
+}
 
 await browser.close();
 console.log(failed === 0

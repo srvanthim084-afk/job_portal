@@ -55,7 +55,11 @@
     "verify:triggers": "node tools/verify-triggers.mjs",
     "send:credentials": "node tools/send-credentials.mjs",
     "intake:cleanup": "node tools/intake-cleanup.mjs",
-    "intake:connect": "node tools/connect-mailbox.mjs"
+    "intake:connect": "node tools/connect-mailbox.mjs",
+    "verify:external-jobs": "node tools/verify-external-jobs.mjs",
+    "verify:external-rls": "node tools/verify-external-rls.mjs",
+    "verify:review-chain": "node tools/verify-review-chain.mjs",
+    "verify:job-descriptions": "node tools/verify-job-descriptions.mjs"
   },
   "dependencies": {
     "playwright": "^1.63.0"

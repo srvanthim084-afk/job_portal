@@ -26,6 +26,13 @@ import {
 import { detectLanguage, languageRequest } from '../api/src/ai/call/language.js';
 import { detectIntent } from '../api/src/ai/call/intent.js';
 
+/* The recruiter this deployment actually has. The demo login these
+   checks signed in as went with the demo data, and every failure it
+   caused read as a broken feature. */
+import { login as tlLogin } from './lib/logins.mjs';
+const RECRUITER_LOGIN = tlLogin('recruiter');
+
+
 const BASE = (process.env.TL_URL || 'http://localhost:4323/').replace(/\/$/, '');
 const PASSWORD = process.env.TL_PASSWORD || 'TeamLink@2026';
 
@@ -467,7 +474,7 @@ let candidateId, jobId, callId;
 
 await check('a recruiter can see which telephony provider is active', async () => {
   await recruiter.api('post', '/auth/login',
-    { email: 'recruiter@teamlink.com', password: PASSWORD, role: 'recruiter' });
+    { email: RECRUITER_LOGIN.email, password: RECRUITER_LOGIN.password, role: 'recruiter' });
   await recruiter.page.evaluate(() => window.TL.refresh());
   await recruiter.page.waitForTimeout(600);
 
@@ -490,10 +497,10 @@ await check('a candidate with a phone number and a requirement exists', async ()
     currentCompany: 'Infotech', education: 'B.Tech',
   });
 
-  const companyId = await recruiter.page.evaluate(() => {
-    const rec = (DATA.recruiters || []).find((r) => r.email === 'recruiter@teamlink.com');
+  const companyId = await recruiter.page.evaluate((email) => {
+    const rec = (DATA.recruiters || []).find((r) => r.email === email);
     return rec ? rec.companyId : (DATA.companies[0] || {}).id;
-  });
+  }, RECRUITER_LOGIN.email);
   const job = await recruiter.api('post', '/jobs', {
     title: `React Developer ${stamp}`, companyId, location: 'Hyderabad', mode: 'Hybrid',
     exp: '3-5 yrs', salaryMin: 800000, salaryMax: 1200000,

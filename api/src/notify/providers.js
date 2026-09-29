@@ -222,6 +222,58 @@ export function isReservedTestAddress(to) {
   return /\.(test|example|invalid|localhost)$/.test(domain);
 }
 
+/* ------------------------------------------------------------------ *
+ * who may be phoned at all
+ * ------------------------------------------------------------------ */
+
+/**
+ * The numbers outbound calling, SMS and WhatsApp are allowed to reach.
+ *
+ * WHY THIS EXISTS. This portal holds a hundred and thirty-nine real
+ * candidates, most of them sourced from job boards who have never heard
+ * of us. An AI calling campaign is one button and a job, and it dials
+ * whoever the filter returned. That has already gone wrong once on the
+ * written channels - an import invited every row in the file, and real
+ * people received real mail - and a telephone call at nine in the
+ * evening is a great deal harder to apologise for than an email.
+ *
+ * So while a number is listed here, it is the ONLY number any of the
+ * three channels will dial or message. Everything else is refused before
+ * the provider is called, and recorded, so the refusal is visible rather
+ * than silent.
+ *
+ * Set OUTBOUND_ALLOWLIST empty to lift it. That is a deliberate,
+ * one-line decision somebody makes on purpose, which is the point.
+ *
+ * The comparison is on the last ten digits: +91 95155 47979, 09515547979
+ * and 9515547979 are one telephone.
+ */
+const last10 = (v) => String(v || '').replace(/[^0-9]/g, '').slice(-10);
+
+export function outboundAllowlist() {
+  return String(process.env.OUTBOUND_ALLOWLIST || '')
+    .split(',')
+    .map((x) => last10(x))
+    .filter((x) => x.length === 10);
+}
+
+/**
+ * @returns null when the number may be contacted, or a result object
+ *          explaining the refusal.
+ */
+export function blockedByAllowlist(channel, to) {
+  const list = outboundAllowlist();
+  if (!list.length) return null;                 // no allowlist, no restriction
+  const n = last10(to);
+  if (n && list.includes(n)) return null;
+  return {
+    status: 'blocked_not_allowlisted',
+    provider: channel,
+    error: `outbound is restricted to ${list.length} test number(s); `
+         + `${n ? `…${n.slice(-4)}` : 'that number'} is not one of them`,
+  };
+}
+
 export const emailProvider = {
   channel: 'email',
   // Any transport counts as configured. SMTP first, then EmailJS, then a
@@ -328,6 +380,8 @@ export const smsProvider = {
       return NOT_CONFIGURED('sms', 'SMS_API_KEY / SMS_API_URL are not set');
     }
     if (!to) return { status: 'skipped_no_address', provider: 'sms', error: 'no phone number' };
+    const smsBlocked = blockedByAllowlist('sms', to);
+    if (smsBlocked) return smsBlocked;
 
     /*
      * The settings an Indian operator actually checks.
@@ -384,6 +438,8 @@ export const ivrProvider = {
       return NOT_CONFIGURED('ivr', 'IVR_API_KEY / IVR_API_URL are not set');
     }
     if (!to) return { status: 'skipped_no_address', provider: 'ivr', error: 'no phone number' };
+    const ivrBlocked = blockedByAllowlist('ivr', to);
+    if (ivrBlocked) return ivrBlocked;
 
     try {
       const res = await postJson(config.ivrApiUrl, {
@@ -456,6 +512,8 @@ export const whatsappProvider = {
       return NOT_CONFIGURED('whatsapp', 'WHATSAPP_API_KEY / WHATSAPP_PHONE_ID are not set');
     }
     if (!to) return { status: 'skipped_no_address', provider: 'whatsapp', error: 'no phone number' };
+    const waBlocked = blockedByAllowlist('whatsapp', to);
+    if (waBlocked) return waBlocked;
 
     /*
      * Template or free text, and the choice is Meta's, not ours.

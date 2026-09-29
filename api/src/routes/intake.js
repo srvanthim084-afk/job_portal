@@ -206,7 +206,13 @@ export default function intakeRoutes() {
         `delete from email_messages
           where mailbox_id = $1
             and ($2::boolean is not true
-                 or status in ('needs_review','failed','ignored','new'))
+                 -- needs_mapping belongs here and was missing. It is the
+                 -- status of a digest whose role had no requirement, so it
+                 -- is exactly the one worth re-reading once the missing
+                 -- requirement exists (or once the code that creates it is
+                 -- fixed) — and it was the one status a rescan could not
+                 -- reach, leaving those emails stuck for good.
+                 or status in ('needs_review','needs_mapping','failed','ignored','new'))
           returning id`, [req.params.id, b.onlyUnresolved !== false])).rowCount);
 
       res.json({ cleared, note: 'The next sync will read these emails again.' });
@@ -601,10 +607,23 @@ export default function intakeRoutes() {
       if (ctx.email && ctx.must_change_password) {
         const password = temporaryPassword();
         const hash = await hashPassword(password);
-        await withUser(ENGINE, (c) => c.query(
-          `update users set password_hash=$2, must_change_password=true, password_set_at=now()
-            where id=$1`, [ctx.user_id, hash]));
-        credentials = { email: ctx.email, password };
+
+        /*
+         * THROUGH THE DEFINER FUNCTION. The direct UPDATE here matched
+         * no policy on `users` and so affected zero rows without
+         * raising, which meant the credentials sent below had never been
+         * stored and could not sign anybody in. See 0070.
+         */
+        const stored = await withUser(ENGINE, async (c) => (await c.query(
+          `select auth_set_password($1,$2,true,null) as ok`,
+          [ctx.user_id, hash])).rows[0]);
+
+        /* Only claim a password exists if one was actually written. */
+        if (stored && stored.ok === true) {
+          credentials = { email: ctx.email, password };
+        } else {
+          console.error('[intake] the temporary password was not stored for user', ctx.user_id);
+        }
       }
 
       const messages = buildEventMessages('APPLICATION_IMPORTED', {

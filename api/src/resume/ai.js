@@ -64,7 +64,25 @@ export async function parseWithAi(text) {
           'You extract structured data from resumes. Return ONLY a JSON object, ' +
           'no prose and no code fence. Include a key ONLY when the resume states ' +
           'that information explicitly. Never infer, never guess, never use a ' +
-          'placeholder. Omit anything the document does not say.',
+          'placeholder. Omit anything the document does not say.\n\n' +
+          /*
+           * SAID EXPLICITLY, BECAUSE THIS IS THE ONE THAT WENT WRONG.
+           * The deterministic parser returned "CORE SKILLS" as a
+           * candidate's name; a model reading a two-column CV can make
+           * the same mistake for the same reason - the heading is at the
+           * top of the text. The rule is stated rather than hoped for.
+           */
+          '"name" is the candidate\'s own personal name. It is NEVER a ' +
+          'section heading (CORE SKILLS, SUMMARY, OBJECTIVE, EXPERIENCE, ' +
+          'EDUCATION, PROJECTS, DECLARATION and the like), never a job ' +
+          'title, and never an employer. Take it from the header at the ' +
+          'top of the resume, or from a line labelled Name / Full Name / ' +
+          'Candidate Name. If the document does not state a personal ' +
+          'name, OMIT the key - do not derive one from the email ' +
+          'address.\n' +
+          '"location" is the candidate\'s CITY, not a street, a ' +
+          'neighbourhood or a PIN code. From "Plot 42, Hydernagar, ' +
+          'Kukatpally, Hyderabad 500072" the answer is "Hyderabad".',
         messages: [{
           role: 'user',
           content: `Extract these fields from the resume below.\n\n${SCHEMA_HINT}\n\n` +

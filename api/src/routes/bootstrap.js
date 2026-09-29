@@ -23,6 +23,7 @@ import { wrap } from '../errors.js';
 import { config } from '../config.js';
 import {
   toCompany, toJob, toCandidate, toApplication,
+  toEducationRecord, toExperienceRecord,
   toInterview, toOffer, toNotification, toPerson, attachPrimary,
 } from '../shapes.js';
 
@@ -66,7 +67,9 @@ export default function bootstrapRoutes() {
       // they do for a recruiter.
       const bdes        = await c.query(`select * from bde_users order by name`);
       const admins      = await c.query(`select * from admins limit 1`);
-      const stages      = await c.query(`select id, label, kanban from stages order by sort_order`);
+      const stages      = await c.query(
+        `select id, label, kanban, candidate_label, owner, next_stage
+           from stages order by sort_order`);
       const settings    = await c.query(`select value from app_settings where key='ai'`);
       // AI interview aggregates, scoped by RLS: a candidate gets their
       // own, a recruiter/client their company's, an admin everything.
@@ -78,6 +81,37 @@ export default function bootstrapRoutes() {
         : empty;
 
       const cands = candidates.rows.map(toCandidate);
+
+      /*
+       * THE SIGNED-IN CANDIDATE'S OWN EDUCATION AND WORK HISTORY.
+       *
+       * The portal renders the profile page from this payload, not from
+       * the single-candidate GET, so rows that existed in the database
+       * were shown as "Add your degree and college" - the candidate had
+       * typed them into the onboarding wizard a moment earlier.
+       *
+       * Their own row only. Staff read these through the detail route,
+       * where one candidate is being looked at; attaching every
+       * candidate's full work history to a bootstrap that already
+       * carries the whole pool would grow it for no reader.
+       */
+      if (session && session.role === 'candidate' && session.profileId) {
+        const mine = cands.find((x) => x.id === session.profileId);
+        if (mine) {
+          const edu = await c.query(
+            `select qualification, specialization, institution, passing_year, score,
+                    education_type
+               from candidate_education where candidate_id=$1 order by sort_order, id`,
+            [session.profileId]);
+          const exp = await c.query(
+            `select company, job_title, start_date, end_date, currently_working,
+                    location, employment_type, responsibilities, leaving_reason
+               from candidate_experience where candidate_id=$1 order by sort_order, id`,
+            [session.profileId]);
+          mine.educationRecords  = edu.rows.map(toEducationRecord);
+          mine.experienceRecords = exp.rows.map(toExperienceRecord);
+        }
+      }
       const apps  = applications.rows.map(toApplication);
 
       // Rebuild the prototype's two views of an application from the one
@@ -97,7 +131,17 @@ export default function bootstrapRoutes() {
         clients:     clients.rows.map(toPerson),
         bdes:        bdes.rows.map(toPerson),
         admin:       admins.rows[0] ? toPerson(admins.rows[0]) : null,
-        stages:      stages.rows.map((s) => ({ id: s.id, label: s.label, kanban: s.kanban })),
+        /* candidateLabel: what a CANDIDATE is shown, when that must differ
+           from the internal wording (0051). Null for almost every stage. */
+        stages:      stages.rows.map((s) => ({
+          id: s.id, label: s.label, kanban: s.kanban,
+          candidateLabel: s.candidate_label || null,
+          /* Who holds the file here, and where the handover button sends
+             it. The chain is data (0052), not a rule written into a
+             screen that will disagree with the next one. */
+          owner: s.owner || null,
+          nextStage: s.next_stage || null,
+        })),
         aiSettings:  settings.rows[0] ? settings.rows[0].value : {},
         aiInterviews: aiInterviews.rows.map((r) => ({
           id: r.id,
@@ -116,9 +160,19 @@ export default function bootstrapRoutes() {
       };
     });
 
+    /* Carried here too, so a refresh does not lose the fact that this
+       person is still on a password somebody else generated. */
+    const temp = session && session.userId
+      ? await withUser(session, async (c) => (await c.query(
+          `select must_change_password from users where id=$1`, [session.userId])).rows[0])
+      : null;
+
     res.json({
       session: session
-        ? { role: session.role, id: session.profileId, userId: session.userId }
+        ? {
+            role: session.role, id: session.profileId, userId: session.userId,
+            mustChangePassword: !!(temp && temp.must_change_password),
+          }
         : null,
       data: payload,
       serverTime: new Date().toISOString(),

@@ -41,7 +41,15 @@ export function newSessionToken() {
 export async function login({ email, password, userAgent, ip }) {
   return withUser(null, async (c) => {
     const { rows } = await c.query(
-      `select * from auth_find_user($1)`, [String(email || '').trim()]
+      /*
+       * BY ADDRESS OR BY PHONE NUMBER. auth_find_login tries the address
+       * exactly first - so nothing about an existing sign-in changes -
+       * and only then reads the input as a telephone. A number that does
+       * not identify exactly one account matches nothing, deliberately:
+       * two candidates can share a handset, and guessing which of them
+       * is signing in would eventually open a stranger's profile.
+       */
+      `select * from auth_find_login($1)`, [String(email || '').trim()]
     );
     const user = rows[0];
 
@@ -87,6 +95,77 @@ export async function registerCandidate({ email, password, name, phone, candidat
       [String(email).trim(), hash, candidateId, name, phone || null]
     );
     return rows[0].id;
+  });
+}
+
+/* ------------------------------------------------------------------ *
+ * forgotten passwords
+ *
+ * The same token shape as a session: 32 random bytes handed to the
+ * person, and only the SHA-256 of it written down. A leaked database
+ * therefore contains no working reset links.
+ *
+ * SHORT-LIVED ON PURPOSE. A reset link is a bearer credential sitting in
+ * somebody's inbox; an hour is long enough to walk to a different device
+ * and short enough that a forwarded mail is not a standing key.
+ * ------------------------------------------------------------------ */
+const RESET_TTL_MIN = Math.max(5, Number(process.env.PASSWORD_RESET_MINUTES || 30));
+
+/**
+ * Issues a reset token when the address is known.
+ *
+ * Returns null for an unknown or suspended account, and the CALLER MUST
+ * ANSWER THE BROWSER IDENTICALLY EITHER WAY. A forgot-password form that
+ * distinguishes the two is an address-enumeration endpoint.
+ */
+export async function startPasswordReset({ email, ip }) {
+  const { token, hash } = newSessionToken();
+  const expires = new Date(Date.now() + RESET_TTL_MIN * 60_000);
+
+  return withUser(null, async (c) => {
+    const { rows } = await c.query(
+      `select * from auth_password_reset_start($1,$2,$3,$4)`,
+      [String(email || '').trim(), hash, expires, ip || null]);
+    if (!rows.length) return null;
+    return {
+      token, expires, minutes: RESET_TTL_MIN,
+      userId: rows[0].user_id, email: rows[0].email, role: rows[0].role,
+      name: rows[0].display_name || null,
+    };
+  });
+}
+
+/**
+ * Whether a reset link is still good, WITHOUT spending it.
+ *
+ * Asked when the reset screen opens, so a stale link is reported before
+ * somebody chooses a password and types it twice rather than after.
+ */
+export async function checkPasswordReset(token) {
+  const tokenHash = sha256(String(token || ''));
+  return withUser(null, async (c) => {
+    const { rows } = await c.query(
+      `select auth_password_reset_valid($1) as ok`, [tokenHash]);
+    return !!(rows[0] && rows[0].ok);
+  });
+}
+
+/**
+ * Spends a reset token and sets the new password.
+ *
+ * Returns the user id, or null when the token is unknown, already used
+ * or expired - the three cases are deliberately indistinguishable to the
+ * caller, because telling them apart tells an attacker which guesses
+ * were close.
+ */
+export async function finishPasswordReset({ token, password }) {
+  const tokenHash = sha256(String(token || ''));
+  const passwordHash = await hashPassword(password);
+
+  return withUser(null, async (c) => {
+    const { rows } = await c.query(
+      `select auth_password_reset_consume($1,$2) as id`, [tokenHash, passwordHash]);
+    return (rows[0] && rows[0].id) || null;
   });
 }
 

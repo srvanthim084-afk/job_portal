@@ -53,26 +53,55 @@ const FIELDS = [
   ['name', /^(candidate\s*)?(full\s*)?name$|^candidate$|^applicant\s*name$/i],
   // "Verified Mobile" is a yes/no column in a Naukri export, not a
   // number, so the real one is matched first and the flag never wins.
-  ['phone', /^(mobile|phone|contact)\s*(no\.?|number|num)?$|mobile\s*number|phone\s*number|^cell/i],
-  ['email', /^e.?mail(\s*(id|address))?$|^email$/i],
-  ['skills', /key\s*skills|it\s*skills|^skills?$|technolog|stack/i],
-  ['location', /^(current\s*)?(location|city)$|current\s*location|^based/i],
+  /*
+   * "NUMBER" ON ITS OWN, which is what a recruiter's own sheet says.
+   *
+   * This required mobile|phone|contact BEFORE the word, so a column
+   * headed simply "Number" - the heading on the Profile Screening Sheet,
+   * and on most sheets somebody types by hand - matched nothing. The
+   * phone column was then unmapped, and every single row was refused
+   * with "no email and no phone, nothing to contact them on" while the
+   * numbers sat right there in the file.
+   *
+   * "Ph", "Phone/Mobile" and "Mobile No / Alt No" missed for the same
+   * reason: the pattern was anchored at both ends around one spelling.
+   * A header list is never finished, which is why sniffValueColumns()
+   * below reads the DATA as well - but widening the obvious spellings
+   * first keeps the mapping explainable on the Columns step.
+   */
+  ['phone', /^(mobile|phone|contact|whats\s*app|wa)|^ph\.?$|^cell|^number$|^num$|mobile|phone\s*(no|number)|contact\s*(no|number)/i],
+  // "Mail ID" is the commonest spelling on an Indian recruiter's own
+  // sheet and did not match: the pattern required an "e" before "mail".
+  ['email', /^e.?mail(\s*(id|address))?$|^email$|^mail(\s*(id|address))?$|e.?mail\s*id/i],
+  // "Technical Skills" failed on both halves - "technolog" does not
+  // match "technical", and "^skills?$" is anchored.
+  ['skills', /key\s*skills|it\s*skills|technical\s*skills|^skills?$|skill\s*set|technolog|stack/i],
+  ['location', /^(current\s*)?(location|city|place)$|current\s*(location|city)|^based|^city\s*name$/i],
   ['preferredLocation', /pref.*location/i],
   ['title', /current\s*designation|^designation$|resume\s*headline|job\s*title|^title$|^position$/i],
-  ['currentCompany', /current\s*(employer|company|organi[sz]ation)|^company$|^employer$|organi[sz]ation/i],
+  ['currentCompany', /current\s*(employer|company|organi[sz]ation)|^company(\s*name)?$|^employer$|organi[sz]ation|present\s*company/i],
   /*
    * Naukri writes experience as "5 Year(s) 6 Month(s)" and also exports
    * a plain "Total Experience". Both are read; parseExperience() below
    * turns the first into 5.5 rather than 56.
    */
-  ['expYears', /total\s*exp|work\s*exp|^exp(erience)?\s*(in\s*years|years|yrs)?$/i],
+  // "Years of Exp" and "Exp (Yrs)" are how it is written by hand.
+  ['expYears', /total\s*exp|work\s*exp|years?\s*of\s*exp|^exp(erience)?\s*(in\s*years|years|yrs|\(yrs?\))?$|^yrs?\s*exp/i],
   // "Annual Salary" and "Expected Annual Salary" are Naukri's wording;
   // the expected one is matched FIRST so it cannot be taken as current.
   ['expectedCtc', /expected\s*(annual\s*)?(ctc|salary|package)|exp(ected)?\s*ctc/i],
   ['ctc', /current\s*(annual\s*)?(ctc|salary|package)|^annual\s*salary$|^ctc$|^salary$/i],
-  ['noticePeriod', /notice/i],
+  // "NP" on its own. Anchored, so it cannot claim a column called
+  // "NP Status" or swallow an unrelated two-letter heading elsewhere.
+  ['noticePeriod', /notice|^np$|^n\.p\.?$/i],
   ['education', /highest\s*(degree|qualification)|ug\s*course|pg\s*course|education|qualification|degree/i],
-  ['source', /^source$|portal|job\s*board/i],
+  ['source', /^source$|portal|job\s*board|^referred\s*by$/i],
+  /* Free text the recruiter keeps beside a name. Not stored on the
+     candidate today - it is read so the column is not reported as
+     "ignored", which is what makes a recruiter think the import lost
+     something. */
+  ['notes', /^notes?$|^remarks?$|^comments?$/i],
+  ['resume', /^resume$|^cv$|resume\s*(file|link|url)|cv\s*(file|link|url)/i],
 ];
 
 /**
@@ -121,14 +150,81 @@ const looksLikeHeader = (row) =>
 const splitList = (v) => String(v || '')
   .split(/[;,|]/).map((x) => x.trim()).filter(Boolean).slice(0, 40);
 
+/**
+ * A phone number out of a spreadsheet cell, and WHY when there is none.
+ *
+ * The old version returned a bare string, so every failure looked
+ * identical to the caller and the recruiter was told "no phone" whether
+ * the column was missing, the cell was blank, Excel had mangled the
+ * number into 9.19E+11, or somebody had typed two numbers separated by a
+ * slash. Those are four different problems with four different fixes.
+ *
+ * WHAT IT HANDLES, all of it seen on real sheets:
+ *
+ *   "+91 95398 13730"     spaces, brackets, dashes and the country code
+ *   "09539813730"         a leading zero from an STD-dialled list
+ *   "9539813730 / 9440…"  two numbers in one cell - the first wins
+ *   "9539813730, 944…"    the same, comma separated
+ *   9539813730            a NUMBER cell, not text
+ *   9.53981373E+9         Excel's scientific notation
+ *
+ * @returns { phone, reason }  phone is '' when none could be read, and
+ *                             reason then says what was wrong with it.
+ */
 const cleanPhone = (v) => {
-  const s = String(v || '').trim();
-  if (!s) return '';
-  // Excel turns a long number into 9.19E+11; that is not a phone number
-  // and must not be stored as one.
-  if (/e\+/i.test(s)) return '';
-  const digits = s.replace(/[^\d+]/g, '');
-  return digits.length >= 10 ? digits : '';
+  const raw = String(v === null || v === undefined ? '' : v).trim();
+  if (!raw) return { phone: '', reason: 'blank' };
+
+  /*
+   * SCIENTIFIC NOTATION IS EXPANDED, NOT DISCARDED.
+   *
+   * This used to return '' the moment it saw "e+", which threw away
+   * every row in a sheet whose phone column was formatted as a number.
+   * Expanding it recovers the number when Excel kept the digits; when it
+   * did not - 9.19E+11 is 919000000000, and the real digits are gone -
+   * the padding shows up as a run of trailing zeros and the recruiter is
+   * told to format the column as Text rather than being told the number
+   * is missing.
+   */
+  let text = raw;
+  if (/^[\d.]+e\+?\d+$/i.test(raw.replace(/\s/g, ''))) {
+    const n = Number(raw.replace(/\s/g, ''));
+    if (!Number.isFinite(n)) return { phone: '', reason: `not a number: "${raw}"` };
+    text = n.toFixed(0);
+    if (/0{4,}$/.test(text)) {
+      return { phone: '',
+        reason: `Excel stored this as a number and lost digits ("${raw}"). `
+              + 'Format the column as Text in the spreadsheet and export it again.' };
+    }
+  }
+
+  /* Two numbers in one cell: take the first that is usable rather than
+     gluing them together into a twenty-digit string. */
+  const parts = text.split(/[,;/|]|\s{2,}|or/i).map((p) => p.trim()).filter(Boolean);
+  const tried = [];
+
+  for (const part of (parts.length ? parts : [text])) {
+    let digits = part.replace(/\D/g, '');
+    if (!digits) { tried.push(part); continue; }
+    // +91 / 0091 / 91 in front of a ten-digit mobile, and the 0 an STD
+    // list leaves on. Taken off ONLY when what remains is still a
+    // plausible number, so a genuine ten-digit number starting 91 or 0
+    // is not shortened into an invalid one.
+    if (digits.length > 10 && digits.startsWith('0091')) digits = digits.slice(4);
+    if (digits.length > 10 && digits.startsWith('91')) digits = digits.slice(2);
+    while (digits.length > 10 && digits.startsWith('0')) digits = digits.slice(1);
+
+    if (digits.length === 10) return { phone: digits, reason: null };
+    /* Not an Indian mobile, but long enough to be a real number
+       somewhere - a landline with an STD code, an overseas number.
+       Kept rather than refused; the duplicate check compares the last
+       ten digits anyway. */
+    if (digits.length > 10 && digits.length <= 15) return { phone: digits, reason: null };
+    tried.push(part);
+  }
+
+  return { phone: '',
+    reason: `not a usable number: "${tried.join(' / ').slice(0, 60)}"` };
 };
 
 export default function spreadsheetRoutes() {
@@ -164,6 +260,53 @@ export default function spreadsheetRoutes() {
 
       rows = rows.filter((row) => row.some((c) => String(c || '').trim() !== ''));
       if (!rows.length) throw badRequest('That file has no rows.');
+
+      /*
+       * PREVIEW, AND THE RECRUITER'S OWN COLUMN MAPPING.
+       *
+       * `preview` runs everything below - the header hunt, the column
+       * mapping, the duplicate matching - and writes nothing, so the
+       * recruiter can see what a file WOULD do before it does it. It is
+       * the same code path rather than a second one, because a preview
+       * that is computed differently from the import is a preview of
+       * something else.
+       *
+       * `mapping` is the correction: {"Mobile Number": "phone"}, sent
+       * back after the recruiter has fixed whatever auto-mapping got
+       * wrong. It is applied over the guess, never instead of it, so
+       * correcting one column does not lose the other eleven.
+       */
+      const preview = String(req.body?.preview || '') === 'true' || req.body?.preview === true;
+
+      /*
+       * THE ROWS THE RECRUITER CHOSE TO SKIP.
+       *
+       * Sent as the line numbers shown on the review screen, because
+       * that is what they were deciding about. A duplicate they marked
+       * Skip is left completely alone - not merged, not gap-filled, not
+       * touched - which is the difference between "this is the same
+       * person, fill in what we are missing" and "this is not who the
+       * file thinks it is".
+       */
+      let skipLines = new Set();
+      if (req.body?.skip) {
+        let raw = req.body.skip;
+        if (typeof raw === 'string') {
+          try { raw = JSON.parse(raw); } catch { raw = raw.split(','); }
+        }
+        if (!Array.isArray(raw)) throw badRequest('The skip list could not be read.');
+        skipLines = new Set(raw.map((n) => Number(n)).filter(Number.isFinite));
+      }
+      let override = {};
+      if (req.body?.mapping) {
+        try {
+          override = typeof req.body.mapping === 'string'
+            ? JSON.parse(req.body.mapping) : req.body.mapping;
+        } catch { throw badRequest('The column mapping could not be read.'); }
+        if (!override || typeof override !== 'object' || Array.isArray(override)) {
+          throw badRequest('The column mapping could not be read.');
+        }
+      }
 
       /*
        * The header is not always the first row.
@@ -204,6 +347,22 @@ export default function spreadsheetRoutes() {
       if (!Object.keys(map).length) {
         DEFAULT_ORDER.forEach((f, i) => { map[f] = i; });
       }
+
+      /*
+       * The recruiter's corrections, by column NAME rather than index,
+       * because that is what they were shown. A field mapped to "" is
+       * one they explicitly told us to ignore.
+       */
+      const known = new Set(FIELDS.map(([f]) => f));
+      for (const [col, field] of Object.entries(override)) {
+        const i = headerCells.findIndex((h) => h === col);
+        if (i < 0) continue;
+        for (const [f, at2] of Object.entries(map)) if (at2 === i) delete map[f];
+        if (!field) continue;
+        if (!known.has(field)) throw badRequest(`"${field}" is not a TeamLink field.`);
+        map[field] = i;
+      }
+
       if (map.name === undefined) {
         throw new ApiError(422, 'NO_NAME_COLUMN',
           'No name column was found. Name the first column "Name", or include a header row.');
@@ -214,6 +373,8 @@ export default function spreadsheetRoutes() {
       const imported = [];
       const updated = [];
       const skipped = [];
+      const merges = [];
+      const importId = preview ? null : newId('imp');
 
       // The import runs as the CALLER: a recruiter importing a list is
       // subject to the same policies as everything else they do.
@@ -221,12 +382,58 @@ export default function spreadsheetRoutes() {
         for (const [index, row] of rows.entries()) {
           const name = at(row, 'name');
           const email = at(row, 'email').toLowerCase();
-          const phone = cleanPhone(at(row, 'phone'));
+          const phoneRead = cleanPhone(at(row, 'phone'));
+          const phone = phoneRead.phone;
           const line = index + (header ? 2 : 1);
+
+          /*
+           * THE FIRST THREE ROWS, EXACTLY AS THEY WERE READ.
+           *
+           * "no email and no phone" on every row of a sheet that plainly
+           * has phone numbers is impossible to diagnose from the screen,
+           * and the answer was always in one of three places: the header
+           * did not match, the mapping did not carry, or the value did
+           * not survive cleaning. All three are printed here, once per
+           * import, so the next time it happens the log says which.
+           */
+          if (index < 3) {
+            console.log(`[import] row ${line}`,
+              JSON.stringify({
+                raw: row.slice(0, 8),
+                mappedColumns: Object.fromEntries(Object.entries(map)
+                  .map(([f, i]) => [f, headerCells[i] || `column ${i + 1}`])),
+                nameCell: name,
+                emailCell: at(row, 'email'),
+                phoneCell: at(row, 'phone'),
+                phoneAfterCleaning: phone || null,
+                phoneRejectedBecause: phoneRead.reason,
+              }));
+          }
 
           if (!name) { skipped.push({ line, reason: 'no name' }); continue; }
           if (!email && !phone) {
-            skipped.push({ line, name, reason: 'no email and no phone - nothing to contact them on' });
+            /*
+             * WHICH of the four things went wrong, not "no contact".
+             *
+             * The single message covered a missing column, a blank cell,
+             * a number Excel had mangled, and a value that was simply
+             * not a phone number. A recruiter who is told "no phone" on
+             * a sheet full of phone numbers has nothing to act on.
+             */
+            const noPhoneColumn = map.phone === undefined;
+            const noEmailColumn = map.email === undefined;
+            let reason;
+            if (noPhoneColumn && noEmailColumn) {
+              reason = 'neither a phone nor an email column was mapped - '
+                + 'set one on the Columns step';
+            } else if (noPhoneColumn) {
+              reason = 'no email in this row, and no phone column was mapped';
+            } else if (phoneRead.reason === 'blank') {
+              reason = 'the phone cell is empty and there is no email';
+            } else {
+              reason = `no email, and the phone ${phoneRead.reason}`;
+            }
+            skipped.push({ line, name, reason });
             continue;
           }
 
@@ -299,7 +506,32 @@ export default function spreadsheetRoutes() {
             education: at(row, 'education') || null,
           };
 
+          /*
+           * WHERE THIS ROW CAME FROM (0075).
+           *
+           * The file's own Source column when it has one - "naukri",
+           * "Referred by Priya" - and 'Bulk Import' when it does not,
+           * because that IS where the candidate came from as far as this
+           * portal is concerned. The raw wording is kept in
+           * source_details; the column itself is canonicalised by the
+           * database, since it now holds a fixed vocabulary and an
+           * unrecognised value would be refused outright.
+           *
+           * DELIBERATELY NOT IN `fields`. The merge path a few lines
+           * below iterates that object as a list of COLUMN NAMES, so a
+           * key that is not a column makes every re-import of a file
+           * fail with "column source_raw does not exist".
+           */
+          const sourceRaw = at(row, 'source') || null;
+
           if (existing) {
+            /* Marked Skip on the review screen: recorded as skipped and
+               left exactly as it was. */
+            if (skipLines.has(line)) {
+              skipped.push({ line, name, reason: 'skipped — you chose not to merge this one',
+                             id: existing.id, choice: 'skip' });
+              continue;
+            }
             // Fill the gaps, never overwrite: the profile in the database
             // has usually been through a human, and the spreadsheet has
             // usually not.
@@ -316,17 +548,68 @@ export default function spreadsheetRoutes() {
               sets.push(`skills = case when coalesce(array_length(skills,1),0) = 0
                                        then $${vals.length}::text[] else skills end`);
             }
-            if (sets.length) {
+            if (sets.length && !preview) {
               vals.push(existing.id);
               await c.query(`update candidates set ${sets.join(', ')}, updated_at = now()
                               where id = $${vals.length}`, vals);
+              /* WHICH GAPS. The merge only ever fills empty columns, so
+                 the interesting question afterwards is which ones it
+                 filled - and months later, on whose authority. */
+              merges.push({
+                candidateId: existing.id,
+                matchedOn: [existing.email && email ? 'email' : null,
+                            existing.phone && phone ? 'phone' : null]
+                  .filter(Boolean).join('+') || 'name+company',
+                incoming: { name, email: email || null, phone: phone || null,
+                            location: place || null, currentCompany: company || null,
+                            skills },
+                filled: Object.fromEntries(
+                  Object.entries(fields).filter(([k, v]) => v !== null && v !== '' && k !== 'name')),
+              });
             }
+            /*
+             * On a preview the recruiter is deciding what to do about
+             * this person, so they get both sides of it: what is on file
+             * and what the file would add. §6 of the brief is exactly
+             * this screen.
+             */
             updated.push({ line, id: existing.id, name: existing.name,
-                           email: existing.email, phone: existing.phone });
+                           email: existing.email, phone: existing.phone,
+                           incoming: preview ? {
+                             name,
+                             email: email || null,
+                             phone: phone || null,
+                             location: place || null,
+                             currentCompany: company || null,
+                             expYears,
+                             noticePeriod: at(row, 'noticePeriod') || null,
+                             skills,
+                           } : undefined });
             continue;
           }
 
+          if (skipLines.has(line)) {
+            skipped.push({ line, name, reason: 'skipped — you chose not to import this one',
+                           choice: 'skip' });
+            continue;
+          }
           const id = newId('cand');
+          if (preview) {
+            /* Everything above ran - the parse, the mapping, the search
+               for an existing profile - and found nobody. That is the
+               answer the preview needs; the row is not written. */
+            imported.push({ line, id: null, name, email: fields.email, phone: fields.phone,
+                            incoming: {
+                              name,
+                              email: fields.email, phone: fields.phone,
+                              location: fields.location,
+                              currentCompany: fields.current_company,
+                              expYears: fields.exp_years,
+                              noticePeriod: fields.notice_period,
+                              skills,
+                            } });
+            continue;
+          }
           await c.query(
             // The recruiter who uploaded the file owns the row. Without
             // an owner the profile is visible to every recruiter, which
@@ -334,13 +617,17 @@ export default function spreadsheetRoutes() {
             `insert into candidates
                (id, name, email, phone, location, preferred_location, title,
                 current_company, exp_years, exp, ctc, expected_ctc, notice_period,
-                education, skills, technical_skills, owner_recruiter_id)
-             values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15,$16)`,
+                education, skills, technical_skills, owner_recruiter_id,
+                source, source_details)
+             values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15,$16,
+                     candidate_source_canonical($17), $18)`,
             [id, fields.name, fields.email, fields.phone, fields.location,
              fields.preferred_location, fields.title, fields.current_company,
              fields.exp_years, fields.exp, fields.ctc, fields.expected_ctc,
              fields.notice_period, fields.education, skills,
-             req.session.role === 'recruiter' ? req.session.profileId : null]);
+             req.session.role === 'recruiter' ? req.session.profileId : null,
+             sourceRaw || 'Bulk Import',
+             sourceRaw || null]);
           imported.push({ line, id, name, email: fields.email, phone: fields.phone });
         }
       });
@@ -364,7 +651,72 @@ export default function spreadsheetRoutes() {
       // this fixes. candidate_portal_account() declines to make a second
       // account, and candidate_invited() declines to send a second set
       // of credentials, so nobody is written to twice.
-      const invitable = imported.concat(updated).filter((c) => c.email || c.phone);
+      /*
+       * The record of this upload, written as the engine because the
+       * audit tables are not directly writable by anybody (migration
+       * 0048). It is written AFTER the candidates, so an import that
+       * failed half way does not leave a row claiming it succeeded.
+       */
+      if (!preview) {
+        try {
+          await withUser(ENGINE, async (c) => {
+            await c.query(
+              `insert into candidate_imports
+                 (id, filename, format, total_rows, created_count, merged_count,
+                  skipped_count, column_map, imported_by, recruiter_id)
+               values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10)`,
+              [importId, (req.file && req.file.originalname) || null, format,
+               rows.length, imported.length, updated.length, skipped.length,
+               JSON.stringify(Object.entries(map).reduce((o, [f, i]) => {
+                 o[headerCells[i] || `Column ${i + 1}`] = f; return o;
+               }, {})),
+               req.session.userId || null,
+               req.session.role === 'recruiter' ? req.session.profileId : null]);
+
+            if (imported.length) {
+              await c.query(
+                `update candidates set import_id = $1, sourced_at = now()
+                  where id = any($2)`,
+                [importId, imported.map((x) => x.id)]);
+            }
+
+            for (const m of merges) {
+              await c.query(
+                `insert into candidate_merge_logs
+                   (candidate_id, import_id, matched_on, incoming, filled, merged_by)
+                 values ($1,$2,$3,$4::jsonb,$5::jsonb,$6)`,
+                [m.candidateId, importId, m.matchedOn,
+                 JSON.stringify(m.incoming), JSON.stringify(m.filled),
+                 req.session.userId || null]);
+            }
+          });
+        } catch (err) {
+          /* The candidates are in. Losing the audit row is worth saying
+             out loud and is not worth failing the import over. */
+          console.error('[import] audit trail not written:', err.message);
+        }
+      }
+
+      /*
+       * IMPORTING SOMEBODY IS NOT INVITING THEM.
+       *
+       * This used to create a portal account for every imported row and
+       * send the credentials out by email, SMS and WhatsApp, on the
+       * reasoning that a candidate should be able to correct what a
+       * spreadsheet says about them. The cost of that reasoning is that
+       * uploading a sourcing list - people who have not applied, have
+       * not been spoken to, and in many cases have never heard of us -
+       * messages every one of them.
+       *
+       * A candidate now becomes a portal user when somebody decides to
+       * invite them, which is what `invite=true` says. Off by default:
+       * the safe direction for an action that cannot be taken back once
+       * four hundred messages have left the building.
+       */
+      const invite = String(req.body?.invite || '') === 'true' || req.body?.invite === true;
+      const invitable = (preview || !invite)
+        ? []
+        : imported.concat(updated).filter((c) => c.email || c.phone);
       if (invitable.length) {
         inviteCandidates(invitable, {
           invitedBy: req.session.userId || 'import',
@@ -388,12 +740,25 @@ export default function spreadsheetRoutes() {
           && !Object.values(map).includes(i))
         .map(({ h }) => String(h).trim());
 
-      res.status(201).json({
+      res.status(preview ? 200 : 201).json({
+        preview,
+        importId,
+        merged: merges.length,
         format,
         bannerRows,
         recognised,
         ignored,
         columns: Object.keys(map),
+        /* The header as it was written in the file, next to the field
+           each column was matched to, so the mapping screen can show
+           both sides and let the recruiter change one. */
+        headerCells,
+        mapping: Object.entries(map).reduce((o, [field, i]) => {
+          o[headerCells[i] || `Column ${i + 1}`] = field;
+          return o;
+        }, {}),
+        fields: FIELDS.map(([f]) => f),
+        totalRows: rows.length,
         imported: imported.length,
         updated: updated.length,
         skipped: skipped.length,
@@ -485,6 +850,38 @@ export default function spreadsheetRoutes() {
     }));
 
   /**
+   * GET /api/candidates/import/template — the blank workbook to fill in.
+   *
+   * A recruiter with their own spreadsheet does not need this: the
+   * importer matches headers loosely and reads whatever they already
+   * have. It is for the recruiter who has a list in their head, or in a
+   * format nothing can read, and wants to know what the columns should
+   * be called.
+   *
+   * One example row, marked as an example, because a blank sheet with
+   * eleven headers does not say whether Skills is one cell or eleven, or
+   * what a notice period is supposed to look like.
+   */
+  r.get('/candidates/import/template', requireAuth(),
+    requireRole('recruiter', 'bde', 'admin'), wrap(async (req, res) => {
+      const COLUMNS = ['Name', 'Phone', 'Email', 'Skills', 'Experience', 'Location',
+        'Current Company', 'Notice Period', 'Resume', 'Source', 'Notes'];
+      const EXAMPLE = [
+        ['Rahul Kumar', '9845000111', 'rahul.kumar@example.com',
+         'Java, Spring Boot, SQL', '5 Years 6 Months', 'Hyderabad',
+         'ABC Technologies', '30 Days', 'rahul-kumar-cv.pdf', 'Referral',
+         'Example row — delete before uploading. Separate skills with commas.'],
+      ];
+      const buf = writeSheet(COLUMNS, EXAMPLE, 'Candidates');
+      res.setHeader('content-type',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('content-disposition',
+        'attachment; filename="TeamLink_Candidate_Import_Template.xlsx"');
+      res.setHeader('content-length', buf.length);
+      res.end(buf);
+    }));
+
+  /**
    * GET /api/candidates/export — the candidate list, as a workbook.
    * Same columns the screen's CSV export produced, in a real .xlsx.
    */
@@ -507,7 +904,11 @@ export default function spreadsheetRoutes() {
       const COLUMNS = [
         'Name', 'Designation', 'Current company', 'Experience', 'Location',
         'Preferred location', 'Current CTC', 'Expected CTC (LPA)', 'Skills',
-        'Education', 'Notice period', 'Email', 'Phone', 'Resume', 'Source',
+        'Education', 'Notice period', 'Email', 'Phone', 'Resume',
+        /* 0075. The source, what makes it specific, and when they were
+           added - the same three the screen's CSV now carries, so the two
+           exports do not disagree about what a candidate record contains. */
+        'Source', 'Source detail', 'Added on',
         'Do not contact', 'Preferred language',
         'AI calls', 'Last call outcome', 'Last call summary',
       ];
@@ -518,7 +919,8 @@ export default function spreadsheetRoutes() {
         c.expected_ctc ? Number((Number(c.expected_ctc) / 100000).toFixed(2)) : '',
         [...new Set([...(c.skills || []), ...(c.technical_skills || [])])].join('; '),
         c.education || '', c.notice_period || '', c.email || '', c.phone || '',
-        c.resume_file || '', c.source || '',
+        c.resume_file || '', c.source || 'Unknown', c.source_details || '',
+        c.created_at ? new Date(c.created_at).toISOString().slice(0, 10) : '',
         c.do_not_contact ? 'Yes' : '',
         ({ en: 'English', hi: 'Hindi', te: 'Telugu' })[c.preferred_language] || '',
         Number(c.calls || 0),

@@ -99,10 +99,34 @@ export default function resumeRoutes() {
  * "AI analysed your resume" when no model was involved is exactly the kind
  * of claim this codebase does not make.
  */
+/*
+ * WHAT WENT IN AND WHAT CAME OUT - IN DEVELOPMENT ONLY.
+ *
+ * A resume that parses wrongly is almost impossible to diagnose from the
+ * result alone: the question is always "what did the text actually look
+ * like". This prints the first part of the extracted text and the parsed
+ * object, and it is off in production because that text is somebody's
+ * address and phone number and does not belong in a log file.
+ */
+function traceParse(stage, value) {
+  if (config.isProd || process.env.RESUME_TRACE === 'false') return;
+  try {
+    const shown = typeof value === 'string'
+      ? value.slice(0, 1200)
+      : JSON.stringify(value, null, 1).slice(0, 1800);
+    console.log(`[resume:${stage}]\n${shown}\n`);
+  } catch (e) { /* a trace must never break a parse */ }
+}
+
 async function parseResume(text) {
+  traceParse('text', text);
+
   const local = extractFields(text);
+  traceParse('deterministic', local.fields);
 
   const ai = await parseWithAi(text).catch((err) => ({ error: err.message }));
+  if (ai && ai.fields) traceParse('model', ai.fields);
+  else if (ai && ai.error) traceParse('model-error', ai.error);
 
   if (ai && ai.fields && Object.keys(ai.fields).length) {
     // The model's output is merged OVER the deterministic result, so a field

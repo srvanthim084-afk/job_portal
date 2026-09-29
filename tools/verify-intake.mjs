@@ -317,8 +317,13 @@ await check('the candidate was emailed, and the delivery recorded', async () => 
   must(communications.length >= 1, 'no communication was recorded');
   const email = communications.find((c) => c.channel === 'email');
   must(email, 'no email attempt was recorded');
-  must(['sent', 'delivered', 'failed', 'not_configured', 'skipped_no_address'].includes(email.status),
-    `email recorded "${email.status}"`);
+  /* `not_applicable` is the pause: INTAKE_NOTIFY_CANDIDATES is off, so
+     nothing was sent to anybody and the row says so with the reason.
+     That is a correct outcome, and the point of the check is that the
+     attempt is on the record either way. */
+  must(['sent', 'delivered', 'failed', 'not_configured', 'not_applicable',
+    'skipped_no_address'].includes(email.status),
+  `email recorded "${email.status}"`);
   for (const ch of ['sms', 'whatsapp']) {
     must(communications.some((c) => c.channel === ch), `${ch} was never attempted`);
   }

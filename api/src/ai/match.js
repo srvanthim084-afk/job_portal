@@ -18,14 +18,20 @@
  *
  * A profile that passes both is then scored out of 100:
  *
- *   skills        40   how much of what the job asks for they actually have
- *   experience    20   inside the band, or just outside it
+ *   skills        50   how much of what the job asks for they actually have
+ *   experience    15   inside the band, or just outside it
  *   role          15   their title or preferred role against the job title
- *   location      15   their location or preferred location, remote counts
+ *   location      10   their location or preferred location, remote counts
  *   education      5   the qualification the job asks for
  *   preferences    5   expected salary, notice period, work mode
  *
- * and only those above the configured threshold are notified.
+ * and then SKILL COVERAGE CAPS THE RESULT: a candidate with none of the
+ * skills the requirement names cannot score above 20 however well the
+ * other five dimensions read. Without that cap the score was mostly a
+ * measure of being in the right city with a plausible number of years,
+ * and a microbiologist sat at 58% against Human Resource Recruiter.
+ *
+ * Only those above the configured threshold are notified.
  *
  * Every number the engine produces comes with the evidence for it, because
  * a recruiter looking at "78%" needs to see WHICH skills matched before
@@ -36,8 +42,24 @@
 /** The default bar. A job may set its own; the environment may move this. */
 export const DEFAULT_THRESHOLD = Number(process.env.JOB_MATCH_THRESHOLD || 65);
 
-const WEIGHTS = {
-  skills: 40, experience: 20, role: 15, location: 15, education: 5, preferences: 5,
+/*
+ * SKILLS LEAD, AND THE REST FOLLOW.
+ *
+ * Skills used to be 40 of 100, which sounds dominant and is not: the
+ * other 60 are dimensions almost every applicant scores something on.
+ * A candidate in the right city, with plausible years behind them and a
+ * degree, banked around fifty before the first skill was looked at - so
+ * a microbiologist scored 58% against Human Resource Recruiter while
+ * matching none of the ten skills that requirement names, and a Java
+ * intern scored 58% against the same role. Sorting by match score put
+ * them above people who could do the job.
+ *
+ * Skills are now half the score outright, and - more importantly - they
+ * also cap it, through MATCH_CEILING below. Being in the right city does
+ * not make somebody a radiologist.
+ */
+export const WEIGHTS = {
+  skills: 50, experience: 15, role: 15, location: 10, education: 5, preferences: 5,
 };
 
 /* ------------------------------------------------------------------ *
@@ -353,7 +375,38 @@ export function matchCandidate(job, cand, { threshold = DEFAULT_THRESHOLD } = {}
   const usable = assessed.filter((x) => x[3]);
   const earned = usable.reduce((n, x) => n + (x[1].score || 0), 0);
   const possible = usable.reduce((n, x) => n + x[2], 0);
-  const score = possible ? Math.round((earned / possible) * 100) : 0;
+  const weighted = possible ? Math.round((earned / possible) * 100) : 0;
+
+  /*
+   * THE CEILING: HOW MUCH OF THE ROLE'S OWN SKILLS THEY HAVE.
+   *
+   * A weighted average lets the other dimensions carry a profile that
+   * cannot do the work. The requirement names ten skills; if a candidate
+   * has none of them, no combination of city, years and qualification
+   * should put them halfway up the list, because the recruiter reads the
+   * number as "how well does this person fit this role".
+   *
+   * So skill coverage sets a maximum the rest cannot exceed:
+   *
+   *     none of the named skills   at most 20%
+   *     a fifth of them            at most 36%
+   *     half of them               at most 60%
+   *     all of them                no ceiling at all
+   *
+   * It is a ceiling and not a multiplier on purpose - a candidate with
+   * every skill and nothing else going for them is still held down by
+   * the weighted score, and the ceiling never invents points it did not
+   * earn. It only stops points earned elsewhere standing in for the
+   * skills the role asked for.
+   *
+   * When the requirement lists NO skills there is nothing to measure
+   * coverage against, so no ceiling applies - the same reasoning that
+   * keeps skills out of the denominator above. `basis.ceiling` records
+   * it either way, so a capped score is never mistaken for a weak one.
+   */
+  const covered = skills.stated === false ? null : Math.min(1, skills.coverage || 0);
+  const ceiling = covered == null ? null : Math.round(20 + 80 * covered);
+  const score = ceiling == null ? weighted : Math.min(weighted, ceiling);
 
   const breakdown = { skills, experience, role, location, education, preferences };
   const out = {
@@ -368,6 +421,14 @@ export function matchCandidate(job, cand, { threshold = DEFAULT_THRESHOLD } = {}
       skipped: assessed.filter((x) => !x[3]).map((x) => x[0]),
       outOf: possible,
       earned,
+      /* What the weighted sum came to before the skills ceiling, what
+         that ceiling was, and whether it actually bit. A recruiter
+         asking "why is this only 20%" gets the answer from the record
+         rather than from the source. */
+      weighted,
+      skillCoverage: covered,
+      ceiling,
+      cappedBySkills: ceiling != null && weighted > ceiling,
     },
     threshold,
     matchedSkills: skills.matched,
