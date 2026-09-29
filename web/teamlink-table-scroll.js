@@ -140,7 +140,9 @@
        * they are in the list - so on those screens it sticks to the
        * bottom and sits after the table rather than before it.
        */
-      '.tlts-bar.tlts-bottom{top:auto; bottom:0; margin:0 0 2px}',
+      '.tlts-bar.tlts-bottom{top:auto; bottom:0; margin:6px 0 2px}',
+      /* The top one sits under the navbar, above the header row. */
+      '.tlts-bar.tlts-top{z-index:20; background:var(--card,#fff)}',
       /* Columns are never squashed to fit; the bar is there to reach
          them. Only on this surface, so the recruiter tables keep the
          widths they have. */
@@ -159,8 +161,51 @@
          inside the page. `overflow-y` is deliberately not set - see
          the note at the top of the file about why `clip` does not
          survive here. */
-      '.tbl-wrap.tlts-w, .tp-tbl.tlts-w{overflow-x:auto;',
+      /*
+       * THE WRAPPER NO LONGER SCROLLS. THIS IS THE WHOLE TRICK.
+       *
+       * `overflow-x:auto` makes an element a scroll container in BOTH
+       * axes, and a `position:sticky` header inside one anchors to THAT
+       * container rather than to the page - so it never moved. Measured
+       * twice: `overflow-y:clip` does not rescue it either, because the
+       * spec says a `clip` paired with an `auto` computes to `hidden`,
+       * and Chrome returns exactly that.
+       *
+       * So nothing here scrolls. The wide table is CLIPPED by the host -
+       * `overflow-x:clip` with `overflow-y:visible`, which was measured
+       * to stay clip/visible and therefore establishes no scrollport -
+       * and it is moved sideways by a transform that the two scrollbars
+       * drive. The nearest scrollport for a sticky header is then the
+       * page, which is what makes it stick under the navbar.
+       */
+      '.tbl-wrap.tlts-w, .tp-tbl.tlts-w{overflow:visible;',
       '  width:100%; max-width:100%; height:auto; max-height:none}',
+      '.tlts-clip{overflow-x:clip; overflow-y:visible; width:100%; max-width:100%}',
+      '.tlts-slide{will-change:transform}',
+
+      /*
+       * AND NO ANCESTOR MAY CLIP EITHER. `.panel` carries
+       * `overflow:hidden` to keep the table's corners inside its radius,
+       * and a sticky element cannot escape an ancestor that clips: the
+       * bar and the header were being cut off at the panel's edge. The
+       * panel holding a wide table is opened up, and the radius is kept
+       * by clipping the host inside it instead.
+       */
+      '.tlts-openpanel{overflow:visible!important}',
+      '.tlts-openpanel > .panel-body{border-radius:inherit}',
+
+      /* The header row, just under the top bar. Its offset is measured
+         per table and set as --tlts-head, because the recruiter chrome,
+         the candidate portal and the admin screens do not share a
+         header height. */
+      '.tbl-wrap table.data.tlts > thead > tr > th,',
+      '.tp-tbl table.tlts > thead > tr > th{',
+      '  position:sticky; top:var(--tlts-head,0px); z-index:15;',
+      '  background:var(--bg-alt,#f7fafd);',
+      '  box-shadow:inset 0 -1px 0 var(--line,#e6ebf2)}',
+      /* The first cell is sticky on both axes, so it sits above the
+         rest of the header as well as above the rows. */
+      '.tbl-wrap table.data.tlts > thead > tr > th:first-child{z-index:16}',
 
       '.tlts-bar > div{height:1px}',
 
@@ -184,15 +229,20 @@
   }
 
   /* wrapper element -> its bar */
-  var bars = new WeakMap();
-
   /*
-   * WHERE THE PAGE STOPS AND THE TABLE BEGINS.
+   * THE SCROLL MODEL
+   * ---------------------------------------------------------------
+   * Nothing here is a native scroll container. The wide table is
+   * clipped by a host (`overflow-x:clip; overflow-y:visible`, which
+   * establishes no scrollport) and moved by `transform: translateX`.
+   * Two slim proxy scrollbars drive that transform - one sticky under
+   * the navbar, one sticky at the foot of the window - and each follows
+   * the other.
    *
-   * Measured rather than hard-coded: the recruiter chrome, the candidate
-   * portal and the admin screens do not share a header height, and a
-   * number written here would be wrong on two of the three the first time
-   * anybody changed a padding.
+   * This is what makes the header row stick. A `position:sticky` header
+   * inside an `overflow-x:auto` wrapper anchors to the WRAPPER, which
+   * never scrolls vertically, so it never moves. With no scrollport
+   * between the header and the page, the page is what it sticks to.
    */
   function stickyTopFor(wrap) {
     var top = DEFAULT_TOP;
@@ -232,32 +282,6 @@
    * same .tbl-wrap markup is used by every role and only the route says
    * whose screen it is.
    */
-  function isBottomSurface() {
-    /*
-     * EVERY SCREEN, NOW.
-     *
-     * This was the candidate portal only, on the reasoning that a
-     * recruiter reading columns wants the bar beside the headings. The
-     * recruiter screens then reported the same complaint the candidate
-     * screens had: wide table, last column off the right, and no
-     * horizontal scrollbar anywhere until you scroll past the last row.
-     *
-     * A bar at the foot of the window is in reach from any row, which is
-     * the whole point, so both surfaces get it and the top placement is
-     * retired. The function stays so there is one place to change if a
-     * screen ever wants the other behaviour.
-     */
-    return true;
-  }
-
-  /**
-   * How much of the right-hand end the floating chat button covers.
-   *
-   * Nothing, usually - the button sits 26px up and the bar is 14px tall,
-   * so they miss each other. Measured anyway, because both numbers are
-   * in stylesheets that will change, and a thumb scrolled fully right
-   * and hidden under a button is unreachable.
-   */
   function fabClearance(barHeight) {
     var fab = document.querySelector('.fab');
     if (!fab) return 0;
@@ -268,72 +292,97 @@
     return Math.max(0, Math.round(window.innerWidth - r.left + 8));
   }
 
-  function barFor(wrap) {
-    var bar = bars.get(wrap);
-    if (bar && bar.isConnected && bar.parentNode === wrap.parentNode) return bar;
+  var state = new WeakMap();      // wrap -> { pos, max, top, bottom, clip }
 
-    bar = document.createElement('div');
-    bar.className = 'tlts-bar';
+  function stateFor(wrap) {
+    var st = state.get(wrap);
+    if (!st) { st = { pos: 0, max: 0, top: null, bottom: null, clip: null }; state.set(wrap, st); }
+    return st;
+  }
+
+  /** The host that clips the table, created once around the wrapper. */
+  function clipFor(wrap) {
+    var st = stateFor(wrap);
+    if (st.clip && st.clip.isConnected && st.clip.contains(wrap)) return st.clip;
+    if (wrap.parentElement && wrap.parentElement.classList.contains('tlts-clip')) {
+      st.clip = wrap.parentElement;
+      return st.clip;
+    }
+    var clip = document.createElement('div');
+    clip.className = 'tlts-clip';
+    wrap.parentNode.insertBefore(clip, wrap);
+    clip.appendChild(wrap);
+    st.clip = clip;
+    return clip;
+  }
+
+  /**
+   * Open every ancestor that clips.
+   *
+   * `.panel` carries `overflow:hidden` for its rounded corners, and a
+   * sticky bar or header cannot escape an ancestor that clips - both
+   * were being cut off at the panel's edge. Only panels holding a wide
+   * table are opened, and only up to the page.
+   */
+  function openAncestors(wrap) {
+    var n = wrap.parentElement;
+    for (var i = 0; n && n !== document.body && i < 6; i++) {
+      var cs = getComputedStyle(n);
+      if ((cs.overflowX !== 'visible' || cs.overflowY !== 'visible')
+          && !n.classList.contains('tlts-clip')) {
+        n.classList.add('tlts-openpanel');
+      }
+      n = n.parentElement;
+    }
+  }
+
+  /** Move the table, and bring both bars with it. */
+  function setPos(wrap, pos, from) {
+    var st = stateFor(wrap);
+    var table = wrap.querySelector('table');
+    if (!table) return;
+    st.pos = Math.max(0, Math.min(Math.round(pos), st.max));
+    table.style.transform = st.pos ? 'translateX(' + (-st.pos) + 'px)' : '';
+    table.classList.toggle('tlts-x', st.pos > 0);
+
+    if (st.top && from !== 'top' && st.top.scrollLeft !== st.pos) st.top.scrollLeft = st.pos;
+    if (st.bottom && from !== 'bottom' && st.bottom.scrollLeft !== st.pos) st.bottom.scrollLeft = st.pos;
+    remember(wrap);
+  }
+
+  /** One proxy bar. `where` is 'top' or 'bottom'. */
+  function barFor(wrap, where) {
+    var st = stateFor(wrap);
+    if (st[where] && st[where].isConnected) return st[where];
+
+    var bar = document.createElement('div');
+    bar.className = 'tlts-bar tlts-' + where;
     bar.setAttribute('aria-hidden', 'true');
     bar.appendChild(document.createElement('div'));
 
-    /*
-     * WHICHEVER ONE YOU MOVE, THE OTHER FOLLOWS.
-     *
-     * Setting scrollLeft fires a scroll event of its own, so without a
-     * note of who started it the two would push each other back and
-     * forth.
-     *
-     * THE LOCK IS CLEARED BY A TIMER, NOT BY THE ECHO. Clearing it when
-     * the echo arrives assumes an echo always does, and it does not:
-     * assigning a scrollLeft that is already the current value changes
-     * nothing and fires no event, so the lock would stay set and swallow
-     * the next real scroll in the other direction. A short timer clears
-     * it whether the echo came or not.
-     */
-    var lock = null;
-    var lockTimer = null;
-    function hold(who) {
-      lock = who;
-      clearTimeout(lockTimer);
-      lockTimer = setTimeout(function () { lock = null; }, 80);
-    }
-
+    /* Setting scrollLeft on the other bar fires its own scroll event, so
+       a note of who started it stops the two pushing each other back and
+       forth. Cleared on a timer rather than on the echo, because
+       assigning a value that is already current fires nothing and the
+       lock would never clear. */
+    var lock = false;
     bar.addEventListener('scroll', function () {
-      if (lock === 'wrap') return;
-      hold('bar');
-      if (wrap.scrollLeft !== bar.scrollLeft) wrap.scrollLeft = bar.scrollLeft;
-      shadow(wrap);
-      remember(wrap);
+      if (lock) return;
+      lock = true;
+      setPos(wrap, bar.scrollLeft, where);
+      setTimeout(function () { lock = false; }, 60);
     }, { passive: true });
 
-    /* The table still scrolls by trackpad, shift+wheel and touch even
-       with its own scrollbar hidden, so the bar follows those too. */
-    wrap.addEventListener('scroll', function () {
-      shadow(wrap);
-      remember(wrap);
-      if (lock === 'bar') return;
-      hold('wrap');
-      if (bar.scrollLeft !== wrap.scrollLeft) bar.scrollLeft = wrap.scrollLeft;
-    }, { passive: true });
+    var clip = clipFor(wrap);
+    if (where === 'top') clip.parentNode.insertBefore(bar, clip);
+    else clip.parentNode.insertBefore(bar, clip.nextSibling);
 
-    /* Inserted immediately before the table it belongs to: sticky needs
-       to be in the flow, and being a sibling means it is thrown away with
-       the table when the page repaints. */
-    wrap.parentNode.insertBefore(bar, wrap);
-    bars.set(wrap, bar);
+    st[where] = bar;
 
-    /*
-     * RECALCULATED WHEN ANYTHING MOVES.
-     *
-     * Columns appear, filters change the rows, the sidebar opens, the
-     * window resizes - each changes the table's scrollWidth, and a strip
-     * whose inner width is stale either scrolls too far or stops short.
-     */
-    if (typeof ResizeObserver === 'function') {
+    if (typeof ResizeObserver === 'function' && !bar.__tltsRo) {
       var ro = new ResizeObserver(refresh);
       ro.observe(wrap);
-      var t = wrap.querySelector('table.data');
+      var t = wrap.querySelector('table');
       if (t) ro.observe(t);
       bar.__tltsRo = ro;
     }
@@ -341,31 +390,44 @@
   }
 
   /*
-   * WHERE THE TABLE WAS SCROLLED TO.
-   *
-   * Filtering, sorting and paging all repaint the table from scratch, so
-   * a recruiter who had scrolled out to the Source and Last Active
-   * columns was thrown back to the left edge on every keystroke in the
-   * search box. Keyed on the table's column signature so the position is
-   * restored to the same table and not to a different one that happens to
-   * be drawn next.
+   * The wheel, because the table is no longer a scroll container and the
+   * browser will not do it for us. Shift+wheel and a trackpad's sideways
+   * swipe both arrive here as deltaX or a shifted deltaY.
    */
+  function wheelFor(wrap) {
+    var st = stateFor(wrap);
+    if (st.wheel) return;
+    st.wheel = true;
+    wrap.addEventListener('wheel', function (e) {
+      if (!st.max) return;
+      var dx = e.shiftKey ? (e.deltaY || e.deltaX) : e.deltaX;
+      if (!dx) return;
+      var next = st.pos + dx;
+      /* Only swallow the event while there is somewhere to go, so the
+         page still scrolls when the table is already at its end. */
+      if ((dx < 0 && st.pos > 0) || (dx > 0 && st.pos < st.max)) e.preventDefault();
+      setPos(wrap, next);
+    }, { passive: false });
+  }
+
+  /* ------------------------------------------------------------------ *
+   * where the table was scrolled to, across a repaint
+   * ------------------------------------------------------------------ */
   var positions = Object.create(null);
 
   function keyFor(wrap) {
-    var t = wrap.querySelector('table.data');
-    if (!t) return null;
-    var heads = t.querySelectorAll('thead th');
-    var parts = [];
-    for (var i = 0; i < heads.length && i < 12; i++) {
-      parts.push((heads[i].textContent || '').trim().slice(0, 14));
-    }
-    return parts.join('|');
+    var t = wrap.querySelector('table');
+    if (!t) return '';
+    var head = t.querySelector('thead tr');
+    if (!head) return '';
+    return [].slice.call(head.children).map(function (c) {
+      return (c.textContent || '').trim().slice(0, 12);
+    }).join('|');
   }
 
   function remember(wrap) {
     var k = keyFor(wrap);
-    if (k) positions[k] = wrap.scrollLeft;
+    if (k) positions[k] = stateFor(wrap).pos;
   }
 
   function restore(wrap) {
@@ -373,36 +435,31 @@
     if (!k) return;
     var was = positions[k];
     if (typeof was !== 'number' || was <= 0) return;
-    var max = wrap.scrollWidth - wrap.clientWidth;
-    var to = Math.min(was, Math.max(0, max));
-    if (to > 0 && Math.abs(wrap.scrollLeft - to) > 1) wrap.scrollLeft = to;
-  }
-
-  function shadow(wrap) {
-    var t = wrap.querySelector('table.data.tlts');
-    if (t) t.classList.toggle('tlts-x', wrap.scrollLeft > 0);
+    setPos(wrap, was);
   }
 
   function wideTables() {
     var out = [];
-    var list = document.querySelectorAll('.tbl-wrap');
+    var list = document.querySelectorAll('.tbl-wrap, .tp-tbl');
     for (var i = 0; i < list.length; i++) {
       var w = list[i];
       if (w.hasAttribute('data-tl-no-sticky')) continue;
-      if (!w.querySelector('table.data')) continue;
+      if (!w.querySelector('table')) continue;
       out.push(w);
     }
     return out;
   }
 
-  /* A bar whose table has gone, on a page that kept the bar. */
+  /** Bars whose table has gone, on a page that kept the bars. */
   function sweep() {
     var all = document.querySelectorAll('.tlts-bar');
     for (var i = 0; i < all.length; i++) {
-      var next = all[i].nextElementSibling;
-      if (!next || !next.classList || !next.classList.contains('tbl-wrap')) {
-        if (all[i].__tltsRo) { try { all[i].__tltsRo.disconnect(); } catch (e) {} }
-        all[i].remove();
+      var bar = all[i];
+      var clip = bar.parentElement
+        && bar.parentElement.querySelector(':scope > .tlts-clip');
+      if (!clip || !clip.querySelector('table')) {
+        if (bar.__tltsRo) { try { bar.__tltsRo.disconnect(); } catch (e) {} }
+        bar.remove();
       }
     }
   }
@@ -414,47 +471,66 @@
 
     for (var i = 0; i < wraps.length; i++) {
       var wrap = wraps[i];
-      var table = wrap.querySelector('table.data');
-      var overflows = wrap.scrollWidth - wrap.clientWidth > 1;
+      var table = wrap.querySelector('table');
+      if (!table) continue;
 
-      /* EVERYTHING FITS: no pinned column, no strip, and the table keeps
-         its own scrollbar because it is not using one. */
-      if (narrow || !overflows) {
-        if (table) table.classList.remove('tlts', 'tlts-x');
+      var st = stateFor(wrap);
+
+      /*
+       * MEASURE WITH THE CLASS ON, NOT BEFORE IT.
+       *
+       * `min-width:max-content` is what lets the table take its natural
+       * width, and it hangs off `.tlts` - so measuring first and adding
+       * the class afterwards asks how wide a table is while it is still
+       * being squeezed, gets "it fits", and never adds the class. The
+       * class goes on, the width is read, and it comes off again if the
+       * table genuinely fits.
+       */
+      table.classList.add('tlts');
+      var avail = wrap.clientWidth || wrap.getBoundingClientRect().width;
+      var full = table.scrollWidth;
+      var over = Math.max(0, Math.round(full - avail));
+
+      if (narrow || over <= 1) {
+        table.classList.remove('tlts', 'tlts-x');
+        table.style.transform = '';
         wrap.classList.remove('tlts-w');
-        var existing = bars.get(wrap);
-        if (existing) existing.classList.remove('on');
+        st.max = 0; st.pos = 0;
+        if (st.top) st.top.classList.remove('on');
+        if (st.bottom) st.bottom.classList.remove('on');
         continue;
       }
 
-      table.classList.add('tlts');
       wrap.classList.add('tlts-w');
-      shadow(wrap);
+      st.max = over;
 
-      var bar = barFor(wrap);
-      var bottom = isBottomSurface();
+      clipFor(wrap);
+      openAncestors(wrap);
+      wheelFor(wrap);
 
-      /* The bar is a sibling of the table either way; which side of it
-         decides whether `bottom:0` has anything to stick to. */
-      if (bottom) {
-        if (bar.nextSibling === wrap) wrap.parentNode.insertBefore(bar, wrap.nextSibling);
-        bar.classList.add('tlts-bottom');
-        wrap.parentNode.classList.add('tlts-bottom-host');
-        bar.style.top = '';
-        bar.style.marginRight = fabClearance(bar.getBoundingClientRect().height || 14) + 'px';
-      } else {
-        if (bar.previousSibling === wrap) wrap.parentNode.insertBefore(bar, wrap);
-        bar.classList.remove('tlts-bottom');
-        wrap.parentNode.classList.remove('tlts-bottom-host');
-        bar.style.marginRight = '';
-        bar.style.top = stickyTopFor(wrap) + 'px';
-      }
+      /*
+       * WHERE THE PAGE'S OWN CHROME STOPS.
+       *
+       * The top bar parks just below the navbar, and the header row just
+       * below the bar - measured, because the three shells in this app
+       * do not share a header height.
+       */
+      var navH = stickyTopFor(wrap);
+      var top = barFor(wrap, 'top');
+      var bottom = barFor(wrap, 'bottom');
+      var barH = Math.round(top.getBoundingClientRect().height) || 14;
 
-      bar.firstChild.style.width = wrap.scrollWidth + 'px';
-      if (bar.scrollLeft !== wrap.scrollLeft) bar.scrollLeft = wrap.scrollLeft;
-      bar.classList.add('on');
+      top.style.top = navH + 'px';
+      bottom.style.marginRight = fabClearance(barH) + 'px';
+      wrap.style.setProperty('--tlts-head', (navH + barH + 4) + 'px');
+
+      top.firstChild.style.width = full + 'px';
+      bottom.firstChild.style.width = full + 'px';
+      top.classList.add('on');
+      bottom.classList.add('on');
 
       restore(wrap);
+      setPos(wrap, st.pos);
     }
   }
 

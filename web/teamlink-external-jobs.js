@@ -291,7 +291,7 @@
   var prevLogout = window.doLogout;
   if (typeof prevLogout === 'function') {
     window.doLogout = function () {
-      X.probed = false; X.enabled = false; X.autoScored = false;
+      X.probed = false; X.enabled = false; X.autoScored = false; X.vocab = null;
       X.cache = { matches: null, applications: null };
       return prevLogout.apply(this, arguments);
     };
@@ -435,6 +435,14 @@
       X.page.minMatch = Number(out.minMatch || 60);
       X.cache.matches = out.jobs || [];
 
+      /* The option vocabulary follows the DATA. When this response was
+         itself unfiltered it already is the whole list, so nothing extra
+         is fetched; otherwise it is read once in the background. */
+      if (!X.vocab) {
+        if (!anyFilterSet()) X.vocab = vocabFrom(X.cache.matches);
+        else loadVocab().then(function () { paintMatches(); });
+      }
+
       /*
        * SCORE THEM ON THE FIRST VISIT, once.
        *
@@ -449,6 +457,7 @@
         X.autoScored = true;
         fill('xjMatches', '<div class="xj-empty">Scoring your profile against the '
           + 'external jobs…</div>');
+        X.vocab = null;
         TL.api.post('/external/match', {}).then(function () {
           return TL.api.get('/external/recommended?' + query());
         }).then(function (again) {
@@ -489,6 +498,65 @@
     return Object.keys(seen).sort();
   }
 
+  /*
+   * THE OPTIONS COME FROM EVERY JOB, NOT FROM THE ONES LEFT AFTER
+   * FILTERING.
+   *
+   * They were built from `X.cache.matches`, which is the CURRENT result
+   * set - so picking Location = "Remote - India" reduced the list to the
+   * Remote - India jobs, and the Location dropdown was then rebuilt from
+   * those and offered exactly two things: "Any" and "Remote - India".
+   * Every other city had vanished, and the only way back was to select
+   * "Any" first. The same held for Source and Job type.
+   *
+   * So the vocabulary is read once from the unfiltered list and kept
+   * beside the results. It is refreshed when the DATA changes - a sync,
+   * a re-match, a page load - and never when a filter moves, which is
+   * also why the options stop reordering after every selection.
+   */
+  var VOCAB_KEYS = ['source', 'location', 'jobType'];
+
+  function anyFilterSet() {
+    var f = X.filters || {};
+    return !!(f.source || f.location || f.jobType || f.skill || Number(f.min) > 0);
+  }
+
+  function vocabFrom(rows) {
+    var job = function (m) { return m.job || {}; };
+    return {
+      source: choices(rows, function (m) { return job(m).sourceName; }),
+      location: choices(rows, function (m) { return job(m).location; }),
+      jobType: choices(rows, function (m) { return job(m).employmentType; }),
+    };
+  }
+
+  /** The full set, asked for once, with no filters on it. */
+  function loadVocab() {
+    if (X.vocabLoading) return X.vocabLoading;
+    if (!(window.TL && TL.api)) return Promise.resolve(null);
+    var q = 'pageSize=100&page=1';
+    if (X.candidateId) q += '&candidateId=' + encodeURIComponent(X.candidateId);
+    X.vocabLoading = TL.api.get('/external/recommended?' + q)
+      .then(function (out) {
+        X.vocab = vocabFrom(out.jobs || []);
+        X.vocabLoading = null;
+        return X.vocab;
+      })
+      .catch(function () { X.vocabLoading = null; return null; });
+    return X.vocabLoading;
+  }
+
+  /**
+   * What a dropdown offers: the whole vocabulary, plus whatever is
+   * currently selected even if the vocabulary has not arrived yet - so
+   * a selection is never silently dropped from its own list.
+   */
+  function optionsFor(key, rows, pick, current) {
+    var list = (X.vocab && X.vocab[key]) || choices(rows, pick);
+    if (current && list.indexOf(current) < 0) list = list.concat([current]).sort();
+    return list;
+  }
+
   function filterBar(rows) {
     var f = X.filters;
     var dd = function (key, label, list, cur) {
@@ -507,9 +575,12 @@
       + '<label class="xj-f"><span>Search</span>'
       + '<input value="' + esc(f.skill || '') + '" placeholder="Title or company" '
       + 'oninput="xjFilter(&quot;skill&quot;, this.value)"></label>'
-      + dd('source', 'Source', choices(rows, function (m) { return job(m).sourceName; }), f.source)
-      + dd('location', 'Location', choices(rows, function (m) { return job(m).location; }), f.location)
-      + dd('jobType', 'Job type', choices(rows, function (m) { return job(m).employmentType; }), f.jobType)
+      + dd('source', 'Source',
+          optionsFor('source', rows, function (m) { return job(m).sourceName; }, f.source), f.source)
+      + dd('location', 'Location',
+          optionsFor('location', rows, function (m) { return job(m).location; }, f.location), f.location)
+      + dd('jobType', 'Job type',
+          optionsFor('jobType', rows, function (m) { return job(m).employmentType; }, f.jobType), f.jobType)
       + '<label class="xj-f"><span>Minimum match</span>'
       + '<select onchange="xjFilter(&quot;min&quot;, this.value)">'
       + [0, 60, 70, 80, 90].map(function (v) {
@@ -945,6 +1016,9 @@
   window.xjRematch = function () {
     fill('xjMatches', '<div class="xj-empty">Scoring your profile against the '
       + 'external jobs…</div>');
+    /* A re-match changes which jobs this candidate has, so the option
+       vocabulary is no longer current and is rebuilt on the next paint. */
+    X.vocab = null;
     TL.api.post('/external/match', {}).then(function (out) {
       toast(out.stored + ' external job(s) scored', '🌐');
       return TL.api.get('/external/matches?limit=50');
