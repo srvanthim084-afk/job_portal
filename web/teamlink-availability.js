@@ -132,7 +132,7 @@
 
   function mineHtml() {
     var av = MINE.data;
-    if (!av) return '<div class="tlav-me"><span class="tlav-me-h">Job search status</span><span class="tlav-sub">Loading…</span></div>';
+    if (!av) return '<div class="tlav-me" id="tlavMe"><span class="tlav-me-h">Job search status</span><span class="tlav-sub">Loading…</span></div>';
     var current = av.status;
     var buttons = STATUS.map(function (s) {
       return '<button type="button" class="tlav-opt' + (current === s[0] ? ' on tlav-on-' + s[0] : '') + '"'
