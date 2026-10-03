@@ -57,6 +57,15 @@ async function signIn(ctx, email, password, role) {
   const page = await open(ctx, '#/');
   const r = await api(page, 'post', '/auth/login', { email, password, role });
   must(r.ok, `sign-in failed for ${email}: ${r.message}`);
+  /* A recruiter created by an administrator signs in on a temporary
+     password and is held on "choose a new password" until they do (0069).
+     Do it the way they would, keeping the same password for this run. */
+  if (r.v && (r.v.mustChangePassword || (r.v.session && r.v.session.mustChangePassword))) {
+    const ch = await api(page, 'post', '/auth/password', { current: password, next: password + 'x' });
+    must(ch.ok, `password change failed for ${email}: ${ch.message}`);
+    const back = await api(page, 'post', '/auth/password', { current: password + 'x', next: password });
+    must(back.ok, `password change back failed for ${email}: ${back.message}`);
+  }
   await page.reload();
   await page.waitForFunction(() => window.TL && TL.ready === true && window.STATE && STATE.session, null, { timeout: 30000 });
   return page;
@@ -159,7 +168,7 @@ await check('5. B sees the red badge, and blocked buttons on the profile', async
   await go(B, `#/recruiter/candidate-profile?id=${CID}`);
   await B.waitForSelector('#tlscPanel .tlsc-banner-red', { timeout: 10000 });
   const banner = await B.$eval('#tlscPanel .tlsc-banner-red', (e) => e.innerText);
-  must(new RegExp(`${RA.name} is processing this candidate for Senior Medical Coder \\(Interview Scheduled\\)`).test(banner), banner);
+  must(new RegExp(`${RA.name} is processing this candidate for Senior Medical Coder ${stamp} \\(Interview Scheduled\\)`).test(banner), banner);
   must(/Hold ends/.test(banner), 'no hold end date');
   for (const id of ['#tlscCall', '#tlscWa', '#tlscLog']) {
     must(await B.$eval(id, (e) => e.disabled), `${id} is not disabled`);

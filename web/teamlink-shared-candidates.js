@@ -208,7 +208,9 @@
         span.innerHTML = html;
         r.host.appendChild(span);
       });
-    }).then(function () { painting = false; }, function () { painting = false; });
+    }).then(function () { painting = false; afterPaint(); }, function () { painting = false; afterPaint(); });
+    /* afterPaint() again: rows drawn while this request was out were
+       skipped (painting), and nothing else would come back for them. */
   }
 
   /* ------------------------------------------------------------------ *

@@ -107,10 +107,23 @@
     /* The search screens build their own query strings; the availability
        filter is added to theirs rather than rebuilding them. */
     a.get = function (path, opts) {
-      if (typeof path === 'string' && path.indexOf('/candidates?') === 0 && isStaff() && onSearchScreen()) {
+      var search = typeof path === 'string' && path.indexOf('/candidates?') === 0 && isStaff();
+      if (search && onSearchScreen()) {
         path += availabilityQuery();
       }
-      return get.call(this, path, opts);
+      var out = get.call(this, path, opts);
+      /* Every staff search answer carries each row's status: it replaces
+         whatever was cached, so an application or a reply since the last
+         search shows on the next one. (Talent Pool rows are not in DATA,
+         so this is the only fresh source for them.) */
+      if (search && out && typeof out.then === 'function') {
+        out.then(function (res) {
+          ((res && res.candidates) || []).forEach(function (c) {
+            if (c && c.id && c.availabilityStatus && typeof c.availabilityStatus === 'object') KNOWN[c.id] = c.availabilityStatus;
+          });
+        }, function () { /* the caller handles it */ });
+      }
+      return out;
     };
     a.__tlav = true;
     return true;
@@ -223,7 +236,11 @@
     var rows = rowsOnScreen();
     var missing = [];
     rows.forEach(function (r) {
-      var av = KNOWN[r.id] || fromData(r.id);
+      /* The search response is the fresher of the two: a status cached
+         earlier must not hide a change (an application, a reply). */
+      var fresh = fromData(r.id);
+      if (fresh) KNOWN[r.id] = fresh;
+      var av = fresh || KNOWN[r.id];
       if (!av) { missing.push(r.id); return; }
       var key = av.status + (av.notConfirmed ? '!' : '');
       if (r.host.getAttribute('data-tlav') === key) return;

@@ -74,7 +74,7 @@ const recName = await rp.evaluate(() => { const r = DATA.recruiterById ? DATA.re
 const first = String(recName).trim().split(/\s+/)[0];
 const job = await rp.evaluate(async (s) => {
   const boot = await TL.api.get('/bootstrap');
-  const co = (boot.data.companies || [])[0];
+  const myCo = ((boot.data.recruiters || []).find((r) => boot.session && r.id === boot.session.id) || {}).companyId; const co = (boot.data.companies || []).find((x) => x.id === myCo) || (boot.data.companies || [])[0];
   const j = await TL.api.post('/jobs', { title: `Medical Coder ${s}`, companyId: co.id, location: 'Hyderabad',
     mode: 'Onsite', exp: '0-2 yrs', pay: '₹3 LPA', salaryMin: 3, salaryMax: 3, type: 'Full-time',
     status: 'open', skills: ['ICD-10'], description: 'Verification job - safe to delete.' });

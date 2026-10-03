@@ -52,6 +52,22 @@ const clickApply = (page) => page.evaluate(() => {
   if (!b) return false;
   b.click(); return true;
 });
+/* What a candidate meets on the way since the later features: the resume
+   score hint under 60 ("Apply anyway"), and one-click apply's "fill these
+   first" sheet ("Apply without them"). Both are optional; answered the way
+   a candidate in a hurry would. Screening questions are switched off on
+   this script's jobs - verify-screening-questions.mjs covers them. */
+const settlePrompts = async (page) => {
+  for (let i = 0; i < 3; i++) {
+    const hit = await page.evaluate(() => {
+      const b = Array.from(document.querySelectorAll('button'))
+        .find((x) => /^\s*(Apply anyway|Apply without them)\s*$/.test(x.textContent) && x.offsetParent);
+      if (!b) return false; b.click(); return true;
+    }).catch(() => false);
+    if (!hit) return;
+    await page.waitForTimeout(2000);
+  }
+};
 const myApps = (page, jobId) => page.evaluate((id) => TL.api.get('/applications')
   .then((o) => o.applications.filter((a) => a.jobId === id).length), jobId);
 
@@ -67,12 +83,13 @@ const jobs = [];
     try {
       await TL.api.post('/auth/login', { email: e, password: p, role: 'recruiter' });
       const boot = await TL.api.get('/bootstrap');
-      const co = (boot.data.companies || [])[0];
+      const myCo = ((boot.data.recruiters || []).find((r) => boot.session && r.id === boot.session.id) || {}).companyId; const co = (boot.data.companies || []).find((x) => x.id === myCo) || (boot.data.companies || [])[0];
       const made = [];
       for (const t of ['Store Associate', 'Delivery Coordinator', 'Front Office Executive']) {
         const j = await TL.api.post('/jobs', { title: `${t} ${s}`, companyId: co.id, location: 'Hyderabad',
           mode: 'Onsite', exp: '0-2 yrs', pay: '₹3 LPA', salaryMin: 3, salaryMax: 3, type: 'Full-time',
           status: 'open', skills: ['Communication'], description: 'Verification job - safe to delete.' });
+        await TL.api.put(`/jobs/${j.job.id}/screening-questions`, { questions: [] });
         made.push({ id: j.job.id, title: j.job.title });
       }
       return made;
@@ -155,6 +172,8 @@ await check('4. registration succeeds and the application continues for that job
   await p.waitForFunction(() => STATE.session && STATE.session.role === 'candidate', null, { timeout: 20000 });
   await p.waitForTimeout(3500);
   await wizardAway(p);
+  await settlePrompts(p);
+  await wizardAway(p);
   must(await myApps(p, J1.id) === 1, 'no application for the job after registering');
   const at = await p.evaluate(() => location.hash);
   must(at.includes(J1.id) || /^#\/apply-success\//.test(at), 'not on the job or its confirmation: ' + at);
@@ -170,15 +189,19 @@ await check('5. signed in, Apply Now applies directly', async () => {
   /* One-click apply (teamlink-portal-upgrades.js): a profile without a
      resume or experience is first asked for them; "Apply without them"
      is the direct apply this check has always made. */
-  await p.evaluate(() => { const b = document.getElementById('tlpuWithout'); if (b) b.click(); });
-  await p.waitForTimeout(2500);
+  await settlePrompts(p);
+  await p.waitForTimeout(1500);
   await wizardAway(p);
   must(!/register/.test(await p.evaluate(() => location.hash)), 'sent to registration while signed in');
   must(await myApps(p, J2.id) === 1, 'not applied');
 });
 
 await check('6. applying again does not make a second application', async () => {
-  await p.evaluate((id) => window.applyToJob(id), J2.id);
+  /* Fired as a click would, not awaited: a pending Apply chain handed back
+     to Playwright whole has crashed the tab in the harness (a click never
+     reads it). */
+  await p.evaluate((id) => { window.applyToJob(id); }, J2.id);
+  await settlePrompts(p);
   await p.waitForTimeout(1500);
   const direct = await p.evaluate((id) => TL.api.post('/applications', { jobId: id }).then(() => 'created', (e) => e.code || e.message), J2.id);
   must(direct === 'DUPLICATE_APPLICATION', 'server answered ' + direct);
@@ -208,6 +231,8 @@ await check('7. Log in instead: a wrong password keeps the job, the right one ap
   await q.waitForFunction(() => STATE.session && STATE.session.role === 'candidate', null, { timeout: 20000 })
     .catch(async () => { throw new Error('not signed in (email kept after the failure: "' + kept + '"): ' + await q.evaluate(() => location.hash + ' | ' + ((document.getElementById('tlLoginError') || {}).textContent || '') + ' | ' + Array.from(document.querySelectorAll('.toast, .tl-toast')).map((t) => t.textContent).join(' / '))); });
   await q.waitForTimeout(3000);
+  await wizardAway(q);
+  await settlePrompts(q);
   await wizardAway(q);
   must(await myApps(q, J3.id) === 1, 'no application after logging in');
   const at = await q.evaluate(() => location.hash);

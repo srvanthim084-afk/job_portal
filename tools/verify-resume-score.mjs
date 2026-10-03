@@ -77,10 +77,14 @@ await rp.evaluate(({ e, p }) => TL.api.post('/auth/login', { email: e, password:
 await signedIn(rp);
 const job = await rp.evaluate(async (s) => {
   const boot = await TL.api.get('/bootstrap');
-  const co = (boot.data.companies || [])[0];
+  const myCo = ((boot.data.recruiters || []).find((r) => boot.session && r.id === boot.session.id) || {}).companyId; const co = (boot.data.companies || []).find((x) => x.id === myCo) || (boot.data.companies || [])[0];
   const j = await TL.api.post('/jobs', { title: `Accounts Assistant ${s}`, companyId: co.id, location: 'Hyderabad',
     mode: 'Onsite', exp: '0-2 yrs', pay: '₹3 LPA', salaryMin: 3, salaryMax: 3, type: 'Full-time',
     status: 'open', skills: ['Tally ERP', 'GST', 'Excel'], description: 'Verification job - safe to delete.' });
+  /* Every new job gets the six standard screening questions (0097). This
+     script tests the resume-score hint, so its job asks none; the questions
+     path is verify-screening-questions.mjs. */
+  await TL.api.put(`/jobs/${j.job.id}/screening-questions`, { questions: [] });
   return { id: j.job.id, title: j.job.title };
 }, stamp);
 
@@ -154,6 +158,18 @@ const deskCtx = await browser.newContext({ viewport: { width: 1280, height: 900 
 const B = await newCandidate(deskCtx, 'b');
 
 await check('4. a score under 60: Apply shows a gentle hint, "Apply anyway" applies', async () => {
+  /* The hint is for a profile that is complete but thin. A profile still
+     missing what one-click apply needs gets "Fill N things to apply"
+     instead (one nudge, not two) - so B gets those things, thinly. */
+  await B.p.evaluate(async ({ id }) => {
+    await TL.api.put('/candidates/' + id, { skills: ['Excel'], exp: '1 yr', expYears: 1 });
+    await TL.uploadResume(new File(['Score B Candidate, Hyderabad. Looking for an accounts assistant job. Excel.'], 'resume.txt', { type: 'text/plain' }));
+    await TL.refresh();
+  }, { id: B.id });
+  await B.p.evaluate(() => TLResumeScore.load(true));
+  await B.p.waitForTimeout(1500);
+  const left = await B.p.evaluate(() => TLPortalUpgrades.missing());
+  must(!left.length, 'still missing for one-click: ' + left.join(', '));
   const s = await B.p.evaluate(() => TLResumeScore.load(true));
   must(s && s.status === 'scored' && s.total < 60, 'score ' + (s && s.total));
   await go(B.p, `#/job/${job.id}`);

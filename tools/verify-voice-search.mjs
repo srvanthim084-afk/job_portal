@@ -88,7 +88,7 @@ const chips = (page) => page.evaluate(() => Array.from(document.querySelectorAll
   const out = await rp.evaluate(async ({ e, p, s }) => {
     await TL.api.post('/auth/login', { email: e, password: p });
     const boot = await TL.api.get('/bootstrap');
-    const co = (boot.data.companies || [])[0];
+    const myCo = ((boot.data.recruiters || []).find((r) => boot.session && r.id === boot.session.id) || {}).companyId; const co = (boot.data.companies || []).find((x) => x.id === myCo) || (boot.data.companies || [])[0];
     const made = [];
     for (const [t, loc, mode, exp] of [['Driver', 'Nellore', 'Onsite', '0-2 yrs'], ['Telecaller', 'Hyderabad', 'Remote', '0-2 yrs'],
       ['Data Entry Operator', 'Guntur', 'Onsite', '0–1 yrs'], ['Delivery Executive', 'Nellore', 'Onsite', '0-2 yrs']]) {

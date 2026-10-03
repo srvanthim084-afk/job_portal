@@ -53,7 +53,8 @@ create table if not exists candidate_resume_score_queue (
 -- ---------------------------------------------------------------------
 -- the latest score per candidate, for badges and the 70+ filter
 -- ---------------------------------------------------------------------
-create or replace view candidate_resume_score_latest_v as
+create or replace view candidate_resume_score_latest_v
+  with (security_invoker = true) as
   select distinct on (s.candidate_id)
          s.candidate_id, s.status, s.total_score, s.label, s.scored_at
     from candidate_resume_scores s
@@ -80,8 +81,12 @@ begin
   end if;
 end $$;
 
--- The view runs as its owner, so it filters like the policy does.
-create or replace view candidate_resume_score_visible_v as
+-- Runs as the READER (security_invoker), so resume_scores_read above and
+-- the candidates policy inside its EXISTS both apply. As an owner-run
+-- view the EXISTS saw every candidate, and a client could read the score
+-- of anyone in the database. The WHERE below only narrows further.
+create or replace view candidate_resume_score_visible_v
+  with (security_invoker = true) as
   select l.* from candidate_resume_score_latest_v l
    where l.candidate_id = app_candidate_id()
       or (app_role() in ('recruiter','bde','admin','client')

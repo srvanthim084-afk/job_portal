@@ -113,7 +113,7 @@ await check('a recruiter publishes a matching job', async () => {
     try {
       await TL.api.post('/auth/login', { email: e, password: p, role: 'recruiter' });
       const boot = await TL.api.get('/bootstrap');
-      const co = (boot.data.companies || [])[0];
+      const myCo = ((boot.data.recruiters || []).find((r) => boot.session && r.id === boot.session.id) || {}).companyId; const co = (boot.data.companies || []).find((x) => x.id === myCo) || (boot.data.companies || [])[0];
       const j = await TL.api.post('/jobs', { title: `${w} Operator`, companyId: co.id, location: 'Nellore',
         mode: 'Onsite', exp: '1-3 yrs', pay: '₹3 LPA', salaryMin: 3, salaryMax: 3, type: 'Full-time',
         status: 'open', skills: ['Rigging'], description: 'Verification job - safe to delete.' });

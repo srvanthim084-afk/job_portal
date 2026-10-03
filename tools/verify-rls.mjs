@@ -348,7 +348,20 @@ await check('VIEWS respect RLS (security_invoker)', async () => {
   const opts = await q(`select c.relname, c.reloptions
                           from pg_class c join pg_namespace n on n.oid=c.relnamespace
                          where c.relkind='v' and n.nspname='public'`);
-  const missing = opts.filter(v =>
+  /* Views that run as their owner ON PURPOSE: each exists to show a reader
+     fewer COLUMNS than the table holds (no viewer ids or companies, no
+     knockout flags or weights, no venue before release), which RLS cannot
+     do, and each carries its own row filter on the reader's identity.
+     Reviewed one by one; a new view is not added here without the same
+     review.
+       candidate_profile_viewers_v       candidate_id = app_candidate_id()          (0093)
+       job_screening_questions_public_v  open jobs, or jobs the reader applied to   (0097)
+       candidate_screening_answers_v     role candidate and own applications        (0097)
+       client_screening_answers_v        role client, own company, visible stages   (0097)
+       candidate_interview_prep_v        role candidate and own interviews          (0098) */
+  const OWNER_RUN_BY_DESIGN = new Set(['candidate_profile_viewers_v', 'job_screening_questions_public_v',
+    'candidate_screening_answers_v', 'client_screening_answers_v', 'candidate_interview_prep_v']);
+  const missing = opts.filter(v => !OWNER_RUN_BY_DESIGN.has(v.relname) &&
     !(v.reloptions || []).some(o => String(o).replace(/\s/g,'') === 'security_invoker=true'));
   await asApi();
   if (missing.length)

@@ -85,7 +85,7 @@ const rp = await open(rc, '#/');
 const job = await rp.evaluate(async ({ e, p, s }) => {
   await TL.api.post('/auth/login', { email: e, password: p, role: 'recruiter' });
   const boot = await TL.api.get('/bootstrap');
-  const co = (boot.data.companies || [])[0];
+  const myCo = ((boot.data.recruiters || []).find((r) => boot.session && r.id === boot.session.id) || {}).companyId; const co = (boot.data.companies || []).find((x) => x.id === myCo) || (boot.data.companies || [])[0];
   const j = await TL.api.post('/jobs', { title: `Field Sales Executive ${s}`, companyId: co.id, location: 'Hyderabad',
     mode: 'Onsite', exp: '1-3 yrs', pay: '₹3-4 LPA', salaryMin: 3, salaryMax: 4, type: 'Full-time', status: 'open',
     skills: ['Field Sales', 'Negotiation'], description: 'Verification job - safe to delete.' });
@@ -134,6 +134,16 @@ async function candidateApplies(name, relocate, mobile) {
     if (!b) return false; b.click(); return true;
   });
   must(clicked, 'no Apply button');
+  /* What stands before the questions for a brand-new candidate: one-click
+     apply's "Fill N things to apply" (no resume yet) or, for a complete but
+     thin profile, the resume-score hint. Past each the way a candidate in a
+     hurry would go. */
+  for (let i = 0; i < 4; i++) {
+    const at = await p.waitForSelector('#tlsqApply .tlsq-q, #tlpuWithout, #tlrsApplyAnyway', { timeout: 15000 });
+    const id = await at.evaluate((e) => e.id);
+    if (id !== 'tlpuWithout' && id !== 'tlrsApplyAnyway') break;
+    await at.click(); await p.waitForTimeout(800);
+  }
   await p.waitForSelector('#tlsqApply .tlsq-q', { timeout: 15000 });
   const prog = await p.textContent('#tlsqApply .tlsq-progtext');
   must(/of 6 answered/.test(prog), 'no progress line: ' + prog);

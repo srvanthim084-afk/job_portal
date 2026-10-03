@@ -409,7 +409,14 @@
     var next = function (jobId) {
       var self = this, args = arguments;
       var s = S.score;
-      if (isCand() && s && s.status === 'scored' && s.total < LOW && !hinted[jobId] && typeof window.fcrModal === 'function') {
+      /* One nudge, not two. When one-click apply is about to ask for the
+         missing fields themselves ("Fill 2 things to apply", with the
+         inputs right there), that sheet is the better prompt and this hint
+         stands aside. It shows to candidates whose profile is complete but
+         thin - the case it is for. */
+      var missing = [];
+      try { missing = (window.TLPortalUpgrades && TLPortalUpgrades.missing) ? TLPortalUpgrades.missing() : []; } catch (e) { missing = []; }
+      if (isCand() && !missing.length && s && s.status === 'scored' && s.total < LOW && !hinted[jobId] && typeof window.fcrModal === 'function') {
         hinted[jobId] = true;
         window.__tlrsGo = function () { try { fcrCloseModal(); } catch (e) { /* */ } return prev.apply(self, args); };
         var t = (s.tips || [])[0];

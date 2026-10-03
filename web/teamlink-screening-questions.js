@@ -298,7 +298,15 @@
   }
 
   window.TLScreening = {
-    beforeApply: function (jobId) { return beforeApply(String(jobId || '')); },
+    /* Answers given a moment ago for this job (the Apply Now wrapper below
+       asked first) are the answers: one-click apply calls this too, and
+       must not put the same questions on screen a second time. */
+    beforeApply: function (jobId) {
+      var id = String(jobId || '');
+      var p = pendingFor(id);
+      if (p) return Promise.resolve({ answers: p.answers, saveDefaults: p.saveDefaults });
+      return beforeApply(id);
+    },
     pendingFor: pendingFor,
     open: openDetail,
   };

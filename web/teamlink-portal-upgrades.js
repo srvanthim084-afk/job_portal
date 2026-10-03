@@ -478,6 +478,9 @@
   }
   window.TLPortalUpgrades = window.TLPortalUpgrades || {};
   window.TLPortalUpgrades.match = function (jobId) { return MATCH[jobId] || null; };
+  /* What one-click apply would ask for before applying ([] = nothing). The
+     resume-score hint reads it so a candidate is nudged once, not twice. */
+  window.TLPortalUpgrades.missing = function () { var c = me(); return c ? missingFor(c) : []; };
 
   var prevCms = window.computeMatchScore;
   if (typeof prevCms === 'function') {
@@ -861,28 +864,43 @@
     };
   }
 
-  /* ---- the wrappers ---- */
-  var prevApply = window.applyToJob;
-  if (typeof prevApply === 'function') {
-    window.applyToJob = function (jobId, via) {
+  /* ---- the wrappers ----
+     Installed at window load, like the screening questions' wrapper and
+     the resume-score hint, and AFTER the screening one (its script loads
+     first and registers first). So the chain a tap runs through is:
+       resume-score hint -> this (the "Fill N things" sheet when needed)
+       -> screening questions (once: TLScreening reuses answers already
+       given) -> the application.
+     A profile missing what an application needs is asked for that
+     before it is asked six questions, not after. */
+  function installApplyWrappers() {
+    var prevApply = window.applyToJob;
+    if (typeof prevApply !== 'function' || prevApply.__tlpu) return;
+    var next = function (jobId, via) {
       var self = this, args = arguments;
       var legacy = function () { return prevApply.apply(self, args); };
       if (!jobId || isExternal(jobId) || !isCandidate() || resuming(jobId)) return legacy();
       return oneClick(jobId, legacy, via);
     };
+    next.__tlpu = true;
+    window.applyToJob = next;
+    /* The other Apply buttons mean the same thing now: one tap. The home
+       page's "Easy Apply" (cpEasyApply) keeps its review step with the
+       cover note - verify-easy-apply pins it - and its Submit comes back
+       through applyToJob, so it is one-click from there. */
+    ['easyApply', 'capApply'].forEach(function (fn) {
+      var prev = window[fn];
+      if (typeof prev !== 'function' || prev.__tlpu) return;
+      var w = function (jobId) {
+        if (!jobId || isExternal(jobId) || !isCandidate() || resuming(jobId)) return prev.apply(this, arguments);
+        return window.applyToJob(jobId, true);
+      };
+      w.__tlpu = true;
+      window[fn] = w;
+    });
   }
-  /* The other Apply buttons mean the same thing now: one tap. The home
-     page's "Easy Apply" (cpEasyApply) keeps its review step with the
-     cover note - verify-easy-apply pins it - and its Submit comes back
-     through applyToJob, so it is one-click from there. */
-  ['easyApply', 'capApply'].forEach(function (fn) {
-    var prev = window[fn];
-    if (typeof prev !== 'function') return;
-    window[fn] = function (jobId) {
-      if (!jobId || isExternal(jobId) || !isCandidate() || resuming(jobId)) return prev.apply(this, arguments);
-      return window.applyToJob(jobId, true);
-    };
-  });
+  if (document.readyState === 'complete') installApplyWrappers();
+  else window.addEventListener('load', installApplyWrappers);
 
   /* ================================================================ *
    * cards and the job page

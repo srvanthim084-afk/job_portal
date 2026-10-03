@@ -142,7 +142,14 @@ await check('7. the recruiter now sees them, green "Actively looking"', async ()
   await rec.evaluate(() => window.tpLoad && tpLoad());
   await rec.waitForTimeout(1800);
   const row = await rowFor(rec);
-  must(row && /Actively looking/.test(row), `row: ${row}`);
+  must(row && /Actively looking/.test(row), `row: ${String(row).split(String.fromCharCode(10)).join(' / ')} | ` + await rec.evaluate((n) => {
+    const tr = Array.from(document.querySelectorAll('#tpHost tbody tr')).find((t) => t.innerText.includes(n));
+    const td = tr && tr.querySelector('td.who');
+    const cb = tr && tr.querySelector('input[type="checkbox"]');
+    const id = cb && (/tpPick\('([^']+)'/.exec(cb.getAttribute('onchange') || '') || [])[1];
+    const c = id && window.DATA && DATA.candidateById(id);
+    return 'data-tlav=' + (td && td.getAttribute('data-tlav')) + ' id=' + id + ' DATA=' + JSON.stringify(c && c.availabilityStatus);
+  }, name));
   must(await rec.evaluate((n) => { const tr = Array.from(document.querySelectorAll('#tpHost tbody tr')).find((t) => t.innerText.includes(n));
     return !!(tr && tr.querySelector('.tlav-green')); }, name), 'the badge is not green');
   await shot(rec, '7-green-after-apply');

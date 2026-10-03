@@ -73,7 +73,13 @@ const setup = await (async () => {
       const mk = (title, exp, skills) => TL.api.post('/jobs', {
         title: `${title} ${s}`, companyId: co.company ? co.company.id : 'apv_' + s, location: 'Hyderabad', mode: 'Onsite',
         exp, pay: '₹3-5 LPA', salaryMin: 3, salaryMax: 5, type: 'Full-time', status: 'open', skills,
-      }).then((r) => r.job);
+      }).then(async (r) => {
+        /* Every new job gets the six standard screening questions (0097). This
+        script tests something else, so its jobs ask none; the questions path
+        is verify-screening-questions.mjs. */
+        await TL.api.put(`/jobs/${r.job.id}/screening-questions`, { questions: [] });
+        return r.job;
+      });
       const fresher = await mk('Junior Java Developer', 'Fresher', ['Java', 'Spring', 'AWS', 'SQL']);
       const senior = await mk('Java Developer', '2-4 yrs', ['Java', 'Spring', 'AWS', 'SQL']);
       const closing = await mk('Java Support Engineer', '2-4 yrs', ['Java', 'Spring', 'AWS', 'SQL']);
@@ -85,6 +91,13 @@ const setup = await (async () => {
 })();
 if (typeof setup === 'string') { console.error('setup failed: ' + setup); process.exit(1); }
 const { fresher, senior, closing } = setup;
+
+/* A complete but thin profile meets the resume-score hint first
+   (teamlink-resume-score.js) - "Apply anyway" is the way past it. */
+async function passHint(page) {
+  const b = await page.waitForSelector('#tlrsApplyAnyway', { timeout: 3000 }).catch(() => null);
+  if (b) { await b.click(); await page.waitForTimeout(500); }
+}
 
 async function makeCandidate(name, full) {
   const ctx = await browser.newContext();
@@ -234,6 +247,7 @@ await check('5. one tap applies, "Applied ✓" with Undo, Undo withdraws, apply 
     throw new Error('the Apply button cannot be tapped: ' + String(e.message).split(String.fromCharCode(10)).slice(0, 6).join(' | '));
   });
   await cp.click(`${cardFor(senior.id)} .rj-btn.pri`);
+  await passHint(cp);
   await cp.waitForSelector('.tlpu-toast', { timeout: 8000 });
   const t = await cp.$eval('.tlpu-toast', (e) => e.textContent);
   must(/Applied ✓/.test(t) && /Undo/.test(t), 'toast: ' + t);
@@ -245,7 +259,7 @@ await check('5. one tap applies, "Applied ✓" with Undo, Undo withdraws, apply 
   must(await apps(senior.id) === 0, 'Undo did not withdraw it');
   await shot(cp, '05b-after-undo');
   const btn = await cp.$eval(`${cardFor(senior.id)} .rj-foot`, (e) => e.innerText).catch((e) => 'no card: ' + e.message);
-  must(await cp.$(`${cardFor(senior.id)} .rj-btn.pri`), 'after Undo the card shows: ' + btn + ' / hasApplication=' + await cp.evaluate((id) => DATA.hasApplication(STATE.session.id, id), senior.id));
+  must(await cp.$(`${cardFor(senior.id)} .rj-btn.pri`), 'after Undo the card shows: ' + String(btn).split(String.fromCharCode(10)).join(' | ') + ' / hasApplication=' + await cp.evaluate((id) => DATA.hasApplication(STATE.session.id, id), senior.id));
   await cp.click(`${cardFor(senior.id)} .rj-btn.pri`);
   await cp.waitForSelector('.tlpu-toast', { timeout: 8000 });
   await cp.waitForTimeout(800);
@@ -263,6 +277,7 @@ await check('5b. the home page Easy Apply keeps its review step, and Submit appl
   }, fresher.id);
   must(seen.review && seen.submit, 'no review step: ' + JSON.stringify(seen));
   await cp.evaluate(() => [...document.querySelectorAll('button')].find((b) => /submit application/i.test(b.textContent)).click());
+  await passHint(cp);
   await cp.waitForTimeout(2500);
   must(await apps(fresher.id) === 1, 'Submit did not apply');
 });
