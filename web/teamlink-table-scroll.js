@@ -180,6 +180,12 @@
        */
       '.tbl-wrap.tlts-w, .tp-tbl.tlts-w{overflow:visible;',
       '  width:100%; max-width:100%; height:auto; max-height:none}',
+      /* Talent Pool puts its own `.tp-scroll{overflow-x:auto}` between
+         the wrapper and the table. Left alone it drew a second, native
+         scrollbar inside the card and, being a scroll container, kept the
+         header row from sticking. While this module drives the table
+         that box only has to hold it. */
+      '.tp-tbl.tlts-w .tp-scroll{overflow:visible}',
       '.tlts-clip{overflow-x:clip; overflow-y:visible; width:100%; max-width:100%}',
       '.tlts-slide{will-change:transform}',
 
@@ -511,22 +517,25 @@
       /*
        * WHERE THE PAGE'S OWN CHROME STOPS.
        *
-       * The top bar parks just below the navbar, and the header row just
-       * below the bar - measured, because the three shells in this app
-       * do not share a header height.
+       * The header row parks just below the navbar - measured, because
+       * the three shells in this app do not share a header height.
+       *
+       * There is NO bar above the header any more. The slim proxy that
+       * sat between the navbar and the column headings read as a stray
+       * scrollbar inside the table and was asked to go; the one at the
+       * foot of the window, the wheel and the trackpad still move the
+       * table. The header takes the bar's place, so no strip is left
+       * where it was.
        */
       var navH = stickyTopFor(wrap);
-      var top = barFor(wrap, 'top');
+      if (st.top) { st.top.remove(); st.top = null; }
       var bottom = barFor(wrap, 'bottom');
-      var barH = Math.round(top.getBoundingClientRect().height) || 14;
+      var barH = Math.round(bottom.getBoundingClientRect().height) || 14;
 
-      top.style.top = navH + 'px';
       bottom.style.marginRight = fabClearance(barH) + 'px';
-      wrap.style.setProperty('--tlts-head', (navH + barH + 4) + 'px');
+      wrap.style.setProperty('--tlts-head', navH + 'px');
 
-      top.firstChild.style.width = full + 'px';
       bottom.firstChild.style.width = full + 'px';
-      top.classList.add('on');
       bottom.classList.add('on');
 
       restore(wrap);
