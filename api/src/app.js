@@ -38,6 +38,9 @@ import staffRoutes from './routes/staff.js';
 import externalJobRoutes from './routes/external-jobs.js';
 import savedSearchRoutes from './routes/saved-searches.js';
 import pushRoutes from './routes/push.js';
+import profileViewerRoutes from './routes/profile-viewers.js';
+import resumeScoreRoutes from './routes/resume-score.js';
+import voiceSearchRoutes from './routes/voice-search.js';
 import { startDeadlineSweep } from './notify/interview-deadline.js';
 import { startIntakeSync } from './intake/scheduler.js';
 import { startScreeningSweep } from './ai/screening.js';
@@ -48,6 +51,8 @@ import { startBulkMessageSweep } from './notify/bulk.js';
 import { startExternalSyncSweep } from './external/service.js';
 import { startApplyReminderSweep } from './external/reminder.js';
 import { startSavedSearchAlerts } from './notify/saved-search-alerts.js';
+import { startProfileViewDigest } from './notify/profile-view-digest.js';
+import { startResumeScoreSweep } from './resume/score.js';
 
 /*
  * The background work belongs to the APPLICATION, not to one entry point.
@@ -94,6 +99,10 @@ function startBackgroundWork(logger) {
     /* Saved-search alerts: instant ones the publish hook missed, and the
        08:00 IST daily / Monday weekly digests. Idempotent per slot. */
     backgroundStops.push(startSavedSearchAlerts());
+    /* Who viewed my profile: the 19:00 IST digest and the 180-day
+       cleanup (0093). Resume scores for profiles that changed (0094). */
+    backgroundStops.push(startProfileViewDigest());
+    backgroundStops.push(startResumeScoreSweep());
   } catch (err) {
     console.error('[background] could not start:', err.message);
   }
@@ -301,6 +310,11 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', exportRoutes());
   app.use('/api', savedSearchRoutes());
   app.use('/api', pushRoutes());
+  /* Before candidateRoutes: /candidates/search-appearances is a literal
+     path, and /candidates/:id/viewed belongs to who-viewed (0093). */
+  app.use('/api', profileViewerRoutes());
+  app.use('/api', resumeScoreRoutes());
+  app.use('/api', voiceSearchRoutes());
   app.use('/api', candidateRoutes());
   app.use('/api', applicationRoutes());
   app.use('/api', miscRoutes());

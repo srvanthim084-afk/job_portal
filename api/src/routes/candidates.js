@@ -20,6 +20,7 @@ import { inviteCandidate, resendCredentials } from '../notify/invite.js';
 import { treeAvailable, treeResolver, treeDescendantNames, treeNear } from '../place-tree.js';
 import { hashPassword } from '../auth.js';
 import { TEMPLATES, VARIABLES, varsFor, render, addressFor } from '../notify/bulk.js';
+import { appearanceToken } from '../profile-viewers/appearances.js';
 
 /**
  * Validate, or fail with the message beside the field that is wrong.
@@ -234,6 +235,13 @@ export default function candidateRoutes() {
         if (q.mobileVerified === 'true') push(`mobile_verified`);
         if (q.hasResume === 'true')      push(`resume_file is not null`);
         if (q.hidePrivate === 'true')    push(`not is_private`);
+        /* Resume score 70+ (0094): the latest score this caller may see. */
+        if (q.resumeScoreMin !== undefined && q.resumeScoreMin !== '' && Number.isFinite(Number(q.resumeScoreMin))) {
+          params.push(Math.max(0, Math.min(100, Number(q.resumeScoreMin))));
+          push(`exists (select 1 from candidate_resume_score_visible_v rs
+                         where rs.candidate_id = candidates.id and rs.status = 'scored'
+                           and rs.total_score >= $${params.length})`);
+        }
         if (q.hasComments === 'true') {
           push(`exists (select 1 from candidate_comments cc where cc.candidate_id = candidates.id)`);
         }
@@ -422,6 +430,9 @@ export default function candidateRoutes() {
         total: out.total,
         limit, offset,
         hasMore: offset + cands.length < out.total,
+        /* Who viewed my profile (0093): proof of what this search returned,
+           so the page can report which of these rows it showed. */
+        appearanceToken: appearanceToken(req.session, q, cands.map((x) => x.id)),
       });
     }));
 
