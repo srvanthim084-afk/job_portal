@@ -178,6 +178,8 @@ Supabase Cloud by changing one variable.
 | [DEPLOYMENT.md](docs/DEPLOYMENT.md) | first deploy, TLS, backups, checklist |
 | [AI-INTERVIEW.md](docs/AI-INTERVIEW.md) | voice interview scoring and visibility |
 | [NOTIFICATIONS.md](docs/NOTIFICATIONS.md) | multi-channel delivery and its honest limits |
+| [WALKIN-DRIVES.md](docs/WALKIN-DRIVES.md) | walk-in drives: registration, attendance, reminders |
+| [CAREER-ASSISTANT.md](docs/CAREER-ASSISTANT.md) | the AI Career Assistant, its tools, Basic mode and limits |
 | [BASELINE.md](docs/BASELINE.md) | the prototype as supplied |
 
 ## A note on the prototype
