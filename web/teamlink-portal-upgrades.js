@@ -131,7 +131,9 @@
     + '.tlpu-n .notif-msg b{display:block;color:#1c2a3a}'
     + '.tlpu-n .tlpu-m{color:#1d7a45;font-weight:700}'
     + '.tlpu-qf-admin .rowx{display:flex;align-items:center;gap:8px;border:1px solid #e5e9f0;border-radius:10px;padding:8px 10px;margin-bottom:8px;background:#fff}'
-    + '.tlpu-qf-admin input[type=text]{flex:1;border:1px solid #d5dde8;border-radius:8px;padding:7px 9px;font-size:13px}';
+    + '.tlpu-qf-admin .rowx{flex-wrap:wrap}'
+    + '.tlpu-qf-admin input[type=text]{flex:1 1 140px;min-width:0;border:1px solid #d5dde8;border-radius:8px;padding:7px 9px;font-size:13px}'
+    + '@media(max-width:480px){.tlpu-qf-admin .rowx code{display:none}}';
   function addStyle() {
     if (document.getElementById('tlpu-style')) return;
     var st = document.createElement('style');

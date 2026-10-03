@@ -345,8 +345,22 @@ await check('9b. the recruiter sees "Shared N times · M applies"; the posting f
   if (hasForm) {
     await p.waitForSelector('#tlpuDeadline #tlpuLastDate', { timeout: 5000 });
     must(await p.$('#tlpuDeadline #tlpuUrgent'), 'no Urgent hiring toggle');
-    await p.evaluate(() => document.getElementById('tlpuDeadline').scrollIntoView());
+    await p.evaluate(() => { document.getElementById('tlpuDeadline').scrollIntoView(); window.scrollBy(0, -260); });
     await shot(p, '11-posting-form-fields');
+    /* Saving a posting with the two fields filled writes them to the job. */
+    const want = new Date(Date.now() + 330 * 60000 + 10 * 86400000).toISOString().slice(0, 10);
+    await p.evaluate(({ id, want }) => {
+      document.getElementById('tlpuLastDate').value = want;
+      document.getElementById('tlpuUrgent').checked = true;
+      window.fcrRegisterPosting(DATA.jobById(id));
+    }, { id: closing.id, want });
+    await p.waitForTimeout(3500);
+    const saved = await p.evaluate((id) => TL.api.get('/jobs/' + id).then((r) => r.job), closing.id);
+    must(saved.urgent === true, 'urgent was not saved from the form');
+    must(saved.expiresAt && new Date(Date.parse(saved.expiresAt) + 330 * 60000).toISOString().slice(0, 10) === want,
+      `last date saved as ${saved.expiresAt}, wanted ${want}`);
+  } else {
+    throw new Error('the Post a job form (#njStatus) was not on #/recruiter/jobs');
   }
   await ctx.close();
 });
