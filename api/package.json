@@ -12,6 +12,7 @@
     "test": "node --test test/api.test.mjs test/saved-searches.test.mjs test/saved-match-parity.test.mjs test/export-jobs.test.mjs test/external-portal.test.mjs test/push.test.mjs test/push-environment.test.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0",
     "bcryptjs": "^2.4.3",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
