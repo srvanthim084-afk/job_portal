@@ -275,6 +275,16 @@ function pathOf(x, at) {
   return out;
 }
 
+/** The ids above a node, nearest first - what the picker needs to know
+    which rows a selection sits inside. */
+function pathIdsOf(x, at) {
+  const out = [];
+  let p = x.parent[at];
+  let guard = 0;
+  while (p >= 0 && guard < 8) { out.push(x.ids[p]); p = x.parent[p]; guard += 1; }
+  return out;
+}
+
 /* ------------------------------------------------------------------ *
  * the three questions
  * ------------------------------------------------------------------ */
@@ -307,7 +317,7 @@ export async function treeChildren(parentId) {
   /* Administrative areas first, then by name - a district's own mandal
      of the same name is what somebody expanding it is looking for. */
   out.sort((a, b) => (TYPE_ID[a.type] - TYPE_ID[b.type]) || a.name.localeCompare(b.name));
-  return { parent: node(x, at), path: pathOf(x, at), children: out };
+  return { parent: node(x, at), path: pathOf(x, at), ancestorIds: pathIdsOf(x, at), children: out };
 }
 
 let idPos = null;
@@ -383,6 +393,7 @@ export async function treeSearch(q, { limit = 30 } = {}) {
   return hits.slice(0, limit).map(({ at }) => {
     const out = node(x, at);
     out.path = pathOf(x, at);
+    out.ancestorIds = pathIdsOf(x, at);
     /* "Denduluru · Mandal · Eluru · Andhra Pradesh" */
     out.label = [out.name, out.type[0].toUpperCase() + out.type.slice(1), ...out.path].join(' · ');
     return out;

@@ -17,6 +17,7 @@ import { requireAuth, requireRole } from '../auth.js';
 import { toCandidate, toApplication, attachPrimary,
          toEducationRecord, toExperienceRecord } from '../shapes.js';
 import { inviteCandidate, resendCredentials } from '../notify/invite.js';
+import { treeAvailable, treeResolver, treeDescendantNames, treeNear } from '../place-tree.js';
 import { hashPassword } from '../auth.js';
 import { TEMPLATES, VARIABLES, varsFor, render, addressFor } from '../notify/bulk.js';
 
@@ -67,6 +68,49 @@ export default function candidateRoutes() {
       const employment = list(q.employment);
       const industry  = list(q.industry);
       const stages    = list(q.stage);
+      const placeIds  = list(q.placeIds).slice(0, 20);
+
+      /*
+       * A PLACE MEANS EVERYTHING INSIDE IT.
+       *
+       * The candidates table holds a free-text location ("Kavali",
+       * "Nellore, Andhra Pradesh"), so ticking the Nellore district has to
+       * become the names of the places in it. The location filter used to
+       * be `location = any(list)` - exact and case-sensitive, so a district
+       * matched only the people who had typed the district's own name.
+       *
+       * placeIds come from the browse tree and are exact. A plain name is
+       * resolved through the same tree, so a district typed by hand still
+       * covers its towns. Both are compared case-insensitively against the
+       * first comma part of the stored location as well as the whole of it.
+       */
+      let placeNames = [];
+      if (locations.length || placeIds.length) {
+        const names = new Set(locations.map((l) => l.toLowerCase()));
+        if (treeAvailable()) {
+          try {
+            const resolve = await treeResolver();
+            const ids = new Set(placeIds);
+            for (const l of locations) {
+              const node = resolve(l);
+              if (node && node.type !== 'place') ids.add(node.id);
+            }
+            for (const id of ids) {
+              for (const n of await treeDescendantNames(id)) names.add(String(n).toLowerCase());
+            }
+            /* The Near by radius: every place within N km of each picked
+               place, at every level, measured from its own coordinates. */
+            const nearKm = Math.min(Math.max(Number(q.nearKm) || 0, 0), 200);
+            if (nearKm > 0) {
+              for (const id of ids) {
+                const near = await treeNear(id, nearKm, { limit: 40000 });
+                for (const p of near.within || []) names.add(String(p.name).toLowerCase());
+              }
+            }
+          } catch { /* the plain names still filter */ }
+        }
+        placeNames = [...names];
+      }
 
       const out = await withUser(req.session, async (c) => {
         // Built explicitly, one filter at a time. Every value goes in via a
@@ -153,7 +197,12 @@ export default function candidateRoutes() {
                   where s ~* any($${i}::text[])
                 )`);
         }
-        if (locations.length) { params.push(locations); push(`location = any($${params.length})`); }
+        if (placeNames.length) {
+          params.push(placeNames);
+          const i = params.length;
+          push(`(lower(btrim(location)) = any($${i}::text[])
+                 or lower(btrim(split_part(location, ',', 1))) = any($${i}::text[]))`);
+        }
         if (notice.length)    { params.push(notice);    push(`notice_period = any($${params.length})`); }
         if (employment.length){ params.push(employment);push(`candidate_type = any($${params.length})`); }
         if (education.length) {

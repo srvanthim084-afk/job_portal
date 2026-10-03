@@ -1346,7 +1346,16 @@ function currentRoute(){
   return { parts, params };
 }
 function requireRole(role){
-  if(!STATE.session || STATE.session.role !== role){ navigate('/login/'+role); return false; }
+  if(!STATE.session || STATE.session.role !== role){
+    /* NOT BEFORE WE KNOW. Several scripts paint while the page is still
+       parsing, before teamlink-integration.js has asked the server who is
+       signed in. Redirecting then sent every refresh of a signed-in page
+       to the login screen, and the session that arrived a moment later
+       found the page already gone. Until the answer is in, draw nothing;
+       the render that follows it decides. */
+    if(document.readyState==='loading' || (window.TL && TL.ready===false)) return false;
+    navigate('/login/'+role); return false;
+  }
   return true;
 }
 function render(){
@@ -27113,7 +27122,14 @@ table.data td .tl-af b{white-space:normal}
 
     if(on('loc')){
       var place=String((c&&c.location)||'').toLowerCase();
-      if(place.indexOf(f.loc.trim().toLowerCase())<0) return false;
+      /* Places picked in the Location selector match the people in them
+         and in every place under them (and within the Near by radius);
+         a typed fragment keeps its old meaning. */
+      var picked=(typeof tlLocState==='function')?(tlLocState('appLoc').tags||[]):[];
+      if(picked.length&&window.TL_LOC&&TL_LOC.matchesAny){
+        if(!TL_LOC.matchesAny(c&&c.location,picked,Number(tlLocState('appLoc').km)||0)) return false;
+      }
+      else if(place.indexOf(f.loc.trim().toLowerCase())<0) return false;
     }
 
     if(on('when')){
@@ -28337,6 +28353,7 @@ table.data td .tl-af b{white-space:normal}
     var s = st();
     ['q','skills','location','noticePeriod','exp','status','jobId','contacted','applied','stage']
       .forEach(function(k){ s[k]=''; });
+    if(typeof tlLocState==='function'){ var tl=tlLocState('tpLoc'); tl.tags=[]; tl.km=''; tl.q=''; }
     s.offset = 0; s.picked = {};
     tpLoad();
     /* Clearing is almost always the start of a new search, so the cursor
@@ -28363,6 +28380,12 @@ table.data td .tl-af b{white-space:normal}
     if(s.q) p.push('q='+encodeURIComponent(s.q));
     if(s.skills) p.push('skills='+encodeURIComponent(s.skills));
     if(s.location) p.push('location='+encodeURIComponent(s.location));
+    if(s.location && typeof window.tlPlaceIdsFor==='function'){
+      var pids=tlPlaceIdsFor('tpLoc');
+      if(pids.length) p.push('placeIds='+encodeURIComponent(pids.join(',')));
+      var nkm=Number((tlLocState('tpLoc')||{}).km)||0;
+      if(nkm>0) p.push('nearKm='+nkm);
+    }
     if(s.noticePeriod) p.push('noticePeriod='+encodeURIComponent(s.noticePeriod));
     if(s.exp){
       var b = s.exp.split('-');
@@ -28682,8 +28705,13 @@ table.data td .tl-af b{white-space:normal}
           + 'autocomplete="off" oninput="tpSet(\'q\',this.value,true)">')
       + fld('skills','Skills','','<input id="tpf_skills" value="'+E(s.skills)+'" placeholder="e.g. Java, Spring" '
           + 'autocomplete="off" oninput="tpSet(\'skills\',this.value,true)">')
-      + fld('location','Location','','<input id="tpf_location" value="'+E(s.location)+'" placeholder="e.g. Hyderabad" '
-          + 'autocomplete="off" oninput="tpSet(\'location\',this.value,true)">')
+      /* The shared Location selector (State -> District -> Mandal ->
+         Village, Near by), not a free-text box: a district now means the
+         people in its towns too. teamlink-place-tree.js reads it back. */
+      + fld('location','Location','', (typeof tlLocField==='function'&&typeof tlLocState==='function')
+          ? tlLocField('tpLoc',{placeholder:'e.g. Hyderabad'})
+          : '<input id="tpf_location" value="'+E(s.location)+'" placeholder="e.g. Hyderabad" '
+            + 'autocomplete="off" oninput="tpSet(\'location\',this.value,true)">')
       + fld('exp','Experience','', sel('exp', s.exp, [['','Any'],['0-2','Under 2 years'],
           ['2-4','2 – 4 years'],['3-6','3 – 6 years'],['5-9','5 – 9 years'],['10-','10 years or more']]))
       + fld('noticePeriod','Notice period','', sel('noticePeriod', s.noticePeriod,
@@ -29541,4 +29569,6 @@ table.data td .tl-af b{white-space:normal}
 <script src="teamlink-export.js"></script>
 <!-- Save this search: one list of saved searches and job alerts, kept by the server. -->
 <script src="teamlink-saved-searches.js"></script>
+<!-- Location selector, every level: State -> District -> Mandal -> Village. -->
+<script src="teamlink-place-tree.js"></script>
 </body></html>
