@@ -22,8 +22,8 @@
 --                                  reschedule start the reminders afresh
 --   candidate_interview_prep_v     what the candidate may read
 --
--- Recruiters (and admins, BDEs) of the job read and write kits; a client
--- user cannot read them at all.
+-- Recruiters of the job (its company, or its owner) and admins read and
+-- write kits; a client user cannot read them at all.
 -- ---------------------------------------------------------------------
 
 alter table interviews
@@ -103,7 +103,7 @@ create index if not exists interview_prep_messages_iv on interview_prep_messages
 -- who may touch a kit
 -- ---------------------------------------------------------------------
 
-/** Staff who can see the interview (never a client, never a candidate). */
+/** The job's recruiters and admins (never a client, never a candidate). */
 create or replace function prep_kit_staff_ok(p_interview text) returns boolean
 language sql stable security definer set search_path = public as $$
   select app_is_admin()
@@ -111,9 +111,6 @@ language sql stable security definer set search_path = public as $$
             select 1 from interviews i join jobs j on j.id = i.job_id
              where i.id = p_interview
                and (j.company_id = app_recruiter_company() or j.recruiter_id = app_recruiter_id())))
-      or (app_role() = 'bde' and exists (
-            select 1 from interviews i join applications a on a.id = i.application_id
-             where i.id = p_interview))
 $$;
 
 /** The candidate whose interview this kit is for. */

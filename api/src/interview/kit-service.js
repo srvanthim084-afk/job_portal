@@ -248,8 +248,9 @@ export function candidateView(row, ticks = []) {
     bringList: bring,
     checklist: { done: bring.filter((b) => b.done).length, total: bring.length },
     viewedAt: row.viewed_at || null,
+    // English only: candidates have no stored preferred language (only
+    // `languages`, the ones they speak), so there is nothing to switch on.
     language: 'en',
-    languageNote: 'Shown in English: TeamLink does not store a preferred language for candidates.',
     kitReady: !!row.kit_id,
   };
 }
@@ -355,8 +356,13 @@ async function templateId(key) {
  * @param opts  { now, withKit, slot, ignoreQuietHours, override:{date,time} }
  */
 export async function sendInterviewMessage(interviewId, kind, opts = {}) {
-  const ctx = await interviewContext(interviewId);
+  let ctx = await interviewContext(interviewId);
   if (!ctx || !ctx.cand) return { kind, delivery_status: {}, skipped: 'not found' };
+  // A message that links to the kit must have a kit behind the link.
+  if (!ctx.kit && opts.withKit !== false && kind !== 'cancelled') {
+    await ensureKit(interviewId);
+    ctx = await interviewContext(interviewId);
+  }
   const { iv, job } = ctx;
   const date = opts.override ? opts.override.date : iv.scheduled_date;
   const time = opts.override ? opts.override.time : iv.scheduled_time;

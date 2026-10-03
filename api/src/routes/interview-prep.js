@@ -8,7 +8,7 @@
  *   PUT  /api/candidate/interviews/:id/prep-kit/checklist  {itemKey, done}
  *   GET  /api/candidate/interviews/:id/prep-kit.ics     calendar file, no company
  *
- * Recruiter (and admin; BDE read-only) - never a client
+ * Recruiter and admin - never a client, never a BDE
  *   GET  /api/interviews/prep-status?ids=a,b            sent / viewed / checklist n of m
  *   GET  /api/interviews/:id/prep-kit                   kit + candidate preview + messages
  *   PUT  /api/interviews/:id/prep-kit                   edit questions / tips / bring list
@@ -60,7 +60,7 @@ async function staffName(session) {
 export default function interviewPrepRoutes() {
   const r = Router();
   const cand = [requireAuth(), requireRole('candidate')];
-  const staff = [requireAuth(), requireRole('recruiter', 'admin', 'bde')];
+  const staff = [requireAuth(), requireRole('recruiter', 'admin')];
   const writer = [requireAuth(), requireRole('recruiter', 'admin')];
 
   /* ---------------- candidate ---------------- */
