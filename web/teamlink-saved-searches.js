@@ -251,19 +251,30 @@
     if (freq !== 'off' && !ch.length) { say('Pick at least one way to be told, or choose Off', '⚠️'); return; }
     var btn = document.getElementById('tlssSave'); if (btn) btn.disabled = true;
     var body = { label: name.trim() || undefined, alert_frequency: freq, channels: ch.length ? ch : ['email'] };
-    var done = function (msg) { if (typeof window.fcrCloseModal === 'function') fcrCloseModal(); say(msg, '🔔'); load(true); };
+    /* The server's answer goes into the list at once, so the button says
+       "✓ Saved" now rather than after the list has been fetched again. */
+    var done = function (msg, saved) {
+      if (saved && saved.id) {
+        S.list = (S.list || []).filter(function (x) { return x.id !== saved.id; });
+        S.list.unshift(saved);
+        rerender();
+      }
+      if (typeof window.fcrCloseModal === 'function') fcrCloseModal();
+      say(msg, '🔔');
+      load(true);
+    };
     var fail = function (err) {
       if (btn) btn.disabled = false;
       say((err && err.message) || 'That could not be saved. Please try again.', '⚠️');
     };
     if (id) {
       api().put('/saved-searches/' + encodeURIComponent(id), body)
-        .then(function () { done('Saved search updated'); }).catch(fail);
+        .then(function (out) { done('Saved search updated', out && out.savedSearch); }).catch(fail);
       return;
     }
     body.filters = S.draft;
     api().post('/saved-searches', body)
-      .then(function () { done(freq === 'off' ? 'Search saved.' : 'Search saved. We’ll tell you about new jobs.'); })
+      .then(function (out) { done(freq === 'off' ? 'Search saved.' : 'Search saved. We’ll tell you about new jobs.', out && out.savedSearch); })
       .catch(function (err) {
         if (err && err.code === 'DUPLICATE_SEARCH') { done('You had already saved this search.'); return; }
         fail(err);
