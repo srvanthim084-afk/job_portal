@@ -38,6 +38,8 @@ import staffRoutes from './routes/staff.js';
 import externalJobRoutes from './routes/external-jobs.js';
 import savedSearchRoutes from './routes/saved-searches.js';
 import pushRoutes from './routes/push.js';
+import walkinDriveRoutes from './routes/walkin-drives.js';
+import careerAssistantRoutes from './routes/career-assistant.js';
 import { startDeadlineSweep } from './notify/interview-deadline.js';
 import { startIntakeSync } from './intake/scheduler.js';
 import { startScreeningSweep } from './ai/screening.js';
@@ -48,6 +50,7 @@ import { startBulkMessageSweep } from './notify/bulk.js';
 import { startExternalSyncSweep } from './external/service.js';
 import { startApplyReminderSweep } from './external/reminder.js';
 import { startSavedSearchAlerts } from './notify/saved-search-alerts.js';
+import { startWalkinSweep } from './notify/walkin.js';
 
 /*
  * The background work belongs to the APPLICATION, not to one entry point.
@@ -94,6 +97,9 @@ function startBackgroundWork(logger) {
     /* Saved-search alerts: instant ones the publish hook missed, and the
        08:00 IST daily / Monday weekly digests. Idempotent per slot. */
     backgroundStops.push(startSavedSearchAlerts());
+    /* Walk-in drives (0099): statuses move to ONGOING/COMPLETED, and the
+       day-before / morning-of reminders go out. Idempotent per message. */
+    backgroundStops.push(startWalkinSweep());
   } catch (err) {
     console.error('[background] could not start:', err.message);
   }
@@ -301,6 +307,8 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', exportRoutes());
   app.use('/api', savedSearchRoutes());
   app.use('/api', pushRoutes());
+  app.use('/api', walkinDriveRoutes());
+  app.use('/api', careerAssistantRoutes());
   app.use('/api', candidateRoutes());
   app.use('/api', applicationRoutes());
   app.use('/api', miscRoutes());
