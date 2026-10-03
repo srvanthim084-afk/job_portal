@@ -215,8 +215,19 @@ These are required by the security requirements and cannot be preserved:
 - `submitLogin()` no longer accepts any candidate without a password.
 - `ROLE_CREDENTIALS` (`Admin@123` et al.) is dead — the login form posts to
   `/api/auth/login` and the constant is never read.
-- A recruiter sees their own company's pipeline. An admin still sees
-  everything.
+- A recruiter sees their own pipeline: the requirements they own and the
+  applications on them (0031). An admin still sees everything.
+- Candidates are SHARED (0091): every recruiter and BDE reads every
+  non-private candidate - profile, resume, skills, contact details - but
+  only the recruiter who added them, the recruiter whose job they applied
+  to, or an admin can edit them. Private candidates, private notes,
+  message text and other recruiters' applications stay private; what one
+  recruiter learns about another's work on a person is the summary from
+  `candidate_engagements()`. Two recruiters may not work one person for
+  the same role at once (warn / block, enforced by the database). See
+  docs/SHARED-CANDIDATES.md for the full visibility table.
+- The candidate's availability status (0092) is for recruiters, BDEs and
+  admins only - never sent to a client. See docs/AVAILABILITY-STATUS.md.
 
 ## The offline message that was never about being offline
 

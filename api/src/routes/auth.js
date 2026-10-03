@@ -79,6 +79,9 @@ const registerSchema = z.object({
       { required_error: 'Select at least one work mode',
         invalid_type_error: 'Select at least one work mode' })
     .min(1, 'Select at least one work mode').max(10),
+  /* 0092: are you looking? Asked on the form; Actively looking when the
+     form (or an older client) does not say. */
+  availability: z.enum(['actively_looking', 'open_to_offers', 'not_looking']).optional(),
 });
 
 const parse = (schema, body) => {
@@ -211,7 +214,7 @@ export default function authRoutes() {
   r.post('/auth/register', loginOriginLimiter, loginLimiter, wrap(async (req, res) => {
     const { name, email, password, phone,
             preferredLocation, expectedCtc, noticePeriod,
-            preferredWorkModes } = parse(registerSchema, req.body);
+            preferredWorkModes, availability } = parse(registerSchema, req.body);
 
     // Human-readable ids, matching the prototype's 'cand1' style, so
     // anything that renders an id keeps looking the same.
@@ -231,6 +234,9 @@ export default function authRoutes() {
       `select auth_register_preferences($1,$2,$3,$4,$5)`,
       [candidateId, preferredLocation, expectedCtc, noticePeriod,
        preferredWorkModes]));
+    /* 0092: their availability, onto the same just-created record. */
+    await withUser(null, (c) => c.query(`select availability_register($1,$2)`,
+      [candidateId, availability || 'actively_looking']));
 
     const { token, expires, session } = await login({
       email, password, userAgent: req.get('user-agent'), ip: req.ip,

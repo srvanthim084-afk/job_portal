@@ -21,6 +21,11 @@ import { treeAvailable, treeResolver, treeDescendantNames, treeNear } from '../p
 import { hashPassword } from '../auth.js';
 import { TEMPLATES, VARIABLES, varsFor, render, addressFor } from '../notify/bulk.js';
 import { appearanceToken } from '../profile-viewers/appearances.js';
+/* 0091 / 0092: shared candidates, the hold rules, and availability. */
+import { canEngageMany, recordContact, audit, editableSet, forViewer } from '../candidates/engagement.js';
+import { availabilityOf } from './availability.js';
+
+const STAFF_ROLES = ['recruiter', 'bde', 'admin'];
 
 /**
  * Validate, or fail with the message beside the field that is wrong.
@@ -363,21 +368,55 @@ export default function candidateRoutes() {
          * the more useful of the two - a sourcing list is worked by
          * finding who has gone quiet.
          */
+        /*
+         * 0091: by ANYBODY at TeamLink, not only by me. The raw contact
+         * rows are now private to the recruiter who wrote them, so these
+         * ask candidate_last_contacted_at(), which answers with a date
+         * and nothing else - and counts real contacts only, not the
+         * pipeline events the history now also records.
+         */
         if (q.contactedWithinDays) {
           params.push(Number(q.contactedWithinDays));
-          push(`exists (select 1 from candidate_contact_history h
-                         where h.candidate_id = candidates.id
-                           and h.created_at > now() - make_interval(days => $${params.length}))`);
+          push(`candidate_last_contacted_at(candidates.id) > now() - make_interval(days => $${params.length})`);
         }
         if (q.notContactedForDays) {
           params.push(Number(q.notContactedForDays));
-          push(`not exists (select 1 from candidate_contact_history h
-                             where h.candidate_id = candidates.id
-                               and h.created_at > now() - make_interval(days => $${params.length}))`);
+          push(`coalesce(candidate_last_contacted_at(candidates.id), '-infinity'::timestamptz)
+                  <= now() - make_interval(days => $${params.length})`);
         }
         if (String(q.neverContacted) === 'true') {
-          push(`not exists (select 1 from candidate_contact_history h
-                             where h.candidate_id = candidates.id)`);
+          push(`candidate_last_contacted_at(candidates.id) is null`);
+        }
+
+        /*
+         * AVAILABILITY (0092), in SQL like every other filter.
+         *
+         * `availability` picks statuses (plus 'not_confirmed'). With none
+         * picked, a STAFF search hides not_looking and placed by default -
+         * the "Show all" toggle sends availabilityAll=true. The default
+         * does not apply to a requirement's own list (jobId) or a stage
+         * filter: those are the pipeline, and a placed candidate is the
+         * pipeline's best outcome, not noise.
+         */
+        const avail = list(q.availability).filter((x) =>
+          ['actively_looking', 'open_to_offers', 'not_looking', 'placed', 'unknown', 'not_confirmed'].includes(x));
+        const staffCaller = STAFF_ROLES.includes(req.session.role);
+        if (staffCaller && avail.length) {
+          const plain = avail.filter((x) => x !== 'not_confirmed');
+          const frags = [];
+          if (plain.length) {
+            params.push(plain);
+            frags.push(`(availability_status = any($${params.length})
+                         and (availability_stale_at is null
+                              or availability_status not in ('actively_looking', 'open_to_offers')))`);
+          }
+          if (avail.includes('not_confirmed')) {
+            frags.push(`(availability_stale_at is not null
+                         and availability_status in ('actively_looking', 'open_to_offers'))`);
+          }
+          push(`(${frags.join(' or ')})`);
+        } else if (staffCaller && String(q.availabilityAll) !== 'true' && !q.jobId && !stages.length) {
+          push(`availability_status not in ('not_looking', 'placed')`);
         }
 
         const clause = where.length ? `where ${where.join(' and ')}` : '';
@@ -401,13 +440,18 @@ export default function candidateRoutes() {
           added: 'created_at desc',
           'added-asc': 'created_at asc',
         };
-        const order = sortable[q.sort] || 'name asc';
+        /* 0092: Relevance (the default) puts the people who said they are
+           looking first - confirmed actively looking, open to offers,
+           unknown, not confirmed, not looking - then the order it had. */
+        const byRelevance = staffCaller && (!q.sort || q.sort === 'Relevance');
+        const order = (byRelevance ? 'availability_rank(availability_status, availability_stale_at), ' : '')
+          + (sortable[q.sort] || 'name asc') + ', id';
 
         const total = await c.query(`select count(*)::int n from candidates ${clause}`, params);
 
         params.push(limit, offset);
         const rows = await c.query(
-          `select * from candidates ${clause}
+          `select *, app_candidate_editable(candidates.id) as _editable from candidates ${clause}
            order by ${order} limit $${params.length - 1} offset $${params.length}`, params);
 
         // the pipeline position for just this page of candidates
@@ -420,8 +464,15 @@ export default function candidateRoutes() {
       });
 
       /* Find Candidates is recruiter/admin/client only at the route
-         level, so the staff shape is correct here. */
-      const cands = out.rows.map((x) => toCandidate(x, { staff: true }));
+         level, so the staff shape is correct here. 0091/0092: recruiters
+         and admins also get the availability status and whether they may
+         edit the row; a recruiter who may not edit it does not get the
+         owner's notes. A client gets neither. */
+      const staffView = STAFF_ROLES.includes(req.session.role);
+      const cands = out.rows.map((x) => {
+        const c = toCandidate(x, { staff: true });
+        return staffView ? { ...forViewer(c, !!x._editable), availabilityStatus: availabilityOf(x) } : c;
+      });
       const extra = attachPrimary(cands, out.apps.map(toApplication));
 
       res.json({
@@ -529,7 +580,14 @@ export default function candidateRoutes() {
 
     /* A candidate can read their OWN row through this route, and must
        not read the recruiter's notes on themselves. */
-    const cand = toCandidate(out.row, { staff: req.session.role !== 'candidate' });
+    let cand = toCandidate(out.row, { staff: req.session.role !== 'candidate' });
+    /* 0091/0092: shared profile, private notes; availability for staff. */
+    if (STAFF_ROLES.includes(req.session.role)) {
+      const editable = (await editableSet(req.session, [out.row.id])).has(out.row.id);
+      cand = { ...forViewer(cand, editable), availabilityStatus: availabilityOf(out.row) };
+    } else if (req.session.role === 'candidate') {
+      cand.availabilityStatus = availabilityOf(out.row);
+    }
     const extra = attachPrimary([cand], out.apps.map(toApplication));
     cand.educationRecords = out.edu.map(toEducationRecord);
     cand.experienceRecords = out.exp.map(toExperienceRecord);
@@ -1185,6 +1243,13 @@ export default function candidateRoutes() {
         /* The role the message is about, when the recruiter picked one.
            It is what {{job_title}} falls back to. */
         jobId: z.string().trim().max(64).optional(),
+        /* 0091: candidates another recruiter only CONTACTED for this role
+           are skipped unless this is ticked ("Contact anyway" for the
+           batch). Candidates another recruiter is PROCESSING are always
+           skipped. 0092: "not looking" is skipped unless ticked; "placed"
+           always is. */
+        includeWarned: z.boolean().optional(),
+        includeNotLooking: z.boolean().optional(),
       }), req.body);
 
       if (b.channel === 'email' && !String(b.subject || '').trim()) {
@@ -1198,8 +1263,16 @@ export default function candidateRoutes() {
          reported as unreachable rather than silently dropped. */
       const rows = await withUser(req.session, async (c) => (await c.query(
         `select id, name, email, phone, title, preferred_role, location,
-                current_company, notice_period, do_not_contact
+                current_company, notice_period, do_not_contact, availability_status
            from candidates where id = any($1)`, [b.candidateIds])).rows);
+
+      /* The hold rules, asked of the database for every candidate in the
+         batch, before anything is queued. */
+      const verdicts = await canEngageMany(req.session, rows.map((x) => x.id), { jobId: b.jobId || null });
+      const held = [];        // skipped: another recruiter is processing / placed them
+      const warned = [];      // skipped by default: another recruiter contacted them
+      const notLooking = [];  // skipped by default: they said they are not looking
+      const placed = [];      // always skipped: replacement period
 
       const found = new Map(rows.map((x) => [x.id, x]));
       const unreachable = b.candidateIds.filter((id) => !found.has(id));
@@ -1230,6 +1303,26 @@ export default function candidateRoutes() {
           continue;
         }
 
+        /* 0092: placed never, not looking only when ticked. */
+        if (cand.availability_status === 'placed') {
+          placed.push({ id: cand.id, name: cand.name, reason: 'placed - replacement period' });
+          continue;
+        }
+        if (cand.availability_status === 'not_looking' && b.includeNotLooking !== true) {
+          notLooking.push({ id: cand.id, name: cand.name, reason: 'said they are not looking' });
+          continue;
+        }
+        /* 0091: blocked always, warned unless ticked. */
+        const v = verdicts.get(cand.id) || { decision: 'allowed' };
+        if (v.decision === 'blocked') {
+          held.push({ id: cand.id, name: cand.name, reason: v.message || 'another recruiter holds them' });
+          continue;
+        }
+        if (v.decision === 'warn' && b.includeWarned !== true) {
+          warned.push({ id: cand.id, name: cand.name, reason: v.message || 'contacted by another recruiter' });
+          continue;
+        }
+
         const vars = varsFor(cand, {
           jobTitle: job ? job.title : undefined,
           recruiterName: me ? me.name : '',
@@ -1248,6 +1341,17 @@ export default function candidateRoutes() {
           skipped.push({ id: cand.id, name: cand.name });
         } else {
           queued.push({ id: cand.id, name: cand.name });
+          /* 0091: every message is a contact, recorded for the role it is
+             about; one warned past is logged as "contact anyway". */
+          await recordContact(req.session, {
+            candidateId: cand.id, jobId: b.jobId || null, channel: b.channel,
+            source: 'bulk_message', outcome: 'queued', ref: String(row.id),
+          });
+          if (v.decision === 'warn') {
+            await audit(req.session, { candidateId: cand.id, roleKey: v.roleKey, jobId: b.jobId || null,
+              action: 'contact_anyway', detail: { action: 'bulk_message', batchId,
+                                                  holder: v.holder && v.holder.name } });
+          }
         }
       }
 
@@ -1259,6 +1363,15 @@ export default function candidateRoutes() {
         skipped: skipped.length,
         blocked: blocked.length,
         unreachable: unreachable.length,
+        /* 0091 / 0092: who was left out, and why. */
+        held: held.length,
+        warned: warned.length,
+        notLooking: notLooking.length,
+        placed: placed.length,
+        heldCandidates: held.slice(0, 50),
+        warnedCandidates: warned.slice(0, 50),
+        notLookingCandidates: notLooking.slice(0, 50),
+        placedCandidates: placed.slice(0, 50),
         skippedFor: b.channel === 'email' ? 'email address' : 'mobile number',
         skippedCandidates: skipped.slice(0, 50),
         blockedCandidates: blocked.slice(0, 50),
@@ -1678,6 +1791,13 @@ export default function candidateRoutes() {
         : await inviteCandidate(who, { invitedBy: req.session.userId || 'recruiter' });
 
       const sent = !!(out.sent || out.invited);
+      /* 0091: an invitation is a contact. Not tied to a role, so it is
+         recorded but never held - a portal login is not an approach for
+         a job. */
+      if (sent) {
+        await recordContact(req.session, { candidateId: c.id, channel: 'email', source: 'invite',
+                                           outcome: 'sent' });
+      }
       res.json({
         sent,
         // Which case it was, so the screen can say "account created" or
@@ -1722,11 +1842,13 @@ export default function candidateRoutes() {
     wrap(async (req, res) => {
       const { tag, body } = req.body || {};
       if (!body || !String(body).trim()) throw badRequest('A comment cannot be empty.');
+      /* 0091: private (the default, as before) or shared with the team. */
+      const visibility = (req.body || {}).visibility === 'team' ? 'team' : 'private';
       const row = await withUser(req.session, async (c) => {
         const { rows } = await c.query(
-          `insert into candidate_comments (candidate_id, recruiter_id, tag, body)
-           values ($1,$2,$3,$4) returning *`,
-          [req.params.id, req.session.profileId, tag || null, String(body).slice(0, 4000)]);
+          `insert into candidate_comments (candidate_id, recruiter_id, tag, body, visibility)
+           values ($1,$2,$3,$4,$5) returning *`,
+          [req.params.id, req.session.profileId, tag || null, String(body).slice(0, 4000), visibility]);
         return rows[0];
       });
       res.status(201).json({ comment: row });
@@ -1734,9 +1856,15 @@ export default function candidateRoutes() {
 
   r.get('/candidates/:id/comments', requireAuth(), requireRole('recruiter', 'admin'),
     wrap(async (req, res) => {
+      /* My notes, plus colleagues' TEAM notes (0091). Another recruiter's
+         private note never comes back - RLS, not this query, decides. */
       const rows = await withUser(req.session, async (c) => {
         const { rows } = await c.query(
-          `select * from candidate_comments where candidate_id=$1 order by created_at desc`,
+          `select cc.*, r.name as author_name,
+                  (cc.recruiter_id = app_recruiter_id()) as mine
+             from candidate_comments cc
+             left join recruiters r on r.id = cc.recruiter_id
+            where cc.candidate_id=$1 order by cc.created_at desc`,
           [req.params.id]);
         return rows;
       });

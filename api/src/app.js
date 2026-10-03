@@ -62,6 +62,10 @@ import { startProfileViewDigest } from './notify/profile-view-digest.js';
 import { startResumeScoreSweep } from './resume/score.js';
 import { startScreeningQuestionSweep } from './screening/service.js';
 import { startInterviewPrepSweep } from './interview/reminders.js';
+/* 0091 / 0092: shared candidates + "already contacted"; availability. */
+import sharedCandidateRoutes, { engagementRefusalAudit } from './routes/shared-candidates.js';
+import availabilityRoutes from './routes/availability.js';
+import { startAvailabilitySweep } from './notify/availability-checks.js';
 
 /*
  * The background work belongs to the APPLICATION, not to one entry point.
@@ -122,6 +126,9 @@ function startBackgroundWork(logger) {
     backgroundStops.push(startScreeningQuestionSweep());
     /* Interview prep kit (0098): day-before / 2-hour reminders, status nudge. */
     backgroundStops.push(startInterviewPrepSweep());
+    /* "Still looking?" re-confirmations, Not-confirmed marking and the
+       end of the 90-day placed period. Hourly, idempotent, quiet at night. */
+    backgroundStops.push(startAvailabilitySweep());
   } catch (err) {
     console.error('[background] could not start:', err.message);
   }
@@ -339,6 +346,8 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', profileViewerRoutes());
   app.use('/api', resumeScoreRoutes());
   app.use('/api', voiceSearchRoutes());
+  app.use('/api', sharedCandidateRoutes());
+  app.use('/api', availabilityRoutes());
   app.use('/api', candidateRoutes());
   app.use('/api', applicationRoutes());
   app.use('/api', screeningRoutes());
@@ -502,6 +511,9 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
     });
   }
 
+  /* A hold the DATABASE refused rolled its audit row back with it; this
+     writes 'blocked' in a fresh transaction, then hands the error on. */
+  app.use(engagementRefusalAudit());
   app.use(errorHandler(logger));
   return app;
 }
