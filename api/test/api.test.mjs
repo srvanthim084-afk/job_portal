@@ -14,7 +14,10 @@ const API_PORT = 9999;
 let dbHandle, server, client, createApp, hashPassword, getPool, closePool, mockProvider;
 
 test('boot: migrate, seed accounts, start API', async () => {
-  dbHandle = await startTestDb(PORT);
+  // The suite is written against the prototype's demo rows (j1, technova,
+  // cand1, r1, c1, a1, ...). The migrations purge them from the real
+  // portal, so they are re-applied here, in this test database only.
+  dbHandle = await startTestDb(PORT, { demoSeed: true });
   mockProvider = await startMockProvider();
   applyTestEnv(dbHandle.url);
 
@@ -571,11 +574,21 @@ test('another candidate cannot fetch that resume', async () => {
   assert.ok([403, 404].includes(res.status), `resume leaked, status ${res.status}`);
 });
 
+// The four preferences the registration form marks as required. The route
+// refuses a registration without them (0082_registration_preferences.sql,
+// registerSchema in src/routes/auth.js), so every registration below that
+// is meant to get past validation carries them.
+const REQUIRED_PREFS = {
+  preferredLocation: 'Bengaluru', expectedCtc: 12,
+  noticePeriod: '30 days', preferredWorkModes: ['Hybrid'],
+};
+
 test('registration creates a real account that can sign in', async () => {
   const fresh = makeClient(`http://127.0.0.1:${API_PORT}`);
   const email = `new${Date.now()}@test.local`;
   const reg = await fresh.post('/api/auth/register', {
     name: 'New Person', email, password: 'Str0ngPass1', phone: '+91 90000 00000',
+    ...REQUIRED_PREFS,
   });
   assert.equal(reg.status, 201);
   assert.equal(reg.body.session.role, 'candidate');
@@ -593,7 +606,7 @@ test('registration rejects a weak password and a duplicate email', async () => {
   assert.ok(weak.body.error.details.password);
 
   const dupe = await fresh.post('/api/auth/register',
-    { name: 'X Y', email: 'cand1@test.local', password: 'Str0ngPass1' });
+    { name: 'X Y', email: 'cand1@test.local', password: 'Str0ngPass1', ...REQUIRED_PREFS });
   assert.equal(dupe.status, 409);
   assert.equal(dupe.body.error.code, 'EMAIL_TAKEN');
 });

@@ -22,12 +22,60 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS = resolve(HERE, '../../supabase/migrations');
 const UPLOAD_DIR = resolve(HERE, '../var/test-uploads');
 
-export async function startTestDb(port = 5433) {
+/**
+ * The prototype's demo rows (0003_seed.sql), re-applied AFTER every
+ * migration, for a suite that needs a populated portal to test against.
+ *
+ * Later migrations (0029, 0033, ...) empty the real portal of that demo
+ * content on purpose, so a schema built from every migration in order is
+ * empty. That is right for production and the reason this exists: the
+ * fixtures are restored here, in the test database only, never by adding
+ * seed data back to the migrations.
+ *
+ * The seed is used as written; the one adaptation is ON CONFLICT DO
+ * NOTHING on each insert, because a few of its rows (the a1 admin, the
+ * WhatsApp comm templates) are never purged and are still present, and
+ * one duplicate would otherwise abort the whole file. Every insert in
+ * that file is a single line ending in ");" (checked below) - migrations cannot be
+ * edited after they are applied, so that shape is stable.
+ */
+function demoSeedSql() {
+  const sql = readFileSync(join(MIGRATIONS, '0003_seed.sql'), 'utf8');
+  // \r? because a Windows checkout may give the file CRLF line endings
+  const out = sql.replace(/^(insert into .*\));[ \t]*(\r?)$/gm, '$1 on conflict do nothing;$2');
+  const inserts = (sql.match(/^insert into /gm) || []).length;
+  const adapted = (out.match(/ on conflict do nothing;\r?$/gm) || []).length;
+  if (!inserts || inserts !== adapted) {
+    throw new Error(`demo seed: adapted ${adapted} of ${inserts} inserts - 0003_seed.sql changed shape`);
+  }
+  // The seed predates per-recruiter ownership (0031: "each recruiter sees
+  // only their own desk"), so its jobs have no recruiter_id and no
+  // recruiter can see them or their applications. The prototype had one
+  // recruiter per company (r1 TechNova, r2 InnovateSoft, r3 HealthCare
+  // Plus); each seeded job is given to the recruiter at its company, which
+  // is the ownership the seed implied.
+  return out + `
+update jobs j set recruiter_id = r.id
+  from recruiters r
+ where r.id in ('r1', 'r2', 'r3') and r.company_id = j.company_id
+   and j.recruiter_id is null;
+`;
+}
+
+/**
+ * @param port
+ * @param opts.demoSeed  load the 0003 demo rows after all migrations
+ *                       (see demoSeedSql). Off by default: suites that
+ *                       build their own data start from the real, empty
+ *                       portal.
+ */
+export async function startTestDb(port = 5433, { demoSeed = false } = {}) {
   const db = await new PGlite();
 
   for (const f of readdirSync(MIGRATIONS).filter((f) => f.endsWith('.sql')).sort()) {
     await db.exec(readFileSync(join(MIGRATIONS, f), 'utf8'));
   }
+  if (demoSeed) await db.exec(demoSeedSql());
   // app_api needs LOGIN to be reachable over the wire
   await db.exec(`alter role app_api login password 'test_only_password';`);
 
