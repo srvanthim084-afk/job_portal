@@ -44,6 +44,8 @@ import portalUpgradeRoutes, { mountPublicJobPage } from './routes/portal-upgrade
 import profileViewerRoutes from './routes/profile-viewers.js';
 import resumeScoreRoutes from './routes/resume-score.js';
 import voiceSearchRoutes from './routes/voice-search.js';
+import screeningRoutes from './routes/screening.js';
+import interviewPrepRoutes from './routes/interview-prep.js';
 import { startDeadlineSweep } from './notify/interview-deadline.js';
 import { startIntakeSync } from './intake/scheduler.js';
 import { startScreeningSweep } from './ai/screening.js';
@@ -58,6 +60,8 @@ import { startWalkinSweep } from './notify/walkin.js';
 import { startPortalSweep } from './portal/alerts.js';
 import { startProfileViewDigest } from './notify/profile-view-digest.js';
 import { startResumeScoreSweep } from './resume/score.js';
+import { startScreeningQuestionSweep } from './screening/service.js';
+import { startInterviewPrepSweep } from './interview/reminders.js';
 
 /*
  * The background work belongs to the APPLICATION, not to one entry point.
@@ -114,6 +118,10 @@ function startBackgroundWork(logger) {
        cleanup (0093). Resume scores for profiles that changed (0094). */
     backgroundStops.push(startProfileViewDigest());
     backgroundStops.push(startResumeScoreSweep());
+    /* Screening questions (0097): answer links, the one 48h reminder. */
+    backgroundStops.push(startScreeningQuestionSweep());
+    /* Interview prep kit (0098): day-before / 2-hour reminders, status nudge. */
+    backgroundStops.push(startInterviewPrepSweep());
   } catch (err) {
     console.error('[background] could not start:', err.message);
   }
@@ -333,6 +341,8 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', voiceSearchRoutes());
   app.use('/api', candidateRoutes());
   app.use('/api', applicationRoutes());
+  app.use('/api', screeningRoutes());
+  app.use('/api', interviewPrepRoutes());
   app.use('/api', miscRoutes());
   app.use('/api', uploadRoutes());
   app.use('/api', aiInterviewRoutes());

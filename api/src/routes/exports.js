@@ -47,6 +47,7 @@ import { wrap, badRequest, forbidden, ApiError } from '../errors.js';
 import { requireAuth, requireRole } from '../auth.js';
 import { writeSheet, makeZip } from '../xlsx.js';
 import { getStorage } from '../storage.js';
+import { SCREENING_COLUMNS, presentScreening } from '../screening/export.js';
 
 /* ------------------------------------------------------------------ *
  * what a column is
@@ -73,6 +74,8 @@ const COLUMNS = {
   preferredLocation: { label: 'Preferred Location', col: 'c.preferred_location' },
   expectedSalary:    { label: 'Expected Salary',    col: 'c.expected_ctc' },
   resumeLink:        { label: 'Resume Link',        col: 'c.resume_file' },
+  /* Screening answers on the latest application (0097). */
+  ...SCREENING_COLUMNS,
 };
 
 const DEFAULT_COLUMNS = Object.keys(COLUMNS);
@@ -156,6 +159,8 @@ const csvCell = (v) => {
 /** A value as a person reads it, not as the column stores it. */
 function present(key, row) {
   const v = row[keyToAlias(key)];
+  const screening = presentScreening(key, v);
+  if (screening !== undefined) return screening;
   if (v == null || v === '') return '';
   if (Array.isArray(v)) return v.join(', ');
   if (key === 'expectedSalary') return `${v} LPA`;
@@ -188,14 +193,17 @@ const keyToAlias = (k) => `x_${k}`;
  */
 async function readRows(session, ids, columns) {
   const select = columns
-    .map((k) => `${COLUMNS[k].col} as ${keyToAlias(k)}`)
+    /* Quoted: an unquoted alias is folded to lower case by Postgres, so
+       x_appliedFor came back as x_appliedfor and every camelCase column
+       exported blank. The keys are whitelisted above, so quoting is safe. */
+    .map((k) => `${COLUMNS[k].col} as "${keyToAlias(k)}"`)
     .join(',\n           ');
 
   return withUser(session, async (c) => {
     const { rows } = await c.query(
       `with latest as (
          select distinct on (a.candidate_id)
-                a.candidate_id, a.stage, a.match_score, a.applied_on,
+                a.candidate_id, a.stage, a.match_score, a.applied_on, a.id as app_id,
                 j.title as job_title
            from applications a
            left join jobs j on j.id = a.job_id

@@ -36,6 +36,8 @@ const DEFAULTS = {
   weightEducation: 15,
   weightLocation: 10,
   autoScreeningEnabled: true,
+  // 0097: how much the screening answers count, out of 100.
+  weightScreeningAnswers: 20,
 };
 
 export async function loadAiSettings() {
@@ -177,6 +179,7 @@ export function scoreApplication({ job, candidate, settings = DEFAULTS }) {
     score,
     verdict,
     threshold,
+    skillsAssessed,
     reasons,
     matched,
     missing,
@@ -255,12 +258,37 @@ export async function screenApplication(applicationId, { actor = 'system', force
    * position in the pipeline - with the score attached and on screen.
    * Nobody is rejected either way: that stays a person's decision.
    */
+  /*
+   * SCREENING ANSWERS (0097).
+   *
+   * The resume score above is untouched - it is still ai_score. When the
+   * candidate has answered the job's questions, a combined score mixes in
+   * the answer score by the admin's "screening answers" weight (default
+   * 20), and that is what decides the verdict. Not answered yet: combined
+   * = resume score, and the screen says "answers pending".
+   *
+   * A failed must-have is NEVER shortlisted automatically, whatever the
+   * numbers say. It is not rejected either - a recruiter decides.
+   */
+  const answers = await screeningAnswersFor(ctx.app, result, settings);
+  if (answers.combined !== null) {
+    result.combinedScore = answers.combined;
+    result.verdict = (answers.combined >= result.threshold && result.skillsAssessed) ? 'shortlist'
+      : answers.combined >= result.threshold - 15 ? 'review' : 'hold';
+  }
+  if (answers.knockedOut && result.verdict === 'shortlist') result.verdict = 'review';
+
   const movable = ['applied', 'ai_screening'].includes(ctx.app.stage);
   const nextStage = movable
     ? (result.verdict === 'shortlist' ? 'shortlisted' : 'applied')
     : ctx.app.stage;
 
-  const note = `AI screening ${result.score}% (threshold ${result.threshold}) - `
+  const note = `AI screening ${result.score}%`
+    + (answers.combined !== null ? ` (with screening answers ${answers.combined}%)` : '')
+    /* No word about a failed must-have here: this note lands in the stage
+       history, which the candidate can read. The recruiter sees it on the
+       screening badge instead. */
+    + ` (threshold ${result.threshold}) - `
     + `${result.verdict === 'shortlist' ? 'recommend shortlist'
        : result.verdict === 'review' ? 'worth a look' : 'gaps against the requirement'}`
     + (result.reasons.length ? `: ${result.reasons.join('; ')}` : '');
@@ -283,9 +311,11 @@ export async function screenApplication(applicationId, { actor = 'system', force
               -- So "was this score worked out before the resume arrived?"
               -- has an answer, which is what decides a re-screen.
               ai_screened_at = now(),
+              -- Resume and answers together (0097); null until answered.
+              screening_combined_score = $4,
               updated_at = now()
         where id = $1`,
-      [applicationId, result.score, nextStage]);
+      [applicationId, result.score, nextStage, answers.combined]);
 
     await c.query(
       `select app_event($1,$2,'screening.completed',$3,$4,$5::jsonb)`,
@@ -311,6 +341,24 @@ export async function screenApplication(applicationId, { actor = 'system', force
   });
 
   return { applicationId, ...result, stage: nextStage };
+}
+
+/**
+ * The screening-answer side of a result: the combined score (null when
+ * the job asks nothing or the answers have not arrived) and whether a
+ * must-have was failed. Read from the application row itself, which the
+ * answer writer keeps current.
+ */
+async function screeningAnswersFor(app, result, settings) {
+  const status = app.screening_status || 'not_required';
+  const knockedOut = status === 'knocked_out';
+  const answered = status === 'answered' || knockedOut;
+  const s = app.screening_answer_score;
+  if (!answered || s === null || s === undefined) return { combined: null, knockedOut };
+  const w = Number(settings.weightScreeningAnswers);
+  const weight = Number.isFinite(w) ? Math.max(0, Math.min(100, w)) : 20;
+  const combined = Math.round(result.score * (100 - weight) / 100 + Number(s) * weight / 100);
+  return { combined, knockedOut };
 }
 
 /**

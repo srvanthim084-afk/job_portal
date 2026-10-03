@@ -18,6 +18,7 @@
  * decides what a BDE may assemble. There is no privileged read here.
  */
 import { toCandidate } from '../shapes.js';
+import { clientScreening } from '../screening/export.js';
 
 /**
  * @param c              a client inside withUser() - RLS applies
@@ -64,6 +65,10 @@ export async function buildExport(c, candidateId, applicationId) {
 
   const shaped = toCandidate(cand.rows[0]);
 
+  // Screening answers (0097): what the client is told - never a knock-out
+  // flag, a weight, or the "another consultancy" answer unless shared.
+  const screening = application ? await clientScreening(c, application.id) : null;
+
   return {
     exportedAt: new Date().toISOString(),
     candidate: {
@@ -109,6 +114,7 @@ export async function buildExport(c, candidateId, applicationId) {
       contentScored: !!interview.content_scored,
       completedAt: interview.completed_at,
     } : null,
+    screening,
     pipeline: history.map((h) => ({
       from: h.from_stage, to: h.to_stage, note: h.note, at: h.created_at,
     })),

@@ -20,6 +20,7 @@ import { dispatchInterviewNotifications } from '../notify/dispatch.js';
 import { dispatchEvent } from '../notify/events.js';
 import { matchCandidate } from '../ai/match.js';
 import { screenApplication } from '../ai/screening.js';
+import { applyScreeningAnswers, storeApplyScreening } from '../screening/apply.js';
 
 const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
 
@@ -97,6 +98,9 @@ export default function applicationRoutes() {
         .transform((v) => (v === undefined ? undefined : normaliseSource(v))),
       resumePath: z.string().trim().max(400).optional(),
       matchScore: z.number().min(0).max(100).optional(),
+      // Screening questions (0097): [{questionId, answer}], checked against the job's questions.
+      answers: z.array(z.object({ questionId: z.string().trim().min(1).max(64), answer: z.any() })).max(12).optional(),
+      saveScreeningDefaults: z.boolean().optional(),
     }), req.body);
 
     // A candidate may only apply as themselves. A recruiter may add a
@@ -108,6 +112,9 @@ export default function applicationRoutes() {
       throw forbidden('Only candidates can apply to roles.');
     }
     if (!candidateId) throw badRequest('No candidate specified.');
+
+    // Validated BEFORE anything is written: a refused answer leaves no application behind.
+    const screeningAnswers = await applyScreeningAnswers(body.jobId, body.answers);
 
     const out = await withUser(req.session, async (c) => {
       const job = await c.query(
@@ -158,6 +165,11 @@ export default function applicationRoutes() {
          returning *`,
         [id, body.jobId, candidateId, matchScore,
          body.source || 'portal', postingType, body.resumePath || null]);
+
+      // Same transaction: the application and its answers exist together or not at all.
+      if (screeningAnswers) {
+        await storeApplyScreening(c, id, screeningAnswers, req.session, candidateId, body.saveScreeningDefaults);
+      }
 
       // Same transaction — see the header note.
       const company = await c.query(`select name from companies where id=$1`, [j.company_id]);
