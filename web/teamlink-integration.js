@@ -302,6 +302,15 @@
       .then(function () {}, function () {});
   }
 
+  /* A scanned resume was read by the model, not from a text layer: say so,
+     so the candidate checks what was filled in. */
+  function noteScan(res) {
+    if (res && res.parser === 'ai-ocr' && typeof window.toast === 'function') {
+      window.toast('Your resume is a scanned file, so we read it with AI. Please check the details we filled in.', '🔍');
+    }
+    return res;
+  }
+
   function request(method, path, body, opts) {
     opts = opts || {};
 
@@ -1886,6 +1895,7 @@
 
       // A large PDF takes longer than an ordinary request.
       return request('POST', '/resume/extract', fd, { timeout: 60000 })
+        .then(noteScan)
         .then(function (res) {
           TL.lastExtract = res;          // read by the parseResumeText wrap
 
@@ -2356,6 +2366,7 @@
       fd.append('resume', file);
 
       return request('POST', '/resume/extract', fd, { timeout: 60000 })
+        .then(noteScan)
         .then(function (res) {
           // Store the file itself, so Easy Apply and the recruiter see the
           // NEW resume rather than the one it replaced.

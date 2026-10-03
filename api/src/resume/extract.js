@@ -186,9 +186,8 @@ async function fromPdf(buffer) {
     const text = (out?.text || '').trim();
     const pages = out?.pages?.length ?? out?.total ?? null;
     if (!text) {
-      throw new ApiError(422, RESUME_CODES.NO_TEXT,
-        'This PDF has no text in it — it looks like a scan or an image. ' +
-        'Please upload a text-based PDF or DOCX, or paste your resume text below.');
+      /* No text layer: a scan. extractResumeText() tries the model on it. */
+      return { text: '', parser: 'pdf-parse', pages, scanned: true };
     }
     return { text, parser: 'pdf-parse', pages };
   } catch (err) {
@@ -277,7 +276,31 @@ export async function extractResumeText(buffer, originalName = '') {
 
   // Control characters and zero-width joiners come out of some PDFs and
   // would end up in the database and on screen.
-  const text = sanitize(out.text);
+  let text = sanitize(out.text);
+
+  /*
+   * A SCANNED PDF. No text layer - or nothing but the page markers
+   * pdf-parse writes between pages - so it is read by the model when one
+   * is configured (resume/ai.js transcribes it word for word) and the
+   * ordinary parser runs on the transcription. Without a model, the
+   * refusal below is unchanged.
+   */
+  const scanLike = kind === 'pdf'
+    && text.replace(/--\s*\d+\s+of\s+\d+\s*--/g, '').trim().length < MIN_USEFUL_CHARS;
+  if (scanLike) {
+    const { transcribePdfWithAi } = await import('./ai.js');
+    const read = await transcribePdfWithAi(buffer);
+    if (read && sanitize(read).length >= MIN_USEFUL_CHARS) {
+      text = sanitize(read);
+      out.parser = 'ai-ocr';
+    }
+  }
+
+  if (scanLike && out.parser !== 'ai-ocr') {
+    throw new ApiError(422, RESUME_CODES.NO_TEXT,
+      'This PDF has no text in it — it looks like a scan or an image. ' +
+      'Please upload a text-based PDF or DOCX, or paste your resume text below.');
+  }
 
   if (text.length < MIN_USEFUL_CHARS) {
     throw new ApiError(422, RESUME_CODES.NO_TEXT,

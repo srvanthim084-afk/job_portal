@@ -173,3 +173,67 @@ function validate(obj, text) {
   }
   return out;
 }
+
+/*
+ * READING A SCANNED RESUME.
+ *
+ * A PDF with no text layer - a phone photo, a scanner's output - used to
+ * be turned away with "please upload a text-based PDF". Most candidates
+ * who send one do not have another; it is the resume they have.
+ *
+ * When a model is configured it is given the PDF itself (the Messages
+ * API reads PDF pages, scanned ones included) and asked for a word-for-
+ * word transcription - not a summary, not fields. The ordinary
+ * deterministic parser then runs on that text exactly as it would on a
+ * text PDF, and the result is labelled 'ai-ocr' so the page can tell the
+ * candidate to check it.
+ *
+ * Without a key nothing changes: the file is refused as before, with the
+ * same advice. Nothing is guessed.
+ */
+const OCR_TIMEOUT_MS = Number(process.env.AI_OCR_TIMEOUT_MS || 60_000);
+const OCR_MAX_BYTES = 20 * 1024 * 1024;
+
+export async function transcribePdfWithAi(buffer) {
+  if (!config.aiApiKey || !buffer || buffer.length > OCR_MAX_BYTES) return null;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), OCR_TIMEOUT_MS);
+  try {
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': config.aiApiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: 8000,
+        system:
+          'You transcribe documents. Output ONLY the text that appears on the ' +
+          'pages, in reading order, one line per line of the document. Keep ' +
+          'headings, names, dates, phone numbers and email addresses exactly as ' +
+          'printed. Do not summarise, correct, translate or add anything. If a ' +
+          'word cannot be read, leave it out.',
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'document',
+              source: { type: 'base64', media_type: 'application/pdf', data: buffer.toString('base64') } },
+            { type: 'text', text: 'Transcribe this resume.' },
+          ],
+        }],
+      }),
+    });
+    if (!res.ok) return null;
+    const body = await res.json();
+    const text = (body?.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
+    return text || null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
