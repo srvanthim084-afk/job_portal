@@ -70,6 +70,7 @@ async function searchTermsFromCandidates(session) {
  * broken feed look like an empty one.
  */
 export async function syncSource(session, sourceId) {
+  const startedAt = new Date();
   const source = await store.getSource(session, sourceId);
   if (!source) return { ok: false, status: 'not_found', error: 'no such source' };
 
@@ -117,6 +118,11 @@ export async function syncSource(session, sourceId) {
     await store.recordSyncResult(session, sourceId, {
       status: collected.status, error: collected.error, jobCount: 0,
     });
+    /* A failed fetch changes nothing in the table: the jobs already
+       synced stay, and only the run says it failed. */
+    await store.recordSyncRun(session, {
+      sourceId, startedAt, status: collected.status, error: collected.error || null,
+    });
     return {
       ok: collected.status === 'manual',
       status: collected.status,
@@ -127,12 +133,14 @@ export async function syncSource(session, sourceId) {
 
   let saved = 0;
   let skipped = 0;
+  let created = 0;
   const problems = [];
   for (const raw of collected.jobs) {
     const job = normaliseExternalJob(raw, source);
     if (!job) { skipped++; continue; }
     try {
-      await store.saveJob(session, job);
+      const row = await store.saveJob(session, job);
+      if (row && row.created) created++;
       saved++;
     } catch (err) {
       skipped++;
@@ -146,6 +154,11 @@ export async function syncSource(session, sourceId) {
     status: problems.length ? 'partial' : 'ok',
     error: problems.length ? problems.join('; ') : null,
     jobCount: saved,
+  });
+  await store.recordSyncRun(session, {
+    sourceId, startedAt, status: problems.length ? 'partial' : 'ok',
+    fetched: collected.jobs.length, created, updated: saved - created,
+    duplicates: linked, skipped, error: problems.length ? problems.join('; ') : null,
   });
 
   return {
@@ -448,7 +461,11 @@ export function startExternalSyncSweep() {
       /* A posting that has stopped appearing in its feed has been taken
          down. Closed rather than deleted: a candidate who applied to it
          still has an application pointing at it. */
+      const expiryStart = new Date();
       const closed = await closeStalePostings(ENGINE);
+      if (closed) {
+        await store.recordSyncRun(ENGINE, { kind: 'expire', startedAt: expiryStart, status: 'ok', closed });
+      }
       if (closed) console.log(`[external] ${closed} posting(s) closed after `
         + `${config.externalJobs.activeDays} days unseen`);
 

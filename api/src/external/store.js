@@ -92,6 +92,9 @@ export async function recordSyncResult(session, sourceId, { status, error, jobCo
  * is kept, because matches and applications point at it.
  */
 export async function saveJob(session, job) {
+  /* The id is offered; the upsert keeps the existing one on a conflict,
+     so "the id we offered came back" means the row is new. */
+  const offered = newId('xjob');
   return withUser(session, async (c) => {
     const { rows } = await c.query(
       /* 0078. The last four are the ones 0067 added and this call never
@@ -100,15 +103,27 @@ export async function saveJob(session, job) {
       `select (external_job_save($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
                                  $15,$16,$17,$18,$19,$20,$21,$22,$23,
                                  $24,$25,$26,$27)).*`,
-      [newId('xjob'), job.sourceId, job.externalJobId, job.title, job.company, job.location,
+      [offered, job.sourceId, job.externalJobId, job.title, job.company, job.location,
        job.description, job.skills, job.experience, job.expMin, job.expMax,
        job.salary, job.salaryMin, job.salaryMax, job.employmentType, job.industry,
        job.education, job.applicationUrl, job.applyEmail, job.postedAt, job.status,
        job.dedupeKey, JSON.stringify(job.raw ?? {}),
        job.originalPublisher ?? null, job.city ?? null, job.state ?? null,
        job.country ?? null]);
-    return rows[0];
+    const row = rows[0];
+    if (row) Object.defineProperty(row, 'created', { value: row.id === offered, enumerable: false });
+    return row;
   });
+}
+
+/** One line in external_sync_runs. Never fails the sync it describes. */
+export async function recordSyncRun(session, run) {
+  return withUser(session, (c) => c.query(
+    `select external_sync_run_record($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+    [run.sourceId || null, run.kind || 'sync', run.startedAt || new Date(), run.status,
+     run.fetched || 0, run.created || 0, run.updated || 0, run.closed || 0,
+     run.duplicates || 0, run.skipped || 0, run.error || null]))
+    .catch((err) => console.error('[external] could not record the sync run:', err.message));
 }
 
 /** Link same-vacancy rows together. Returns how many were linked. */

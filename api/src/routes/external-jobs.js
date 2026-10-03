@@ -26,6 +26,8 @@ import { z } from 'zod';
 import { wrap, badRequest, forbidden, notFound } from '../errors.js';
 import { requireAuth } from '../auth.js';
 import { config } from '../config.js';
+import { withUser } from '../db.js';
+import { validateExternalUrl } from '../external/redirect.js';
 import * as store from '../external/store.js';
 import { toSource, toExternalJob, toMatch, toExternalApplication } from '../external/shapes.js';
 import { normaliseExternalJob } from '../external/normalise.js';
@@ -76,6 +78,114 @@ export default function externalJobRoutes() {
    * What the browser layer asks before it adds anything to the interface.
    * Reports the switches, never a credential.
    */
+  /* ================================================================ *
+   * THE JOB PORTAL'S VIEW OF EXTERNAL JOBS
+   *
+   * External jobs appear in the ordinary TeamLink job portal - the
+   * candidate search and the public job board - next to TeamLink's own.
+   * These three routes are what the portal reads. No sign-in is needed:
+   * the public job board is where candidates look first.
+   *
+   * Applying is NOT a TeamLink application. The apply route sends the
+   * candidate to the original job page and records nothing in
+   * `applications`; a signed-in candidate's click is tracked separately
+   * (POST /external/apply -> external_applications, status "Clicked"),
+   * which is a different record with a different meaning.
+   * ================================================================ */
+  const PORTAL = { userId: '', role: 'anon', profileId: null };
+  const STATUS = { open: 'ACTIVE', closed: 'CLOSED', expired: 'EXPIRED', removed: 'UNAVAILABLE' };
+  const portalJob = (r) => ({
+    id: r.id,
+    jobType: 'EXTERNAL',
+    title: r.title,
+    company: r.company || '',
+    location: r.location || '',
+    experience: r.experience || '',
+    salary: r.salary || '',
+    salaryMin: r.salary_min == null ? null : Number(r.salary_min),
+    salaryMax: r.salary_max == null ? null : Number(r.salary_max),
+    skills: r.skills || [],
+    description: r.description || '',
+    employmentType: r.employment_type || '',
+    education: r.education || '',
+    postedAt: r.posted_at ? new Date(r.posted_at).toISOString() : null,
+    lastSyncedAt: r.synced_at ? new Date(r.synced_at).toISOString() : null,
+    status: STATUS[r.status] || 'UNAVAILABLE',
+    source: r.source_key,
+    sourceName: r.source_name,
+    publisher: r.original_publisher || null,
+  });
+
+  r.get('/portal/external-jobs', wrap(async (req, res) => {
+    const q = String(req.query.q || '').slice(0, 120);
+    const source = String(req.query.source || '').slice(0, 60);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 500);
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+    const rows = await withUser(PORTAL, async (c) => (await c.query(
+      `select * from external_portal_jobs($1,$2,$3,$4)`, [q, source, limit, offset])).rows);
+    res.json({
+      jobs: rows.map(portalJob),
+      total: rows.length ? Number(rows[0].total) : 0,
+    });
+  }));
+
+  r.get('/portal/external-jobs/:id', wrap(async (req, res) => {
+    const row = await withUser(PORTAL, async (c) => (await c.query(
+      `select * from external_portal_job($1)`, [String(req.params.id).slice(0, 80)])).rows[0]);
+    if (!row) throw notFound('This job is no longer available.');
+    res.json({ job: portalJob(row) });
+  }));
+
+  /** A small page for when there is nowhere to send the candidate. */
+  const sorry = (res, code, title, line) => res.status(code).type('html').send(
+    `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} · TeamLink</title>
+<style>body{margin:0;background:#f4f7fb;font:15px/1.6 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#16202c}
+main{max-width:480px;margin:12vh auto;padding:28px 26px;background:#fff;border:1px solid #e6ebf2;border-radius:14px}
+h1{font-size:19px;margin:0 0 8px}p{margin:0 0 14px;color:#42505f}a{color:#1d6ff2;font-weight:700}</style></head>
+<body><main><h1>${title}</h1><p>${line}</p><p><a href="/#/jobs">Back to TeamLink jobs</a></p></main></body></html>`);
+
+  /*
+   * GET /api/portal/external-jobs/:id/apply
+   *
+   * The destination comes from the database by job id - never from the
+   * request - and is validated before it goes in a Location header.
+   */
+  r.get('/portal/external-jobs/:id/apply', wrap(async (req, res) => {
+    const id = String(req.params.id).slice(0, 80);
+    const t = await withUser(PORTAL, async (c) => (await c.query(
+      `select * from external_portal_apply_target($1)`, [id])).rows[0]);
+    if (!t) return sorry(res, 404, 'This job is no longer available', 'We could not find that job.');
+    if (t.status !== 'open') {
+      return sorry(res, 410, 'This job is no longer available',
+        `The original posting on ${t.source_name || 'its website'} has closed, so there is nowhere to apply.`);
+    }
+    const ok = validateExternalUrl(t.application_url, t.connector || t.source_key);
+    if (!ok.ok) {
+      console.warn(`[external] redirect refused for ${id} (${t.source_key}): ${ok.reason}`);
+      return sorry(res, 422, 'We could not open this job',
+        'The link we have for it does not look safe to follow, so we have not sent you there. The job has been reported.');
+    }
+    res.set('Referrer-Policy', 'no-referrer');
+    return res.redirect(302, ok.url);
+  }));
+
+  /* The Job Sources screen: what each sync did. */
+  r.get('/external/sync-runs', requireAuth(), wrap(async (req, res) => {
+    if (!STAFF.includes(req.session.role)) throw forbidden();
+    const rows = await withUser(req.session, async (c) => (await c.query(
+      `select r.*, s.name as source_name from external_sync_runs r
+         left join job_sources s on s.id = r.source_id
+        order by r.started_at desc limit 50`)).rows);
+    res.json({ runs: rows.map((x) => ({
+      id: Number(x.id), source: x.source_id, sourceName: x.source_name || (x.kind === 'expire' ? 'All sources' : ''),
+      kind: x.kind, status: x.status,
+      startedAt: x.started_at, completedAt: x.completed_at,
+      fetched: x.fetched, created: x.created, updated: x.updated, closed: x.closed,
+      duplicates: x.duplicates, skipped: x.skipped, error: x.error || null,
+    })) });
+  }));
+
   r.get('/external/config', requireAuth(), wrap(async (_req, res) => {
     res.json({
       enabled: true,                                // it is mounted, so it is
@@ -605,6 +715,19 @@ export default function externalJobRoutes() {
           applyUrl: shapedExisting.applicationUrl,
           application: shapedExisting,
         });
+      }
+    }
+
+    /* The stored link is checked BEFORE the click is recorded: a job
+       whose link is unsafe is reported, and the candidate is not sent. */
+    const target = await withUser(req.session, async (c) => (await c.query(
+      `select * from external_portal_apply_target($1)`, [externalJobId])).rows[0]);
+    if (target && target.status === 'open' && target.application_url) {
+      const ok = validateExternalUrl(target.application_url, target.connector || target.source_key);
+      if (!ok.ok) {
+        console.warn(`[external] apply refused for ${externalJobId} (${target.source_key}): ${ok.reason}`);
+        return res.status(422).json({ ok: false, status: 'invalid_url',
+          error: { code: 'INVALID_URL', message: 'This job’s link does not look safe to follow, so we have not opened it.' } });
       }
     }
 

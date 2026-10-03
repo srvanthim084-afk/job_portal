@@ -55,8 +55,12 @@
     if (!a) return;
     S.loading = true; S.error = '';
     paint();
-    Promise.all([a.get('/external/sources'), a.get('/external/connectors')])
+    Promise.all([a.get('/external/sources'), a.get('/external/connectors'),
+      a.get('/external/sync-runs').catch(function () { return { runs: [] }; }),
+      a.get('/external/jobs?limit=100').catch(function () { return { jobs: [] }; })])
       .then(function (out) {
+        S.runs = (out[2] && out[2].runs) || [];
+        S.jobs = (out[3] && out[3].jobs) || [];
         S.sources = out[0].sources || [];
         S.connectors = out[1].connectors || [];
         S.loading = false;
@@ -82,7 +86,20 @@
       + '<h2>Available connectors</h2>'
       + '<div class="desc">Each board TeamLink can collect from, and what it needs. '
       + 'Keys are read from the server environment and are never shown here.</div>'
-      + '</div></div><div class="panel-body"><div id="jsConnHost"></div></div></div>';
+      + '</div></div><div class="panel-body"><div id="jsConnHost"></div></div></div>'
+      /* What each sync did, and the external jobs themselves - TeamLink's
+         own jobs are on the Jobs screen; these are the ones candidates
+         apply for on the original site. */
+      + '<div class="panel" style="margin-top:14px"><div class="panel-head"><div>'
+      + '<h2>Recent syncs</h2>'
+      + '<div class="desc">One line per run: fetched, new, updated, closed as stale, '
+      + 'duplicates folded together, and any error. A failed run keeps the jobs it already had.</div>'
+      + '</div></div><div class="panel-body"><div id="jsRunsHost"></div></div></div>'
+      + '<div class="panel" style="margin-top:14px"><div class="panel-head"><div>'
+      + '<h2>External jobs</h2>'
+      + '<div class="desc">Open external jobs shown in the job portal. Candidates applying '
+      + 'are sent to the original URL; nothing becomes a TeamLink application.</div>'
+      + '</div></div><div class="panel-body"><div id="jsJobsHost"></div></div></div>';
   }
 
   function paint() {
@@ -106,6 +123,40 @@
       + '</div>';
 
     if (conn) conn.innerHTML = connectorTable();
+
+    var runs = document.getElementById('jsRunsHost');
+    if (runs) {
+      runs.innerHTML = (S.runs || []).length ? '<table class="js-tbl"><thead><tr>'
+        + '<th>When</th><th>Source</th><th>Status</th><th>Fetched</th><th>New</th><th>Updated</th>'
+        + '<th>Closed</th><th>Duplicates</th><th>Error</th></tr></thead><tbody>'
+        + S.runs.map(function (r) {
+          return '<tr><td>' + esc(when(r.startedAt)) + '</td><td>' + esc(r.sourceName || r.source || '—')
+            + (r.kind === 'expire' ? '<div class="js-sub">stale postings closed</div>' : '') + '</td>'
+            + '<td>' + statusPill({ lastSyncStatus: r.status }) + '</td>'
+            + ['fetched', 'created', 'updated', 'closed', 'duplicates'].map(function (k) {
+              return '<td class="js-num">' + Number(r[k] || 0) + '</td>';
+            }).join('')
+            + '<td class="js-errcell">' + esc(r.error || '') + '</td></tr>';
+        }).join('') + '</tbody></table>'
+        : '<div class="js-empty">No syncs recorded yet.</div>';
+    }
+
+    var jobs = document.getElementById('jsJobsHost');
+    if (jobs) {
+      jobs.innerHTML = (S.jobs || []).length ? '<table class="js-tbl"><thead><tr>'
+        + '<th>Source</th><th>Source job ID</th><th>Title</th><th>Company</th><th>Status</th>'
+        + '<th>Last synced</th><th>Original URL</th></tr></thead><tbody>'
+        + S.jobs.map(function (j) {
+          var url = j.applicationUrl || '';
+          return '<tr><td>' + esc(j.sourceName || j.sourceId) + '</td>'
+            + '<td><span class="js-code">' + esc(j.sourceJobId || '') + '</span></td>'
+            + '<td>' + esc(j.title) + '</td><td>' + esc(j.company || '—') + '</td>'
+            + '<td>' + esc(j.status || '') + '</td><td>' + esc(when(j.syncedAt)) + '</td>'
+            + '<td style="max-width:260px;word-break:break-all">' + (url ? '<a href="' + esc(url)
+              + '" target="_blank" rel="noopener noreferrer">' + esc(url) + '</a>' : '—') + '</td></tr>';
+        }).join('') + '</tbody></table>'
+        : '<div class="js-empty">No external jobs yet.</div>';
+    }
   }
 
   function statusPill(s) {
