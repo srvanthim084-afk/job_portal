@@ -175,6 +175,15 @@ export async function runAvailabilitySweep(opts = {}) {
   out.lapsed = (await withUser(ENGINE, (c) => c.query(
     `select availability_engine_lapse($1) as n`, [at]))).rows[0].n;
 
+  /* Messages are OFF until the owner turns them on. The backfill marks
+     everyone active in the last 30 days as actively looking, so the first
+     weeks after deploying would ask a large share of the real candidates
+     "are you still looking?" - a new automatic stream to people who were
+     told no unasked mail would come. AVAILABILITY_RECONFIRM_MESSAGES=true
+     turns it on; "Not confirmed" bookkeeping above runs either way. */
+  const messagesOn = opts.messages ?? (String(process.env.AVAILABILITY_RECONFIRM_MESSAGES || '').toLowerCase() === 'true');
+  if (!messagesOn) { out.skipped = 'messages off (set AVAILABILITY_RECONFIRM_MESSAGES=true)'; return out; }
+
   if (inQuietHours(now)) { out.skipped = 'quiet hours (21:00-08:00 IST)'; return out; }
 
   const placed = (await withUser(ENGINE, (c) => c.query(

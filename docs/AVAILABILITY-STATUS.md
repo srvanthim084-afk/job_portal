@@ -47,6 +47,15 @@ Backfill: candidates who signed in or applied in the last 30 days → Actively l
 
 ## Re-confirmation ("Are you still looking for a job?")
 
+**Off until you turn it on.** The re-confirm messages, and the one message
+sent when a placed candidate's 90 days end, go out only when the server
+has `AVAILABILITY_RECONFIRM_MESSAGES=true`. The backfill marks everyone who
+signed in or applied in the last 30 days as actively looking. With the
+messages on, a large share of real candidates would be asked within the
+first weeks. "Not confirmed" bookkeeping runs either way. Turn it on
+when you are ready for that stream.
+
+
 The hourly sweep (`startAvailabilitySweep`, started with the other background work):
 
 * Actively looking not confirmed for **30 days**, Open to offers for **60 days** → asked.

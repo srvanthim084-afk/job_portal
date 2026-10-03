@@ -73,6 +73,7 @@ test('boot', async () => {
     EMAIL_API_KEY: '', EMAIL_SMTP_HOST: '', EMAIL_SMTP_USER: '', EMAIL_SMTP_PASS: '',
     EMAILJS_SERVICE_ID: '', EMAILJS_TEMPLATE_ID: '', EMAILJS_PUBLIC_KEY: '', EMAILJS_PRIVATE_KEY: '',
     OUTBOUND_ALLOWLIST: '',
+    AVAILABILITY_RECONFIRM_MESSAGES: 'true',
   });
   raw = (sql, params) => dbh.db.query(sql, params);
 
