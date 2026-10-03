@@ -192,6 +192,36 @@ test('applying to a draft job is refused', async () => {
   assert.equal(res.body.error.code, 'JOB_UNAVAILABLE');
 });
 
+test('applying while signed out is refused, whatever the page did', async () => {
+  const anon = makeClient(`http://127.0.0.1:${API_PORT}`);
+  const res = await anon.post('/api/applications', { jobId: 'j5' });
+  assert.equal(res.status, 401);
+  const none = await getPool().query(`select count(*)::int n from applications where job_id='j5' and source='portal' and applied_at > now() - interval '1 minute'`);
+  assert.equal(none.rows[0].n, 0, 'a signed-out request created an application');
+});
+
+test('applying to a job that does not exist is refused', async () => {
+  const res = await client.post('/api/applications', { jobId: 'no_such_job_xyz' });
+  assert.equal(res.status, 404);
+  assert.equal(res.body.error.code, 'JOB_UNAVAILABLE');
+});
+
+test('applying to a closed or paused job is refused, and nothing is recorded', async () => {
+  try {
+    for (const set of [`status='closed'`, `status='open', paused=true`]) {
+      await getPool().query(`update jobs set ${set} where id='j2'`);
+      const res = await client.post('/api/applications', { jobId: 'j2' });
+      // 404 when row security hides the job from candidates, 409 when it is visible but not open.
+      assert.ok([404, 409].includes(res.status), `${set}: ${res.status}`);
+      assert.equal(res.body.error.code, 'JOB_UNAVAILABLE');
+    }
+    const none = await getPool().query(`select count(*)::int n from applications where job_id='j2' and candidate_id='cand1'`);
+    assert.equal(none.rows[0].n, 0);
+  } finally {
+    await getPool().query(`update jobs set status='open', paused=false where id='j2'`);
+  }
+});
+
 test('candidate sees only their own notifications', async () => {
   const res = await client.get('/api/notifications');
   assert.equal(res.status, 200);
