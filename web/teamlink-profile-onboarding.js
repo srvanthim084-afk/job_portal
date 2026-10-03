@@ -822,10 +822,26 @@
 
     var app = document.getElementById('app');
     if (!app) return;
-    var target = app.querySelector('.cap-wrap, .cap-main, .wrap') || app;
     var el = document.createElement('div');
     el.innerHTML = bannerHtml(c);
     var node = el.firstChild;
+
+    /*
+     * UNDER THE HEADER, NEVER ABOVE IT.
+     *
+     * The candidate shell has none of .cap-wrap / .cap-main / .wrap, so
+     * this fell back to the first child of #app - which is ABOVE the
+     * sticky header. Measured on Applications at 375px: the header sat
+     * 153px down the page behind a 137px banner, and looked as if it did
+     * not stick at all. Where the shell has a header, the banner follows
+     * it.
+     */
+    var header = app.querySelector(':scope > .cp-hd, :scope > header');
+    if (header && header.parentNode) {
+      header.parentNode.insertBefore(node, header.nextSibling);
+      return;
+    }
+    var target = app.querySelector('.cap-wrap, .cap-main, .wrap') || app;
     if (target.firstChild) target.insertBefore(node, target.firstChild);
     else target.appendChild(node);
   }

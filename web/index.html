@@ -142,7 +142,12 @@
   .role-links .sep{width:1px;height:14px;background:var(--line)}
   .header-actions{display:flex;align-items:center;gap:10px}
   @media (max-width:860px){
-    body{overflow-x:hidden}
+    /* clip, not hidden. `hidden` makes the page shell a scroll container,
+       which is the thing a sticky header must never sit inside; `clip`
+       paired with a visible y-axis stays clip/visible (measured) and
+       establishes no scrollport. It is a safety net only - anything wide
+       enough to hit it should scroll inside itself, as .tlpipe now does. */
+    body{overflow-x:clip}
     .site-header-inner{flex-wrap:wrap;height:auto;padding:12px 0;row-gap:10px}
     .main-nav{display:none}
     .header-spacer{display:none}
@@ -25076,6 +25081,17 @@ table.data td .tl-af b{white-space:normal}
 .cp-wrap{max-width:1240px;margin:0 auto;padding:18px 18px 96px}
 .cp-panel{position:absolute;right:0;top:calc(100% + 8px);width:330px;max-width:calc(100vw - 24px);max-height:420px;overflow-y:auto;background:#fff;border:1px solid #e6ebf2;border-radius:12px;box-shadow:0 14px 40px rgba(15,30,60,.18);display:none;z-index:900}
 .cp-panel.on{display:block}
+/* ON A PHONE THE PANEL IS PINNED TO THE SCREEN, NOT TO ITS ICON.
+   A 330px panel hung from the right edge of the bell (which sits at
+   x=170 on a 375px screen) started at x=-160: half of Notifications and
+   a third of Messages were off the left edge and clipped. Nothing above
+   the header sets transform, filter or contain, so `fixed` is measured
+   against the viewport; the header is sticky at top:0 and 59px tall
+   here, so 66px puts the panel just under it with the desktop's gap. */
+@media (max-width:600px){
+  .cp-hd .cp-panel{position:fixed;left:12px;right:12px;top:66px;width:auto;max-width:none;
+    max-height:min(420px, calc(100vh - 66px - 72px))}
+}
 .cp-panel .ph{padding:11px 14px;border-bottom:1px solid #f0f3f7;font-size:13px;font-weight:800;color:#16202c;display:flex;justify-content:space-between;align-items:center}
 .cp-row{padding:11px 14px;border-bottom:1px solid #f4f6fa;font-size:12.5px;color:#33404f;cursor:pointer;line-height:1.5}
 .cp-row:hover{background:#f7fafd}
@@ -27425,7 +27441,13 @@ table.data td .tl-af b{white-space:normal}
    One track, read from the stages table and from the application's real
    stage history, rendered for whoever is looking.
    ===================================================================== */
-.tlpipe{--tlp-done:var(--brand-600,#1d6ff2);--tlp-soft:var(--line,#e4e9f0)}
+.tlpipe{--tlp-done:var(--brand-600,#1d6ff2);--tlp-soft:var(--line,#e4e9f0);
+  /* A flex or grid child defaults to min-width:auto, which lets it grow to
+     its content - twelve stages at 96px is 1,149px on a 375px phone. The
+     track's own overflow-x:auto never engaged because its box was never
+     narrower than its content. Bounded here, the track scrolls itself
+     and the page does not. */
+  min-width:0;max-width:100%}
 .tlpipe .track{display:flex;align-items:flex-start;gap:0;overflow-x:auto;padding:4px 0 2px}
 .tlpipe .st{flex:1 1 0;min-width:96px;position:relative;text-align:center;padding-top:19px}
 /* The rail is drawn as two half-segments per step so the first and last
