@@ -163,7 +163,7 @@ export default function profileViewerRoutes() {
       tip = {
         resumeScore: out.score && out.score.status === 'scored' ? out.score.total_score : null,
         text: out.score && out.score.status === 'scored'
-          ? `Profile score ${out.score.total_score}. ${best ? best.fix : 'Keep your profile up to date'} to get more views.`
+          ? `Profile score ${out.score.total_score}. ${best ? `Next step: ${best.fix}` : 'Keep your profile up to date.'} Stronger profiles get more views.`
           : 'Check your resume score and add the missing details to get more views.',
         link: '#/candidate/resume-score',
       };
