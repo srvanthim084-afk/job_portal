@@ -69,6 +69,18 @@ export function fromPgError(err) {
     return conflict(CODES.EMAIL_TAKEN, 'An account with that email already exists.');
   }
 
+  /*
+   * 0091: the hold rules, refused by the database. The message is written
+   * for a person; the DETAIL is JSON the screen uses to offer "Message
+   * <holder>" and "Request admin override".
+   */
+  if (c === 'TLB01' || c === 'TLD01') {
+    let details;
+    try { details = { engagement: JSON.parse(err.detail || '{}') }; } catch { details = undefined; }
+    return new ApiError(409, c === 'TLB01' ? 'ENGAGEMENT_BLOCKED' : 'DUPLICATE_SUBMISSION',
+      String(err.message || 'Another recruiter holds this candidate for this role.'), details);
+  }
+
   if (c === '23505') {
     if (constraint.includes('applications_candidate_id_job_id'))
       return conflict(CODES.DUPLICATE_APPLICATION, 'You have already applied to this role.');

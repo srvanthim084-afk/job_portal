@@ -1029,9 +1029,10 @@ begin
       raise exception '%', engagement_block_message(v.reason, v.holder_name, v.job_title,
                              v.role_key, v.status_label, v.hold_expires_at)
         using errcode = 'TLB01',
-              detail = engagement_block_detail(v.decision, v.reason, v.holder_recruiter_id,
+              detail = (engagement_block_detail(v.decision, v.reason, v.holder_recruiter_id,
                          v.holder_name, v.role_key, v.job_title, v.status_label,
-                         v.hold_expires_at);
+                         v.hold_expires_at)::jsonb
+                        || jsonb_build_object('candidateId', new.candidate_id))::text;
     end if;
     if v.reason = 'override' then
       update engagement_overrides set used_at = coalesce(used_at, now()) where id = v.override_id;
@@ -1075,7 +1076,7 @@ begin
           using errcode = 'TLD01',
                 detail = json_build_object('reason', 'duplicate_submission',
                            'firstRecruiter', v_dup.rname, 'roleKey', v_rk,
-                           'jobTitle', v_job.title)::text;
+                           'jobTitle', v_job.title, 'candidateId', new.candidate_id)::text;
       end if;
       update engagement_overrides set used_at = now() where id = v_ovr;
       perform engagement_audit_write(new.candidate_id, v_rk, new.job_id, 'override_used',
@@ -1122,6 +1123,28 @@ create trigger applications_engagement_log
   after insert or update of stage on applications
   for each row execute function applications_engagement_log();
 
+/* An interview booked is an engagement too, whoever booked it. */
+create or replace function interviews_engagement_log() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare v_job record;
+begin
+  select j.title, j.department, j.recruiter_id into v_job from jobs j where j.id = new.job_id;
+  insert into candidate_contact_history
+    (candidate_id, job_id, channel, direction, outcome, ref_id, contacted_by,
+     recruiter_id, role_key, source)
+  values (new.candidate_id, new.job_id, 'pipeline', 'out', 'interview', new.id,
+          app_user_id_safe(),
+          coalesce((select a.recruiter_id from applications a where a.id = new.application_id),
+                   v_job.recruiter_id),
+          app_role_key(v_job.title, v_job.department), 'interview');
+  return new;
+end $$;
+
+drop trigger if exists interviews_engagement_log on interviews;
+create trigger interviews_engagement_log
+  after insert on interviews
+  for each row execute function interviews_engagement_log();
+
 /* An AI call is a call. Blocked the same way, recorded the same way. */
 create or replace function ai_call_engagement_guard() returns trigger
 language plpgsql security definer set search_path = public as $$
@@ -1133,9 +1156,10 @@ begin
       raise exception '%', engagement_block_message(v.reason, v.holder_name, v.job_title,
                              v.role_key, v.status_label, v.hold_expires_at)
         using errcode = 'TLB01',
-              detail = engagement_block_detail(v.decision, v.reason, v.holder_recruiter_id,
+              detail = (engagement_block_detail(v.decision, v.reason, v.holder_recruiter_id,
                          v.holder_name, v.role_key, v.job_title, v.status_label,
-                         v.hold_expires_at);
+                         v.hold_expires_at)::jsonb
+                        || jsonb_build_object('candidateId', new.candidate_id))::text;
     end if;
   end if;
   return new;
@@ -1310,6 +1334,7 @@ revoke execute on function applications_engagement_guard() from public;
 revoke execute on function applications_engagement_log() from public;
 revoke execute on function ai_call_engagement_guard() from public;
 revoke execute on function ai_call_engagement_log() from public;
+revoke execute on function interviews_engagement_log() from public;
 
 do $$
 begin

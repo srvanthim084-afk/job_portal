@@ -27,7 +27,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { startTestDb } from './harness.mjs';
 
-const DB_PORT = 5461;
+const DB_PORT = 5477;
 
 let dbh, db;
 const uid = {};
@@ -211,6 +211,11 @@ test('every application event writes the contact history', async () => {
   });
   const after = await q(`select source from candidate_contact_history where ref_id = 'app_a1' order by id`);
   assert.deepEqual(after.map((r) => r.source), ['application', 'interview']);
+  // an interview booked
+  await raw(`insert into interviews (id, candidate_id, job_id, application_id, type, status)
+             values ('iv_t1', 'c1', 'jA', 'app_a1', 'HR Round', 'Scheduled')`);
+  const iv = await q(`select source, recruiter_id, role_key from candidate_contact_history where ref_id = 'iv_t1'`);
+  assert.deepEqual(iv, [{ source: 'interview', recruiter_id: 'rA', role_key: 'medical coder' }]);
 });
 
 test('the hold lapses 30 days after the last activity', async () => {

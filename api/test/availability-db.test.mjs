@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { startTestDb } from './harness.mjs';
 
-const DB_PORT = 5462;
+const DB_PORT = 5478;
 let dbh, db;
 const uid = {};
 const ROLE = { rA: 'recruiter', cand: 'candidate', cand2: 'candidate', admin: 'admin', client: 'client' };

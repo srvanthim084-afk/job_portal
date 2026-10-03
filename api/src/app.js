@@ -48,6 +48,10 @@ import { startBulkMessageSweep } from './notify/bulk.js';
 import { startExternalSyncSweep } from './external/service.js';
 import { startApplyReminderSweep } from './external/reminder.js';
 import { startSavedSearchAlerts } from './notify/saved-search-alerts.js';
+/* 0091 / 0092: shared candidates + "already contacted"; availability. */
+import sharedCandidateRoutes, { engagementRefusalAudit } from './routes/shared-candidates.js';
+import availabilityRoutes from './routes/availability.js';
+import { startAvailabilitySweep } from './notify/availability-checks.js';
 
 /*
  * The background work belongs to the APPLICATION, not to one entry point.
@@ -94,6 +98,9 @@ function startBackgroundWork(logger) {
     /* Saved-search alerts: instant ones the publish hook missed, and the
        08:00 IST daily / Monday weekly digests. Idempotent per slot. */
     backgroundStops.push(startSavedSearchAlerts());
+    /* "Still looking?" re-confirmations, Not-confirmed marking and the
+       end of the 90-day placed period. Hourly, idempotent, quiet at night. */
+    backgroundStops.push(startAvailabilitySweep());
   } catch (err) {
     console.error('[background] could not start:', err.message);
   }
@@ -301,6 +308,8 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', exportRoutes());
   app.use('/api', savedSearchRoutes());
   app.use('/api', pushRoutes());
+  app.use('/api', sharedCandidateRoutes());
+  app.use('/api', availabilityRoutes());
   app.use('/api', candidateRoutes());
   app.use('/api', applicationRoutes());
   app.use('/api', miscRoutes());
@@ -459,6 +468,9 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
     });
   }
 
+  /* A hold the DATABASE refused rolled its audit row back with it; this
+     writes 'blocked' in a fresh transaction, then hands the error on. */
+  app.use(engagementRefusalAudit());
   app.use(errorHandler(logger));
   return app;
 }
