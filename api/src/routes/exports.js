@@ -38,9 +38,12 @@
    ===================================================================== */
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
+import { mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { withUser } from '../db.js';
-import { wrap, badRequest, forbidden } from '../errors.js';
+import { wrap, badRequest, forbidden, ApiError } from '../errors.js';
 import { requireAuth, requireRole } from '../auth.js';
 import { writeSheet, makeZip } from '../xlsx.js';
 import { getStorage } from '../storage.js';
@@ -81,12 +84,49 @@ const DEFAULT_COLUMNS = Object.keys(COLUMNS);
  */
 const ZIP_LIMIT = 100;
 
+/*
+ * ABOVE THAT, A JOB. A selection of more than a hundred is built in the
+ * background and downloaded when it is ready, rather than refused. A
+ * thousand is the ceiling for one job: the archive is assembled in
+ * memory, and a thousand resumes is already a few hundred megabytes.
+ */
+const JOB_LIMIT = 1000;
+const JOB_TTL_MS = 24 * 60 * 60 * 1000;
+const JOB_DIR = process.env.EXPORT_DIR || join(process.cwd(), 'var', 'exports');
+
+/** id -> { id, owner, status, total, done, included, missing, file, error, createdAt } */
+const jobs = new Map();
+
+/** Archives older than a day go, with their records. */
+function sweepJobs() {
+  const now = Date.now();
+  for (const [id, j] of jobs) {
+    if (now - j.createdAt > JOB_TTL_MS) {
+      try { if (j.file) unlinkSync(j.file); } catch { /* already gone */ }
+      jobs.delete(id);
+    }
+  }
+  try {
+    if (!existsSync(JOB_DIR)) return;
+    for (const f of readdirSync(JOB_DIR)) {
+      const full = join(JOB_DIR, f);
+      if (now - statSync(full).mtimeMs > JOB_TTL_MS) unlinkSync(full);
+    }
+  } catch { /* nothing to sweep */ }
+}
+setInterval(sweepJobs, 60 * 60 * 1000).unref?.();
+
 const selectionSchema = z.object({
   ids: z.array(z.string().max(80)).min(1, 'Select at least one candidate.').max(5000),
   scope: z.enum(['selected', 'filtered', 'page']).default('selected'),
   /* What the sidebar had set, for the audit line only. Never used to
      build a query - the ids are the query. */
   filters: z.record(z.any()).optional(),
+});
+
+const jobSchema = selectionSchema.extend({
+  ids: z.array(z.string().max(80)).min(1, 'Select at least one candidate.')
+    .max(JOB_LIMIT, `One export holds up to ${JOB_LIMIT} resumes.`),
 });
 
 const listSchema = selectionSchema.extend({
@@ -245,6 +285,61 @@ function zipName(row, used) {
  * routes
  * ------------------------------------------------------------------ */
 
+/**
+ * The archive itself: every resume on file, plus missing_resumes.txt
+ * naming anybody whose file is absent or unreadable.
+ *
+ * @param onProgress (done, total) after each file - the background job
+ *                   reports it; the direct download ignores it.
+ */
+async function buildArchive(rows, withFile, without, onProgress) {
+  const store = getStorage();
+  const used = new Set();
+  const members = [];
+  const failed = [];
+
+  let done = 0;
+  for (const row of withFile) {
+    try {
+      const buf = await store.get(row.x_path);
+      members.push({ name: zipName(row, used), data: buf });
+    } catch (err) {
+      /* One unreadable file must not lose the other ninety-nine. It is
+         reported in the same place as a missing one, with the reason. */
+      failed.push(`${row.x_name || row.x_id} — file could not be read (${err.message})`);
+    }
+    done += 1;
+    if (onProgress) onProgress(done, withFile.length);
+  }
+
+  const notes = [];
+  if (without.length) {
+    notes.push('No resume on file:');
+    without.forEach((x) => notes.push(`  ${x.x_name || x.x_id}`));
+  }
+  if (failed.length) {
+    if (notes.length) notes.push('');
+    notes.push('On file but unreadable:');
+    failed.forEach((line) => notes.push(`  ${line}`));
+  }
+  if (notes.length) {
+    notes.unshift(`TeamLink resume export — ${new Date().toISOString().slice(0, 10)}`,
+      `${rows.length} selected, ${members.length} included.`, '');
+    members.push({
+      name: 'missing_resumes.txt',
+      data: Buffer.from(notes.join('\r\n'), 'utf8'),
+    });
+  }
+
+  return { zip: makeZip(members), members, failed };
+}
+
+function publicJob(j) {
+  return { id: j.id, status: j.status, total: j.total, done: j.done,
+           included: j.included, missing: j.missing, error: j.error,
+           expiresAt: new Date(j.createdAt + JOB_TTL_MS).toISOString() };
+}
+
 export default function exportRoutes() {
   const r = Router();
 
@@ -272,6 +367,7 @@ export default function exportRoutes() {
         columns: Object.entries(COLUMNS).map(([key, v]) => ({ key, label: v.label })),
         defaults: DEFAULT_COLUMNS,
         zipLimit: ZIP_LIMIT,
+        jobLimit: JOB_LIMIT,
       });
     }));
 
@@ -359,42 +455,7 @@ export default function exportRoutes() {
       throw badRequest('None of the selected candidates has a resume on file.');
     }
 
-    const store = getStorage();
-    const used = new Set();
-    const members = [];
-    const failed = [];
-
-    for (const row of withFile) {
-      try {
-        const buf = await store.get(row.x_path);
-        members.push({ name: zipName(row, used), data: buf });
-      } catch (err) {
-        /* One unreadable file must not lose the other ninety-nine. It is
-           reported in the same place as a missing one, with the reason. */
-        failed.push(`${row.x_name || row.x_id} — file could not be read (${err.message})`);
-      }
-    }
-
-    const notes = [];
-    if (without.length) {
-      notes.push('No resume on file:');
-      without.forEach((x) => notes.push(`  ${x.x_name || x.x_id}`));
-    }
-    if (failed.length) {
-      if (notes.length) notes.push('');
-      notes.push('On file but unreadable:');
-      failed.forEach((line) => notes.push(`  ${line}`));
-    }
-    if (notes.length) {
-      notes.unshift(`TeamLink resume export — ${new Date().toISOString().slice(0, 10)}`,
-        `${rows.length} selected, ${members.length} included.`, '');
-      members.push({
-        name: 'missing_resumes.txt',
-        data: Buffer.from(notes.join('\r\n'), 'utf8'),
-      });
-    }
-
-    const zip = makeZip(members);
+    const { zip, members, failed } = await buildArchive(rows, withFile, without);
     const stamp = new Date().toISOString().slice(0, 10);
     res.setHeader('content-type', 'application/zip');
     res.setHeader('content-disposition',
@@ -404,6 +465,92 @@ export default function exportRoutes() {
     res.setHeader('x-teamlink-missing', String(without.length + failed.length));
     return res.send(zip);
   }));
+
+  /*
+   * MORE THAN A HUNDRED: A BACKGROUND JOB.
+   *
+   *   POST /api/recruiter/candidates/export-resumes/jobs        start it
+   *   GET  /api/recruiter/candidates/export-resumes/jobs/:id    how far
+   *   GET  /api/recruiter/candidates/export-resumes/jobs/:id/download
+   *
+   * The selection is read and audited in the request, as the direct
+   * download is, so what can be exported is decided by the same row-level
+   * rules and the audit line is written before any file is touched. Only
+   * the archive is built afterwards. The archive belongs to the person who
+   * asked for it - nobody else's session can see or download it - and it
+   * is deleted after a day.
+   */
+  r.post('/recruiter/candidates/export-resumes/jobs', ...staff, wrap(async (req, res) => {
+    const body = parse(jobSchema, req.body);
+    const rows = await readRows(req.session, body.ids, ['name', 'appliedFor']);
+    const withFile = rows.filter((x) => x.x_path);
+    const without = rows.filter((x) => !x.x_path);
+
+    await audit(req, {
+      kind: 'resumes_zip',
+      scope: body.scope,
+      candidates: rows.length,
+      resumes: withFile.length,
+      missing: without.length,
+      filters: body.filters,
+    });
+    if (!withFile.length) throw badRequest('None of the selected candidates has a resume on file.');
+
+    sweepJobs();
+    const id = `xj_${randomBytes(12).toString('hex')}`;
+    const job = {
+      id, owner: String(req.session.userId), status: 'running',
+      total: withFile.length, done: 0, included: 0, missing: without.length,
+      file: null, error: null, createdAt: Date.now(),
+    };
+    jobs.set(id, job);
+
+    setImmediate(async () => {
+      try {
+        const out = await buildArchive(rows, withFile, without, (d) => { job.done = d; });
+        mkdirSync(JOB_DIR, { recursive: true });
+        const file = join(JOB_DIR, `${id}.zip`);
+        writeFileSync(file, out.zip);
+        job.file = file;
+        job.included = withFile.length - out.failed.length;
+        job.missing = without.length + out.failed.length;
+        job.status = 'ready';
+      } catch (err) {
+        job.status = 'failed';
+        job.error = 'The archive could not be built. Try a smaller selection.';
+        console.error('[export] job failed:', err.message);
+      }
+    });
+
+    res.status(202).json({ job: publicJob(job) });
+  }));
+
+  const mine = (req) => {
+    const job = jobs.get(String(req.params.id));
+    if (!job || job.owner !== String(req.session.userId)) {
+      throw new ApiError(404, 'NOT_FOUND', 'That export is not available. It may have expired.');
+    }
+    return job;
+  };
+
+  r.get('/recruiter/candidates/export-resumes/jobs/:id', requireAuth(),
+    requireRole('recruiter', 'bde', 'admin'), wrap(async (req, res) => {
+      res.json({ job: publicJob(mine(req)) });
+    }));
+
+  r.get('/recruiter/candidates/export-resumes/jobs/:id/download', requireAuth(),
+    requireRole('recruiter', 'bde', 'admin'), wrap(async (req, res) => {
+      const job = mine(req);
+      if (job.status !== 'ready' || !job.file || !existsSync(job.file)) {
+        throw new ApiError(409, 'NOT_READY', 'That export is not ready yet.');
+      }
+      const stamp = new Date(job.createdAt).toISOString().slice(0, 10);
+      res.setHeader('content-type', 'application/zip');
+      res.setHeader('x-content-type-options', 'nosniff');
+      res.setHeader('x-teamlink-included', String(job.included));
+      res.setHeader('x-teamlink-missing', String(job.missing));
+      res.download(job.file, `teamlink-resumes-${stamp}.zip`);
+    }));
 
   /** The log, for an administrator. */
   r.get('/admin/export-audit', requireAuth(), requireRole('admin'),

@@ -374,7 +374,8 @@
       + scopeOpt('__f_xlsx', 'Export List (Excel .xlsx)', 'A real workbook.', false, false)
         .replace(/name="tlxScope"/g, 'name="tlxFormat"').replace(/value="__f_xlsx"/, 'value="xlsx"')
       + scopeOpt('__f_zip', 'Download Resumes (ZIP)',
-          'The original files, up to ' + cat.zipLimit + ' at a time. Anyone without a '
+          'The original files. Up to ' + cat.zipLimit + ' download at once; up to '
+          + (cat.jobLimit || cat.zipLimit) + ' are prepared in the background. Anyone without a '
           + 'resume is listed in missing_resumes.txt inside the archive.', false, false)
         .replace(/name="tlxScope"/g, 'name="tlxFormat"').replace(/value="__f_zip"/, 'value="zip"')
 
@@ -460,9 +461,15 @@
         go.disabled = false; go.textContent = 'Export'; return;
       }
       if (format === 'zip' && ids.length > cat.zipLimit) {
-        toast('That is ' + ids.length + ' resumes. One archive holds '
-          + cat.zipLimit + ' — narrow the selection, or export in batches.', '⚠️');
-        go.disabled = false; go.textContent = 'Export'; return;
+        var most = cat.jobLimit || cat.zipLimit;
+        if (ids.length > most) {
+          toast('That is ' + ids.length + ' resumes. One export holds up to '
+            + most + ' — narrow the selection, or export in batches.', '⚠️');
+          go.disabled = false; go.textContent = 'Export'; return;
+        }
+        /* More than fit in one download: built in the background, and
+           downloaded here when it is ready. */
+        return backgroundZip(ids, scope, box, back, go);
       }
       if (ids.length > 100) {
         toast('Preparing ' + ids.length + ' records… this may take a moment.', '⏳');
@@ -504,6 +511,51 @@
     }).catch(function (err) {
       toast(err && err.message ? err.message : 'That export did not complete.', '⚠️');
       go.disabled = false; go.textContent = 'Export';
+    });
+  }
+
+  /**
+   * A large resume export: start the job, show how far it has got, and
+   * download the archive when the server says it is ready. Polled every
+   * two seconds; the archive stays available for a day.
+   */
+  function backgroundZip(ids, scope, box, back, go) {
+    var hdrs = { 'content-type': 'application/json', 'x-csrf-token': csrf() };
+    return fetch('/api/recruiter/candidates/export-resumes/jobs', {
+      method: 'POST', credentials: 'same-origin', headers: hdrs,
+      body: JSON.stringify({ ids: ids, scope: scope, filters: filtersForAudit() }),
+    }).then(function (res) {
+      return res.json().catch(function () { return null; }).then(function (j) {
+        if (!res.ok) throw new Error((j && j.error && j.error.message) || ('Export failed (' + res.status + ')'));
+        return j.job;
+      });
+    }).then(function (job) {
+      toast('Preparing ' + job.total + ' resumes in the background — the download starts when it is ready.', '⏳');
+      return new Promise(function (resolve, reject) {
+        var tick = function () {
+          fetch('/api/recruiter/candidates/export-resumes/jobs/' + encodeURIComponent(job.id),
+            { credentials: 'same-origin', cache: 'no-store' })
+            .then(function (r) { return r.json(); })
+            .then(function (out) {
+              var j = out && out.job;
+              if (!j) throw new Error((out && out.error && out.error.message) || 'That export is no longer available.');
+              if (j.status === 'failed') throw new Error(j.error || 'That export did not complete.');
+              if (j.status === 'ready') { resolve(j); return; }
+              go.textContent = 'Preparing… ' + j.done + ' / ' + j.total;
+              setTimeout(tick, 2000);
+            })
+            .catch(reject);
+        };
+        tick();
+      });
+    }).then(function (j) {
+      var a = document.createElement('a');
+      a.href = '/api/recruiter/candidates/export-resumes/jobs/' + encodeURIComponent(j.id) + '/download';
+      a.rel = 'noopener';
+      document.body.appendChild(a); a.click(); a.remove();
+      back.remove();
+      toast(j.included + ' resumes downloaded'
+        + (j.missing ? ' · ' + j.missing + ' had no file, listed in missing_resumes.txt' : ''), '✅');
     });
   }
 
