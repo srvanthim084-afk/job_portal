@@ -41,6 +41,9 @@ import pushRoutes from './routes/push.js';
 import walkinDriveRoutes from './routes/walkin-drives.js';
 import careerAssistantRoutes from './routes/career-assistant.js';
 import portalUpgradeRoutes, { mountPublicJobPage } from './routes/portal-upgrades.js';
+import profileViewerRoutes from './routes/profile-viewers.js';
+import resumeScoreRoutes from './routes/resume-score.js';
+import voiceSearchRoutes from './routes/voice-search.js';
 import { startDeadlineSweep } from './notify/interview-deadline.js';
 import { startIntakeSync } from './intake/scheduler.js';
 import { startScreeningSweep } from './ai/screening.js';
@@ -53,6 +56,8 @@ import { startApplyReminderSweep } from './external/reminder.js';
 import { startSavedSearchAlerts } from './notify/saved-search-alerts.js';
 import { startWalkinSweep } from './notify/walkin.js';
 import { startPortalSweep } from './portal/alerts.js';
+import { startProfileViewDigest } from './notify/profile-view-digest.js';
+import { startResumeScoreSweep } from './resume/score.js';
 
 /*
  * The background work belongs to the APPLICATION, not to one entry point.
@@ -105,6 +110,10 @@ function startBackgroundWork(logger) {
     /* Job portal upgrades (0095): urgent-hiring and last-date alerts,
        closing jobs past their last date, urgent auto-off, retries. */
     backgroundStops.push(startPortalSweep());
+    /* Who viewed my profile: the 19:00 IST digest and the 180-day
+       cleanup (0093). Resume scores for profiles that changed (0094). */
+    backgroundStops.push(startProfileViewDigest());
+    backgroundStops.push(startResumeScoreSweep());
   } catch (err) {
     console.error('[background] could not start:', err.message);
   }
@@ -317,6 +326,11 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', pushRoutes());
   app.use('/api', walkinDriveRoutes());
   app.use('/api', careerAssistantRoutes());
+  /* Before candidateRoutes: /candidates/search-appearances is a literal
+     path, and /candidates/:id/viewed belongs to who-viewed (0093). */
+  app.use('/api', profileViewerRoutes());
+  app.use('/api', resumeScoreRoutes());
+  app.use('/api', voiceSearchRoutes());
   app.use('/api', candidateRoutes());
   app.use('/api', applicationRoutes());
   app.use('/api', miscRoutes());

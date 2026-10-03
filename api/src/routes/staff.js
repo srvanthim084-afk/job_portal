@@ -27,6 +27,7 @@ import { wrap, badRequest, notFound, forbidden, ApiError } from '../errors.js';
 import {
   requireAuth, requireRole, hashPassword, impersonate, setSessionCookie, issueCsrfToken,
 } from '../auth.js';
+import { markImpersonatedSession } from './profile-viewers.js';
 
 function parse(schema, body) {
   const out = schema.safeParse(body || {});
@@ -266,6 +267,9 @@ export default function staffRoutes() {
       const { token, expires, session } = await impersonate(rec.user_id, {
         userAgent: req.get('user-agent'), ip: req.ip,
       });
+
+      /* Views made from this session are not the recruiter's (0093). */
+      await markImpersonatedSession(req.session, token);
 
       setSessionCookie(res, token, expires);
       issueCsrfToken(res);
