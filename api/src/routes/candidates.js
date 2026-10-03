@@ -463,7 +463,7 @@ export default function candidateRoutes() {
       const staffView = STAFF_ROLES.includes(req.session.role);
       const cands = out.rows.map((x) => {
         const c = toCandidate(x, { staff: true });
-        return staffView ? { ...forViewer(c, !!x._editable), availability: availabilityOf(x) } : c;
+        return staffView ? { ...forViewer(c, !!x._editable), availabilityStatus: availabilityOf(x) } : c;
       });
       const extra = attachPrimary(cands, out.apps.map(toApplication));
 
@@ -573,9 +573,9 @@ export default function candidateRoutes() {
     /* 0091/0092: shared profile, private notes; availability for staff. */
     if (STAFF_ROLES.includes(req.session.role)) {
       const editable = (await editableSet(req.session, [out.row.id])).has(out.row.id);
-      cand = { ...forViewer(cand, editable), availability: availabilityOf(out.row) };
+      cand = { ...forViewer(cand, editable), availabilityStatus: availabilityOf(out.row) };
     } else if (req.session.role === 'candidate') {
-      cand.availability = availabilityOf(out.row);
+      cand.availabilityStatus = availabilityOf(out.row);
     }
     const extra = attachPrimary([cand], out.apps.map(toApplication));
     cand.educationRecords = out.edu.map(toEducationRecord);

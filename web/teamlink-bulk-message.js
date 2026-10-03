@@ -118,6 +118,13 @@
         ? '<div class="tlbm-warn">' + blocked.length + ' asked not to be contacted '
           + 'and will be skipped.</div>' : '')
 
+      /* ---- shared candidates (0091) and availability (0092) --------
+         Filled in once the server has said who other recruiters hold
+         and who is not looking. The server applies the same rules when
+         the batch is sent; this only says so before the recruiter
+         presses Send. */
+      + '<div id="tlbmHolds"></div>'
+
       /* ---- template ---------------------------------------------- */
       + '<div class="tlbm-f"><label for="tlbmTpl">Template</label>'
       + '<select id="tlbmTpl" onchange="tlBulkTemplate(this.value)">'
@@ -162,7 +169,76 @@
     if (box) box.classList.add('tlbm-modal');
 
     tlBulkTemplate(M.templates[0] ? M.templates[0].id : 'blank');
+    loadHolds();
   }
+
+  /*
+   * WHO THE SERVER WILL LEAVE OUT, before Send is pressed.
+   *
+   *   held by another recruiter (in process / placed)  always skipped
+   *   contacted by another recruiter                   skipped unless ticked
+   *   said they are not looking                         skipped unless ticked
+   *   placed (replacement period)                       always skipped
+   *
+   * Without a job chosen, every role counts - a message that names no
+   * role could be about theirs.
+   */
+  function loadHolds() {
+    var host = document.getElementById('tlbmHolds');
+    if (!host || !M || !window.TLEngagement) return;
+    var ids = M.rows.map(function (c) { return c.id; });
+    window.TLEngagement.badges(ids, null).then(function (map) {
+      if (!M) return;
+      var held = [], warned = [], notLooking = [], placed = [];
+      M.rows.forEach(function (c) {
+        var b = map[c.id] || {};
+        var av = b.availability || {};
+        if (av.status === 'placed') { placed.push(c); return; }
+        if (av.status === 'not_looking') { notLooking.push(c); return; }
+        if (b.kind === 'in_process' || b.kind === 'joined') held.push(c);
+        else if (b.kind === 'contacted') warned.push(c);
+      });
+      M.holds = { held: held, warned: warned, notLooking: notLooking, placed: placed };
+      var names = function (list) {
+        return esc(list.slice(0, 4).map(function (c) { return c.name; }).join(', '))
+          + (list.length > 4 ? ' and ' + (list.length - 4) + ' more' : '');
+      };
+      var host2 = document.getElementById('tlbmHolds');
+      if (!host2) return;
+      host2.innerHTML = ''
+        + (held.length ? '<div class="tlbm-warn tlbm-hold">' + held.length + ' being processed by another recruiter'
+          + ' - always skipped: ' + names(held) + '.</div>' : '')
+        + (placed.length ? '<div class="tlbm-warn">' + placed.length + ' placed through TeamLink (replacement period)'
+          + ' - always skipped: ' + names(placed) + '.</div>' : '')
+        + (warned.length ? '<div class="tlbm-warn">' + warned.length + ' contacted recently by another recruiter'
+          + ' - skipped unless you include them: ' + names(warned) + '.'
+          + '<label class="tlbm-inc"><input type="checkbox" id="tlbmIncWarn" onchange="tlBulkCount()"> Include them'
+          + ' (recorded as "Contact anyway")</label></div>' : '')
+        + (notLooking.length ? '<div class="tlbm-warn">' + notLooking.length + ' said they are not looking'
+          + ' - skipped unless you include them: ' + names(notLooking) + '.'
+          + '<label class="tlbm-inc"><input type="checkbox" id="tlbmIncNL" onchange="tlBulkCount()"> Include them</label></div>' : '');
+      tlBulkCount();
+    });
+  }
+
+  /** The Send button's count, after the skips above. */
+  window.tlBulkCount = function () {
+    if (!M) return;
+    var btn = document.getElementById('tlbmSend');
+    if (!btn || M.sending || M.batchId) return;
+    var ch = CHANNEL[M.channel];
+    var hold = M.holds || { held: [], warned: [], notLooking: [], placed: [] };
+    var incW = !!(document.getElementById('tlbmIncWarn') || {}).checked;
+    var incN = !!(document.getElementById('tlbmIncNL') || {}).checked;
+    var out = {};
+    hold.held.concat(hold.placed).forEach(function (c) { out[c.id] = 1; });
+    if (!incW) hold.warned.forEach(function (c) { out[c.id] = 1; });
+    if (!incN) hold.notLooking.forEach(function (c) { out[c.id] = 1; });
+    var n = M.rows.filter(function (c) {
+      return !out[c.id] && !c.doNotContact && String(c[ch.field] || '').trim();
+    }).length;
+    btn.textContent = 'Send to ' + n + ' candidate' + (n === 1 ? '' : 's');
+  };
 
   window.tlBulkClose = function () {
     if (M && M.poll) clearInterval(M.poll);
@@ -277,6 +353,8 @@
       templateId: (document.getElementById('tlbmTpl') || {}).value || undefined,
       subject: M.channel === 'email' ? subj : undefined,
       body: body,
+      includeWarned: !!(document.getElementById('tlbmIncWarn') || {}).checked,
+      includeNotLooking: !!(document.getElementById('tlbmIncNL') || {}).checked,
     }).then(function (r) {
       M.batchId = r.batchId;
       if (btn) btn.textContent = 'Sending…';
@@ -333,6 +411,10 @@
         + tile('Queued', queued.queued, '')
         + tile('Skipped', queued.skipped, 'no ' + esc(queued.skippedFor))
         + tile('Not contacted', queued.blocked, 'opted out')
+        + (queued.held ? tile('Held by others', queued.held, 'another recruiter') : '')
+        + (queued.warned ? tile('Contacted by others', queued.warned, 'not included') : '')
+        + (queued.notLooking ? tile('Not looking', queued.notLooking, 'not included') : '')
+        + (queued.placed ? tile('Placed', queued.placed, 'replacement period') : '')
         + '</div>'
         + '<div class="tlbm-res-n">' + esc(queued.note) + '</div></div>';
       return;
@@ -483,6 +565,8 @@
     + '.tlbm-s-ok{background:#e8f6ee;color:#1d7a45}'
     + '.tlbm-s-wait{background:#eef2fb;color:#3b4d78}'
     + '.tlbm-s-bad{background:#fdeaea;color:#b3261e}'
+    + '.tlbm-hold{background:#fdeaea;border-color:#f3b8b4;color:#8c1d16}'
+    + '.tlbm-inc{display:flex;align-items:center;gap:7px;margin-top:6px;font-weight:700;cursor:pointer}'
     + '@media (max-width:700px){.tlbm-res-g{flex-direction:column}}';
 
   var tag = document.createElement('style');

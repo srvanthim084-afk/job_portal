@@ -135,8 +135,8 @@ test('search: not looking is hidden by default, "Show all" shows it, the filter 
   const all = await REC.get('/api/candidates?limit=200&availabilityAll=true');
   const k = all.body.candidates.find((c) => c.id === ids.k);
   assert.ok(k, '"Show all" did not show them');
-  assert.equal(k.availability.status, 'not_looking');
-  assert.equal(k.availability.label, 'Not looking');
+  assert.equal(k.availabilityStatus.status, 'not_looking');
+  assert.equal(k.availabilityStatus.label, 'Not looking');
 
   const only = await REC.get('/api/candidates?limit=200&availability=not_looking');
   assert.deepEqual(only.body.candidates.map((c) => c.id), [ids.k]);
@@ -152,7 +152,7 @@ test('applying while not looking makes them actively looking', async () => {
   assert.equal(s.src, 'apply');
   const def = await REC.get('/api/candidates?limit=200');
   const k = def.body.candidates.find((c) => c.id === ids.k);
-  assert.equal(k.availability.status, 'actively_looking');
+  assert.equal(k.availabilityStatus.status, 'actively_looking');
 });
 
 test('ranking: actively looking first, then open to offers, unknown, not confirmed', async () => {
@@ -166,7 +166,7 @@ test('ranking: actively looking first, then open to offers, unknown, not confirm
   const order = r.body.candidates.map((c) => c.id).filter((x) => x.startsWith('rk_'));
   assert.deepEqual(order, ['rk_active', 'rk_open', 'rk_unknown', 'rk_stale']);
   const stale = r.body.candidates.find((c) => c.id === 'rk_stale');
-  assert.equal(stale.availability.label, 'Not confirmed');
+  assert.equal(stale.availabilityStatus.label, 'Not confirmed');
 });
 
 test('a client never sees an availability field', async () => {

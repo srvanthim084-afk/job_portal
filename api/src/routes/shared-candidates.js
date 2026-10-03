@@ -8,6 +8,8 @@
  *   POST /api/engagement/badges                   one badge per candidate, for a list
  *   POST /api/engagement/check                    may I contact them? (dryRun to ask,
  *                                                 otherwise enforced + logged)
+ *   POST /api/engagement/record                   a contact sent from the browser
+ *                                                 (Find Candidates email/WhatsApp/SMS)
  *   POST /api/candidates/:id/call-log             "Log call": outcome, optional job,
  *                                                 note -> a comment
  *   POST /api/engagement/message-holder           an internal message to the holder
@@ -236,6 +238,32 @@ export default function sharedCandidateRoutes() {
       });
     }
     res.json({ verdict: v, availability, contactId });
+  }));
+
+  /* ------------------------------------------------------------------ *
+   * a contact that left from the browser (the Find Candidates email /
+   * WhatsApp / SMS buttons, wa.me): write it down. A held candidate is
+   * refused here as everywhere else; "contact anyway" was already
+   * recorded when the recruiter chose to include them.
+   * ------------------------------------------------------------------ */
+  r.post('/engagement/record', requireAuth(), requireRole(...STAFF), wrap(async (req, res) => {
+    const b = parse(z.object({
+      candidateId: z.string().trim().min(1).max(64),
+      jobId: z.string().trim().max(64).optional(),
+      channel: z.enum(['whatsapp', 'sms', 'email', 'phone']),
+      outcome: z.enum(['sent', 'opened', 'failed']).default('sent'),
+    }), req.body);
+    const v = await canEngage(req.session, b.candidateId, { jobId: b.jobId });
+    if (v.decision === 'blocked') {
+      await audit(req.session, { candidateId: b.candidateId, roleKey: v.roleKey, jobId: b.jobId || null,
+        action: 'blocked', detail: { action: b.channel, reason: v.reason } });
+      throw new ApiError(409, 'ENGAGEMENT_BLOCKED', v.message || 'Another recruiter holds this candidate.',
+        { engagement: v });
+    }
+    const id = await recordContact(req.session, {
+      candidateId: b.candidateId, jobId: b.jobId, channel: b.channel, source: b.channel, outcome: b.outcome,
+    });
+    res.status(201).json({ contactId: id != null ? Number(id) : null });
   }));
 
   /* ------------------------------------------------------------------ *
