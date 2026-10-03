@@ -370,6 +370,10 @@ export default function sharedCandidateRoutes() {
         throw forbidden('A second submission to the same client needs an administrator.');
       }
 
+      /* Read before the transaction below opens: a second connection
+         inside it waits for the first on the embedded database (one
+         session at a time) until the statement timeout. */
+      const admins = req.session.role === 'admin' ? [] : await adminIds();
       const out = await withUser(req.session, async (c) => {
         const cand = (await c.query(`select id, name from candidates where id = $1`, [b.candidateId])).rows[0];
         if (!cand) return null;
@@ -381,7 +385,7 @@ export default function sharedCandidateRoutes() {
           await c.query(`select * from engagement_override_decide($1, true, $2)`, [id, b.reason]);
         } else {
           const me = (await c.query(`select name from recruiters where id = $1`, [req.session.profileId])).rows[0];
-          for (const adminId of await adminIds()) {
+          for (const adminId of admins) {
             await notify(c, {
               recipientId: adminId, role: 'admin', type: 'ENGAGEMENT_OVERRIDE_REQUEST',
               title: `Override requested: ${cand.name}`,
