@@ -166,6 +166,11 @@ await check('5. signed in, Apply Now applies directly', async () => {
   await p.waitForTimeout(1200);
   await wizardAway(p);
   must(await clickApply(p), 'no Apply button');
+  await p.waitForTimeout(1500);
+  /* One-click apply (teamlink-portal-upgrades.js): a profile without a
+     resume or experience is first asked for them; "Apply without them"
+     is the direct apply this check has always made. */
+  await p.evaluate(() => { const b = document.getElementById('tlpuWithout'); if (b) b.click(); });
   await p.waitForTimeout(2500);
   await wizardAway(p);
   must(!/register/.test(await p.evaluate(() => location.hash)), 'sent to registration while signed in');
