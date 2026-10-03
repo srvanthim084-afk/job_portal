@@ -9,7 +9,7 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "seed:auth": "node src/scripts/seed-auth.js",
-    "test": "node --test test/api.test.mjs test/saved-searches.test.mjs test/saved-match-parity.test.mjs test/export-jobs.test.mjs test/external-portal.test.mjs"
+    "test": "node --test test/api.test.mjs test/saved-searches.test.mjs test/saved-match-parity.test.mjs test/export-jobs.test.mjs test/external-portal.test.mjs test/push.test.mjs test/push-environment.test.mjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

@@ -30,6 +30,7 @@ import { config } from '../config.js';
 import { providers } from './providers.js';
 import { channelSettings } from './channel-settings.js';
 import { buildSavedSearchMessages } from './templates.js';
+import { sendPush } from './webpush.js';
 import { toCandidate, toJob } from '../shapes.js';
 import { jobMatchesFilters, locationTierFunction } from '../search/saved-match.js';
 
@@ -134,6 +135,12 @@ async function candidateFacts(c, ids) {
   add((await c.query(`select candidate_id, job_id from hidden_jobs where candidate_id = any($1)`, [ids])).rows);
   add((await c.query(
     `select candidate_id, job_id from job_matches where notified and candidate_id = any($1)`, [ids])).rows);
+  /* Their phone-notification devices (0089). */
+  out.forEach((f) => { f.cand.__push = []; });
+  try {
+    const subs = (await c.query(`select * from push_engine_subscriptions($1)`, [ids])).rows;
+    subs.forEach((r) => { const f = out.get(r.candidate_id); if (f) f.cand.__push.push(r); });
+  } catch (err) { console.error('[saved-search] push devices could not be read:', err.message); }
   return out;
 }
 
@@ -168,9 +175,66 @@ async function deliver({ search, cand, kind, jobs, total, label, templateId, now
   const waCfg = await channelSettings('whatsapp').catch(() => ({}));
   const quiet = inQuietHours(now);
   const result = {};
+  const record = (channel, r, to) => withUser(ENGINE, (c) => c.query(
+    `select saved_search_delivery_add($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [search.id, search.candidate_id, kind, channel, r.status, to || null,
+     r.provider || null, r.ref || null, r.error || null, jobs.map((j) => j.id)]))
+    .catch((err) => console.error('[saved-search] could not record a delivery:', err.message));
 
-  for (const channel of CHANNELS) {
-    if (!(search.channels || []).includes(channel)) continue;
+  const chosen = search.channels || [];
+  const channels = CHANNELS.filter((ch) => chosen.includes(ch));
+  const fallback = {};
+
+  /*
+   * PHONE NOTIFICATIONS (push).
+   *
+   * To every device the candidate turned them on for. A candidate who
+   * chose them but has no device yet - an iPhone that has not been added
+   * to the Home Screen, say - is not left with nothing: if push was their
+   * only phone channel, the alert goes by SMS instead (or by email when
+   * there is no usable phone), and only on a channel they had not already
+   * chosen, so the same job never arrives twice.
+   */
+  if (chosen.includes('push')) {
+    const subs = cand.__push || [];
+    let r;
+    if (cand.doNotContact) r = { status: 'skipped_opted_out', provider: 'push', error: 'do not contact' };
+    else if (!subs.length) r = { status: 'skipped_no_device', provider: 'push', error: 'no device has phone notifications on' };
+    else if (quiet) r = { status: 'skipped_quiet_hours', provider: 'push', error: '21:00-08:00 IST' };
+    else {
+      const one = jobs.length === 1 && total === 1;
+      const note = {
+        title: one ? `New job: ${jobs[0].title}` : `${total} new jobs for "${label}"`,
+        body: one ? [jobs[0].companyName, jobs[0].location].filter(Boolean).join(' · ') || label
+          : jobs.slice(0, 3).map((j) => j.title).join(', '),
+        url: one ? jobUrl(jobs[0].id, search.id) : searchUrl(search.id),
+        tag: `ss-${search.id}`,
+        badge: total,
+      };
+      let sent = 0; const errors = [];
+      for (const sub of subs) {
+        const out = await sendPush(sub, note);
+        if (out.status === 'not_configured') { r = out; break; }
+        if (out.status === 'sent') sent += 1; else errors.push(out.error || out.status);
+        await withUser(ENGINE, (c) => c.query(`select push_engine_result($1,$2)`,
+          [sub.id, out.status === 'sent' ? 'sent' : out.status === 'gone' ? 'gone' : 'failed']))
+          .catch(() => {});
+      }
+      if (!r) r = sent ? { status: 'sent', provider: 'push', ref: `${sent} device(s)` }
+        : { status: 'failed', provider: 'push', error: errors.join('; ').slice(0, 300) };
+    }
+    result.push = r.status;
+    await record('push', r, null);
+
+    const noDevice = r.status === 'skipped_no_device';
+    const otherPhone = chosen.includes('sms') || chosen.includes('whatsapp');
+    if (noDevice && !otherPhone && !cand.doNotContact) {
+      const fb = (cand.phone && cand.smsOptIn !== false) ? 'sms' : 'email';
+      if (!channels.includes(fb)) { channels.push(fb); fallback[fb] = true; }
+    }
+  }
+
+  for (const channel of channels) {
     const to = channel === 'email' ? cand.email : cand.phone;
     let r;
     if (cand.doNotContact) r = { status: 'skipped_opted_out', provider: channel, error: 'do not contact' };
@@ -202,12 +266,9 @@ async function deliver({ search, cand, kind, jobs, total, label, templateId, now
         r = { status: 'failed', provider: channel, error: err.message };
       }
     }
+    if (fallback[channel]) r = Object.assign({}, r, { error: [r.error, 'instead of a phone notification (no device set up)'].filter(Boolean).join(' · ') });
     result[channel] = r.status;
-    await withUser(ENGINE, (c) => c.query(
-      `select saved_search_delivery_add($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-      [search.id, search.candidate_id, kind, channel, r.status, to || null,
-       r.provider || null, r.ref || null, r.error || null, jobs.map((j) => j.id)]))
-      .catch((err) => console.error('[saved-search] could not record a delivery:', err.message));
+    await record(channel, r, to);
   }
   return result;
 }

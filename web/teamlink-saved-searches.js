@@ -200,7 +200,8 @@
 
   function channelsAvailable() {
     var c = me() || {};
-    return { email: !!c.email, sms: !!c.phone, whatsapp: !!c.phone };
+    return { email: !!c.email, sms: !!c.phone, whatsapp: !!c.phone,
+      push: !!(window.TLPush && TLPush.available && TLPush.available()) };
   }
 
   function panel(opts) {
@@ -225,12 +226,14 @@
       }).join('')
       + '</div><div style="font-size:11.5px;color:#8a94a6;margin-top:5px">Daily and weekly come at 8 AM. Texts are never sent between 9 PM and 8 AM.</div></div>'
       + '<div class="fgroup"><label>Send to</label><div style="display:flex;gap:16px;flex-wrap:wrap;font-size:13px">'
-      + [['email', 'Email'], ['sms', 'SMS'], ['whatsapp', 'WhatsApp']].map(function (c) {
+      + [['email', 'Email'], ['sms', 'SMS'], ['whatsapp', 'WhatsApp'], ['push', 'Phone notifications']].map(function (c) {
         var dis = !have[c[0]];
-        return '<label style="display:flex;gap:6px;align-items:center;' + (dis ? 'color:#a3adba' : '') + '" title="' + (dis ? 'Add your ' + (c[0] === 'email' ? 'email' : 'mobile number') + ' to your profile first' : '') + '">'
+        var why = c[0] === 'push' ? 'This browser cannot show phone notifications'
+          : 'Add your ' + (c[0] === 'email' ? 'email' : 'mobile number') + ' to your profile first';
+        return '<label style="display:flex;gap:6px;align-items:center;' + (dis ? 'color:#a3adba' : '') + '" title="' + (dis ? why : '') + '">'
           + '<input type="checkbox" name="tlssCh" value="' + c[0] + '"' + (chosen.indexOf(c[0]) >= 0 && !dis ? ' checked' : '') + (dis ? ' disabled' : '') + '> ' + c[1] + '</label>';
       }).join('')
-      + '</div></div>'
+      + '</div>' + (window.TLPush && TLPush.panelHtml ? TLPush.panelHtml() : '') + '</div>'
       + '</div>'
       + '<div class="fcr-jd-actions"><button class="btn btn-primary" id="tlssSave" onclick="tlssSubmit(\'' + (s ? js(s.id) : '') + '\')">' + (s ? 'Save changes' : 'Save search') + '</button>'
       + '<button class="btn btn-ghost" onclick="fcrCloseModal()">Cancel</button></div>';
@@ -249,6 +252,11 @@
     var freq = on ? on.getAttribute('data-v') : 'daily';
     var ch = Array.prototype.map.call(document.querySelectorAll('input[name="tlssCh"]:checked'), function (x) { return x.value; });
     if (freq !== 'off' && !ch.length) { say('Pick at least one way to be told, or choose Off', '⚠️'); return; }
+    /* Phone notifications: on Android and computers the permission is
+       asked right here, inside the tap. On iPhone it is not - see
+       teamlink-push.js - and the search is saved either way. */
+    var wantsPush = ch.indexOf('push') >= 0 && window.TLPush;
+    if (wantsPush && TLPush.onPushChosen) TLPush.onPushChosen();
     var btn = document.getElementById('tlssSave'); if (btn) btn.disabled = true;
     var body = { label: name.trim() || undefined, alert_frequency: freq, channels: ch.length ? ch : ['email'] };
     /* The server's answer goes into the list at once, so the button says
@@ -262,6 +270,7 @@
       if (typeof window.fcrCloseModal === 'function') fcrCloseModal();
       say(msg, '🔔');
       load(true);
+      if (wantsPush && TLPush.afterSave) setTimeout(function () { TLPush.afterSave(); }, 50);
     };
     var fail = function (err) {
       if (btn) btn.disabled = false;

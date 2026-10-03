@@ -26,7 +26,7 @@ import { verifyStopToken, asMatchable } from '../notify/saved-search-alerts.js';
 
 const ENGINE = { userId: '', role: 'admin', profileId: null };
 const FREQ = ['off', 'instant', 'daily', 'weekly'];
-const CH = ['email', 'sms', 'whatsapp'];
+const CH = ['email', 'sms', 'whatsapp', 'push'];
 const MAX = 20;
 
 const newId = () => `ss_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
@@ -35,7 +35,7 @@ const body = z.object({
   label: z.string().trim().max(80).optional(),
   filters: z.unknown().optional(),
   alert_frequency: z.enum(FREQ).optional(),
-  channels: z.array(z.enum(CH)).max(3).optional(),
+  channels: z.array(z.enum(CH)).max(4).optional(),
 }).strict();
 
 function parse(input, { requireFilters }) {

@@ -37,6 +37,7 @@ import { notificationRoutes } from './routes/notifications.js';
 import staffRoutes from './routes/staff.js';
 import externalJobRoutes from './routes/external-jobs.js';
 import savedSearchRoutes from './routes/saved-searches.js';
+import pushRoutes from './routes/push.js';
 import { startDeadlineSweep } from './notify/interview-deadline.js';
 import { startIntakeSync } from './intake/scheduler.js';
 import { startScreeningSweep } from './ai/screening.js';
@@ -299,6 +300,7 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
      route of the same shape registered first would swallow them. */
   app.use('/api', exportRoutes());
   app.use('/api', savedSearchRoutes());
+  app.use('/api', pushRoutes());
   app.use('/api', candidateRoutes());
   app.use('/api', applicationRoutes());
   app.use('/api', miscRoutes());
