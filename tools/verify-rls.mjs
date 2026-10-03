@@ -203,23 +203,38 @@ await check('candidate sees ONLY notifications addressed to them', async () => {
 });
 
 /*
- * The tenancy boundary is the RECRUITER, not the company (0031).
+ * CANDIDATES ARE SHARED; APPLICATIONS ARE NOT (0091).
  *
- * These three used to assert the opposite - a shared talent pool, and
- * applications visible to everybody at the same company. That was the
- * model; it is not any more, because a consultancy where each recruiter
- * runs their own desk needs the narrower one. They are kept rather than
- * deleted: "who can see what" still has to be asserted, only the answer
- * has changed.
+ * 0031 made the recruiter the boundary for everything, and this check
+ * asserted that a recruiter saw no candidate owned by another recruiter.
+ * The owner decided otherwise: TeamLink is one consultancy with one pool
+ * of people, so every recruiter reads every NON-PRIVATE candidate, while
+ * the pipeline - applications, stages, interviews, scores, private notes
+ * - stays with the job's recruiter. The expectation is changed on
+ * purpose, not loosened: it still asserts both sides of the line, and it
+ * adds the two that sharing makes necessary (a private candidate stays
+ * hidden, and read access is not edit access).
  */
-await check('a recruiter sees no candidate belonging to another recruiter', async () => {
+await check('a recruiter sees every non-private candidate, and no other recruiter\'s private one', async () => {
+  await asService();
+  await db.exec(`update candidates set owner_recruiter_id = 'r2' where id in ('cand2','cand3')`);
+  await db.exec(`update candidates set is_private = true where id = 'cand3'`);
+  const shared = (await q(`select count(*)::int n from candidates where not coalesce(is_private,false)`))[0].n;
   await as('r1', 'recruiter');
-  const foreign = await q(
-    `select count(*)::int n from candidates
-      where owner_recruiter_id is not null and owner_recruiter_id <> 'r1'`);
-  if (foreign[0].n > 0) {
-    throw new Error(`${foreign[0].n} candidate(s) owned by another recruiter are visible`);
-  }
+  const seen = await ids(`select id from candidates`);
+  if (!seen.includes('cand2')) throw new Error("r1 cannot see r2's (shared) candidate");
+  if (seen.includes('cand3')) throw new Error("r2's PRIVATE candidate is visible to r1");
+  const visibleShared = (await q(`select count(*)::int n from candidates where not coalesce(is_private,false)`))[0].n;
+  eq(visibleShared, shared, 'non-private candidates visible to a recruiter');
+});
+
+await check("a recruiter cannot EDIT another recruiter's candidate", async () => {
+  await as('r1', 'recruiter');
+  await db.exec(`update candidates set title = 'HIJACKED' where id = 'cand2'`);
+  await asService();
+  const r = await q(`select title from candidates where id = 'cand2'`);
+  await asApi();
+  if (r[0].title === 'HIJACKED') throw new Error("r1 edited r2's candidate");
 });
 
 await check('a recruiter sees only applications on their own requirements', async () => {
@@ -268,6 +283,32 @@ await check("recruiter's private notes do not leak to another recruiter", async 
   await as('r2', 'recruiter');
   const theirs = (await q(`select count(*)::int n from candidate_comments`))[0].n;
   eq(theirs, 0, `r2 can read ${theirs} of r1's notes`);
+});
+
+await check('a TEAM note is readable by another recruiter, and still not writable', async () => {
+  await as('r1', 'recruiter');
+  await db.exec(`insert into candidate_comments (candidate_id,recruiter_id,tag,body,visibility)
+                 values ('cand1','r1','team','r1 team note','team')`);
+  await as('r2', 'recruiter');
+  const seen = await q(`select body from candidate_comments`);
+  eq(seen.map((x) => x.body), ['r1 team note'], 'what r2 reads of r1\'s notes');
+  let forged = false;
+  try {
+    await db.exec(`insert into candidate_comments (candidate_id,recruiter_id,body) values ('cand1','r1','forged')`);
+    forged = true;
+  } catch (e) { /* refused, which is the point */ }
+  if (forged) throw new Error('r2 wrote a note as r1');
+});
+
+await check("another recruiter's raw contact history is not readable (only the summary)", async () => {
+  await as('r1', 'recruiter');
+  await db.exec(`select engagement_record('cand1', null, 'medical coder', 'phone', 'phone', 'interested', 'r1 said this', null)`);
+  await as('r2', 'recruiter');
+  eq((await q(`select count(*)::int n from candidate_contact_history where candidate_id='cand1'`))[0].n, 0,
+    'raw contact rows visible to another recruiter');
+  const summary = await q(`select * from candidate_engagements('cand1', null)`);
+  if (!summary.length) throw new Error('the engagement summary is empty');
+  if (JSON.stringify(summary).includes('r1 said this')) throw new Error('the summary carries the note');
 });
 
 await check("recruiter cannot schedule an interview for another company's job", async () => {
