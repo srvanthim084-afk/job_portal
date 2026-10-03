@@ -755,6 +755,21 @@ begin
     v_dec := 'allowed'; v_why := 'admin';
   end if;
 
+  -- 6. the decision always; WHO and WHAT only about a candidate the
+  --    caller can see (a private one is somebody else's business)
+  if not (app_is_admin() or exists (
+            select 1 from candidates c
+             where c.id = p_candidate_id
+               and (not coalesce(c.is_private, false)
+                    or c.owner_recruiter_id = v_me
+                    or (v_me is not null and app_candidate_is_mine(c.id))
+                    or (app_role() = 'bde' and app_candidate_at_company(c.id, app_bde_company()))))) then
+    return query select v_dec, v_why, v_rk, null::text, null::text, null::text, null::text,
+                        null::text, null::text, null::timestamptz, null::timestamptz,
+                        null::text, null::text, v_ovr;
+    return;
+  end if;
+
   return query select v_dec, v_why, coalesce(v_rk, v_h.role_key),
                       v_h.recruiter_id, v_h.rname, v_h.level, v_h.job_title,
                       v_h.status, v_h.status_label, v_h.last_at, v_h.expires_at,
@@ -1329,6 +1344,8 @@ end $$;
 -- the internal ones must not be reachable by the API at all.
 -- =====================================================================
 revoke execute on function engagement_rows(text[]) from public;
+-- answers for any candidate id without asking who is calling: internal only
+revoke execute on function candidate_hold(text, text) from public;
 revoke execute on function engagement_audit_write(text, text, text, text, jsonb) from public;
 revoke execute on function applications_engagement_guard() from public;
 revoke execute on function applications_engagement_log() from public;
@@ -1350,7 +1367,6 @@ begin
       engagement_audit_add(text, text, text, text, jsonb),
       engagement_status(text, text),
       engagement_submission_stages(),
-      candidate_hold(text, text),
       can_engage(text, text, text),
       candidate_engagements(text, text),
       engagement_badges(text[], text),

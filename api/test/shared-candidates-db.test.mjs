@@ -371,6 +371,14 @@ test('badges: one per candidate, about OTHER recruiters', async () => {
     const e = await q(`select * from candidate_engagements('c2', null)`);
     assert.equal(e.length, 0, 'a private candidate leaked through the engagements');
   });
+  await as('rA', async () => {
+    await q(`select engagement_record('c2', 'jA', null, 'phone', 'phone', 'interested', null, null)`);
+  });
+  await as('rB', async () => {
+    const v = (await q(`select * from can_engage('c2', 'jB', null)`))[0];
+    assert.equal(v.decision, 'warn', 'the rule still applies to a private candidate');
+    assert.equal(v.holder_name, null, 'who works a PRIVATE candidate leaked through can_engage');
+  });
 });
 
 test('admin: the conflicts view', async () => {
