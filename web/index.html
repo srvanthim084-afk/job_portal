@@ -5391,8 +5391,8 @@ function pageRecruiterDash(section, params){
   else if(section==='applications'){
     content = `
     <div class="panel"><div class="panel-head"><div><h2>All applications</h2><div class="desc">${apps.length} applications across ${myJobs.length} open roles</div></div></div>
-    <div class="panel-body pad0"><div class="tbl-wrap"><table class="data">
-      <thead><tr><th>Candidate</th><th>Applied for</th><th>Applied on</th><th>AI Match</th><th>Stage</th><th>Action</th></tr></thead>
+    <div class="panel-body pad0"><div class="tbl-wrap tl-apps-wrap"><table class="data">
+      <thead><tr><th>Candidate<span class="th-sub">Location · Experience · Ref ID</span></th><th>Applied for<span class="th-sub">Job · Client</span></th><th>Applied on<span class="th-sub">Date · Source</span></th><th>AI Match<span class="th-sub">Match · Interview score</span></th><th>Stage</th><th>Actions</th></tr></thead>
       <tbody>${(typeof window.sortAppsNewestFirst==='function'?sortAppsNewestFirst(apps):apps).map(a=>{ const c=DATA.candidateById(a.candidateId), j=DATA.jobById(a.jobId);
         return `<tr><td class="clickable" onclick="navigate('/recruiter/candidate-profile?id=${c.id}')">${personCell(c)}</td><td>${esc(j.title)}${(typeof window.tlCoTag==='function')?tlCoTag(j):''}</td><td style="font-size:12px;white-space:nowrap">${typeof window.appliedOnHtml==='function'?appliedOnHtml(a,c):esc(a.appliedAt||'—')}</td><td><span class="score ${scoreClass(a.matchScore)}">${a.matchScore}%</span>${typeof window.tlInterviewTag==='function'?tlInterviewTag(a,typeof c!=='undefined'?c:null):''}</td><td>${stageBadge(a.stage)}</td>
         <td class="row-actions">${(typeof window.tlNeedsScreening==='function'?tlNeedsScreening(a):(a.stage==='applied'||a.stage==='ai_screening')) ? `<button class="btn btn-ai btn-sm" onclick="runAIScreeningForApp('${a.id}')">Run AI Screening</button>` : (typeof window.tlScreenedTag==='function'?tlScreenedTag(a):'')}${(()=>{

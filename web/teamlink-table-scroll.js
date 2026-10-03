@@ -93,10 +93,30 @@
       '.tlts-w table.tlts > thead > tr > th.tlts-pin{z-index:15; background:var(--bg-alt,#f7fafd)}',
       '.tlts-w table.tlts > tbody > tr.clickable:hover > td.tlts-pin{background:var(--brand-100,#eef4ff)}',
       '.tlts-w.tlts-x table.tlts .tlts-pin-last{box-shadow:8px 0 10px -8px rgba(16,32,58,.28)}',
+      /* Collapsed borders belong to the table, and a pinned cell's
+         background painted over the row line. Separate borders belong to
+         each cell, so the line runs unbroken under the pinned columns. */
+      '.tlts-w table.tlts{border-collapse:separate; border-spacing:0}',
       /* the header row: sticky within its container, opaque */
       '.tlts-w table.tlts > thead > tr > th{position:sticky; top:0; z-index:10;',
       '  background:var(--bg-alt,#f7fafd); box-shadow:inset 0 -1px 0 var(--line,#e6ebf2)}',
       '.tlts-w table.tlts > thead > tr > th.tlts-pin{z-index:15}',
+      /* Applications: the box is the one scroller, both ways, and no
+         taller than the window - so the header row stays above the rows
+         however far down they go, and the sideways scrollbar is the box's
+         own bottom edge. */
+      '@media (min-width:' + (CARD_WIDTH + 1) + 'px){',
+      '  .tbl-wrap.tlts-w.tl-apps-wrap{overflow:auto; max-height:calc(100vh - 88px)} }',
+      /* what each column holds, under its heading */
+      'table.data > thead > tr > th .th-sub{display:block; margin-top:2px; font-size:10.5px;',
+      '  font-weight:600; letter-spacing:0; text-transform:none; white-space:nowrap;',
+      '  color:var(--text-soft,#7b8794)}',
+      /* An actions cell is a table cell. As display:flex it dropped out of
+         the row: shorter than its neighbours, its border off the row line,
+         and its column no longer lined up with the heading. */
+      'table.data > tbody > tr > td.row-actions{display:table-cell; vertical-align:middle}',
+      'table.data > tbody > tr > td.row-actions > *{vertical-align:middle; margin:3px 6px 3px 0}',
+      'table.data > tbody > tr > td.row-actions > *:last-child{margin-right:0}',
 
       /* the bar at the foot of the window */
       '.tlts-bar{position:sticky; bottom:0; z-index:30; height:14px; margin:6px 0 2px;',
@@ -136,6 +156,7 @@
 
   /* where each table was scrolled to, across a repaint */
   var positions = Object.create(null);
+  var positionsY = Object.create(null);   // the Applications box scrolls down too
   function keyFor(table) {
     var head = table.querySelector('thead tr');
     if (!head) return '';
@@ -255,7 +276,7 @@
     scroller.addEventListener('scroll', function () {
       wrap.classList.toggle('tlts-x', scroller.scrollLeft > 0);
       var table = scroller.querySelector('table');
-      if (table) { var k = keyFor(table); if (k) positions[k] = scroller.scrollLeft; }
+      if (table) { var k = keyFor(table); if (k) { positions[k] = scroller.scrollLeft; positionsY[k] = scroller.scrollTop; } }
       if (st.bar && st.bar.scrollLeft !== scroller.scrollLeft) {
         if (st.barLock) st.barLock(true);
         st.bar.scrollLeft = scroller.scrollLeft;
@@ -311,6 +332,7 @@
 
       var k = keyFor(table);
       if (k && positions[k] > 0 && scroller.scrollLeft === 0) scroller.scrollLeft = positions[k];
+      if (k && positionsY[k] > 0 && scroller.scrollTop === 0) scroller.scrollTop = positionsY[k];
       wrap.classList.toggle('tlts-x', scroller.scrollLeft > 0);
       showBar(wrap, overflowing);
     }
