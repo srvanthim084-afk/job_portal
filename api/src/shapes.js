@@ -190,6 +190,13 @@ export function toCandidate(r, opts = {}) {
     certifications: arr(r.certifications),
     languages: arr(r.languages),
     projects: r.projects || [],
+    /* 0087: what a resume has and the profile had nowhere to keep. */
+    internships: Array.isArray(r.internships) ? r.internships : [],
+    achievements: Array.isArray(r.achievements) ? r.achievements : [],
+    otherLinks: Array.isArray(r.other_links) ? r.other_links : [],
+    preferredJoiningDate: r.preferred_joining_date
+      ? new Date(r.preferred_joining_date).toISOString().slice(0, 10) : '',
+    additionalInfo: nz(r.additional_info),
     linkedin: nz(r.linkedin),
     github: nz(r.github),
     portfolio: nz(r.portfolio),

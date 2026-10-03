@@ -28,6 +28,12 @@ const clean = (s) => String(s || '').replace(/\s+/g, ' ').trim();
    Anita Sharma, 9876543210" being read as the candidate's own phone. */
 const SECTION_PATTERNS = [
   ['summary',        /\b(professional\s+summary|career\s+objective|objective|profile\s+summary|about\s+me|summary)\b/i],
+  /* Internships and training are their own section, not employment: a
+     fresher's "Internship Experience" opened the experience section and
+     made the host company their current employer. Checked before
+     experience and certifications for that reason. */
+  ['internships',    /\b(internships?(\s+experience)?|industrial\s+training|summer\s+training|in-?plant\s+training|apprenticeships?|trainings?)\b/i],
+  ['achievements',   /\b(achievements?|accomplishments?|awards?(\s*(&|and)\s*(achievements?|honou?rs|recognitions?))?|honou?rs|recognitions?)\b/i],
   ['skills',         /\b(key\s+skills|technical\s+skills|core\s+competenc\w*|skills?\s*(&|and)?\s*(expertise)?)\b/i],
   /* "Career History" and "Work History" are as common as "Experience" on a
      medical CV, and neither opened an experience section - so everything
@@ -407,7 +413,11 @@ function findLinks(text) {
   const linkedin = firstMatch(text, /((?:https?:\/\/)?(?:[a-z]{2,3}\.)?linkedin\.com\/[^\s,|)]+)/i);
   const github   = firstMatch(text, /((?:https?:\/\/)?github\.com\/[^\s,|)]+)/i);
   const url = (u) => (u ? (/^https?:/i.test(u) ? u : `https://${u}`).replace(/[.,;]+$/, '') : null);
-  return { linkedin: url(linkedin), github: url(github) };
+  /* A personal site or portfolio: the first other web address on the
+     page. Mail providers and the two above are not portfolios. */
+  const others = String(text || '').match(/\b((?:https?:\/\/|www\.)[^\s,|)<>]+)/gi) || [];
+  const portfolio = others.find((u) => !/linkedin\.com|github\.com|gmail\.|yahoo\.|outlook\.|hotmail\./i.test(u)) || null;
+  return { linkedin: url(linkedin), github: url(github), portfolio: url(portfolio) };
 }
 
 /** "7 years", "7+ yrs", "Total Experience: 7.5 years" */
@@ -1121,6 +1131,15 @@ export function extractFields(text) {
   const skills = findList(sections.skills, { max: 40 });
   const certifications = findList(sections.certifications, { max: 15, minLen: 4 });
   const projects = findList(sections.projects, { max: 12, minLen: 4 });
+  /* One item per LINE, not per comma: "Winner, Smart India Hackathon
+     2022" is one achievement, and "Data Science Intern, Acme Analytics"
+     is one internship. */
+  const lineItems = (sec, max) => String(sec || '').split('\n')
+    .map((l) => l.replace(/^[\s\u2022\u25cf\u25aa\u2023\u2043*\-–—>]+/, '').replace(/^\d+[.)]\s+/, '').trim())
+    .filter((l) => l.length >= 4 && l.length <= 300)
+    .slice(0, max);
+  const internships = lineItems(sections.internships, 10);
+  const achievements = lineItems(sections.achievements, 12);
   const languages = findList(sections.languages, { max: 10, minLen: 3 });
 
   const raw = {
@@ -1190,6 +1209,9 @@ export function extractFields(text) {
     dob: findDob(t),
     linkedin: links.linkedin,
     github: links.github,
+    portfolio: links.portfolio,
+    internships,
+    achievements,
   };
 
   // Drop everything that was not found. An absent key is the signal the

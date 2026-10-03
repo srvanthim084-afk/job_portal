@@ -194,6 +194,7 @@ export default function uploadRoutes() {
       let parsed = null;
       let parseError = null;
       let resumeText = null;
+      let applied = null;
       try {
         const doc = await extractResumeText(req.file.buffer, req.file.originalname);
         const out = extractFields(doc.text);
@@ -228,7 +229,7 @@ export default function uploadRoutes() {
            parsed ? parsed.confidence : null,
            parseError, resumeText]);
 
-        if (parsed) await applyExtractedFields(c, candidateId, parsed.fields);
+        if (parsed) applied = await applyExtractedFields(c, candidateId, parsed.fields);
         if (!upd.rowCount) {
           // the row exists but RLS refused the write, or it is simply gone
           const seen = await c.query(`select 1 from candidates where id=$1`, [candidateId]);
@@ -280,7 +281,12 @@ export default function uploadRoutes() {
         parse: parsed
           ? { ok: true, parser: parsed.parser, chars: parsed.chars,
               fieldsDetected: parsed.found, confidence: parsed.confidence,
-              fields: parsed.fields }
+              fields: parsed.fields,
+              /* What was written onto the profile, and what the resume
+                 says differently from what the candidate already has -
+                 offered on the page for review, never applied silently. */
+              populated: applied ? applied.filled : [],
+              suggestions: applied ? applied.suggestions : {} }
           : { ok: false, error: parseError },
       });
     }));

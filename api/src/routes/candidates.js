@@ -1487,6 +1487,26 @@ export default function candidateRoutes() {
        */
       educationRecords:  z.array(educationRow).max(20).optional(),
       experienceRecords: z.array(experienceRow).max(30).optional(),
+
+      /* The profile sections (0087 and the existing projects column).
+         Each item is a small object; every string is capped. */
+      projects: z.array(z.object({
+        name: text(160), desc: text(1000), role: text(120), tech: text(300), url: text(300),
+      })).max(30).optional(),
+      internships: z.array(z.object({
+        org: text(200), role: text(160), duration: text(80), desc: text(1000), tech: text(300),
+      })).max(20).optional(),
+      achievements: z.array(z.object({
+        title: text(200), org: text(200), date: text(40), desc: text(1000),
+      })).max(30).optional(),
+      otherLinks: z.array(z.object({ label: text(60), url: text(300) })).max(10).optional(),
+      softSkills: z.array(z.string().max(80)).max(40).optional(),
+      availableFrom: z.string().max(10).optional(),
+      preferredJoiningDate: z.string().max(10).optional(),
+      immediateJoiner: z.boolean().optional(),
+      willingToRelocate: z.boolean().nullable().optional(),
+      relocationLocation: z.string().max(160).optional(),
+      additionalInfo: z.string().max(2000).optional(),
     });
     const out = schema.safeParse(req.body || {});
     if (!out.success) {
@@ -1510,7 +1530,15 @@ export default function candidateRoutes() {
       preferredWorkModes: 'preferred_work_modes',
       isPrivate: 'is_private', whatsappOptIn: 'whatsapp_opt_in',
       doNotContact: 'do_not_contact',
+      projects: 'projects', internships: 'internships', achievements: 'achievements',
+      otherLinks: 'other_links', softSkills: 'soft_skills',
+      availableFrom: 'available_from', preferredJoiningDate: 'preferred_joining_date',
+      immediateJoiner: 'immediate_joiner', willingToRelocate: 'willing_to_relocate',
+      relocationLocation: 'relocation_location', additionalInfo: 'additional_info',
     };
+    /* jsonb columns take JSON text; a blank date is no date. */
+    const JSONB = { projects: 1, internships: 1, achievements: 1, otherLinks: 1 };
+    const DATES = { availableFrom: 1, preferredJoiningDate: 1 };
 
     /*
      * The row lists first (0080), through the definer function - both
@@ -1529,7 +1557,14 @@ export default function candidateRoutes() {
     const cand = await withUser(req.session, async (c) => {
       const sets = [], vals = [];
       for (const [k, col] of Object.entries(COLS)) {
-        if (body[k] !== undefined) { vals.push(body[k]); sets.push(`${col}=$${vals.length}`); }
+        if (body[k] === undefined) continue;
+        if (JSONB[k]) { vals.push(JSON.stringify(body[k])); sets.push(`${col}=$${vals.length}::jsonb`); continue; }
+        if (DATES[k]) {
+          const d = String(body[k] || '').trim();
+          if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) throw badRequest('Please check the highlighted fields and try again.', { [k]: 'Use a date like 2026-11-01.' });
+          vals.push(d || null); sets.push(`${col}=$${vals.length}`); continue;
+        }
+        vals.push(body[k]); sets.push(`${col}=$${vals.length}`);
       }
       /*
        * Rows and no flat columns is a legitimate save - the wizard's
