@@ -38,6 +38,7 @@ import staffRoutes from './routes/staff.js';
 import externalJobRoutes from './routes/external-jobs.js';
 import savedSearchRoutes from './routes/saved-searches.js';
 import pushRoutes from './routes/push.js';
+import portalUpgradeRoutes, { mountPublicJobPage } from './routes/portal-upgrades.js';
 import { startDeadlineSweep } from './notify/interview-deadline.js';
 import { startIntakeSync } from './intake/scheduler.js';
 import { startScreeningSweep } from './ai/screening.js';
@@ -48,6 +49,7 @@ import { startBulkMessageSweep } from './notify/bulk.js';
 import { startExternalSyncSweep } from './external/service.js';
 import { startApplyReminderSweep } from './external/reminder.js';
 import { startSavedSearchAlerts } from './notify/saved-search-alerts.js';
+import { startPortalSweep } from './portal/alerts.js';
 
 /*
  * The background work belongs to the APPLICATION, not to one entry point.
@@ -94,6 +96,9 @@ function startBackgroundWork(logger) {
     /* Saved-search alerts: instant ones the publish hook missed, and the
        08:00 IST daily / Monday weekly digests. Idempotent per slot. */
     backgroundStops.push(startSavedSearchAlerts());
+    /* Job portal upgrades (0095): urgent-hiring and last-date alerts,
+       closing jobs past their last date, urgent auto-off, retries. */
+    backgroundStops.push(startPortalSweep());
   } catch (err) {
     console.error('[background] could not start:', err.message);
   }
@@ -290,6 +295,9 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', companyRoutes());
   app.use('/api', resumeRoutes());
   app.use('/api', bdeRoutes());
+  /* Ahead of the job and application routes: it adds rules to applying
+     and chips to the job board on their own paths (0095). */
+  app.use('/api', portalUpgradeRoutes());
   app.use('/api', jobRoutes());
   // Before candidateRoutes: /candidates/export must not be read as
   // /candidates/:id, which answers "that candidate could not be found".
@@ -447,6 +455,9 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
      * 200 with an HTML body, which hides missing files from exactly the
      * people who need to see them.
      */
+    /* A shared job link, with its link preview (0095). */
+    mountPublicJobPage(app, serveStatic);
+
     app.get('/reset-password', (_req, res) => {
       res.setHeader('cache-control', 'no-cache');
       /*

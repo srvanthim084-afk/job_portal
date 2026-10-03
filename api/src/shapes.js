@@ -120,6 +120,13 @@ export function toJob(r) {
   // byte-comparable with the prototype's own seed objects.
   if (r.paused) j.paused = true;
   if (r.archived) j.archived = true;
+  /* 0095. The last date to apply, and urgent hiring while it lasts -
+     present only when set, like the walk-in fields above. */
+  if (r.expires_at) j.expiresAt = new Date(r.expires_at).toISOString();
+  if (r.urgent && r.urgent_until && new Date(r.urgent_until) > new Date()) {
+    j.urgent = true;
+    j.urgentUntil = new Date(r.urgent_until).toISOString();
+  }
   return j;
 }
 
