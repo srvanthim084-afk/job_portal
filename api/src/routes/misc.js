@@ -19,6 +19,7 @@ import { wrap, badRequest, notFound, forbidden } from '../errors.js';
 import { requireAuth, requireRole } from '../auth.js';
 import { dispatchEvent } from '../notify/events.js';
 import { toNotification, toInterview, toOffer } from '../shapes.js';
+import { interviewScheduled, interviewChanged } from '../interview/kit-service.js';
 
 const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
 
@@ -126,15 +127,11 @@ export default function miscRoutes() {
         return { row: rows[0], applicationId: app.rows[0]?.id || null };
       });
 
-      // Same channels as every other event, after the commit.
-      const notify = row.applicationId
-        ? await dispatchEvent(req.session, 'INTERVIEW_SCHEDULED', {
-            applicationId: row.applicationId,
-            scheduledAt: b.date ? `${b.date}${b.time ? ' ' + b.time : ''}` : null,
-            mode: b.mode || null,
-            interviewer: b.interviewer || null,
-          })
-        : null;
+      // After the commit: the prep kit (0098) and "Interview scheduled -
+      // <role>, <date> <time>. Your prep kit: <link>" on every channel.
+      // It replaces the generic INTERVIEW_SCHEDULED message, which named
+      // the client company - the candidate must never be told it.
+      const notify = await interviewScheduled(req.session, row.row, req.body || {});
 
       res.status(201).json({ interview: toInterview(row.row), notify });
     }));
@@ -179,32 +176,12 @@ export default function miscRoutes() {
        * Anything else - a score, feedback, a no-show recorded after the
        * fact - is recruiter bookkeeping and is not the candidate's news.
        */
-      const wasCancelled = row.after.status === 'Cancelled'
-        && row.before.status !== 'Cancelled';
-      const moved = row.after.status !== 'Cancelled'
-        && (String(row.before.scheduled_date || '') !== String(row.after.scheduled_date || '')
-            || String(row.before.scheduled_time || '') !== String(row.after.scheduled_time || ''));
-
-      let delivery;
-      if ((wasCancelled || moved) && row.after.application_id) {
-        const when = (d) => (d
-          ? new Date(d).toLocaleDateString('en-GB',
-              { day: 'numeric', month: 'short', year: 'numeric' })
-          : undefined);
-
-        delivery = await dispatchEvent(req.session,
-          wasCancelled ? 'INTERVIEW_CANCELLED' : 'INTERVIEW_RESCHEDULED', {
-            applicationId: row.after.application_id,
-            candidateId: row.after.candidate_id,
-            jobId: row.after.job_id,
-            // A cancellation quotes the slot that is being cancelled;
-            // a reschedule quotes the new one.
-            interviewDate: when(wasCancelled ? row.before.scheduled_date : row.after.scheduled_date),
-            interviewTime: (wasCancelled ? row.before.scheduled_time : row.after.scheduled_time)
-              || undefined,
-            interviewType: row.after.type || row.after.mode || undefined,
-          });
-      }
+      // Cancelled -> "cancelled" now; moved -> the kit is refreshed and
+      // "rescheduled" goes now, with the reminders following the new time.
+      // Both come from the prep kit (0098), whose messages never name the
+      // client; anything else is recruiter bookkeeping and sends nothing.
+      const delivery = await interviewChanged(req.session, row.before, row.after)
+        .catch((err) => { console.error('[prep-kit] change handling failed:', err.message); return undefined; });
 
       res.json({ interview: toInterview(row.after), delivery: delivery || undefined });
     }));

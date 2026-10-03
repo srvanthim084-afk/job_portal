@@ -38,6 +38,8 @@ import staffRoutes from './routes/staff.js';
 import externalJobRoutes from './routes/external-jobs.js';
 import savedSearchRoutes from './routes/saved-searches.js';
 import pushRoutes from './routes/push.js';
+import screeningRoutes from './routes/screening.js';
+import interviewPrepRoutes from './routes/interview-prep.js';
 import { startDeadlineSweep } from './notify/interview-deadline.js';
 import { startIntakeSync } from './intake/scheduler.js';
 import { startScreeningSweep } from './ai/screening.js';
@@ -48,6 +50,8 @@ import { startBulkMessageSweep } from './notify/bulk.js';
 import { startExternalSyncSweep } from './external/service.js';
 import { startApplyReminderSweep } from './external/reminder.js';
 import { startSavedSearchAlerts } from './notify/saved-search-alerts.js';
+import { startScreeningQuestionSweep } from './screening/service.js';
+import { startInterviewPrepSweep } from './interview/reminders.js';
 
 /*
  * The background work belongs to the APPLICATION, not to one entry point.
@@ -94,6 +98,10 @@ function startBackgroundWork(logger) {
     /* Saved-search alerts: instant ones the publish hook missed, and the
        08:00 IST daily / Monday weekly digests. Idempotent per slot. */
     backgroundStops.push(startSavedSearchAlerts());
+    /* Screening questions (0097): answer links, the one 48h reminder. */
+    backgroundStops.push(startScreeningQuestionSweep());
+    /* Interview prep kit (0098): day-before / 2-hour reminders, status nudge. */
+    backgroundStops.push(startInterviewPrepSweep());
   } catch (err) {
     console.error('[background] could not start:', err.message);
   }
@@ -303,6 +311,8 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', pushRoutes());
   app.use('/api', candidateRoutes());
   app.use('/api', applicationRoutes());
+  app.use('/api', screeningRoutes());
+  app.use('/api', interviewPrepRoutes());
   app.use('/api', miscRoutes());
   app.use('/api', uploadRoutes());
   app.use('/api', aiInterviewRoutes());
