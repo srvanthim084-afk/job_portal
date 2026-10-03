@@ -337,6 +337,26 @@ export default function miscRoutes() {
     res.json({ ok: true });
   }));
 
+  /*
+   * "Not interested". The table existed from the start and nothing wrote
+   * to it - the browser kept the set in memory, so a hidden job came back
+   * on the next visit, and the server had no way to know not to send it
+   * in an alert. Saved-search alerts read this list.
+   */
+  r.post('/hidden-jobs/:jobId', requireAuth(), requireRole('candidate'), wrap(async (req, res) => {
+    await withUser(req.session, (c) => c.query(
+      `insert into hidden_jobs (candidate_id, job_id) values ($1,$2) on conflict do nothing`,
+      [req.session.profileId, String(req.params.jobId).slice(0, 64)]));
+    res.json({ ok: true });
+  }));
+
+  r.delete('/hidden-jobs/:jobId', requireAuth(), requireRole('candidate'), wrap(async (req, res) => {
+    await withUser(req.session, (c) => c.query(
+      `delete from hidden_jobs where candidate_id=$1 and job_id=$2`,
+      [req.session.profileId, req.params.jobId]));
+    res.json({ ok: true });
+  }));
+
   r.get('/saved-jobs', requireAuth(), requireRole('candidate'), wrap(async (req, res) => {
     const rows = await withUser(req.session, async (c) => {
       const saved  = await c.query(`select job_id from saved_jobs`);

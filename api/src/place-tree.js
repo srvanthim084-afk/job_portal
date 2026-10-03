@@ -482,3 +482,76 @@ export async function treeNear(id, km, { limit = 4000 } = {}) {
 
 /** Warm the index without asking it anything. */
 export async function treeWarm() { await load(); return treeStatus(); }
+
+/**
+ * A name -> place lookup that answers synchronously once the tree is in.
+ *
+ * For matching a job's free-text location against a saved search's
+ * location tags, where thousands of (job, search) pairs are compared in a
+ * loop and an await per pair would be absurd. Load once, then ask.
+ *
+ * EXACT NAMES ONLY (aliases and diacritics folded). "Nellore" resolves;
+ * "Nell" does not - a typeahead may guess, a filter must not. The first
+ * comma part is used, so "Nellore, Andhra Pradesh" is Nellore. Among
+ * several places with one name the most populous wins, which is the one
+ * people mean when they write it on a job advert.
+ *
+ * Returns { id, name, type, lat, lon, state, ancestors:Set<id> } or null.
+ */
+export async function treeResolver() {
+  const x = await load();
+  const memo = new Map();
+
+  return function resolve(raw) {
+    const name = String(raw || '').split(',')[0].trim();
+    if (name.length < 2) return null;
+    const key = foldName(name);
+    if (memo.has(key)) return memo.get(key);
+
+    const seen = new Set();
+    const hits = [];
+    for (const at of x.byName.get(name.toLowerCase()) || []) { if (!seen.has(at)) { seen.add(at); hits.push(at); } }
+    for (const at of x.byPrefix.get(key.slice(0, 3)) || []) {
+      if (seen.has(at)) continue;
+      const own = x.folded[at] === key;
+      const alias = !own && x.aliases[at]
+        && x.aliases[at].split('|').some((a) => foldName(a.trim()) === key);
+      if (own || alias) { seen.add(at); hits.push(at); }
+    }
+
+    let best = -1;
+    for (const at of hits) {
+      if (best < 0
+          || (x.pop[at] || 0) > (x.pop[best] || 0)
+          || ((x.pop[at] || 0) === (x.pop[best] || 0) && x.type[at] < x.type[best])) best = at;
+    }
+
+    let out = null;
+    if (best >= 0) {
+      const ancestors = new Set();
+      let p = x.parent[best];
+      let state = x.type[best] === 0 ? x.names[best] : '';
+      for (let guard = 0; p >= 0 && guard < 8; guard += 1) {
+        ancestors.add(x.ids[p]);
+        if (x.type[p] === 0) state = x.names[p];
+        p = x.parent[p];
+      }
+      /* Every node sharing the name is an ancestor candidate too: a job
+         in "Hyderabad" the city sits inside "Hyderabad" the district,
+         and the two are one place to anybody reading the advert. */
+      const sameName = new Set(hits.map((at) => x.ids[at]));
+      out = {
+        id: x.ids[best], name: x.names[best], type: TYPES[x.type[best]],
+        lat: x.lat[best], lon: x.lon[best], state, ancestors, sameName,
+      };
+    }
+    memo.set(key, out);
+    return out;
+  };
+}
+
+/** Great-circle distance in km, for callers holding two resolved places. */
+export function treeDistanceKm(a, b) {
+  if (!a || !b || !Number.isFinite(a.lat) || !Number.isFinite(b.lat)) return null;
+  return haversine(a.lat, a.lon, b.lat, b.lon);
+}

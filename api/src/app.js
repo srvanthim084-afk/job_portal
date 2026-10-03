@@ -36,6 +36,7 @@ import intakeRoutes from './routes/intake.js';
 import { notificationRoutes } from './routes/notifications.js';
 import staffRoutes from './routes/staff.js';
 import externalJobRoutes from './routes/external-jobs.js';
+import savedSearchRoutes from './routes/saved-searches.js';
 import { startDeadlineSweep } from './notify/interview-deadline.js';
 import { startIntakeSync } from './intake/scheduler.js';
 import { startScreeningSweep } from './ai/screening.js';
@@ -45,6 +46,7 @@ import { startProfileNudgeSweep } from './notify/profile-nudge.js';
 import { startBulkMessageSweep } from './notify/bulk.js';
 import { startExternalSyncSweep } from './external/service.js';
 import { startApplyReminderSweep } from './external/reminder.js';
+import { startSavedSearchAlerts } from './notify/saved-search-alerts.js';
 
 /*
  * The background work belongs to the APPLICATION, not to one entry point.
@@ -88,6 +90,9 @@ function startBackgroundWork(logger) {
     /* One reminder per unanswered external application, ever. The claim
        that makes that true is in the database (0077), not here. */
     backgroundStops.push(startApplyReminderSweep());
+    /* Saved-search alerts: instant ones the publish hook missed, and the
+       08:00 IST daily / Monday weekly digests. Idempotent per slot. */
+    backgroundStops.push(startSavedSearchAlerts());
   } catch (err) {
     console.error('[background] could not start:', err.message);
   }
@@ -293,6 +298,7 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
      candidateRoutes so its literal paths are reached: a parameterised
      route of the same shape registered first would swallow them. */
   app.use('/api', exportRoutes());
+  app.use('/api', savedSearchRoutes());
   app.use('/api', candidateRoutes());
   app.use('/api', applicationRoutes());
   app.use('/api', miscRoutes());

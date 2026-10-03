@@ -156,6 +156,12 @@ export function emailLayout(opts = {}) {
         <p style="margin:0;font-family:${FONT};font-size:12.5px;line-height:1.6;color:${BRAND.soft}">${esc(opts.note)}</p>
       </td></tr>` : ''}
 
+      ${opts.stopLink && opts.stopLink.url ? `<tr><td class="tl-pad" style="padding:12px 34px 0">
+        <p style="margin:0;font-family:${FONT};font-size:12.5px;line-height:1.6;color:${BRAND.soft}">
+          <a href="${esc(opts.stopLink.url)}" style="color:${BRAND.soft};text-decoration:underline">${esc(opts.stopLink.label || 'Stop these emails')}</a>
+        </p>
+      </td></tr>` : ''}
+
       <tr><td class="tl-pad" style="padding:26px 34px 30px">
         <div style="border-top:1px solid ${BRAND.line};padding-top:16px">
           <p style="margin:0 0 4px;font-family:${FONT};font-size:12.5px;color:${BRAND.soft}">

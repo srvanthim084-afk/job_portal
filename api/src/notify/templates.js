@@ -489,3 +489,67 @@ export function buildEventMessages(event, c) {
       + (ref ? `${ref}\n` : '') + `${c.portalUrl}`,
   };
 }
+
+/* ------------------------------------------------------------------ *
+ * saved searches: "a new job for Driver · Nellore"
+ * ------------------------------------------------------------------ */
+
+/**
+ * One message per channel for a saved-search alert.
+ *
+ * `jobs` is one job for an instant alert and up to five for a daily or
+ * weekly digest - the same builder, so the two cannot drift into saying
+ * different things about the same search. Every email carries a "Stop
+ * this alert" link that works without signing in.
+ *
+ * @param c { candidateName, label, kind:'instant'|'daily'|'weekly',
+ *            jobs:[{ title, company, location, pay, url }], total,
+ *            searchUrl, stopUrl }
+ */
+export function buildSavedSearchMessages(c) {
+  const jobs = (c.jobs || []).slice(0, 5);
+  const total = Math.max(Number(c.total) || 0, jobs.length);
+  const one = jobs.length === 1 && total === 1;
+  const label = c.label || 'your saved search';
+
+  const subject = one
+    ? `New job for "${label}": ${jobs[0].title}`
+    : `${total} new jobs for "${label}"`;
+
+  const line = (j) => [j.title, j.company, j.location, j.pay].filter(Boolean).join(' · ');
+  const lead = one
+    ? `A new job matching your saved search "${label}" has been posted.`
+    : `${total} new jobs match your saved search "${label}"`
+      + (c.kind === 'weekly' ? ' this week.' : c.kind === 'daily' ? ' since yesterday.' : '.');
+  const more = total > jobs.length ? `\n\n…and ${total - jobs.length} more on TeamLink.` : '';
+  const listText = jobs.map((j) => `• ${line(j)}\n  ${j.url}`).join('\n');
+
+  const greeting = c.candidateName ? `Hi ${c.candidateName},` : 'Hi,';
+  const text = `${greeting}\n\n${lead}\n\n${listText}${more}\n\n`
+    + `See all results: ${c.searchUrl}\n\n`
+    + `Stop this alert: ${c.stopUrl}\n\n— TeamLink`;
+
+  const html = emailLayout({
+    title: subject,
+    preheader: lead,
+    greeting,
+    body: `${lead}\n\n${jobs.map((j) => `• ${line(j)}`).join('\n')}${more}`,
+    facts: one ? [['Role', jobs[0].title], ['Company', jobs[0].company],
+                  ['Location', jobs[0].location], ['Pay', jobs[0].pay]] : [],
+    cta: { label: one ? 'View job & apply' : 'See these jobs', url: one ? jobs[0].url : c.searchUrl },
+    note: `You get this because you saved the search "${label}" on TeamLink`
+      + ` with ${c.kind === 'instant' ? 'instant' : c.kind} alerts.`,
+    stopLink: { label: 'Stop this alert', url: c.stopUrl },
+  });
+
+  // Short on purpose: one SMS segment where it can be.
+  const sms = (one
+    ? `TeamLink: New job for "${label}": ${jobs[0].title}${jobs[0].location ? ` - ${jobs[0].location}` : ''}. ${jobs[0].url}`
+    : `TeamLink: ${total} new jobs for "${label}". ${c.searchUrl}`).slice(0, 320);
+
+  const whatsapp = `*TeamLink*\n\n${greeting}\n\n${lead}\n\n`
+    + jobs.map((j) => `• ${line(j)}\n${j.url}`).join('\n\n') + more
+    + `\n\nAll results: ${c.searchUrl}`;
+
+  return { email: { subject, text, html }, sms, whatsapp };
+}

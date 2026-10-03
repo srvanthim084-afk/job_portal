@@ -224,6 +224,16 @@ export function runJobAlertsInBackground(jobId, opts) {
                       `profiles, ${r.notified} notified (threshold ${r.threshold})`);
         }
       })
-      .catch((err) => console.error(`[alerts] ${jobId} failed:`, err.message));
+      .catch((err) => console.error(`[alerts] ${jobId} failed:`, err.message))
+      /* Saved searches go AFTER the profile match, so a candidate who
+         was just told about this job by that alert is not told again. */
+      .then(() => import('./saved-search-alerts.js'))
+      .then((m) => m.runSavedSearchInstant(jobId))
+      .then((r) => {
+        if (r && (r.recorded || r.sent)) {
+          console.log(`[saved-search] ${jobId}: ${r.recorded} search(es) matched, ${r.sent} instant alert(s) delivered`);
+        }
+      })
+      .catch((err) => console.error(`[saved-search] ${jobId} failed:`, err.message));
   }, 10).unref?.();
 }
