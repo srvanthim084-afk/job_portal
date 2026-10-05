@@ -55,7 +55,9 @@ const save = async (c, jobId) => {
 const inbox = (candId, type = 'SAVED_JOB_SIMILAR') => raw(
   `select id, title, message, job_id, metadata from notifications where recipient_id=$1 and type=$2 order by created_at`,
   [candId, type]).then((r) => r.rows);
-const allMailsTo = (email) => mock.received.filter((m) => m.url === '/email' && (m.body.to || []).includes(email));
+/* 0109: registering sends the welcome email (Candidate ID); it is not a job alert. */
+const allMailsTo = (email) => mock.received.filter((m) => m.url === '/email' && (m.body.to || []).includes(email)
+  && !/^Welcome to TeamLink!/.test(String(m.body.subject || '')));
 /* this feature's emails only - an application confirmation is not one of them */
 const mailsTo = (email) => allMailsTo(email).filter((m) => /like (one|ones) you saved/.test(String(m.body.subject || '')));
 const row = (candId, jobId) => raw(
