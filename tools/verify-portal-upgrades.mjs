@@ -233,7 +233,7 @@ await check('4. Share -> WhatsApp opens wa.me with the job and no client name', 
   await popup.waitForURL(/wa\.me|whatsapp/, { timeout: 8000 }).catch(() => {});
   const wa = decodeURIComponent(popup.url().replace(/\+/g, ' '));
   must(/wa\.me\/\?text=/.test(popup.url()) || /whatsapp/.test(popup.url()), 'opened ' + popup.url());
-  must(wa.includes(senior.title) && wa.includes('Apply on TeamLink') && wa.includes(`/job/${senior.id}?ref=`), 'text: ' + wa);
+  must(wa.includes(senior.title) && wa.includes('TeamLink Consultancy') && wa.includes('View Job & Apply') && wa.includes(`/job/${senior.id}?ref=`), 'text: ' + wa);
   must(!wa.includes(CLIENT) && !/apollo/i.test(wa), 'the client name is in the share');
   await popup.close();
   await cp.evaluate(() => window.tlpuCloseSheet());

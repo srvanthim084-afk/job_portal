@@ -92,9 +92,38 @@ WhatsApp (wa.me), Copy link, Email and LinkedIn.
 - `POST /api/jobs/:id/share {channel}` (anyone, signed out included; open jobs
   only) → `{code, url, text, links}`. Every share is a `job_shares` row
   (job, who shared or NULL, channel, code).
-- Text: `<title> - <location> - <pay> | Apply on TeamLink: <link>`, link
-  `/job/<id>?ref=<code>`. **No company field is read**, so a client's name
-  cannot reach a share, a message or a preview (tested).
+- Message (WhatsApp, the phone's share sheet, email), the owner's format:
+
+  ```
+  🌟 *TeamLink Consultancy*
+
+  📢 *Job Opportunity*
+
+  👨‍⚕️ *<title>*
+
+  I thought this job opportunity might be relevant for you.
+
+  📍 *Location:* <location>          (left out when the job has none)
+  💼 *Job Type:* <employment type>   (left out when the job has none)
+
+  👉 *View Job & Apply:*
+  <link>
+
+  Please check the job details and apply if interested.
+
+  *TeamLink Consultancy*
+  ```
+
+  Blank, `undefined`, `null` and `[object Object]` values are never printed.
+  **No company field is read**, so a client's name cannot reach a share, a
+  message or a preview (tested).
+- Link: `/job/<id>?ref=<code>` on the address the PUBLIC can open.
+  **Set `PUBLIC_SHARE_URL`** (e.g. `https://jobs.your-domain.in`) to the
+  portal's public https address: only the origin is swapped, the path and
+  `?ref=` stay. Without it the link uses `PUBLIC_ORIGIN` when that is a real
+  address, otherwise the address the page was opened on - a `localhost` link
+  opens only on that computer, and the share response says so
+  (`publicLink: false`). The Open Graph `og:url` / `og:image` use the same.
 - `GET /job/:id` serves the application with Open Graph tags (title +
   location, pay/experience/mode, the TeamLink icon) for WhatsApp and other
   previews, and a first-line script that turns the address into

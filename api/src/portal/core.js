@@ -268,16 +268,73 @@ export function newShareCode() {
   return randomBytes(6).toString('base64url');
 }
 
+/** A field worth printing: never "undefined", "null" or "[object Object]". */
+export const cleanField = (v) => {
+  if (v === undefined || v === null) return '';
+  const s = String(v).trim();
+  return s && !['undefined', 'null', '[object Object]'].includes(s) ? s : '';
+};
+
 /**
- * "<title> - <location> - <pay> | Apply on TeamLink: <link>"
+ * The message a shared job travels with (WhatsApp, the phone's own share
+ * sheet, email) - the owner's format:
  *
- * Built from the job's own title, place and pay and NOTHING else - no
- * company field is read, so a client's name cannot reach a share, a
- * WhatsApp message or a link preview however the job was written.
+ *   🌟 *TeamLink Consultancy*
+ *   📢 *Job Opportunity*
+ *   👨‍⚕️ *<title>*
+ *   I thought this job opportunity might be relevant for you.
+ *   📍 *Location:* <location>        (only when the job has one)
+ *   💼 *Job Type:* <employment type> (only when the job has one)
+ *   👉 *View Job & Apply:*
+ *   <link>
+ *   Please check the job details and apply if interested.
+ *   *TeamLink Consultancy*
+ *
+ * Built from the job's own title, place and employment type and NOTHING
+ * else - no company field is read, so a client's name cannot reach a
+ * share, a WhatsApp message or a link preview however the job was written.
  */
 export function shareText(job, link) {
-  const parts = [job.title, job.location, job.pay].map((s) => String(s || '').trim()).filter(Boolean);
-  return `${parts.join(' - ')} | Apply on TeamLink: ${link}`;
+  const title = cleanField(job && job.title) || 'Job Opportunity';
+  const location = cleanField(job && job.location);
+  const jobType = cleanField(job && job.type);
+  const lines = [
+    '🌟 *TeamLink Consultancy*', '',
+    '📢 *Job Opportunity*', '',
+    `👨‍⚕️ *${title}*`, '',
+    'I thought this job opportunity might be relevant for you.', '',
+  ];
+  if (location) lines.push(`📍 *Location:* ${location}`);
+  if (jobType) lines.push(`💼 *Job Type:* ${jobType}`);
+  if (location || jobType) lines.push('');
+  lines.push('👉 *View Job & Apply:*', link, '',
+    'Please check the job details and apply if interested.', '',
+    '*TeamLink Consultancy*');
+  return lines.join('\n');
+}
+
+const LOCAL_HOSTS = ['localhost', '127.0.0.1', '[::1]', '::1'];
+export const isLocalUrl = (u) => {
+  try { return LOCAL_HOSTS.includes(new URL(u).hostname); } catch { return false; }
+};
+
+/**
+ * The same link on the address the PUBLIC can open. Only the origin is
+ * swapped - the path, the job id and ?ref= (share tracking) stay - and
+ * only when a public base is configured and the link is local or on a
+ * different origin.
+ */
+export function toPublicUrl(existingUrl, publicBase) {
+  const base = cleanField(publicBase);
+  let u;
+  try { u = new URL(existingUrl); } catch { return existingUrl; }
+  if (!base) return u.toString();
+  let b;
+  try { b = new URL(base); } catch { return u.toString(); }
+  if (isLocalUrl(u.toString()) || u.origin !== b.origin) {
+    u.protocol = b.protocol; u.hostname = b.hostname; u.port = b.port;
+  }
+  return u.toString();
 }
 
 const escHtml = (v) => String(v == null ? '' : v)

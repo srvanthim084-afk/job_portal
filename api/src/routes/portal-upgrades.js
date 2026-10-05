@@ -35,13 +35,30 @@ import { requireAuth, requireRole } from '../auth.js';
 import { toJob, toApplication } from '../shapes.js';
 import {
   CHIP_SQL, parseChips, normaliseChipSettings, nearMeFilter, explainMatch, loadAiSettings,
-  missingForOneClick, newShareCode, shareText, ogTags, SHARE_CHANNELS, endOfIstDay, escHtml,
+  missingForOneClick, newShareCode, shareText, toPublicUrl, isLocalUrl, ogTags, SHARE_CHANNELS, endOfIstDay, escHtml,
 } from '../portal/core.js';
 import { kickUrgent } from '../portal/alerts.js';
 
 const APPLY_PER_HOUR = () => Number(process.env.APPLY_RATE_PER_HOUR || 30);
 const SHARE_COOKIE = 'tl_share_ref';
 const base = () => config.publicOrigin.replace(/\/$/, '');
+
+/*
+ * Where a shared link points. PUBLIC_SHARE_URL is the address people
+ * outside this computer open (the portal's public https address); a
+ * WhatsApp recipient cannot open localhost. Without it: PUBLIC_ORIGIN when
+ * that is a real address, else the address this request came in on, so
+ * the link at least works where it was made.
+ */
+function shareBase(req) {
+  const pub = String(process.env.PUBLIC_SHARE_URL || '').trim().replace(/\/$/, '');
+  if (pub) return pub;
+  const cfg = base();
+  if (!isLocalUrl(cfg)) return cfg;
+  const host = req && req.get ? req.get('host') : '';
+  return host ? `${req.protocol}://${host}` : cfg;
+}
+const shareLink = (req, path) => toPublicUrl(`${shareBase(req)}${path}`, process.env.PUBLIC_SHARE_URL);
 
 const parse = (schema, body) => {
   const out = schema.safeParse(body || {});
@@ -206,10 +223,12 @@ export default function portalUpgradeRoutes() {
     });
     if (!out || !out.job) throw new ApiError(404, CODES.JOB_UNAVAILABLE, 'This job is not open, so it cannot be shared.');
     const job = toJob(out.job);
-    const url = `${base()}/job/${encodeURIComponent(job.id)}?ref=${encodeURIComponent(out.code)}`;
+    const url = shareLink(req, `/job/${encodeURIComponent(job.id)}?ref=${encodeURIComponent(out.code)}`);
     const text = shareText(job, url);
     res.status(201).json({
-      code: out.code, url, text,
+      /* publicLink false: the link only opens on this computer (no
+         PUBLIC_SHARE_URL yet) - the sheet can say so. */
+      code: out.code, url, text, publicLink: !isLocalUrl(url),
       links: {
         whatsapp: `https://wa.me/?text=${encodeURIComponent(text)}`,
         email: `mailto:?subject=${encodeURIComponent(`Job: ${job.title}`)}&body=${encodeURIComponent(text)}`,
@@ -444,10 +463,10 @@ export function mountPublicJobPage(app, staticDir) {
         });
       }
 
-      const url = `${base()}/job/${encodeURIComponent(id)}`;
+      const url = shareLink(req, `/job/${encodeURIComponent(id)}`);
       const target = `/${ref ? `?ref=${encodeURIComponent(ref)}` : ''}#/job/${encodeURIComponent(id)}`;
       const head = (row
-        ? ogTags(toJob(row), { url, image: `${base()}/icons/icon-512.png` })
+        ? ogTags(toJob(row), { url, image: shareLink(req, '/icons/icon-512.png') })
         : `<meta property="og:title" content="TeamLink - jobs"><meta property="og:url" content="${escHtml(url)}">`)
         + `\n<script>try{history.replaceState(null,'',${JSON.stringify(target)});}catch(e){location.replace(${JSON.stringify(target)});}</script>`;
 

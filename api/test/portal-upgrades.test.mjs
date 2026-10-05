@@ -336,12 +336,47 @@ test('the recruiter is reminded two days before the last date, once', async () =
  * 3. sharing
  * ------------------------------------------------------------------ */
 
+test('share: the link moves to PUBLIC_SHARE_URL (path and ?ref kept); blank fields are left out', async () => {
+  const { toPublicUrl, shareText } = await import('../src/portal/core.js');
+  assert.equal(toPublicUrl('http://localhost:4323/job/j1?ref=abc123', 'https://jobs.example.in'),
+    'https://jobs.example.in/job/j1?ref=abc123');
+  assert.equal(toPublicUrl('http://localhost:4323/job/j1?ref=abc123', ''), 'http://localhost:4323/job/j1?ref=abc123');
+  assert.equal(toPublicUrl('https://jobs.example.in/job/j1', 'https://jobs.example.in'), 'https://jobs.example.in/job/j1');
+  const t = shareText({ title: 'Staff Nurse', location: 'undefined', type: null }, 'https://x.test/job/j1');
+  assert.equal(t.includes('Location'), false);
+  assert.equal(t.includes('Job Type'), false);
+  assert.equal(t.includes('undefined'), false);
+  assert.match(t, /👨‍⚕️ \*Staff Nurse\*/);
+  assert.equal(shareText({}, 'https://x.test/job/j2').includes('*Job Opportunity*'), true);
+
+  const j = await job({ title: 'Public Share Role', location: 'Guntur', pay: '₹3 LPA' });
+  process.env.PUBLIC_SHARE_URL = 'https://jobs.example.in';
+  try {
+    const s = await makeClient(base).post(`/api/jobs/${j}/share`, { channel: 'whatsapp' });
+    assert.equal(s.status, 201);
+    assert.equal(s.body.url, `https://jobs.example.in/job/${j}?ref=${s.body.code}`);
+    assert.equal(s.body.publicLink, true);
+    assert.ok(s.body.text.includes(`https://jobs.example.in/job/${j}?ref=${s.body.code}`));
+  } finally {
+    delete process.env.PUBLIC_SHARE_URL;
+  }
+});
+
 test('share: code, text and link preview without the client name; clicks and applies counted', async () => {
   const j = await job({ title: 'Share Role', location: 'Nellore', pay: '₹3-4 LPA' });
   const anon = makeClient(base);
   const s = await anon.post(`/api/jobs/${j}/share`, { channel: 'whatsapp' });
   assert.equal(s.status, 201, JSON.stringify(s.body));
-  assert.equal(s.body.text, `Share Role - Nellore - ₹3-4 LPA | Apply on TeamLink: ${base}/job/${j}?ref=${s.body.code}`);
+  const link = `${base}/job/${j}?ref=${s.body.code}`;
+  assert.equal(s.body.url, link);
+  assert.equal(s.body.text, [
+    '🌟 *TeamLink Consultancy*', '', '📢 *Job Opportunity*', '', '👨‍⚕️ *Share Role*', '',
+    'I thought this job opportunity might be relevant for you.', '',
+    '📍 *Location:* Nellore', '💼 *Job Type:* Full-time', '',
+    '👉 *View Job & Apply:*', link, '', 'Please check the job details and apply if interested.', '',
+    '*TeamLink Consultancy*'].join('\n'));
+  assert.equal(decodeURIComponent(s.body.links.whatsapp.replace('https://wa.me/?text=', '')), s.body.text);
+  assert.equal(s.body.publicLink, false, 'a 127.0.0.1 link is reported as not public');
   assert.ok(s.body.links.whatsapp.startsWith('https://wa.me/?text='));
   assert.equal(JSON.stringify(s.body).includes(CLIENT_NAME), false, 'no client name in the share');
   assert.equal(JSON.stringify(s.body).toLowerCase().includes('acme'), false);
