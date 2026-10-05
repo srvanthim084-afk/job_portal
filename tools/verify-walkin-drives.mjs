@@ -329,13 +329,12 @@ const fresh = { email: `walkin.public.${stamp}@tl-verify.test`, name: 'Walkin Pu
 const pubText = () => pp.evaluate(() => ((document.querySelector('#app') || {}).innerText || ''));
 const intentText = () => pp.evaluate(() => ((document.querySelector('.tl-walkin-intent') || {}).innerText || '').split(String.fromCharCode(10)).join(' '));
 
-await check('14. signed out: "Walk-in Drives" in the header and on the jobs page; the list and filters work', async () => {
+await check('14. signed out: no walk-in links in the header or on the jobs page (owner, 2026-10-05); #/walkins still lists and filters', async () => {
   must(await pp.evaluate(() => !STATE.session), 'should be signed out');
-  must(await pp.$('header .main-nav a[href="#/walkins"]'), 'no Walk-in Drives link in the site header');
-  const entry = await pp.$('a.wk-jobs-entry');
-  must(entry, 'no Walk-in Drives entry on the jobs page');
+  must(!(await pp.$('header .main-nav a[href="#/walkins"]')), 'a Walk-ins link is in the signed-out header');
+  must(!(await pp.$('a.wk-jobs-entry')), 'a Walk-in Drives entry is on the signed-out jobs page');
   await shot(pp, '14-public-jobs-entry');
-  await entry.click();
+  await pp.evaluate(() => { location.hash = '#/walkins'; });
   await pp.waitForTimeout(1500);
   must((await pp.evaluate(() => location.hash)) === '#/walkins', 'did not open #/walkins');
   let t = await pubText();
