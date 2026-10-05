@@ -1256,6 +1256,51 @@
   })(0);
   window.addEventListener('hashchange', schedule);
 
+  /* ================================================================ *
+   * "Walk-in Jobs" beside Internships in the candidate header (owner,
+   * 2026-10-05). Not a separate module: it is the Jobs list with the
+   * Walk-in quick filter on, so walk-in stays a job type.
+   * ================================================================ */
+  var walkinFilterOn = function () { return /[?&]qf=[^&]*\bwalkin\b/.test(String(location.hash || '')); };
+  window.tlNavWalkins = function () {
+    try { window.scrollTo(0, 0); } catch (e) { /* ignore */ }
+    if (typeof STATE !== 'undefined') {
+      STATE.rj = STATE.rj || {}; STATE.rj.f = STATE.rj.f || {};
+      STATE.rj.mode = ''; STATE.rj.q = ''; STATE.rj.f.types = [];
+    }
+    var next = '#/candidate/search?qf=walkin';
+    if (location.hash === next) { if (typeof render === 'function') render(); } else location.hash = next;
+  };
+  /* Jobs and Internships switch the walk-in filter off again. */
+  ['tlNavJobs', 'tlNavInternships'].forEach(function (fn) {
+    var prev = window[fn];
+    if (typeof prev !== 'function' || prev.__tlwkNav) return;
+    var next = function () {
+      if (walkinFilterOn() && typeof window.tlpuChip === 'function') window.tlpuChip('walkin');
+      return prev.apply(this, arguments);
+    };
+    next.__tlwkNav = true;
+    window[fn] = next;
+  });
+  (function wrapHeader() {
+    var prev = window.cpShell;
+    if (typeof prev !== 'function' || prev.__tlwkNav) return;
+    var next = function (section) {
+      var html = prev.apply(this, arguments);
+      if (typeof html !== 'string' || html.indexOf('tlNavWalkins()') >= 0) return html;
+      var on = section === 'search' && walkinFilterOn();
+      return html.replace(/(<nav class="cp-nav">[\s\S]*?)(<a\b[^>]*>Internships<\/a>)([\s\S]*?<\/nav>)/, function (_m, a, intern, rest) {
+        if (on) {
+          /* the walk-in list is showing: Walk-in Jobs is the current tab, not Jobs */
+          a = a.replace(/<a class="on"( onclick="tlNavJobs\(\)">Jobs<\/a>)/, '<a class=""$1');
+        }
+        return a + intern + '<a class="' + (on ? 'on' : '') + '" onclick="tlNavWalkins()">Walk-in Jobs</a>' + rest;
+      });
+    };
+    next.__tlwkNav = true;
+    window.cpShell = next;
+  })();
+
   window.TLWalkinJobs = {
     open: openForm,
     isWalkin: isWalkin,
