@@ -281,9 +281,15 @@ export default function applicationRoutes() {
    */
   r.put('/applications/:id/status', requireAuth(),
     requireRole('recruiter', 'client', 'admin'), wrap(async (req, res) => {
-      const { stage, note } = parse(z.object({
+      const { stage, note, reason, expectedVersion } = parse(z.object({
         stage: z.string().trim().min(1).max(40),
         note: z.string().trim().max(2000).optional(),
+        /* 0107: an override's reason (walk-in jobs) and the version the
+           screen was showing, so a second recruiter cannot overwrite the
+           first one's move unseen (23.8). Both optional: every existing
+           caller keeps working exactly as before. */
+        reason: z.string().trim().max(1000).optional(),
+        expectedVersion: z.number().int().min(1).optional(),
       }), req.body);
 
       const out = await withUser(req.session, async (c) => {
@@ -301,6 +307,17 @@ export default function applicationRoutes() {
         // failed with 25P02 and the move itself 500'd - and the
         // `.catch(() => {})` around it hid the cause.
         await c.query(`select set_config('app.stage_note', $1, true)`, [note || '']);
+        // 0107: a recruiter's explicit move - walk-in jobs check it against their transition table
+        await c.query(`select set_config('app.stage_explicit', '1', true), set_config('app.stage_reason', $1, true)`,
+          [reason || '']);
+        if (expectedVersion != null) {
+          const cur = await c.query(`select version from applications where id=$1 for update`, [req.params.id]);
+          if (cur.rowCount && cur.rows[0].version !== expectedVersion) {
+            throw new ApiError(409, 'STALE_VERSION',
+              'This applicant was updated by someone else. Refresh to see the latest.',
+              { currentVersion: cur.rows[0].version });
+          }
+        }
 
         const upd = await c.query(
           `update applications set stage=$1 where id=$2 returning *`, [stage, req.params.id]);
@@ -311,7 +328,8 @@ export default function applicationRoutes() {
             : notFound('That application no longer exists.');
         }
         const app = upd.rows[0];
-        const tellThem = valid.rows[0].notify_candidate !== false;
+        // 0107: a walk-in move never messages the candidate by itself (23.18)
+        const tellThem = valid.rows[0].notify_candidate !== false && app.posting_type !== 'walkin';
 
         const job = await c.query(
           `select j.title, co.name as company from jobs j

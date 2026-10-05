@@ -81,6 +81,19 @@ export function fromPgError(err) {
       String(err.message || 'Another recruiter holds this candidate for this role.'), details);
   }
 
+  /* 0107: the walk-in ATS stage machine, refused by the database. */
+  if (typeof c === 'string' && /^TLW0\d$/.test(c)) {
+    const map = {
+      TLW01: [409, 'INVALID_TRANSITION'], TLW02: [400, 'REASON_REQUIRED'], TLW03: [409, 'STALE_VERSION'],
+      TLW04: [409, 'OUTSIDE_DRIVE_WINDOW'], TLW05: [400, 'WALKIN_DATE_IN_PAST'], TLW06: [404, CODES.NOT_FOUND],
+      TLW07: [400, 'STAGE_NOT_FOR_JOB_TYPE'], TLW08: [400, CODES.VALIDATION_FAILED],
+    };
+    const [status, code] = map[c] || [400, CODES.VALIDATION_FAILED];
+    let details;
+    try { details = err.detail ? JSON.parse(err.detail) : undefined; } catch { details = undefined; }
+    return new ApiError(status, code, String(err.message || 'That change is not allowed.'), details);
+  }
+
   if (c === '23505') {
     if (constraint.includes('applications_candidate_id_job_id'))
       return conflict(CODES.DUPLICATE_APPLICATION, 'You have already applied for this position.');

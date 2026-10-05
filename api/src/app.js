@@ -70,6 +70,9 @@ import { startOutboundHoldSweep } from './notify/apply-hold.js';
 /* 0109: multi-step registration, documents, privacy; welcome + reminder. */
 import registrationRoutes from './routes/registration.js';
 import { startRegistrationSweep } from './notify/registration-messages.js';
+/* 0107: the walk-in ATS (stages, check-in, notes, ratings, resumes, No Show, reminders). */
+import walkinAtsRoutes, { walkinAtsKick } from './routes/walkin-ats.js';
+import { startWalkinAtsSweep } from './notify/walkin-ats.js';
 
 /*
  * The background work belongs to the APPLICATION, not to one entry point.
@@ -139,6 +142,9 @@ function startBackgroundWork(logger) {
     /* 0109: the one profile reminder after registering, and retries of a
        welcome email that failed. Idempotent per candidate and message. */
     backgroundStops.push(startRegistrationSweep());
+    /* Walk-in ATS (0107): No Show after end + grace, day-before / morning
+       reminders, settled reschedules, recruiter alerts. Every minute, idempotent. */
+    backgroundStops.push(startWalkinAtsSweep());
   } catch (err) {
     console.error('[background] could not start:', err.message);
   }
@@ -330,6 +336,7 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
     res.json({ ok: true });
   });
 
+  app.use('/api', walkinAtsKick());
   app.use('/api', bootstrapRoutes());
   app.use('/api', authRoutes());
   app.use('/api', companyRoutes());
@@ -362,6 +369,7 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', sharedCandidateRoutes());
   app.use('/api', availabilityRoutes());
   app.use('/api', registrationRoutes());
+  app.use('/api', walkinAtsRoutes());
   app.use('/api', candidateRoutes());
   app.use('/api', applicationRoutes());
   app.use('/api', screeningRoutes());
