@@ -5,7 +5,7 @@
  *   2  refresh on that form       -> still applying for the same job
  *   3  registration refused       -> still on the form, same job
  *   4  registration succeeds      -> the application is submitted for that job
- *   5  signed in, Apply Now       -> applies directly, no form
+ *   5  signed in, Apply Now       -> the application form (0106), then applied
  *   6  apply again                -> still one application
  *   7  Log in instead (one wrong password first) -> applied for the same job
  *   8  Cancel                     -> back on the job, nothing remembered
@@ -15,6 +15,7 @@
  *   TL_URL=http://127.0.0.1:4416/ node tools/verify-apply-auth.mjs
  */
 import { chromium } from 'playwright';
+import { completeApplyForm, closeApplyForm } from './lib/apply-form.mjs';
 
 const BASE = (process.env.TL_URL || 'http://127.0.0.1:4416/').replace(/\/?$/, '/');
 const url = new URL(BASE);
@@ -57,7 +58,12 @@ const clickApply = (page) => page.evaluate(() => {
    first" sheet ("Apply without them"). Both are optional; answered the way
    a candidate in a hurry would. Screening questions are switched off on
    this script's jobs - verify-screening-questions.mjs covers them. */
+/* Since 0106 Apply Now opens the application form (teamlink-walkin-jobs.js),
+   which folds the hint and the "fill these" sheet into itself: the form is
+   filled where the profile left gaps and submitted. */
 const settlePrompts = async (page) => {
+  const f = await completeApplyForm(page, { timeout: 4000 });
+  if (f.state !== 'none') { await closeApplyForm(page); return; }
   for (let i = 0; i < 3; i++) {
     const hit = await page.evaluate(() => {
       const b = Array.from(document.querySelectorAll('button'))
@@ -208,7 +214,7 @@ await check('4. registration succeeds and the application continues for that job
   must(await p.evaluate(() => TLApplyAuth.intent()) === null, 'the job is still remembered');
 });
 
-await check('5. signed in, Apply Now applies directly', async () => {
+await check('5. signed in, Apply Now opens the application form and applies', async () => {
   await p.evaluate((id) => { location.hash = '#/job/' + id; }, J2.id);
   await p.waitForTimeout(1200);
   await wizardAway(p);
