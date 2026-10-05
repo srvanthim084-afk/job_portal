@@ -495,6 +495,28 @@ export async function treeNear(id, km, { limit = 4000 } = {}) {
 export async function treeWarm() { await load(); return treeStatus(); }
 
 /**
+ * Every state, district and mandal, and every town of at least
+ * `minPopulation` people, with its aliases - what the voice search's
+ * spelling-tolerant match (api/src/search/place-sound.js) is built from.
+ * A hamlet is left out on purpose: an ordinary word that sounds like a
+ * village's name must not become a place.
+ */
+export async function treeSoundRows({ minPopulation = 5000 } = {}) {
+  const x = await load();
+  const out = [];
+  for (let k = 0; k < x.n; k += 1) {
+    if (x.type[k] === 3 && (x.pop[k] || 0) < minPopulation) continue;
+    out.push({
+      name: x.names[k],
+      type: TYPES[x.type[k]],
+      population: x.pop[k] || 0,
+      aliases: x.aliases[k] ? x.aliases[k].split('|') : [],
+    });
+  }
+  return out;
+}
+
+/**
  * A name -> place lookup that answers synchronously once the tree is in.
  *
  * For matching a job's free-text location against a saved search's

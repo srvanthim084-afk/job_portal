@@ -66,7 +66,20 @@
       if (f[k] !== '' && f[k] != null && isFinite(Number(f[k]))) out[k] = Number(f[k]);
     });
     if (out.locTags && Number(f.locKm) > 0) out.locKm = Number(f.locKm);
+    /* a voice search's normalized criteria (teamlink-voice-search.js), matched by meaning */
+    if (f.voice && typeof f.voice === 'object') out.voice = f.voice;
     return out;
+  }
+  /** The voice search on screen, if one is: q becomes its English name, and the criteria ride along. */
+  function withVoice(f, surface) {
+    var v = window.TLVoiceSearch && TLVoiceSearch.criteria ? TLVoiceSearch.criteria(surface) : null;
+    if (!v) return f;
+    var o = Object.assign({}, f, { voice: v });
+    var label = (v.role || []).length || (v.technologies || []).length || (v.skills || []).length || (v.industry || []).length
+      ? [].concat(v.industry || [], v.technologies || [], v.skills || [], v.role || []).join(' ') : (v.keywords || []).join(' ');
+    if (label) o.q = label.toLowerCase();
+    if ((v.location || []).length && !(o.locTags || []).length) o.locTags = v.location.slice();
+    return canonical(o);
   }
   function key(f) {
     var c = canonical(f || {});
@@ -79,11 +92,11 @@
     var F = rj.f || {};
     var tags = (F.locTags && F.locTags.length) ? F.locTags
       : (typeof window.tlLocState === 'function' ? (tlLocState('rjSide').tags || []) : []);
-    return canonical({
+    return withVoice(canonical({
       q: rj.q, loc: rj.loc, locations: F.locations, locTags: tags, locKm: F.locKm,
       exp: F.exp, ctcMin: F.ctcMin, ctcMax: F.ctcMax, modes: F.modes, types: F.types,
       skills: F.skills, edu: F.edu, posted: F.posted, company: F.company,
-    });
+    }), 'candidate');
   }
 
   /** The public search's state, said in the Jobs screen's terms. */
@@ -97,7 +110,7 @@
     var modeMap = { onsite: 'Work From Office', office: 'Work From Office', hybrid: 'Hybrid', remote: 'Remote' };
     var q = f.q || f.category || '';
     var tags = [].concat(f.loc ? [f.loc] : [], f.locations || []);
-    return canonical({
+    return withVoice(canonical({
       q: q,
       locTags: tags,
       exp: f.exp && band(f.exp) ? [band(f.exp)] : [],
@@ -108,7 +121,7 @@
       edu: EDUS.indexOf(f.education) >= 0 ? f.education : '',
       company: f.company,
       posted: POSTED[String(f.posted)] ? String(f.posted) : '',
-    });
+    }), 'public');
   }
 
   /** Put a saved search back on the Jobs screen. */
@@ -130,6 +143,11 @@
       ['rjSide', 'rjTop', 'candHome'].forEach(function (k) {
         var st = tlLocState(k); st.tags = (f.locTags || []).slice(); st.km = f.locKm ? String(f.locKm) : '';
       });
+    }
+    /* a saved VOICE search is run by meaning again, not as a typed word */
+    if (f.voice && window.TLVoiceSearch && TLVoiceSearch.replay) {
+      STATE.rj.q = '';
+      TLVoiceSearch.replay(f.voice, 'candidate');
     }
   }
 

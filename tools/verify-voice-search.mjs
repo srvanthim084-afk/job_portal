@@ -6,6 +6,7 @@
  *   2  public search: "Nellore lo driver job kavali" -> chips, filters, results
  *   3  remove a chip before searching; Edit puts the words in the box
  *   4  candidate Search Jobs: "fresher data entry jobs near Guntur"
+ *   3b places said in Telugu / Devanagari script, rules engine (no AI key)
  *   5  nothing found -> "No jobs for ..." with one-tap removals
  *   6  microphone permission refused -> a clear message
  *
@@ -153,6 +154,29 @@ await check('3. a chip can be removed before searching; Edit puts the words in t
   await pp.waitForTimeout(500);
   const box = await pp.evaluate(() => document.querySelector('.search-card input[name="q"]').value);
   must(box === 'driver job kavali', 'box: ' + box);
+});
+
+await check('3b. places said in Telugu / Devanagari script (no AI key) -> the place chip and the jobs there', async () => {
+  for (const [phrase, want, title] of [
+    ['నెల్లూరు లో డ్రైవర్ జాబ్', 'Driver|Nellore', `Driver ${stamp}`],
+    ['हैदराबाद में टेलीकॉलर', 'Telecaller|Hyderabad', `Telecaller ${stamp}`],
+    ['గుంటూరులో డేటా ఎంట్రీ', 'Data Entry|Guntur', `Data Entry Operator ${stamp}`],
+  ]) {
+    await say(pp, phrase, '.search-card .tlvs-mic');
+    const c = await chips(pp);
+    must(c.join('|') === want, `${phrase}: chips ${c.join('|')}`);
+    if (phrase.startsWith('నె')) await shot(pp, 'voice-telugu-panel-phone');
+    await pp.click('#tlvsGo');
+    await pp.waitForTimeout(1200);
+    const st = await pp.evaluate(() => ({ loc: STATE.search.loc, tags: tlLocState('pubJobs').tags,
+      titles: Array.from(document.querySelectorAll('.job-list')).map((x) => x.innerText).join(' ') }));
+    const place = want.split('|')[1];
+    must(st.loc === place && st.tags.includes(place), `${phrase}: ${JSON.stringify({ loc: st.loc, tags: st.tags })}`);
+    must(st.titles.includes(title), `${phrase}: "${title}" is not listed`);
+  }
+  const engine = await pp.evaluate(() => TL.api.post('/search/voice-parse', { text: 'విజయవాడ లో నర్స్', lang: 'te-IN' }));
+  must(engine.engine === 'rules', 'engine ' + engine.engine);
+  await shot(pp, 'voice-telugu-results-phone');
 });
 
 const cand = await browser.newContext({ viewport: { width: 1280, height: 900 } });

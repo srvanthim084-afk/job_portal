@@ -22,6 +22,7 @@
  * for a district matches the towns in it.
  */
 import { z } from 'zod';
+import { cleanSearch, voiceMatches } from './voice-semantic.js';
 
 /* The screen's own option lists (web/index.html, filter rail). */
 export const EXP_BANDS = ['Fresher', '0–2 Years', '2–5 Years', '5–8 Years', '8+ Years'];
@@ -54,7 +55,24 @@ const schema = z.object({
   edu: z.enum(EDUCATION).optional().or(z.literal('')),
   posted: z.enum(POSTED).optional().or(z.literal('')),
   company: text(120).optional(),
+  /* A saved VOICE search: the normalized criteria (voice-semantic.js
+     cleanSearch), matched by meaning instead of the q substring rule. */
+  voice: z.record(z.unknown()).optional(),
 }).strict();
+
+/** The stored form of a voice search's criteria: only what matching needs, bounded. */
+function compactVoice(v) {
+  const s = cleanSearch(v);
+  if (!s.concepts.length && !s.keywords.length) return null;
+  const out = {
+    language: s.language, originalQuery: s.originalQuery, normalizedQuery: s.normalizedQuery,
+    concepts: s.concepts, keywords: s.keywords, location: s.location,
+    role: s.role, skills: s.skills, technologies: s.technologies, industry: s.industry, qualification: s.qualification,
+  };
+  if (s.years != null) out.years = s.years;
+  if (s.fresher) out.fresher = true;
+  return out;
+}
 
 /**
  * Validate and put into canonical form: empty values dropped, lists
@@ -97,6 +115,10 @@ export function normalizeFilters(input) {
     if (f[k] !== '' && f[k] != null && Number.isFinite(Number(f[k]))) out[k] = Number(f[k]);
   }
   if (out.locTags && f.locKm !== '' && Number(f.locKm) > 0) out.locKm = Number(f.locKm);
+  if (f.voice) {
+    const v = compactVoice(f.voice);
+    if (v) out.voice = v;
+  }
   return { ok: true, filters: out };
 }
 
@@ -147,7 +169,12 @@ export function jobMatchesFilters(job, f = {}, ctx = {}) {
   const companyName = j.companyName || '';
 
   const q = norm(f.q);
-  if (q) {
+  if (f.voice) {
+    /* a voice search matches by meaning: every concept in the title, the
+       skills or the description, synonyms included - "python" finds a
+       Django job whose advert never says Python in the title */
+    if (!voiceMatches(j, f.voice)) return false;
+  } else if (q) {
     const hay = norm([j.title, companyName, (j.skills || []).join(' '), j.department].join(' '));
     if (!q.split(',').map((x) => x.trim()).filter(Boolean).some((t) => hay.includes(t))) return false;
   }

@@ -31,7 +31,58 @@ export const FILLER = [
   // scripts
   'కావాలి', 'కావాలండి', 'లో', 'కి', 'కు', 'ఉద్యోగం', 'ఉద్యోగాలు', 'జాబ్', 'జాబ్స్', 'పని', 'దగ్గర', 'ఉంది', 'కోసం', 'నాకు',
   'चाहिए', 'में', 'मे', 'का', 'के', 'की', 'को', 'है', 'नौकरी', 'जॉब', 'काम', 'पास', 'मुझे', 'वाला', 'वाली',
+  // "district", "city", "town" said after a place name
+  'district', 'city', 'town', 'jilla', 'zilla', 'zila', 'jila', 'shahar', 'shehar',
+  'జిల్లా', 'జిల్లాలో', 'నగరం', 'నగరంలో', 'పట్టణం', 'ఏరియా', 'జిల్లె',
+  'जिला', 'जिले', 'ज़िला', 'ज़िले', 'शहर', 'इलाका', 'इलाके', 'एरिया', 'मैं', 'भी', 'वहाँ', 'वहां',
+  'ఉద్యోగాలు', 'ఏదైనా', 'ఏమైనా', 'ఉన్నాయా', 'కావాలా', 'చూపించు', 'చూపించండి', 'ఒక', 'కూడా', 'నుంచి', 'దగ్గరలో',
+  'कोई', 'दिखाओ', 'बताओ', 'लिए', 'ढूंढो', 'चाहता', 'चाहती', 'हूं', 'हूँ', 'हैं', 'नौकरियां', 'नौकरियाँ', 'से', 'तक',
 ];
+
+/**
+ * Ordinary words that SOUND like a city once written in Latin letters
+ * ("కొత్త" new ~ Kota, "చిన్న" small ~ Chennai, "फोन" ~ Pune). They are
+ * never taken for a place by sound. Add a word here when the voice search
+ * turns it into a place.
+ */
+export const NOT_PLACES = [
+  'కొత్త', 'చిన్న', 'పెద్ద', 'మంచి', 'ఫోన్', 'కారు', 'డబ్బు', 'హిందీ', 'స్కూల్', 'కాలేజీ', 'బస్సు', 'బైక్',
+  'फोन', 'फ़ोन', 'बड़ी', 'बड़ा', 'छोटी', 'छोटा', 'रात', 'दिन', 'कल', 'शाम', 'मॉल', 'हिंदी', 'पुरानी', 'पुराना',
+  'బడి', 'పల్లె', 'మనిషి',
+  'बैंक', 'दुकान', 'कॉलेज', 'स्कूल', 'शिफ्ट', 'महीने', 'जल्दी', 'परिवार', 'लड़के', 'बारहवीं', 'खाना', 'लड़की', 'लड़का', 'अंदर',
+  'kotta', 'chinna', 'pedda', 'manchi', 'phone', 'fone', 'bank', 'mall', 'school', 'college', 'shift',
+];
+
+/**
+ * Places that are commonly said by another name. Spoken name (any
+ * script) -> the name the place index uses. A variant is used ONLY when
+ * that name is actually in the index (or on the live board); it never
+ * creates a place. Everything else is matched by sound
+ * (api/src/search/place-sound.js), so only true renames and nicknames
+ * belong here - not ordinary spelling differences.
+ */
+export const PLACE_VARIANTS = {
+  Visakhapatnam: ['vizag', 'vaizag', 'vizagapatnam', 'visakha', 'vishakha', 'విశాఖ', 'వైజాగ్', 'विशाखा', 'वाइज़ैग'],
+  Vijayawada: ['bezawada', 'bejawada', 'బెజవాడ'],
+  Rajahmundry: ['rajamahendravaram', 'rajamahendri', 'rajamundry', 'రాజమహేంద్రవరం', 'రాజమహేంద్రి'],
+  Kadapa: ['cuddapah', 'kadappa'],
+  Mumbai: ['bombay', 'bambai', 'बंबई', 'బొంబాయి'],
+  Chennai: ['madras', 'మద్రాసు', 'మద్రాస్', 'मद्रास'],
+  Kolkata: ['calcutta', 'kalkatta', 'कलकत्ता', 'కలకత్తా'],
+  Bengaluru: ['bangalore', 'bengalooru', 'bangaluru', 'बैंगलोर', 'बेंगलौर', 'బెంగళూరు', 'బెంగుళూరు', 'బెంగుళూర్'],
+  Delhi: ['dilli', 'दिल्ली', 'ఢిల్లీ', 'డిల్లీ'],
+  'New Delhi': ['nayi dilli', 'nai dilli', 'नई दिल्ली', 'న్యూ ఢిల్లీ'],
+  Lucknow: ['lakhnau', 'लखनऊ', 'లక్నో'],
+  Noida: ['नोएडा', 'नोयडा', 'నోయిడా'],
+  Gurugram: ['gurgaon', 'गुड़गांव', 'गुड़गाँव', 'गुरुग्राम', 'గుర్గావ్'],
+  Varanasi: ['banaras', 'benares', 'kashi', 'बनारस', 'काशी'],
+  Prayagraj: ['allahabad', 'इलाहाबाद', 'प्रयागराज'],
+  Puducherry: ['pondicherry', 'pondy', 'पांडिचेरी', 'పాండిచ్చేరి'],
+  Thiruvananthapuram: ['trivandrum', 'త్రివేండ్రం'],
+  Kochi: ['cochin', 'कोचीन', 'కొచ్చిన్'],
+  Mysuru: ['mysore', 'मैसूर', 'మైసూరు'],
+  Hanamkonda: ['hanumakonda', 'హనుమకొండ'],
+};
 
 /** "near me" etc. as phrases - removed whole. */
 export const FILLER_PHRASES = ['near me', 'ke paas', 'ke pass', 'naa daggara', 'na daggara', 'mere paas',

@@ -267,11 +267,11 @@
    * ------------------------------------------------------------------ */
   function dropFrom(r, id) {
     r.chips = r.chips.filter(function (c) { return c.id !== id; });
-    var f = r.filters, p = r.portal;
-    if (id === 'q') { f.q = ''; p.q = ''; }
-    else if (id === 'loc') { f.loc = ''; p.locTags = []; }
+    var f = r.filters, p = r.portal, s = r.search;
+    if (id === 'q') { f.q = ''; p.q = ''; if (s) { s.concepts = []; s.keywords = []; } }
+    else if (id === 'loc') { f.loc = ''; p.locTags = []; if (s) s.location = []; }
     else if (id === 'salary') { f.salaryMin = ''; p.ctcMin = ''; }
-    else if (id === 'exp') { f.exp = ''; p.exp = []; }
+    else if (id === 'exp') { f.exp = ''; p.exp = []; if (s) { s.years = null; s.fresher = false; } }
     else if (id === 'posted') { f.posted = ''; p.posted = ''; }
     else if (id.indexOf('mode:') === 0) {
       var m = id.slice(5);
@@ -283,6 +283,8 @@
       f.jobType = f.jobType.filter(function (x) { return x !== t; });
       p.types = p.types.filter(function (x) { return x !== t; });
     }
+    /* the ranking has to be asked again for what is left */
+    if (s && (id === 'q' || id === 'loc' || id === 'exp')) r.__dirty = true;
   }
   window.tlvsDrop = function (id) { if (V.result) { dropFrom(V.result, id); paint(); } };
 
@@ -291,16 +293,44 @@
     keys.forEach(function (k) { var st = tlLocState(k); st.tags = tags.slice(); });
   }
 
+  /* ------------------------------------------------------------------ *
+   * the meaning: the server's normalized search and its ranked jobs.
+   * While a voice search is on screen the list is THOSE jobs (in that
+   * order), with the screen's other filters still applying on top. The
+   * words that were said are never the search key.
+   * ------------------------------------------------------------------ */
+  var token = 0;
+  function rankOf(r) {
+    var m = Object.create(null);
+    ((r.semantic && r.semantic.results) || []).forEach(function (x, i) { m[x.jobId] = { i: i, score: x.score, label: x.label }; });
+    return m;
+  }
+  /* The place is a filter only while the ranking kept it (levels 1-3, or a place on its own). */
+  function keepsPlace(r) {
+    var s = r.semantic;
+    if (!s || !r.filters.loc) return !!r.filters.loc;
+    return s.level >= 1 && s.level <= 3 || !(r.search && ((r.search.concepts || []).length || (r.search.keywords || []).length));
+  }
+  function voiceOn(surface, f) {
+    var a = V.applied;
+    if (!a || !a.semantic || a.surface !== surface) return false;
+    if (surface === 'public') { f = f || (window.STATE && STATE.search) || {}; return f.__voice === a.token && String(f.q || '') === a.q; }
+    var rj = (window.STATE && STATE.rj) || {};
+    return rj.__voice === a.token && !rj.q;
+  }
+
   function applyPublic(r) {
     var f = r.filters;
     var sort = (STATE.search && STATE.search.sort) || 'relevance';
     var base = typeof window.freshSearchState === 'function' ? freshSearchState() : {};
+    var place = keepsPlace(r) ? (f.loc || '') : '';
     STATE.search = Object.assign(base, {
-      q: f.q || '', loc: f.loc || '', exp: f.exp || '', salaryMin: f.salaryMin || '',
+      q: f.q || '', loc: place, exp: f.exp || '', salaryMin: f.salaryMin || '',
       mode: (f.mode || []).slice(), jobType: (f.jobType || []).slice(), skills: (f.skills || []).slice(),
       education: f.education || '', posted: f.posted || '', sort: sort,
     });
-    setTags(['pubJobs'], f.loc ? [f.loc] : []);
+    if (V.applied && V.applied.semantic) { STATE.search.__voice = V.applied.token; V.applied.q = STATE.search.q; }
+    setTags(['pubJobs'], place ? [place] : []);
     if (typeof window.tlLocState === 'function') { var st = tlLocState('pubJobs'); st.__seeded = true; }
     var onSearch = /^#\/(jobs)?(\?|$)/.test(location.hash || '#/') || (location.hash || '') === '';
     if (!onSearch) location.hash = '#/jobs';
@@ -309,29 +339,53 @@
 
   function applyCandidate(r) {
     var p = r.portal;
+    var voice = !!(V.applied && V.applied.semantic);
+    var tags = keepsPlace(r) ? (p.locTags || []).slice() : [];
     STATE.rj = STATE.rj || {};
-    STATE.rj.q = p.q || '';
+    /* the search box's own rule is a substring of title / skills / company;
+       a voice search is matched by meaning instead, so the box rule is off */
+    STATE.rj.q = voice ? '' : (p.q || '');
     STATE.rj.loc = '';
     STATE.rj.page = 1;
     STATE.rj.f = {
       locations: [], exp: (p.exp || []).slice(), ctcMin: p.ctcMin || '', ctcMax: '',
       modes: (p.modes || []).slice(), types: (p.types || []).slice(), skills: '', edu: '', posted: p.posted || '',
-      company: '', match: '', locTags: (p.locTags || []).slice(), locKm: '',
+      company: '', match: '', locTags: tags, locKm: '',
     };
-    setTags(['rjSide', 'rjTop', 'candHome'], p.locTags || []);
+    if (voice) STATE.rj.__voice = V.applied.token; else delete STATE.rj.__voice;
+    setTags(['rjSide', 'rjTop', 'candHome'], tags);
     if (location.hash !== '#/candidate/search') location.hash = '#/candidate/search';
     else if (typeof window.render === 'function') render();
   }
 
+  function applyNow(r) {
+    token += 1;
+    V.applied = {
+      result: JSON.parse(JSON.stringify(r)), surface: V.surface === 'candidate' && isCand() ? 'candidate' : 'public',
+      token: token, semantic: r.semantic || null, rank: rankOf(r), q: '', banner: false,
+    };
+    if (V.applied.surface === 'candidate') applyCandidate(r); else applyPublic(r);
+  }
+  /* A changed search (a chip removed, a saved voice search) is ranked again on the server. */
+  function rerank(r) {
+    if (!r.search || !api()) return Promise.resolve(r);
+    return api().post('/search/semantic', { search: r.search }).then(function (o) {
+      r.search = o.search; r.semantic = o.semantic; r.__dirty = false; return r;
+    });
+  }
+
   window.tlvsApply = function () {
     var r = V.result; if (!r) return;
-    V.applied = { result: JSON.parse(JSON.stringify(r)), surface: V.surface === 'candidate' && isCand() ? 'candidate' : 'public' };
     V.open = false; V.phase = 'idle'; abort(); paint();
-    if (V.applied.surface === 'candidate') applyCandidate(r); else applyPublic(r);
+    if (r.__dirty) rerank(r).then(applyNow, function () { r.semantic = null; applyNow(r); });
+    else applyNow(r);
   };
 
   window.tlvsEdit = function () {
-    var text = V.text;
+    /* the words in the box are the ENGLISH search we understood, never
+       the other-script sentence (which would match nothing) */
+    var r = V.result;
+    var text = r && r.filters && r.filters.q ? r.filters.q : (/[ऀ-ॿఀ-౿]/.test(V.text) ? '' : V.text);
     V.open = false; V.phase = 'idle'; abort(); paint();
     if (V.surface === 'candidate' && isCand()) {
       STATE.rj = STATE.rj || {}; STATE.rj.q = text;
@@ -348,8 +402,85 @@
     }
   };
 
+  /** The applied voice search's criteria, in the form saved searches store (api saved-match compactVoice). */
+  function criteria(surface) {
+    if (!voiceOn(surface)) return null;
+    var s = V.applied.result.search || {};
+    if (!((s.concepts || []).length || (s.keywords || []).length)) return null;
+    var out = {
+      language: s.language, originalQuery: s.originalQuery, normalizedQuery: s.normalizedQuery,
+      concepts: (s.concepts || []).slice(), keywords: (s.keywords || []).slice(), location: (s.location || []).slice(),
+      role: (s.role || []).slice(), skills: (s.skills || []).slice(), technologies: (s.technologies || []).slice(),
+      industry: (s.industry || []).slice(), qualification: (s.qualification || []).slice(),
+    };
+    if (s.years != null) out.years = s.years;
+    if (s.fresher) out.fresher = true;
+    return out;
+  }
+  /** Run a saved voice search again: the stored criteria, ranked now. */
+  function replay(saved, surface) {
+    if (!saved || !api()) return;
+    api().post('/search/semantic', { search: saved }).then(function (o) {
+      var place = (o.search.location || [])[0] || '';
+      var r = {
+        filters: { q: o.search.label ? o.search.label.toLowerCase() : '', loc: place, salaryMin: '', mode: [], jobType: [], exp: '', skills: [], education: '', posted: '', sort: '' },
+        portal: { q: o.search.label ? o.search.label.toLowerCase() : '', locTags: place ? [place] : [], ctcMin: '', exp: [], modes: [], types: [], posted: '' },
+        chips: [].concat(o.search.label ? [{ id: 'q', label: o.search.label }] : [], place ? [{ id: 'loc', label: place }] : []),
+        search: o.search, semantic: o.semantic,
+      };
+      V.surface = surface || 'candidate';
+      var keep = surface === 'candidate' && window.STATE && STATE.rj ? STATE.rj.f : null;
+      applyNow(r);
+      /* the saved search's other filters stay as the saved search set them */
+      if (keep && STATE.rj) { var tags = STATE.rj.f.locTags; STATE.rj.f = keep; STATE.rj.f.locTags = tags; if (typeof window.render === 'function') render(); }
+    }).catch(function () { /* the saved filters are already on screen */ });
+  }
+
   /* ------------------------------------------------------------------ *
-   * nothing found: drop a chip, or look nearby
+   * the list: the ranked jobs, in their order
+   * ------------------------------------------------------------------ */
+  function installList() {
+    var prevF = window.filterJobsAdvanced;
+    if (typeof prevF === 'function' && !prevF.__tlvs) {
+      var f1 = function (f) {
+        var on = voiceOn('public', f || (window.STATE && STATE.search));
+        if (!on) return prevF.apply(this, arguments);
+        var ff = Object.assign({}, f || STATE.search, { q: '', loc: '' });
+        var list = prevF.call(this, ff);
+        var rank = V.applied.rank;
+        return Array.isArray(list) ? list.filter(function (j) { return j && rank[j.id]; }) : list;
+      };
+      f1.__tlvs = true;
+      window.filterJobsAdvanced = f1;
+    }
+    var prevS = window.sortJobs;
+    if (typeof prevS === 'function' && !prevS.__tlvs) {
+      var s1 = function (list, sort) {
+        var out = prevS.apply(this, arguments);
+        if ((sort || 'relevance') !== 'relevance' || !voiceOn('public') || !Array.isArray(out)) return out;
+        var rank = V.applied.rank;
+        return out.slice().sort(function (a, b) { return (rank[a.id] ? rank[a.id].i : 1e6) - (rank[b.id] ? rank[b.id].i : 1e6); });
+      };
+      s1.__tlvs = true;
+      window.sortJobs = s1;
+    }
+    var prevR = window.recAll;
+    if (typeof prevR === 'function' && !prevR.__tlvs) {
+      var r1 = function () {
+        var list = prevR.apply(this, arguments);
+        if (!Array.isArray(list) || !/^#\/candidate\/search/.test(location.hash) || !voiceOn('candidate')) return list;
+        var rank = V.applied.rank;
+        return list.filter(function (x) { return x && x.job && rank[x.job.id]; })
+          .sort(function (a, b) { return rank[a.job.id].i - rank[b.job.id].i; });
+      };
+      r1.__tlvs = true;
+      window.recAll = r1;
+    }
+  }
+
+  /* ------------------------------------------------------------------ *
+   * nothing found / only related jobs: a message built from the
+   * normalized search, never the words said
    * ------------------------------------------------------------------ */
   function resultCount() {
     if (!V.applied) return null;
@@ -361,22 +492,40 @@
     var b = document.querySelector('.result-count b');
     return b ? Number(b.textContent) : null;
   }
+  function emptyText(a) {
+    var s = a.semantic;
+    if (s && s.empty && s.message) return s.message;
+    var srch = a.result.search;
+    var what = srch && srch.label ? srch.label : (a.result.chips.filter(function (c) { return c.id === 'q'; })[0] || {}).label || '';
+    var loc = a.result.filters.loc;
+    return 'No matching ' + (what ? what + ' ' : '') + 'jobs found' + (loc ? ' in ' + loc : '') + '.';
+  }
   function placeNone() {
     var old = document.getElementById('tlvsNone');
     if (!V.applied) { if (old) old.remove(); return; }
     var onIt = V.applied.surface === 'candidate' ? /^#\/candidate\/search/.test(location.hash) : /^#\/(jobs)?(\?|$)/.test(location.hash || '#/') || !location.hash;
     if (!onIt) { V.applied = null; if (old) old.remove(); return; }
+    if (V.applied.surface === 'candidate' && voiceOn('candidate')) {
+      var box = document.getElementById('rjQ');
+      if (box && !box.value) box.value = V.applied.result.portal.q || '';
+    }
     var n = resultCount();
-    if (n !== 0 || old) return;
+    if (old) return;
     var chips = V.applied.result.chips;
-    if (!chips.length) return;
-    var loc = V.applied.result.filters.loc;
-    var html = '<div class="tlvs-none" id="tlvsNone" role="status"><b>No jobs for ' + chips.map(function (c) { return h(c.label); }).join(' · ') + '</b>'
-      + '<div class="row">' + chips.map(function (c) {
-        return '<button type="button" class="tlvs-btn" style="padding:6px 11px" onclick="tlvsRelax(\'' + h(c.id) + '\')">Remove ' + h(c.label) + '</button>';
-      }).join('')
-      + (loc ? '<button type="button" class="tlvs-btn pri" style="padding:6px 11px" onclick="tlvsNearby()">📍 Nearby places</button>' : '')
-      + '</div></div>';
+    var sem = V.applied.semantic;
+    var html = '';
+    if (n === 0 && chips.length) {
+      var loc = V.applied.result.filters.loc;
+      html = '<div class="tlvs-none" id="tlvsNone" role="status"><b>' + h(emptyText(V.applied)) + '</b>'
+        + '<div class="row">' + chips.map(function (c) {
+          return '<button type="button" class="tlvs-btn" style="padding:6px 11px" onclick="tlvsRelax(\'' + h(c.id) + '\')">Remove ' + h(c.label) + '</button>';
+        }).join('')
+        + (loc ? '<button type="button" class="tlvs-btn pri" style="padding:6px 11px" onclick="tlvsNearby()">📍 Nearby places</button>' : '')
+        + '</div></div>';
+    } else if (n > 0 && sem && sem.message && voiceOn(V.applied.surface)) {
+      html = '<div class="tlvs-none" id="tlvsNone" role="status"><b>' + h(sem.message) + '</b></div>';
+    }
+    if (!html) return;
     var list = V.applied.surface === 'candidate'
       ? (document.querySelector('.rj-results') || document.querySelector('.rj-body > div:last-child') || document.querySelector('.rj-bar'))
       : document.querySelector('.job-list');
@@ -387,7 +536,9 @@
     var r = V.applied.result;
     dropFrom(r, id);
     var old = document.getElementById('tlvsNone'); if (old) old.remove();
-    if (V.applied.surface === 'candidate') applyCandidate(r); else applyPublic(r);
+    V.surface = V.applied.surface;
+    if (r.__dirty) rerank(r).then(applyNow, function () { r.semantic = null; applyNow(r); });
+    else applyNow(r);
   };
   window.tlvsNearby = function () {
     if (!V.applied || typeof window.tlLocState !== 'function') return;
@@ -401,6 +552,7 @@
 
   /* ------------------------------------------------------------------ */
   function install() {
+    installList();
     var prev = window.render;
     if (typeof prev === 'function' && !prev.__tlvs) {
       var r = function () {
@@ -416,5 +568,12 @@
   if (document.readyState === 'complete') install();
   else window.addEventListener('load', install);
 
-  window.TLVoiceSearch = { supported: supported, open: function (s) { window.tlvsOpen(s); } };
+  window.TLVoiceSearch = {
+    supported: supported,
+    open: function (s) { window.tlvsOpen(s); },
+    /* for saved searches (teamlink-saved-searches.js) */
+    criteria: criteria,
+    replay: replay,
+    active: function (s) { return voiceOn(s || 'public'); },
+  };
 })();

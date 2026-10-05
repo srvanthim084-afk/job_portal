@@ -162,6 +162,43 @@ export default function staffRoutes() {
     res.status(201).json({ recruiter: made });
   }));
 
+  /**
+   * POST /api/staff/clients — a login for a client company's hiring team.
+   *
+   * The same rules as a recruiter login (staff_client_create, 0105): an
+   * administrator only, a temporary password the client must change at
+   * first sign-in, hashed before it reaches the database and never
+   * returned, one address one login, and an audit row (staff_audit).
+   */
+  r.post('/staff/clients', requireAuth(), requireRole('admin'), wrap(async (req, res) => {
+    const b = parse(z.object({
+      name: z.string().trim().min(2, 'A name is required.').max(120),
+      email: z.string().trim().email('That is not a valid email address.').max(160),
+      password: z.string().min(8, 'At least 8 characters.').max(200),
+      confirmPassword: z.string().optional(),
+      companyId: z.string().trim().min(1, 'Choose the company.').max(64),
+      title: z.string().trim().max(120).optional(),
+    }), req.body);
+    if (b.confirmPassword != null && b.confirmPassword !== b.password) {
+      throw badRequest('The two passwords do not match.',
+        { confirmPassword: 'This does not match the password.' });
+    }
+    const email = b.email.toLowerCase();
+    const made = await withUser(req.session, async (c) => {
+      const clash = await c.query(`select 1 from users where lower(email) = $1`, [email]);
+      if (clash.rowCount) {
+        throw new ApiError(409, 'EMAIL_TAKEN',
+          'That address already signs in. Use another, or reset the existing account.');
+      }
+      const co = await c.query(`select 1 from companies where id = $1`, [b.companyId]);
+      if (!co.rowCount) throw notFound('That company could not be found.');
+      return (await c.query(`select staff_client_create($1,$2,$3,$4,$5) as out`,
+        [b.name, email, await hashPassword(b.password), b.companyId, b.title || null])).rows[0].out;
+    });
+    // Says a temporary password was set. Never what it is.
+    res.status(201).json({ client: made, mustChangePassword: true });
+  }));
+
   /** PATCH /api/staff/recruiters/:id — edit the employee details. */
   r.patch('/staff/recruiters/:id', requireAuth(), requireRole('admin'), wrap(async (req, res) => {
     const b = parse(z.object({
