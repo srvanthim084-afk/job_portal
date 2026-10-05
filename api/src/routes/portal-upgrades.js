@@ -38,6 +38,9 @@ import {
   missingForOneClick, newShareCode, shareText, shareLines, toPublicUrl, isLocalUrl, ogTags, SHARE_CHANNELS, endOfIstDay, escHtml,
 } from '../portal/core.js';
 import { kickUrgent } from '../portal/alerts.js';
+import { feedRows, jsonLdScript } from '../publishing/feed.js';
+
+const PUBLISHING_ENGINE = { userId: '', role: 'admin', profileId: null };
 
 const APPLY_PER_HOUR = () => Number(process.env.APPLY_RATE_PER_HOUR || 30);
 const SHARE_COOKIE = 'tl_share_ref';
@@ -496,8 +499,17 @@ export function mountPublicJobPage(app, staticDir) {
 
       const url = shareLink(req, `/job/${encodeURIComponent(id)}`);
       const target = `/${ref ? `?ref=${encodeURIComponent(ref)}` : ''}#/job/${encodeURIComponent(id)}`;
+      /* 0112: the job's own id when it is public (what Save & Post checks
+         before it calls the portal posting "Posted"), and schema.org
+         JobPosting when it is published to the TeamLink website. */
+      let ld = '';
+      if (row) {
+        const listed = await withUser(PUBLISHING_ENGINE, (c) => feedRows(c, 'TEAMLINK_WEBSITE', { jobId: id })).catch(() => []);
+        if (listed.length) ld = '\n' + jsonLdScript(listed[0]);
+      }
       const head = (row
         ? ogTags(row, { url, image: shareLink(req, '/icons/icon-512.png'), company: sj.company })
+          + `\n<meta name="teamlink:job" content="${escHtml(id)}">` + ld
         : `<meta property="og:title" content="TeamLink - jobs"><meta property="og:url" content="${escHtml(url)}">`)
         + `\n<script>try{history.replaceState(null,'',${JSON.stringify(target)});}catch(e){location.replace(${JSON.stringify(target)});}</script>`;
 

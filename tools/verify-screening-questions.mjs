@@ -316,7 +316,8 @@ await check('7. AI Job Creation: questions chosen before publishing are saved wi
   await rp.evaluate(() => window.generateJobWithAI());
   await rp.waitForTimeout(1600);
   await rp.selectOption('#njGender', { index: 1 });
-  await rp.click('button:has-text("Publish job")');
+  /* 0112: the button reads "Save & Post" now; matched by what it does. */
+  await rp.click('button.btn-primary[onclick*="publishGeneratedJob"]');
   let saved = null;
   for (let i = 0; i < 30 && !saved; i += 1) {
     await rp.waitForTimeout(500);

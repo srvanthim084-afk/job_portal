@@ -78,6 +78,8 @@ import { startWalkinAtsSweep } from './notify/walkin-ats.js';
 import savedJobAlertRoutes from './routes/saved-job-alerts.js';
 import atsRecordRoutes from './routes/ats-record.js';
 import { startSavedJobAlerts } from './notify/saved-job-alerts.js';
+import jobPublishingRoutes, { publishingJobHooks, publishingPublicRoutes } from './routes/job-publishing.js';
+import { startPublishingSweep } from './publishing/service.js';
 
 /*
  * The background work belongs to the APPLICATION, not to one entry point.
@@ -153,6 +155,9 @@ function startBackgroundWork(logger) {
     /* Saved-job alerts (0110): jobs the publish hook missed, and the
        evening digest of the ones over the daily cap. Idempotent. */
     backgroundStops.push(startSavedJobAlerts());
+    /* Save & Post (0112): queued, retried and newly-connected publications,
+       feed confirmations, and jobs closed or edited since they went out. */
+    backgroundStops.push(startPublishingSweep());
   } catch (err) {
     console.error('[background] could not start:', err.message);
   }
@@ -213,6 +218,13 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
     crossOriginEmbedderPolicy: false,
     referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
   }));
+
+  /* Save & Post (0112): the public jobs feeds the TeamLink website and job
+     sites read, and the platforms' signed confirmations. Ahead of CORS and
+     CSRF on purpose - another site embeds the feed, and a platform's
+     server posts the callback - and outside /api, so no session, cookie
+     or rate limit applies. They read only what is public. */
+  app.use(publishingPublicRoutes());
 
   app.use(cors({
     // originAllowed() lives in config.js because the CSRF guard has to reach
@@ -358,8 +370,12 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   /* 0106: the application form hands each submission on to POST
      /applications, so it is mounted ahead of the routes that guard and
      make an application. */
+  /* Save & Post (0112): an edit, publish or deadline change reconciles the
+     job's destinations; ahead of every route that answers those paths. */
+  app.use('/api', publishingJobHooks());
   app.use('/api', applyFormRoutes());
   app.use('/api', portalUpgradeRoutes());
+  app.use('/api', jobPublishingRoutes());
   app.use('/api', jobRoutes());
   // Before candidateRoutes: /candidates/export must not be read as
   // /candidates/:id, which answers "that candidate could not be found".
