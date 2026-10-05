@@ -293,6 +293,22 @@ test('a candidate reads only their own scores; only the engine writes them', asy
   assert.equal((await A.get('/api/resume-scores?ids=' + B.id)).status, 403);
 });
 
+test('0111: a candidate with education and experience rows can still be deleted', async () => {
+  /* The rows' own re-score trigger used to queue the candidate being
+     deleted, and the queue's foreign key rolled the delete back. */
+  const D = await candidate('Delete Me', `rs.delete.${Date.now()}@tl-sink.local`);
+  await raw(`insert into candidate_education (candidate_id, qualification) values ($1, 'B.Com')`, [D.id]);
+  await raw(`insert into candidate_experience (candidate_id, company) values ($1, 'Acme')`, [D.id]);
+  await raw(`delete from candidates where id = $1`, [D.id]);
+  assert.equal((await raw(`select count(*)::int n from candidates where id = $1`, [D.id])).rows[0].n, 0);
+  assert.equal((await raw(`select count(*)::int n from candidate_resume_score_queue where candidate_id = $1`, [D.id])).rows[0].n, 0);
+  /* ...and a row removed on its own still queues a re-score. */
+  await raw(`insert into candidate_education (candidate_id, qualification) values ($1, 'M.Com')`, [A.id]);
+  await raw(`delete from candidate_resume_score_queue where candidate_id = $1`, [A.id]);
+  await raw(`delete from candidate_education where candidate_id = $1`, [A.id]);
+  assert.equal((await raw(`select count(*)::int n from candidate_resume_score_queue where candidate_id = $1`, [A.id])).rows[0].n, 1);
+});
+
 test('shutdown', async () => {
   await new Promise((r) => server.close(r));
   const { closePool } = await import('../src/db.js');
