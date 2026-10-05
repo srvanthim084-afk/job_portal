@@ -24951,7 +24951,7 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
         return false;
       }
       ensureJob(job);
-      setPending(id);
+      if(opts.arm!==false) setPending(id);
       /* Assert the route AND repaint. The session-restore layer can put
          the previous hash back while this fetch is in flight, so relying
          on a single hashchange left the page showing the router's
@@ -24959,6 +24959,12 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
          and painting, then checking again on the next frame, makes the
          outcome independent of who else touched the route. */
       var want='#/job/'+id;
+      /* A refresh of the job page itself only fills the job in: if the
+         candidate has already moved on, they are not pulled back to it. */
+      if(opts.arm===false){
+        if(location.hash===want&&typeof render==='function') render();
+        return true;
+      }
       if(location.hash!==want) location.hash=want;
       if(typeof render==='function') render();
       try{
@@ -24986,8 +24992,18 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
     /* Route first so the page is never blank while the fetch is in
        flight, then let the fetch fill in / correct the job. */
     if(location.hash.indexOf('#/job/'+id)!==0) location.hash='#/job/'+id;
-    setPending(id);
-    tlOpenJobById(id,{announce:false});
+    /* Only a link from outside (?job=… or /job/<id>) arms the "take me to
+       this job after I sign in" errand. A refresh of the portal's own
+       #/job/<id> page is just someone reading a job: arming it then sent
+       them back to that job at their next sign-in, whatever they signed
+       in for. */
+    var linked=false;
+    try{
+      var q=new URLSearchParams(location.search);
+      linked=!!(q.get('job')||q.get('jobId')||q.get('job_id')||q.get('jid'))||/\/job\/[^/?&]+\/?$/.test(location.pathname);
+    }catch(e){}
+    if(linked) setPending(id);
+    tlOpenJobById(id,{announce:false,arm:linked});
     /* tidy the address bar so a refresh does not re-run the redirect,
        while the hash keeps the candidate on the job */
     try{
@@ -25227,10 +25243,24 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
     });
   }
 
+  /* The browser's Back after a refresh: Chrome can return to an entry of
+     the page from before the refresh with a popstate and no hashchange, so
+     the address said #/candidate/search while the job page stayed on
+     screen. When no hashchange follows, the route is painted here. */
+  var lastPainted=null, sawHash=false;
+  addEventListener('hashchange',function(){ sawHash=true; });
+  addEventListener('popstate',function(){
+    sawHash=false;
+    setTimeout(function(){
+      if(!sawHash&&location.hash!==lastPainted&&typeof window.render==='function') window.render();
+    },60);
+  });
+
   var prevRender=window.render;
   if(typeof prevRender==='function'){
     window.render=function(){
       var out=prevRender.apply(this,arguments);
+      lastPainted=location.hash;
       try{ externalBack(); }catch(e){}
       if(restoreTo&&base(location.hash)===base(restoreTo.hash)){
         restore();

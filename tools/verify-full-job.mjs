@@ -80,13 +80,22 @@ const BARE = made.bare;
 const byId = Object.fromEntries(JOBS.map((j) => [j.id, j]));
 
 /* one external posting, through the admin's manual source, when the layer is on */
-const ext = await setup.evaluate(async ({ pw, s }) => {
+await setup.context().close();
+async function makeExternal() {
+  const ap = await (await b.newContext()).newPage();
+  await ap.goto(BASE + '#/');
+  await ap.waitForFunction(() => window.TL && TL.ready === true, null, { timeout: 30000 });
+  const out = await ap.evaluate(async ({ pw, s }) => {
+  let step = 'admin login';
   try {
     await TL.api.post('/auth/login', { email: 'admin@teamlink.com', password: pw, role: 'admin' });
     const src = `f2src_${s}`;
+    step = 'source';
     await TL.api.post('/external/sources', { id: src, name: `F2 Source ${s}`, collectionMethod: 'manual',
       applicationMethod: 'redirect', active: true });
+    step = 'approved domain';
     await TL.api.put(`/external/sources/${src}/config`, { allowedDomains: ['example.com'] });
+    step = 'posting';
     await TL.api.post('/external/jobs', { sourceId: src, jobs: [{ id: `F2-${s}`, title: `External Check ${s}`, company: 'Example Works',
       location: 'Hyderabad', skills: ['Java'], experience: '2-5 yrs', employmentType: 'Full-time',
       url: `https://example.com/jobs/f2-${s}`, postedAt: new Date().toISOString(), description: 'An external posting.' }] });
@@ -94,9 +103,13 @@ const ext = await setup.evaluate(async ({ pw, s }) => {
     const r = await fetch('/api/portal/external-jobs?limit=500', { cache: 'no-store' }).then((x) => x.json());
     const j = (r.jobs || []).find((x) => x.title === `External Check ${s}`);
     return j ? { id: j.id, title: j.title } : { skip: 'not listed: ' + JSON.stringify(r).slice(0, 120) };
-  } catch (e) { return { skip: e.message }; }
-}, { pw: ADMIN_PW, s });
-await setup.context().close();
+  } catch (e) { return { skip: `${step}: ${e.message}` }; }
+  }, { pw: ADMIN_PW, s });
+  await ap.context().close();
+  return out;
+}
+let ext = await makeExternal();
+if (!ext.id) ext = await makeExternal();
 
 /* ---------------- helpers ---------------- */
 const appText = (p) => p.evaluate(() => (document.getElementById('app') || {}).innerText || '');
@@ -176,7 +189,7 @@ for (const [label, vp, mobile] of [['desktop', { width: 1366, height: 820 }, fal
     await p.waitForTimeout(400);
     listY = await p.evaluate(() => scrollY);
     must(listY > 200, 'the results did not scroll: ' + listY);
-    cardTop = await viewJobBtn(p, A.id).evaluate((e) => e.getBoundingClientRect().top);
+    cardTop = await viewJobBtn(p, A.id).evaluate((e) => e.closest('.rj-card').getBoundingClientRect().top);
   });
   if (!A || !B) { console.log(`  STOP  ${label}: steps 3-15 need the two jobs from step 2`); failed += 1; await ctx.close(); continue; }
   await check(`${label} 3-5. View Job opens the complete page of that job, at #/job/<its id>, and stays`, async () => {
@@ -243,7 +256,7 @@ for (const [label, vp, mobile] of [['desktop', { width: 1366, height: 820 }, fal
     /* scrolled back down, with the card that was opened where it was in the window */
     const y = await p.evaluate(() => scrollY);
     must(y > listY / 2, `scroll ${y}, was ${listY}`);
-    const top = await viewJobBtn(p, A.id).evaluate((e) => e.getBoundingClientRect().top);
+    const top = await viewJobBtn(p, A.id).evaluate((e) => e.closest('.rj-card').getBoundingClientRect().top);
     must(Math.abs(top - cardTop) <= 40, `the opened job's card is at ${Math.round(top)}px, was ${Math.round(cardTop)}px`);
   });
   await check(`${label} 11-12. another job opens with its own data`, async () => {
@@ -277,9 +290,10 @@ for (const [label, vp, mobile] of [['desktop', { width: 1366, height: 820 }, fal
     const first = p.locator(`#app button[onclick^="navigate('/job/"]:visible`).first();
     must(await first.count(), 'no View Job on Home');
     const id = (/\/job\/([^']+)'/.exec(await first.getAttribute('onclick')) || [])[1];
-    const btn = viewJobBtn(p, id);
-    await btn.scrollIntoViewIfNeeded();
-    await btn.click();
+    /* Home repaints its panels as they load; a click can land between two */
+    for (let i = 0; i < 4; i++) {
+      try { await viewJobBtn(p, id).click({ timeout: 4000 }); break; } catch (e) { if (i === 3) throw e; await p.waitForTimeout(700); }
+    }
     await p.waitForFunction((i) => location.hash === '#/job/' + i && !!document.querySelector('#app .tljd'), id, { timeout: 10000 });
     await p.waitForTimeout(1500);
     const want = await p.evaluate((i) => DATA.jobById(i).title, id);
