@@ -85,7 +85,9 @@ function trackerFor(P, stage, hist) {
     steps: P.line.map((p, i) => ({
       phase: p,
       label: P.stepLabel.get(p),
-      state: (!off && i === here) ? 'current' : (i < here || (off && i === here) || reachedAt[p]) ? 'done' : 'todo',
+      /* Where it IS decides the rail: a step reached and then moved back
+         from (a recruiter set it back) is not shown as done ahead of it. */
+      state: (!off && i === here) ? 'current' : (i < here || (off && i === here)) ? 'done' : 'todo',
       at: reachedAt[p] || null,
     })),
     offLine: off ? { phase, label: P.label.get(phase), at: reachedAt[phase] || null } : null,
@@ -364,7 +366,9 @@ export default function atsRecordRoutes() {
     const jobById = new Map(out.jobs.map((j) => [j.id, j]));
     const histBy = new Map();
     out.hist.forEach((h) => { if (!histBy.has(h.application_id)) histBy.set(h.application_id, []); histBy.get(h.application_id).push(h); });
-    const currentApp = out.apps.find((a) => !['rejected', 'joined', 'no_show'].includes(a.stage)) || out.apps[0] || null;
+    /* The current stage: the open application that moved most recently. */
+    const byRecent = out.apps.slice().sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+    const currentApp = byRecent.find((a) => !['rejected', 'joined', 'no_show'].includes(a.stage)) || byRecent[0] || null;
     const ivApps = new Set(out.ivs.map((i) => i.application_id).filter(Boolean));
     const offerApps = new Set(out.offers.map((o) => o.application_id));
 
@@ -404,8 +408,21 @@ export default function atsRecordRoutes() {
     const ev = [];
     const push = (at, kind, label, extra = {}) => { if (at) ev.push({ at: iso(at), kind, label, ...extra }); };
     push(row.created_at, 'registered', row.user_id ? 'Registered' : 'Added to the talent pool');
-    audit.forEach((x) => {
-      if (x.action === 'candidate.updated') push(x.created_at, 'profile_updated', 'Profile Updated', { detail: ((x.detail && x.detail.fields) || []).slice(0, 8).join(', ') });
+    /* Edits within ten minutes of each other are one "Profile Updated". */
+    let lastEdit = null;
+    audit.slice().reverse().forEach((x) => {
+      if (x.action === 'candidate.updated') {
+        const fields = (x.detail && x.detail.fields) || [];
+        if (lastEdit && new Date(x.created_at) - new Date(lastEdit.raw) < 600000) {
+          lastEdit.raw = x.created_at; lastEdit.ev.at = iso(x.created_at);
+          lastEdit.fields = [...new Set([...lastEdit.fields, ...fields])];
+          lastEdit.ev.detail = lastEdit.fields.slice(0, 8).join(', ');
+          return;
+        }
+        push(x.created_at, 'profile_updated', 'Profile Updated', { detail: fields.slice(0, 8).join(', ') });
+        lastEdit = { raw: x.created_at, ev: ev[ev.length - 1], fields: fields.slice() };
+        return;
+      }
       else if (x.action === 'resume.uploaded') push(x.created_at, 'resume_uploaded', 'Resume Uploaded');
       else if (x.action === 'resume.changed') push(x.created_at, 'resume_uploaded', 'Resume Replaced');
       else push(x.created_at, 'document', x.action === 'document.uploaded' ? 'Document Uploaded' : 'Document Updated', { detail: x.detail && x.detail.kind });
@@ -615,6 +632,7 @@ export default function atsRecordRoutes() {
                           count(*) filter (where stage = 'no_show')::int no_show
                      from applications where applied_at >= ${since} group by 1)
         select j.t, count(distinct j.id)::int jobs, coalesce(sum(v.n),0)::int views, coalesce(sum(a.n),0)::int applications,
+               coalesce(sum(a.n) filter (where coalesce(v.n,0) > 0),0)::int viewed_apps,
                coalesce(sum(a.attended),0)::int attended, coalesce(sum(a.selected),0)::int selected, coalesce(sum(a.no_show),0)::int no_show
           from j left join v on v.job_id = j.id left join a on a.job_id = j.id group by j.t`)).rows;
       const top = (await c.query(`
@@ -630,11 +648,11 @@ export default function atsRecordRoutes() {
       const apps = await one(`select count(*)::int total, count(*) filter (where applied_at >= ${since})::int recent from applications`);
       return { cands, uploads, scores, buckets, byType, top, sources, candSources, apps };
     });
-    const t = (k) => out.byType.find((x) => x.t === k) || { jobs: 0, views: 0, applications: 0, attended: 0, selected: 0, no_show: 0 };
+    const t = (k) => out.byType.find((x) => x.t === k) || { jobs: 0, views: 0, applications: 0, viewed_apps: 0, attended: 0, selected: 0, no_show: 0 };
     const rate = (n, d) => (d ? Math.round((1000 * n) / d) / 10 : null);
     const kind = (k) => {
       const x = t(k);
-      return { jobs: x.jobs, views: x.views, applications: x.applications, conversionRate: rate(x.applications, x.views),
+      return { jobs: x.jobs, views: x.views, applications: x.applications, conversionRate: rate(x.viewed_apps, x.views), viewedApplications: x.viewed_apps,
         attended: x.attended, selections: x.selected, noShows: x.no_show, selectionRate: rate(x.selected, x.applications) };
     };
     const reg = kind('regular'); const wk = kind('walkin');
@@ -651,7 +669,9 @@ export default function atsRecordRoutes() {
       },
       jobs: {
         views: reg.views + wk.views, applications: reg.applications + wk.applications,
-        conversionRate: rate(reg.applications + wk.applications, reg.views + wk.views),
+        /* Conversion counts applications to jobs that were viewed, over
+           those views - Apply from a card never opens the job page. */
+        conversionRate: rate(reg.viewedApplications + wk.viewedApplications, reg.views + wk.views),
         byType: { regular: reg, walkin: wk },
         top: out.top.map((x) => ({ jobId: x.id, title: x.title, jobType: x.job_type, views: x.views, applications: x.applications, conversionRate: rate(x.applications, x.views) })),
       },

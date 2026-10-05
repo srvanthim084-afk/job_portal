@@ -486,7 +486,8 @@ begin
                              then 'resume.uploaded' else 'resume.changed' end,
                         'candidate', new.id, '{}'::jsonb);
   end if;
-  v_keys := array(select k from unnest(v_keys) k where not (k = any (v_resume)));
+  /* "Later" on the onboarding prompt is not a profile edit. */
+  v_keys := array(select k from unnest(v_keys) k where not (k = any (v_resume)) and k !~ '^profile_onboarding_');
   if array_length(v_keys, 1) > 0 then
     perform audit_write('candidate.updated', 'candidate', new.id, jsonb_build_object('fields', to_jsonb(v_keys)));
   end if;
