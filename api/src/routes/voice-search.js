@@ -23,6 +23,7 @@ import { hasIndicScript } from '../search/indic-translit.js';
 import { boardWordIndex, rankJobs, cleanSearch } from '../search/voice-semantic.js';
 import { locationTierFunction, nameOnlyTier } from '../search/saved-match.js';
 import { matchCandidate } from '../ai/match.js';
+import { jobsPageScope, teamlinkOnly } from '../jobs/source-scope.js';
 
 let warming = null;
 
@@ -50,6 +51,8 @@ async function rankFor(session, search) {
     jobs: (await c.query(
       `select j.*, co.name as company_name, co.industry as industry
          from jobs_open j left join companies co on co.id = j.company_id
+        /* 0113: TeamLink jobs only - the words' filters rank THIS set */
+        where ${teamlinkOnly('j')}
         order by j.published_at desc nulls last, j.id limit 3000`)).rows,
     cand: session && session.role === 'candidate' && session.profileId
       ? (await c.query(`select * from candidates where id=$1`, [session.profileId])).rows[0] || null
@@ -117,7 +120,7 @@ let boardAt = 0;
 async function boardFacts() {
   if (board && Date.now() - boardAt < 60_000) return board;
   const rows = await withUser(null, async (c) => (await c.query(
-    `select title, skills, location, mode, employment_type from jobs`)).rows);   // anon: the public board only
+    `select title, skills, location, mode, employment_type from jobs where ${teamlinkOnly()}`)).rows);   // anon: the public board only
   const places = new Map();
   rows.forEach((r) => String(r.location || '').split(/[,/]/).map((x) => x.trim()).filter(Boolean)
     .forEach((p) => { if (!places.has(fold(p))) places.set(fold(p), p); }));
@@ -184,6 +187,7 @@ export default function voiceSearchRoutes() {
   }
 
   r.post('/search/voice-parse', limiter, wrap(async (req, res) => {
+    jobsPageScope(req);                 // 0113: the Jobs page's search - TeamLink jobs only, or 400
     const body = z.object({
       text: z.string().max(300),
       lang: z.enum(['en-IN', 'te-IN', 'hi-IN', 'en', 'te', 'hi']).optional(),
@@ -223,6 +227,7 @@ export default function voiceSearchRoutes() {
    * a chip is removed, or when a saved voice search is run again.
    */
   r.post('/search/semantic', limiter, wrap(async (req, res) => {
+    jobsPageScope(req);
     const body = z.object({ search: z.record(z.unknown()) }).safeParse(req.body || {});
     if (!body.success) throw badRequest('Give the search to run.');
     const search = cleanSearch(body.data.search);

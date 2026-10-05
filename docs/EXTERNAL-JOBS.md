@@ -36,8 +36,26 @@ is bypassed.
 | Portal cache | `api/src/external/cache.js` |
 | All new SQL calls | `api/src/external/compliance-store.js` |
 | Admin / candidate routes | `api/src/routes/external-compliance.js`; portal routes in `api/src/routes/external-jobs.js` |
-| Portal UI (cards in the existing lists, details, Apply, saved) | `web/teamlink-portal-external.js` |
+| Portal UI (details page, Apply, saved - never the Jobs page, 0113) | `web/teamlink-portal-external.js` |
+| Job source separation: scopes, the central matcher, the browser guard | `api/src/jobs/source-scope.js`, `supabase/migrations/0113_job_source_separation.sql`, `web/teamlink-job-source-guard.js` |
 | Admin Job Sources screen, recruiter list | `web/teamlink-job-sources.js` |
+
+## Job source separation (owner, 2026-10-05; 0113)
+
+**Jobs page = TeamLink jobs only. External Jobs page = external jobs only.**
+Enforced by the server: every Jobs-page endpoint (`/api/bootstrap` for a
+candidate or visitor, `/api/jobs` incl. `?quick=` chips and pagination,
+`/api/jobs/:id`, `/api/job-matches/explain`, `/api/search/voice-parse`,
+`/api/search/semantic`, saved searches, the alert engines, the career
+assistant) reads TeamLink jobs (`jobs.source_type = 'TEAMLINK'`, and
+`jobs_open` itself says so) and refuses any other `sourceType` with 400
+`SOURCE_SCOPE`. Every External Jobs endpoint (`/api/portal/external-jobs*`,
+`/api/external/recommended`, `/external/matches`, `/external/match`) reads
+`external_jobs` only and refuses `sourceType=TEAMLINK`. Every job carries
+`sourceType` (`TEAMLINK` | `EXTERNAL`) beside `jobSourceType` / `jobSourceName`.
+A job posted through TeamLink is TEAMLINK by trigger; an import is an
+`external_jobs` row. Saved searches store `source_type` and keep it.
+`GET /api/admin/job-source-audit` shows the classification.
 
 ## Data the portal returns for an external job
 

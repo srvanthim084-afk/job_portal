@@ -365,6 +365,9 @@
   window.tlssRun = function (id, fresh) {
     var s = byId(id);
     if (!s) { load(true).then(function () { if (byId(id)) window.tlssRun(id); }); return; }
+    /* 0113: a search keeps its page. One saved on External Jobs never runs
+       on the Jobs page (and the server never gives it TeamLink jobs). */
+    if (s.sourceType === 'EXTERNAL') { location.hash = '#/candidate/external-jobs'; return; }
     /* "3 new" are jobs published after this page loaded its job list, so
        they are not in it yet. Fetch the board again first, or Run search
        would open on results that do not include the jobs it promised. */

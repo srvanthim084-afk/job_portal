@@ -1,16 +1,21 @@
 /*
- * TeamLink — external jobs inside the job portal.
+ * TeamLink — external jobs: their details page, Apply Now and saved list.
  *
- * External jobs (collected by the server from permitted sources and
- * stored in external_jobs) appear in the ordinary portal, next to
- * TeamLink's own jobs, instead of only on a page of their own:
+ * JOB SOURCE SEPARATION (owner, 2026-10-05; migration 0113). The Jobs page
+ * (#/candidate/search, #/candidate/recommended, the public board #/jobs)
+ * lists TeamLink jobs ONLY - the server answers it from TeamLink's jobs and
+ * nothing here adds to it. External jobs are on the External Jobs page
+ * (#/candidate/external-jobs, teamlink-external-jobs.js) ONLY. What this
+ * file still does, for external jobs and nowhere else:
  *
- *   - the candidate job search (#/candidate/search) and the public job
- *     board (#/jobs) list them with a small "External • <source>" label,
- *     filtered by the same search, location, type and posted filters;
- *   - the candidate search gains a Source filter (TeamLink / each
- *     external source);
- *   - #/job/<id> opens an external job's own details page.
+ *   - #/job/xjob_<id> opens an external job's own details page, marked
+ *     External, whose "See other jobs" goes back to External Jobs;
+ *   - Apply Now (below), from that page and from External Jobs;
+ *   - the candidate's saved external jobs, in their own section of Saved Jobs.
+ *
+ * (Until 0113 this file also put external cards into the Jobs page's list,
+ * a Source filter into its rail and a count into the public board. Those
+ * are gone: the two datasets are never mixed.)
  *
  * APPLY NOW (the owner's final rule, 2026-10-05) opens the stored ORIGINAL
  * job URL directly in a new tab (noopener) - no TeamLink page in between,
@@ -29,15 +34,14 @@
   'use strict';
 
   var X = { jobs: null, byId: {}, loading: null, at: 0, off: false,
-    /* 0108: the server's ranked answer per search, and the saved set. */
-    byQ: {}, qLoading: {}, saved: null, savedRows: null, savedFor: null };
+    /* 0108: the saved set. */
+    saved: null, savedRows: null, savedFor: null };
   var h = function (v) {
     return String(v == null ? '' : v).replace(/[&<>"']/g, function (m) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m];
     });
   };
   var js = function (v) { return String(v).replace(/\\/g, '\\\\').replace(/'/g, "\\'"); };
-  var low = function (v) { return String(v == null ? '' : v).trim().toLowerCase(); };
   var rerender = function () { if (typeof window.render === 'function') render(); };
   var isCand = function () { return !!(window.STATE && STATE.session && STATE.session.role === 'candidate'); };
 
@@ -54,7 +58,8 @@
         return r.json();
       })
       .then(function (out) {
-        X.jobs = (out && out.jobs) || [];
+        /* 0113, the secondary guard: never a TeamLink job in the external list. */
+        X.jobs = ((out && out.jobs) || []).filter(function (j) { return j && j.sourceType !== 'TEAMLINK'; });
         X.jobs.forEach(function (j) { X.byId[j.id] = j; });
         X.at = Date.now(); X.loading = null;
         rerender();
@@ -62,35 +67,6 @@
       })
       .catch(function () { X.loading = null; X.jobs = X.jobs || []; return X.jobs; });
     return X.loading;
-  }
-
-  /*
-   * A SEARCH IS RANKED BY THE SERVER (0108). With a query, the listing
-   * asks /api/portal/external-jobs?q=… once per query and keeps the
-   * server's order - the deterministic score documented in migration
-   * 0108 - instead of re-sorting here. The page's own filters (place,
-   * type, posted, company) still narrow that list. Bounded to 500 rows,
-   * cached per query for ten minutes.
-   */
-  function ranked(q) {
-    var key = low(q);
-    if (!key) return null;
-    var hit = X.byQ[key];
-    if (hit && Date.now() - hit.at < 10 * 60 * 1000) return hit.jobs;
-    if (!X.qLoading[key] && !X.off) {
-      X.qLoading[key] = fetch('/api/portal/external-jobs?limit=500&sort=relevance&q=' + encodeURIComponent(String(q).slice(0, 120)),
-        { credentials: 'same-origin', cache: 'no-store' })
-        .then(function (r) { return r.ok ? r.json() : { jobs: [] }; })
-        .then(function (out) {
-          var jobs = (out && out.jobs) || [];
-          jobs.forEach(function (j) { if (!X.byId[j.id] || !X.byId[j.id].__full) X.byId[j.id] = j; });
-          X.byQ[key] = { jobs: jobs, at: Date.now() };
-          delete X.qLoading[key];
-          rerender();
-        })
-        .catch(function () { delete X.qLoading[key]; });
-    }
-    return hit ? hit.jobs : null;
   }
 
   function one(id) {
@@ -103,63 +79,6 @@
         rerender();
         return X.byId[id];
       });
-  }
-
-  /* ------------------------------------------------------------------ *
-   * filtering, with the portal's own filters
-   * ------------------------------------------------------------------ */
-  var daysAgo = function (j) {
-    var t = Date.parse(j.postedAt || j.lastSyncedAt || '');
-    return isNaN(t) ? 999 : Math.floor((Date.now() - t) / 86400000);
-  };
-  var typeOf = function (t) { return low(t).replace(/[\s_-]+/g, ''); };
-
-  function matchQ(j, q) {
-    var terms = low(q).split(',').map(function (x) { return x.trim(); }).filter(Boolean);
-    if (!terms.length) return true;
-    var hay = low([j.title, j.company, (j.skills || []).join(' ')].join(' '));
-    return terms.some(function (t) { return hay.indexOf(t) >= 0; });
-  }
-  function matchPlace(j, places, km) {
-    if (!places.length) return true;
-    if (/remote|anywhere|work from home/i.test(j.location)) return true;
-    if (window.TL_LOC && TL_LOC.matchesAny) return TL_LOC.matchesAny(j.location, places, km || 0);
-    return places.some(function (p) { return low(j.location).indexOf(low(p)) >= 0; });
-  }
-
-  /** The candidate search's filters, applied to external jobs. */
-  function forCandidateSearch() {
-    var rj = (window.STATE && STATE.rj) || {}; var f = rj.f || {};
-    if (f.src === 'teamlink') return [];
-    var places = [].concat(f.locTags || [], (f.locations || []).filter(function (x) { return x !== 'Any Location'; }),
-      rj.loc && rj.loc !== 'Any Location' ? [rj.loc] : []);
-    var types = (f.types || []).map(typeOf);
-    var byServer = ranked(rj.q);
-    return (byServer || X.jobs || []).filter(function (j) {
-      if (f.src && j.source !== f.src) return false;
-      if (!byServer && !matchQ(j, rj.q)) return false;
-      if (!matchPlace(j, places, Number(f.locKm) || 0)) return false;
-      if (types.length && types.indexOf(typeOf(j.employmentType)) < 0) return false;
-      if (f.posted && daysAgo(j) > Number(f.posted)) return false;
-      if (f.company && low(j.company).indexOf(low(f.company)) < 0) return false;
-      return true;
-    });
-  }
-
-  /** The public job board's filters, applied to external jobs. */
-  function forPublicSearch() {
-    var s = (window.STATE && STATE.search) || {};
-    var places = [].concat(s.loc ? [s.loc] : [], s.locations || []);
-    var types = (s.jobType || []).map(typeOf);
-    var byServer = ranked(s.q);
-    return (byServer || X.jobs || []).filter(function (j) {
-      if (!byServer && !matchQ(j, s.q)) return false;
-      if (!matchPlace(j, places, 0)) return false;
-      if (types.length && types.indexOf(typeOf(j.employmentType)) < 0) return false;
-      if (s.posted && daysAgo(j) > Number(s.posted)) return false;
-      if (s.company && low(j.company).indexOf(low(s.company)) < 0) return false;
-      return true;
-    });
   }
 
   /* ------------------------------------------------------------------ *
@@ -191,152 +110,6 @@
   var applyLabel = function (j) {
     return 'Apply Now on ' + siteOf(j) + ' (opens the original job website in a new tab)';
   };
-  var posted = function (j) {
-    var d = daysAgo(j);
-    return d >= 999 ? '' : (d <= 0 ? 'Posted today' : d === 1 ? 'Posted 1 day ago' : 'Posted ' + d + ' days ago');
-  };
-
-  function rjCard(j) {
-    return '<article class="rj-card" data-external="1">'
-      + '<div class="rj-top">'
-      + '<div class="rj-logo">' + h(String(j.company || 'EX').slice(0, 2).toUpperCase()) + '</div>'
-      + '<div style="flex:1;min-width:200px">'
-      + '<h3 class="rj-t">' + h(j.title) + '</h3>'
-      + '<div class="rj-c">' + h(j.company || '—') + ' · ' + h(j.location || '—') + '</div>'
-      + '<div class="rj-meta"><span>💰 ' + h(j.salary || 'Not disclosed') + '</span><span>💼 ' + h(j.experience || '—') + '</span>'
-      + '<span>📄 ' + h(j.employmentType || '—') + '</span></div>'
-      + '<div style="margin-top:7px">' + label(j) + '</div>'
-      + '</div></div>'
-      + ((j.skills || []).length ? '<div class="rj-sec"><div class="rj-sk">' + j.skills.slice(0, 8).map(function (s) {
-        return '<span class="have">' + h(s) + '</span>';
-      }).join('') + '</div></div>' : '')
-      + '<div class="rj-foot"><div class="grow"><b style="color:#42505f">' + h(posted(j)) + '</b>'
-      + ' · <span style="color:#8a94a6">You apply on the original website</span></div>'
-      + '<button type="button" class="rj-btn" aria-label="View job: ' + h(j.title) + '" onclick="navigate(\'/job/' + js(j.id) + '\')">View Job</button>'
-      + saveButton(j, 'rj-btn')
-      + applyControl(j, 'rj-btn pri')
-      + '</div></article>';
-  }
-
-  function publicRow(j) {
-    return '<div class="job-row" data-external="1"><div class="jr-main" onclick="navigate(\'/job/' + js(j.id) + '\')">'
-      + '<div class="jr-top"><div class="jr-headline"><h3><a class="tlpx-link" href="#/job/' + h(encodeURIComponent(j.id)) + '" onclick="event.stopPropagation()">' + h(j.title) + '</a></h3>'
-      + '<div class="co-name">' + h(j.company || '—') + ' · ' + h(j.location || '—') + '</div></div></div>'
-      + '<div class="job-meta"><span>💼 ' + h(j.experience || '—') + '</span><span>💰 ' + h(j.salary || 'Not disclosed') + '</span>'
-      + '<span>🕒 ' + h(j.employmentType || '—') + '</span></div>'
-      + '<div style="margin-top:6px">' + label(j) + ' <span style="font-size:12px;color:#8a94a6;margin-left:6px">' + h(posted(j)) + '</span></div>'
-      + '</div><div style="display:flex;align-items:center;padding:0 14px">'
-      + applyControl(j, 'btn btn-primary btn-sm', true)
-      + '</div></div>';
-  }
-
-  /* ---- the candidate search ---- */
-  window.tlpxSource = function (v) {
-    STATE.rj = STATE.rj || {}; STATE.rj.f = STATE.rj.f || {};
-    STATE.rj.f.src = v || '';
-    STATE.rj.page = 1;
-    rerender();
-  };
-
-  function sourceGroup() {
-    var cur = ((STATE.rj || {}).f || {}).src || '';
-    var seen = {};
-    (X.jobs || []).forEach(function (j) { seen[j.source] = j.sourceName || j.source; });
-    var opts = [['', 'All sources'], ['teamlink', 'TeamLink jobs']].concat(
-      Object.keys(seen).sort(function (a, b) { return seen[a].localeCompare(seen[b]); })
-        .map(function (k) { return [k, seen[k]]; }));
-    return '<div class="rj-fg"><h5>Source</h5><select onchange="tlpxSource(this.value)">'
-      + opts.map(function (o) { return '<option value="' + h(o[0]) + '"' + (o[0] === cur ? ' selected' : '') + '>' + h(o[1]) + '</option>'; }).join('')
-      + '</select></div>';
-  }
-
-  /** The end of the <div> that starts at `from`, by counting nested divs. */
-  function closeOf(html, from) {
-    var depth = 0, i = from;
-    var re = /<div\b|<\/div>/g; re.lastIndex = from;
-    var m;
-    while ((m = re.exec(html))) {
-      depth += m[0] === '</div>' ? -1 : 1;
-      if (depth === 0) return m.index;
-      i = m.index;
-    }
-    return -1;
-  }
-
-  function wrapCandidateSearch() {
-    var prevRec = window.recAll;
-    if (typeof prevRec === 'function' && !prevRec.__tlpx) {
-      /* Choosing an external source shows that source only. */
-      var r2 = function () {
-        var src = (((window.STATE || {}).rj || {}).f || {}).src;
-        if (src && src !== 'teamlink') return [];
-        return prevRec.apply(this, arguments);
-      };
-      r2.__tlpx = true;
-      window.recAll = r2;
-    }
-    var prev = window.rjPage;
-    if (typeof prev !== 'function' || prev.__tlpx) return;
-    var next = function () {
-      var html = prev.apply(this, arguments);
-      if (typeof html !== 'string' || X.off) return html;
-      if (!X.jobs) { load(); return html; }
-
-      /* Source, in the filter rail, beside the others. */
-      var at = html.indexOf('<div class="rj-fg"><h5>Experience</h5>');
-      if (at > 0) html = html.slice(0, at) + sourceGroup() + html.slice(at);
-
-      var ext = forCandidateSearch();
-      var body = html.indexOf('<div class="rj-body">');
-      if (body < 0) return html;
-      var aside = html.indexOf('</aside>', body);
-      var list = html.indexOf('<div', aside > 0 ? aside : body + 20);
-      if (list < 0) return html;
-      var end = closeOf(html, list);
-      if (end < 0) return html;
-      var inner = html.slice(html.indexOf('>', list) + 1, end);
-      var empty = inner.indexOf('class="rj-empty"') >= 0;
-      if (!ext.length) return html;
-      var block = (empty ? '' : '<div style="font-size:12.5px;color:#7b8794;margin:14px 2px 8px">'
-          + ext.length + ' more job' + (ext.length === 1 ? '' : 's') + ' from other job sites · you apply on the original website</div>')
-        + ext.slice(0, 60).map(rjCard).join('')
-        + (ext.length > 60 ? '<div style="font-size:12px;color:#8a94a6;margin:8px 2px">Showing 60 of ' + ext.length + ' — narrow the search to see the rest.</div>' : '');
-      var nextInner = empty ? block : inner + block;
-      return html.slice(0, html.indexOf('>', list) + 1) + nextInner + html.slice(end);
-    };
-    next.__tlpx = true;
-    window.rjPage = next;
-  }
-
-  /* ---- the public job board ---- */
-  function wrapPublic() {
-    var prev = window.pageJobs;
-    if (typeof prev !== 'function' || prev.__tlpx) return;
-    var next = function () {
-      var html = prev.apply(this, arguments);
-      if (typeof html !== 'string' || X.off) return html;
-      if (!X.jobs) { load(); return html; }
-      var ext = forPublicSearch();
-      if (!ext.length) return html;
-      var at = html.indexOf('<div class="job-list">');
-      if (at < 0) return html;
-      var end = closeOf(html, at);
-      if (end < 0) return html;
-      var inner = html.slice(at + '<div class="job-list">'.length, end);
-      var empty = inner.indexOf('class="empty-note"') >= 0;
-      var block = ext.slice(0, 60).map(publicRow).join('');
-      html = html.slice(0, at) + '<div class="job-list">' + (empty ? block : inner + block) + html.slice(end);
-      /* The count says how many there are in total. */
-      return html.replace(/<div class="result-count"><b>(\d+)<\/b> job(s?) found<\/div>/, function (m, n) {
-        var total = Number(n) + ext.length;
-        return '<div class="result-count"><b>' + total + '</b> job' + (total === 1 ? '' : 's') + ' found'
-          + ' <span style="font-weight:600;color:#8a94a6;font-size:12.5px">(' + ext.length + ' from other job sites)</span></div>';
-      });
-    };
-    next.__tlpx = true;
-    window.pageJobs = next;
-  }
-
   /* ---- the job details page ---- */
   var when = function (iso) {
     var t = Date.parse(iso || '');
@@ -352,7 +125,7 @@
         + (j.title ? '<p style="color:#5b6676;margin-top:6px">' + h(j.title) + (j.company ? ' · ' + h(j.company) : '') + '</p>' : '')
         + (j.status === 'UNAVAILABLE' ? '<p style="color:#5b6676;margin-top:4px">This job is no longer available.</p>' : '')
         + (isCand() && X.saved && X.saved[j.id] ? '<p style="color:#5b6676;margin-top:4px">It stays in your Saved Jobs until you remove it.</p>' : '')
-        + '<button type="button" class="btn btn-primary" style="margin-top:14px" onclick="navigate(\'' + (isCand() ? '/candidate/search' : '/jobs') + '\')">See other jobs</button>'
+        + '<button type="button" class="btn btn-primary" style="margin-top:14px" onclick="navigate(\'' + (isCand() ? '/candidate/external-jobs' : '/jobs') + '\')">See other jobs</button>'
         + '</div></div></div></section>';
     }
     var row = function (k, v) { return v ? '<dt class="k">' + h(k) + '</dt><dd class="v" style="margin:0">' + h(v) + '</dd>' : ''; };
@@ -574,13 +347,16 @@
 
   function install() {
     addStyle();
-    wrapCandidateSearch();
-    wrapPublic();
     wrapDetail();
     wrapTracked();
     guardTeamLinkApply();
     wrapSaved();
-    load();
+    /* The external list is read only where external jobs are shown (the
+       External Jobs page, an external job's own page), so Apply Now there
+       has each job's original URL at hand. Never for the Jobs page. */
+    var lazy = function () { if (/^#\/(candidate\/external-jobs|job\/xjob_)/.test(location.hash || '')) load(); };
+    lazy();
+    window.addEventListener('hashchange', lazy);
     loadSaved(false);
     /* A sign-in after load: pick up that candidate's saved jobs. */
     var prevRender = window.render;
@@ -619,5 +395,5 @@
   if (document.readyState === 'complete') install();
   else window.addEventListener('load', install);
 
-  window.TLPortalExternal = { load: load, state: X, ranked: ranked, loadSaved: loadSaved, linkState: linkState };
+  window.TLPortalExternal = { load: load, state: X, loadSaved: loadSaved, linkState: linkState };
 })();

@@ -10,7 +10,10 @@
  *   T3  a Shine fixture job: the same
  *   T4  an Indeed fixture job: the same
  *       ... each click is recorded as "Apply Clicked" and no `applications`
- *       row is created; the cards say "Source: <name>"
+ *       row is created; the cards carry the source's name
+ *       (0113: on the External Jobs page ONLY - the Jobs page, signed in or
+ *       out, never lists them; tools/verify-job-source-separation.mjs is the
+ *       full separation check)
  *   T5  a job whose link is not approved: "Application link unavailable",
  *       no button
  *   T6  a re-sync updates the job, and creates no duplicate
@@ -189,6 +192,49 @@ if (!r.ok) console.log('register: ' + r.message);
 const applicationsNow = async () => ((await api(cand, 'get', '/bootstrap')).v.data.applications || []).length;
 const clicks = async () => ((await api(cand, 'get', '/external/applications')).v.applications || []);
 
+/* 0113: external jobs are on the External Jobs page, never on the Jobs page. */
+async function externalCard(page, title) {
+  await open(page, '#/candidate/external-jobs');
+  await wizardAway(page);
+  await page.waitForFunction(() => window.TLPortalExternal && TLPortalExternal.state.jobs, null, { timeout: 20000 });
+  await page.waitForFunction(() => typeof window.xjFilter === 'function' && document.querySelector('.xj-card, .xj-empty'), null, { timeout: 20000 });
+  await page.evaluate((q) => window.xjFilter('skill', q), title);
+  const card = page.locator('.xj-card', { hasText: title }).first();
+  await card.waitFor({ timeout: 20000 });
+  return card;
+}
+async function notOnJobsPage(page, title) {
+  await open(page, '#/candidate/search');
+  await wizardAway(page);
+  await page.evaluate((q) => { STATE.rj = STATE.rj || {}; STATE.rj.q = q; render(); }, title);
+  await page.waitForTimeout(1200);
+  must(!(await page.locator('body').innerText()).includes(title), 'the Jobs page lists an external job: ' + title);
+  must(!(await page.locator('[data-external]').count()), 'an external card on the Jobs page');
+}
+
+for (const [t, k] of [['T2', 'naukri'], ['T3', 'shine'], ['T4', 'indeed']]) {
+  await check(`${t}  ${FEEDS[k].name}: on External Jobs (not on Jobs) with its source, Apply Now opens exactly the stored URL, "Apply Clicked" recorded, no application`, async () => {
+    const title = `Verify ${FEEDS[k].name} Accountant ${stamp}`;
+    await notOnJobsPage(cand, title);
+    const card = await externalCard(cand, title);
+    must(new RegExp(`${FEEDS[k].name} partner feed`).test(await card.innerText()), 'no source name: ' + (await card.innerText()).slice(0, 160));
+    const apps = await applicationsNow();
+    const before = (await clicks()).length;
+    const [popup] = await Promise.all([cctx.waitForEvent('page', { timeout: 10000 }), card.locator('button', { hasText: /^Apply/ }).first().click()]);
+    await popup.waitForLoadState('domcontentloaded');
+    must(popup.url() === FEEDS[k].url(1), 'opened ' + popup.url());
+    must(!(await cand.locator('#tlafForm').count()) && !(await cand.locator('[role="dialog"]').count()), 'a screen came in between');
+    must(await popup.evaluate(() => window.opener === null), 'the new tab can reach TeamLink (no noopener)');
+    await popup.close();
+    await cand.waitForFunction(async (n) => (await TL.api.get('/external/applications')).applications.length > n, before, { timeout: 10000, polling: 500 });
+    const row = (await clicks()).find((x) => x.externalJobId === X[k].id);
+    must(row && row.status === 'clicked' && row.statusLabel === 'Apply Clicked', 'click record: ' + JSON.stringify(row && [row.status, row.statusLabel]));
+    must(row.sourceName && row.createdAt, 'the record names the source and the time');
+    must(await applicationsNow() === apps, 'an applications row was created');
+    if (k === 'naukri') await cand.screenshot({ path: `${SHOTS}/T2-external-jobs.png` });
+  });
+}
+
 await check('T1  a TeamLink job opens the TeamLink application form (unchanged), and an external job never does', async () => {
   await open(cand, '#/job/' + TLJOB);
   await wizardAway(cand);
@@ -201,6 +247,10 @@ await check('T1  a TeamLink job opens the TeamLink application form (unchanged),
   const [popup] = await Promise.all([cctx.waitForEvent('page', { timeout: 10000 }),
     cand.evaluate((id) => { setTimeout(() => window.applyToJob(id), 0); }, X.naukri.id)]);
   await popup.waitForLoadState('domcontentloaded');
+  /* From a TeamLink job's page the external list is not loaded (0113: it is
+     read only where external jobs are shown), so the tab is pointed at the
+     stored URL when the server answers. */
+  await popup.waitForURL(X.naukri.originalJobUrl, { timeout: 10000 }).catch(() => {});
   await cand.waitForTimeout(400);
   must(!(await cand.locator('#tlafForm').count()), 'the TeamLink form opened for an external job');
   must(popup.url() === X.naukri.originalJobUrl, 'applyToJob(external) opened ' + popup.url());
@@ -208,63 +258,44 @@ await check('T1  a TeamLink job opens the TeamLink application form (unchanged),
   await popup.close();
 });
 
-for (const [t, k] of [['T2', 'naukri'], ['T3', 'shine'], ['T4', 'indeed']]) {
-  await check(`${t}  ${FEEDS[k].name}: the card says "Source: ${FEEDS[k].name}", Apply Now opens exactly the stored URL, "Apply Clicked" recorded, no application`, async () => {
-    await open(cand, '#/candidate/search');
-    await wizardAway(cand);
-    await cand.evaluate((q) => { STATE.rj = STATE.rj || {}; STATE.rj.q = q; render(); }, `Verify ${FEEDS[k].name} Accountant ${stamp}`);
-    const card = cand.locator('article[data-external="1"]', { hasText: `Verify ${FEEDS[k].name} Accountant ${stamp}` }).first();
-    await card.waitFor({ timeout: 20000 });
-    must(new RegExp(`Source: ${FEEDS[k].name} partner feed`).test(await card.innerText()), 'no Source label: ' + (await card.innerText()).slice(0, 160));
-    const apps = await applicationsNow();
-    const before = (await clicks()).length;
-    const [popup] = await Promise.all([cctx.waitForEvent('page', { timeout: 10000 }), card.locator('button', { hasText: 'Apply Now' }).click()]);
-    await popup.waitForLoadState('domcontentloaded');
-    must(popup.url() === FEEDS[k].url(1), 'opened ' + popup.url());
-    must(!(await cand.locator('#tlafForm').count()) && !(await cand.locator('[role="dialog"]').count()), 'a screen came in between');
-    must(await popup.evaluate(() => window.opener === null), 'the new tab can reach TeamLink (no noopener)');
-    await popup.close();
-    await cand.waitForFunction(async (n) => (await TL.api.get('/external/applications')).applications.length > n, before, { timeout: 10000, polling: 500 });
-    const row = (await clicks()).find((a) => a.externalJobId === X[k].id);
-    must(row && row.status === 'clicked' && row.statusLabel === 'Apply Clicked', 'click record: ' + JSON.stringify(row && [row.status, row.statusLabel]));
-    must(row.sourceName && row.createdAt, 'the record names the source and the time');
-    must(await applicationsNow() === apps, 'an applications row was created');
-    if (k === 'naukri') await cand.screenshot({ path: `${SHOTS}/T2-candidate-search.png` });
-  });
-}
-
-await check('T2-T4 signed out: the public board opens the stored URL directly too (no TeamLink URL in between)', async () => {
+await check('T2-T4 signed out: not on the public board; the external job page opens the stored URL directly (no TeamLink URL in between)', async () => {
   const seen = [];
   const pctx = await context(seen);
   const pub = await newPage(pctx, 'public');
+  const title = `Verify Indeed Accountant ${stamp}`;
   await open(pub, '#/jobs');
-  await pub.evaluate((q) => { STATE.search = STATE.search || {}; STATE.search.q = q; render(); }, `Verify Indeed Accountant ${stamp}`);
-  const row = pub.locator('[data-external="1"]', { hasText: `Verify Indeed Accountant ${stamp}` }).first();
-  await row.waitFor({ timeout: 20000 });
-  must(/Source: Indeed partner feed/.test(await row.innerText()), 'Source label');
+  await pub.evaluate((q) => { STATE.search = STATE.search || {}; STATE.search.q = q; render(); }, title);
+  await pub.waitForTimeout(1200);
+  must(!(await pub.locator('body').innerText()).includes(title), 'the public board lists an external job');
+  must(!(await pub.locator('[data-external]').count()), 'an external row on the public board');
+  await open(pub, '#/job/' + X.indeed.id);
+  await pub.waitForSelector('#tlpxTitle', { timeout: 15000 });
+  must(/Source/.test(await pub.locator('article').first().innerText()), 'the details page names the source');
   const reqs = [];
   pub.on('request', (q) => reqs.push(q.url()));
-  const [popup] = await Promise.all([pctx.waitForEvent('page', { timeout: 10000 }), row.locator('button', { hasText: 'Apply Now' }).click()]);
+  const [popup] = await Promise.all([pctx.waitForEvent('page', { timeout: 10000 }), pub.locator('article button', { hasText: 'Apply Now' }).first().click()]);
   await popup.waitForLoadState('domcontentloaded');
   must(popup.url() === FEEDS.indeed.url(1), 'opened ' + popup.url());
   await pub.waitForTimeout(600);
   must(reqs.some((x) => /\/api\/portal\/external-jobs\/[^/]+\/click$/.test(x)), 'the click was not counted');
-  await pub.screenshot({ path: `${SHOTS}/T4-public-board.png` });
+  await pub.screenshot({ path: `${SHOTS}/T4-public-details.png` });
   await pctx.close();
   delete pages.public;
 });
 
-await check('T5  a link on no approved domain: "Application link unavailable", no button, nothing opens', async () => {
-  await open(cand, '#/candidate/search');
-  await wizardAway(cand);
-  await cand.evaluate((q) => { STATE.rj.q = q; render(); }, `Verify Unapproved Link ${stamp}`);
-  const card = cand.locator('article[data-external="1"]', { hasText: `Verify Unapproved Link ${stamp}` }).first();
-  await card.waitFor({ timeout: 20000 });
-  must(/Application link unavailable/.test(await card.innerText()), 'no unavailable note');
-  must(await card.locator('button', { hasText: 'Apply Now' }).count() === 0, 'an Apply Now button is offered');
+await check('T5  a link on no approved domain: "Application link unavailable", nothing opens', async () => {
+  const title = `Verify Unapproved Link ${stamp}`;
+  await notOnJobsPage(cand, title);
+  const card = await externalCard(cand, title);
+  const before = seenCand.length;
+  await card.locator('button', { hasText: /^Apply/ }).first().click();
+  await cand.waitForFunction(() => /Application link unavailable/.test(document.body.innerText), null, { timeout: 8000 });
+  await cand.waitForTimeout(600);
+  must(seenCand.length === before, 'something opened for an unusable link');
   await open(cand, '#/job/' + X.other.id);
   await cand.waitForSelector('#tlpxTitle', { timeout: 15000 });
   must(/Application link unavailable/.test(await cand.locator('article').first().innerText()), 'details page');
+  must(await cand.locator('article button', { hasText: 'Apply Now' }).count() === 0, 'an Apply Now button is offered');
   await cand.screenshot({ path: `${SHOTS}/T5-link-unavailable.png` });
 });
 

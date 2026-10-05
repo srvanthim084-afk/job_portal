@@ -16,6 +16,10 @@ import { toJob, toJobMatch } from '../shapes.js';
 import { runJobAlertsInBackground } from '../notify/job-alerts.js';
 import { normaliseWalkinBody, checkWalkin } from '../portal/walkin-jobs.js';
 import { kickWalkinNotices } from '../notify/walkin-jobs.js';
+import { jobsPageScope, teamlinkOnly } from '../jobs/source-scope.js';
+
+/* Who reads the ATS rather than the Jobs page. */
+const isStaff = (s) => !!s && ['recruiter', 'admin', 'bde', 'client'].includes(s.role);
 
 const strArr = z.array(z.string().trim().max(200)).max(60).optional();
 
@@ -142,10 +146,16 @@ export default function jobRoutes() {
     const q      = (req.query.q || '').trim();
     const loc    = (req.query.location || '').trim();
     const view   = req.query.view === 'all' ? 'jobs_with_counts' : 'jobs_open';
+    /* 0113: the Jobs page is TeamLink jobs only - refused, not widened,
+       for any other ?sourceType=. Staff reading their whole desk
+       (?view=all) still see every row they are allowed by RLS. */
+    jobsPageScope(req);
+    const staffAll = view === 'jobs_with_counts' && isStaff(req.session);
 
     const out = await withUser(req.session, async (c) => {
       const where = [];
       const params = [];
+      if (!staffAll) where.push(teamlinkOnly());
       if (q) {
         params.push(`%${q}%`);
         where.push(`(title ilike $${params.length} or $${params.length} = any(skills))`);
@@ -187,7 +197,11 @@ export default function jobRoutes() {
 
   r.get('/jobs/:id', wrap(async (req, res) => {
     const row = await withUser(req.session, async (c) => {
-      const { rows } = await c.query(`select * from jobs_with_counts where id=$1`, [req.params.id]);
+      /* 0113: a candidate or visitor opens TeamLink jobs here; an
+         external job's details are /api/portal/external-jobs/:id. */
+      const { rows } = await c.query(
+        `select * from jobs_with_counts where id=$1 ${isStaff(req.session) ? '' : `and ${teamlinkOnly()}`}`,
+        [req.params.id]);
       return rows[0];
     });
     // RLS hides an unpublished job from the public, which surfaces here as
@@ -451,6 +465,27 @@ export default function jobRoutes() {
       (c) => c.query(`select job_match_clicked($1)`, [req.params.id]))
       .catch((err) => { console.error('[alerts] click not recorded:', err.message); });
     res.json({ ok: true });
+  }));
+
+  /**
+   * GET /api/admin/job-source-audit - how every job is classified (0113):
+   * per dataset, source type and source name, open and in total, and the
+   * classification log (the first audit and any reclassification).
+   */
+  r.get('/admin/job-source-audit', requireAuth(), requireRole('admin'), wrap(async (req, res) => {
+    const out = await withUser(req.session, async (c) => ({
+      summary: (await c.query(`select * from job_source_summary()`)).rows.map((x) => ({
+        dataset: x.dataset, sourceType: x.source_type, sourceName: x.source_name,
+        open: Number(x.open_jobs), total: Number(x.all_jobs),
+      })),
+      log: (await c.query(
+        `select job_id, source_type, source_name, reason, audited_at from job_source_audit
+          order by audited_at desc, id desc limit 500`)).rows.map((x) => ({
+        jobId: x.job_id, sourceType: x.source_type, sourceName: x.source_name, reason: x.reason,
+        at: new Date(x.audited_at).toISOString(),
+      })),
+    }));
+    res.json(out);
   }));
 
   r.delete('/jobs/:id', requireAuth(), requireRole('admin'), wrap(async (req, res) => {

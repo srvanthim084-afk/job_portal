@@ -38,6 +38,7 @@ import {
   missingForOneClick, newShareCode, shareText, shareLines, toPublicUrl, isLocalUrl, ogTags, SHARE_CHANNELS, endOfIstDay, escHtml,
 } from '../portal/core.js';
 import { kickUrgent } from '../portal/alerts.js';
+import { jobsPageScope, teamlinkOnly } from '../jobs/source-scope.js';
 
 const APPLY_PER_HOUR = () => Number(process.env.APPLY_RATE_PER_HOUR || 30);
 const SHARE_COOKIE = 'tl_share_ref';
@@ -170,6 +171,7 @@ export default function portalUpgradeRoutes() {
    */
   r.get('/jobs', wrap(async (req, res, next) => {
     if (req.query.quick === undefined) return next();
+    jobsPageScope(req);                 // 0113: TeamLink jobs only, or 400
     const chips = parseChips(req.query.quick);
     const idsOnly = req.query.ids === '1' || req.query.ids === 'true';
     const limit = Math.min(parseInt(req.query.limit, 10) || 100, idsOnly ? 2000 : 200);
@@ -179,7 +181,7 @@ export default function portalUpgradeRoutes() {
     const km = Math.min(Math.max(Number(req.query.km) || 50, 5), 300);
 
     const out = await withUser(req.session, async (c) => {
-      const where = [], params = [];
+      const where = [teamlinkOnly()], params = [];
       if (q) { params.push(`%${q}%`); where.push(`(title ilike $${params.length} or $${params.length} = any(skills))`); }
       if (loc) { params.push(`%${loc}%`); where.push(`location ilike $${params.length}`); }
       for (const k of chips) if (CHIP_SQL[k]) where.push(CHIP_SQL[k]);
@@ -214,6 +216,7 @@ export default function portalUpgradeRoutes() {
    * ================================================================ */
 
   r.get('/job-matches/explain', requireAuth(), requireRole('candidate'), wrap(async (req, res) => {
+    jobsPageScope(req);
     const ids = [...new Set(String(req.query.jobIds || '').split(',').map((s) => s.trim()).filter(Boolean))];
     if (!ids.length) throw badRequest('Give jobIds, comma-separated.');
     if (ids.length > 50) throw badRequest('At most 50 jobs at a time.');
@@ -223,7 +226,8 @@ export default function portalUpgradeRoutes() {
       cand: (await c.query(`select * from candidates where id=$1`, [req.session.profileId])).rows[0],
       jobs: (await c.query(
         `select j.*, co.name as company_name from jobs j
-           left join companies co on co.id = j.company_id where j.id = any($1)`, [ids])).rows,
+           left join companies co on co.id = j.company_id
+          where j.id = any($1) and ${teamlinkOnly('j')}`, [ids])).rows,   // 0113: TeamLink jobs only are scored
     }));
     if (!data.cand) throw notFound('Your profile could not be found.');
     const settings = await loadAiSettings();

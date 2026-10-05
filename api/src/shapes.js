@@ -13,6 +13,13 @@
  */
 
 const nz = (v) => (v === null || v === undefined ? undefined : v);
+/* 0113: the 0108 jobSourceType for a jobs row the audit classified EXTERNAL,
+   from its free-text `source` (the same four names external/shapes.js uses). */
+const externalSourceTypeOf = (source) => {
+  const s = String(source || '').toLowerCase();
+  for (const k of ['naukri', 'shine', 'indeed', 'linkedin']) if (s.includes(k)) return k.toUpperCase();
+  return 'OTHER_EXTERNAL';
+};
 const arr = (v) => (Array.isArray(v) ? v : []);
 const numOrU = (v) => (v === null || v === undefined ? undefined : Number(v));
 
@@ -187,9 +194,13 @@ export function toJob(r) {
      present only when set, like the walk-in fields above. */
   if (r.expires_at) j.expiresAt = new Date(r.expires_at).toISOString();
   /* 0108: the TeamLink/external split, named as the owner names it. An
-     external job is never a row here (it is external_jobs, shown beside
-     these), so every job from this table is TeamLink's own. */
-  j.jobSourceType = 'TEAMLINK';
+     imported job is never a row here (it is external_jobs, on the External
+     Jobs page only). 0113: `sourceType` is the normalised TEAMLINK |
+     EXTERNAL from jobs.source_type - TEAMLINK for everything TeamLink
+     posts; EXTERNAL only for a legacy row the 0113 audit classified. */
+  j.sourceType = r.source_type === 'EXTERNAL' ? 'EXTERNAL' : 'TEAMLINK';
+  j.jobSourceType = j.sourceType === 'TEAMLINK' ? 'TEAMLINK' : externalSourceTypeOf(r.source);
+  j.jobSourceName = j.sourceType === 'TEAMLINK' ? 'TeamLink' : (nz(r.source) || 'External');
   j.originalJobUrl = null;
   if (r.urgent && r.urgent_until && new Date(r.urgent_until) > new Date()) {
     j.urgent = true;

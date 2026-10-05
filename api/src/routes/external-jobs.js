@@ -31,7 +31,7 @@ import { validateExternalUrl } from '../external/redirect.js';
 import * as store from '../external/store.js';
 import { toSource, toExternalJob, toMatch, toExternalApplication } from '../external/shapes.js';
 import { normaliseExternalJob } from '../external/normalise.js';
-import { syncSource, matchCandidate, applyExternally, refreshApplicationStatus }
+import { syncSource, applyExternally, refreshApplicationStatus }
   from '../external/service.js';
 /* 0108 */
 import * as cx from '../external/compliance-store.js';
@@ -41,6 +41,8 @@ import { redirectRefused } from '../external/health.js';
 import { checkLink } from '../external/link.js';
 import { withUrlKey } from '../external/service.js';
 import { toLicence, licenceRequirement, toPortalJob, toPortalJobV2 } from '../external/shapes.js';
+/* 0113: the External Jobs page's endpoints are EXTERNAL only (external_jobs). */
+import { externalPageScope, matchJobs, EXTERNAL } from '../jobs/source-scope.js';
 
 const STAFF = ['recruiter', 'bde', 'admin'];
 
@@ -126,6 +128,7 @@ export default function externalJobRoutes() {
    */
   const num = (v) => (v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
   r.get('/portal/external-jobs', wrap(async (req, res) => {
+    externalPageScope(req);
     const q = String(req.query.q || '').slice(0, 120);
     const f = {
       q,
@@ -155,6 +158,7 @@ export default function externalJobRoutes() {
   }));
 
   r.get('/portal/external-jobs/:id', wrap(async (req, res) => {
+    externalPageScope(req);
     const id = String(req.params.id).slice(0, 80);
     const version = await cx.portalVersion(PORTAL);
     const { value: row } = await cached(`job:${id}`, version, () => cx.portalJob(PORTAL, id));
@@ -607,14 +611,16 @@ h1{font-size:19px;margin:0 0 8px}p{margin:0 0 14px;color:#42505f}a{color:#1d6ff2
     const candidateId = subjectCandidate(req, asked);
     if (!candidateId) throw badRequest('Say which candidate to match.');
 
-    const out = await matchCandidate(req.session, candidateId, {
-      jobLimit: Math.min(Number(req.body?.jobLimit) || 200, 500),
-    });
+    /* The central matcher, scoped: external jobs only (0113). */
+    externalPageScope(req);
+    const out = await matchJobs({ session: req.session, candidateId, sourceType: EXTERNAL,
+      opts: { jobLimit: Math.min(Number(req.body?.jobLimit) || 200, 500) } });
     if (out.status === 'not_found') throw notFound('That candidate could not be found.');
     res.json(out);
   }));
 
   r.get('/external/matches', requireAuth(), wrap(async (req, res) => {
+    externalPageScope(req);
     const asked = String(req.query.candidateId || '').trim() || null;
     const candidateId = subjectCandidate(req, asked);
     if (!candidateId) {
@@ -645,6 +651,7 @@ h1{font-size:19px;margin:0 0 8px}p{margin:0 0 14px;color:#42505f}a{color:#1d6ff2
    * match a spec would break the page it is meant to serve.
    */
   r.get('/external/recommended', requireAuth(), wrap(async (req, res) => {
+    externalPageScope(req);
     const asked = String(req.query.candidateId || '').trim() || null;
     const candidateId = subjectCandidate(req, asked);
     if (!candidateId) throw badRequest('Say which candidate’s matches you want.');

@@ -185,6 +185,13 @@ try {
   const extJob = posted.jobs[0];
   check(extJob.title === 'Senior Java Developer' && extJob.expMin === 2 && extJob.expMax === 4,
     `  its experience band was read as ${extJob.expMin}-${extJob.expMax} yrs`);
+  /* 0113: an external job is on External Jobs only - never on the Jobs page. */
+  const board = await api('get', '/jobs?q=Java&limit=200');
+  check(!(board.jobs || []).some((j) => j.id === extJob.id || /^xjob_/.test(j.id)),
+    '  it is NOT on the Jobs page (/api/jobs is TeamLink jobs only)');
+  const extBoard = await api('get', '/portal/external-jobs?q=Senior%20Java&limit=500');
+  check((extBoard.jobs || []).some((j) => j.id === extJob.id && j.sourceType === 'EXTERNAL'),
+    '  it IS on the External Jobs side, marked EXTERNAL');
 
   /* ---- 5 · deduplication keeps every source ---------------------- */
   console.log('\nTest 5 — the same vacancy on two sources stays two rows\n');

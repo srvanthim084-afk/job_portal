@@ -223,6 +223,7 @@ async function jobRow(c, jobId) {
 }
 
 const isLive = (j, now) => j && j.status === 'open' && !j.paused && !j.archived
+  && (j.source_type || 'TEAMLINK') === 'TEAMLINK'          // 0113: TeamLink jobs only
   && (!j.expires_at || new Date(j.expires_at).getTime() > now);
 
 /**
