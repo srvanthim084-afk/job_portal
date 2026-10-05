@@ -235,6 +235,7 @@ const JOB_SQL = `
 /* A walk-in whose day and end time have passed (IST, 0106) is over,
    whatever its status still says. */
 const isLive = (j, now) => !!j && j.status === 'open' && !j.paused && !j.archived
+  && (j.source_type || 'TEAMLINK') === 'TEAMLINK'          // 0113: TeamLink jobs only
   && (!j.expires_at || new Date(j.expires_at).getTime() > now)
   && (!j.walkin_ends || new Date(j.walkin_ends).getTime() > now);
 
@@ -519,6 +520,7 @@ export async function runSavedJobSweep(opts = {}) {
     `select j.id from jobs j
        left join saved_job_alert_jobs p on p.job_id = j.id
       where j.status = 'open' and not coalesce(j.paused, false) and not coalesce(j.archived, false)
+        and j.source_type = 'TEAMLINK'
         and (j.expires_at is null or j.expires_at > $1)
         and (j.posting_kind is distinct from 'walkin'
              or walkin_ends_at(j.walkin_date, j.walkin_to) is null

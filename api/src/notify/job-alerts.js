@@ -60,7 +60,7 @@ export async function runJobAlerts(jobId, opts = {}) {
     const job = (await c.query(
       `select j.*, co.name as company_name
          from jobs j left join companies co on co.id = j.company_id
-        where j.id = $1`, [jobId])).rows[0];
+        where j.id = $1 and j.source_type = 'TEAMLINK'`, [jobId])).rows[0];   // 0113: TeamLink jobs only
     if (!job) return null;
 
     // Only live postings alert. A draft, a paused or an archived job

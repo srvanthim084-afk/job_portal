@@ -150,6 +150,7 @@ export function toMatch(r) {
     ...(r.title ? {
       job: {
         id: r.external_job_id,
+        sourceType: 'EXTERNAL',
         title: r.title,
         company: r.company || null,
         location: r.location || null,
@@ -300,6 +301,8 @@ export const toPortalJobV2 = (r, activeDays = 14) => {
   return {
     ...toPortalJob(r),
     origin: 'EXTERNAL',
+    /* 0113: the normalised scope, the same key TeamLink jobs carry. */
+    sourceType: 'EXTERNAL',
     provider: String(r.provider || 'other').toUpperCase(),
     jobSourceType: SOURCE_TYPE[r.provider] || 'OTHER_EXTERNAL',
     jobSourceName: r.source_name || null,

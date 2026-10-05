@@ -119,10 +119,14 @@ export default function applicationRoutes() {
 
     const out = await withUser(req.session, async (c) => {
       const job = await c.query(
-        `select id, title, company_id, employment_type, posting_kind, status, paused, archived
+        `select id, title, company_id, employment_type, posting_kind, status, paused, archived, source_type
            from jobs where id=$1`, [body.jobId]);
       if (!job.rowCount) throw new ApiError(404, CODES.JOB_UNAVAILABLE, 'This role is no longer available.');
       const j = job.rows[0];
+      /* 0113: the TeamLink application flow is for TeamLink jobs. */
+      if (req.session.role === 'candidate' && j.source_type === 'EXTERNAL') {
+        throw new ApiError(409, CODES.JOB_UNAVAILABLE, 'This is an external job: apply on its original website.');
+      }
       if (j.status !== 'open' || j.paused || j.archived) {
         throw new ApiError(409, CODES.JOB_UNAVAILABLE, 'This role is no longer accepting applications.');
       }

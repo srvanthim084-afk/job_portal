@@ -1,6 +1,7 @@
 /**
- * External jobs inside the job portal: listed with TeamLink's, applied
- * for on the original website, and never turned into a TeamLink
+ * External jobs in the portal: listed on the External Jobs side only
+ * (/api/portal/external-jobs - never in the Jobs page's /api/jobs, 0113),
+ * applied for on the original website, and never turned into a TeamLink
  * application. Self-contained; nothing leaves the machine (sources are
  * manual feeds, the redirect is read from the Location header and not
  * followed).
@@ -120,6 +121,15 @@ test('the listing: public, candidate fields only, searchable, filterable by sour
   assert.deepEqual(java.jobs.map((x) => x.title).sort(), ['Java Developer', 'Senior Java Engineer']);
   const nk = await fetch(`${BASE}/api/portal/external-jobs?source=naukri_feed`).then((r) => r.json());
   assert.deepEqual(nk.jobs.map((x) => x.sourceName), ['Naukri']);
+});
+
+test('0113: the Jobs page never lists them - /api/jobs is TeamLink jobs only', async () => {
+  const jobs = await fetch(`${BASE}/api/jobs?limit=200`).then((r) => r.json());
+  assert.ok(jobs.jobs.some((x) => x.id === 'tlj1'), 'the TeamLink job is there');
+  assert.equal(jobs.jobs.some((x) => /^xjob_/.test(x.id)), false, 'no external job on the Jobs page');
+  assert.ok(jobs.jobs.every((x) => x.sourceType === 'TEAMLINK'));
+  const ext = await fetch(`${BASE}/api/portal/external-jobs`).then((r) => r.json());
+  assert.ok(ext.jobs.every((x) => x.sourceType === 'EXTERNAL' && /^xjob_/.test(x.id)), 'External Jobs: external only');
 });
 
 test('the same job synced twice is one row', async () => {

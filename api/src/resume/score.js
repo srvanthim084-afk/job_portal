@@ -422,7 +422,7 @@ export async function loadInputs(candidateId) {
       `select company, job_title, start_date, end_date, currently_working, responsibilities
          from candidate_experience where candidate_id = $1 order by sort_order, id`, [candidateId])).rows;
     const jobs = (await c.query(
-      `select title, skills from jobs where status = 'open' and not coalesce(paused, false)
+      `select title, skills from jobs where status = 'open' and source_type = 'TEAMLINK' and not coalesce(paused, false)
           and not coalesce(archived, false) order by published_at desc nulls last limit 400`)).rows;
     return { cand, edu, exp, jobs };
   });

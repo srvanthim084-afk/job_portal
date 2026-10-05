@@ -26,6 +26,7 @@ import {
   toEducationRecord, toExperienceRecord,
   toInterview, toOffer, toNotification, toPerson, attachPrimary,
 } from '../shapes.js';
+import { teamlinkOnly } from '../jobs/source-scope.js';
 
 export default function bootstrapRoutes() {
   const r = Router();
@@ -52,7 +53,14 @@ export default function bootstrapRoutes() {
       const companies   = await c.query(`select * from companies order by name`);
       // jobs_with_counts supplies the DERIVED applicants count and
       // posted_days_ago, replacing the drifting counter (§3.2).
-      const jobs        = await c.query(`select * from jobs_with_counts order by published_at desc nulls last, id`);
+      /* 0113: a candidate or a visitor is handed TeamLink jobs - the Jobs
+         page's dataset - plus, for a candidate, any job they already
+         applied to (so their own applications still have a title). Staff
+         keep every row RLS lets them read: that is the ATS, not the Jobs page. */
+      const staff = !!session && ['recruiter', 'admin', 'bde', 'client'].includes(session.role);
+      const jobs        = await c.query(`select * from jobs_with_counts
+        ${staff ? '' : `where ${teamlinkOnly()} or id in (select job_id from applications)`}
+        order by published_at desc nulls last, id`);
       const candidates  = await c.query(`select * from candidates order by id`);
       const applications= await c.query(`select * from applications order by applied_at desc`);
       const interviews  = await c.query(`select * from interviews order by scheduled_date desc nulls last`);

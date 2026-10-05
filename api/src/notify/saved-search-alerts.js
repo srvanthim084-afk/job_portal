@@ -34,6 +34,12 @@ import { sendPush } from './webpush.js';
 import { toCandidate, toJob } from '../shapes.js';
 import { jobMatchesFilters, locationTierFunction } from '../search/saved-match.js';
 import { claimNewJobNotice, releaseNewJobNotice, noticesFor } from './new-job-notice.js';
+import { TEAMLINK, teamlinkOnly } from '../jobs/source-scope.js';
+
+/* 0113: this engine announces TeamLink jobs, so it runs only the searches
+   saved on the Jobs page. A search saved on External Jobs is never handed
+   a TeamLink job (and has no hits table entry to receive one). */
+const onJobsPage = (s) => !s.source_type || s.source_type === TEAMLINK;
 
 /*
  * One "new job for you" message per candidate per job, across every alert
@@ -123,13 +129,26 @@ export function asMatchable(r) {
   return j;
 }
 
+/* An external_jobs row in the same matchable shape (0113: an External Jobs
+   saved search counts external jobs, and only those). */
+export function asMatchableExternal(r) {
+  return {
+    id: r.id, sourceType: 'EXTERNAL', title: r.title || '', companyName: r.company || '',
+    location: r.location || '', mode: '', type: r.employment_type || '', skills: r.skills || [],
+    exp: r.experience || '', education: r.education || '', department: '',
+    salaryMin: r.salary_min == null ? undefined : Number(r.salary_min),
+    salaryMax: r.salary_max == null ? undefined : Number(r.salary_max),
+    publishedAt: r.posted_at || r.created_at ? new Date(r.posted_at || r.created_at).toISOString() : null,
+  };
+}
+
 async function openJobs(c, ids) {
   const where = ids ? 'and j.id = any($1)' : '';
   const { rows } = await c.query(
     `select j.*, co.name as company_name
        from jobs j left join companies co on co.id = j.company_id
       where j.status = 'open' and not coalesce(j.paused, false)
-        and not coalesce(j.archived, false) ${where}`, ids ? [ids] : []);
+        and not coalesce(j.archived, false) and ${teamlinkOnly('j')} ${where}`, ids ? [ids] : []);
   return rows.map(asMatchable);
 }
 
@@ -303,7 +322,7 @@ export async function runSavedSearchInstant(jobId, opts = {}) {
     const [job] = await openJobs(c, [jobId]);
     if (!job) return null;
     const searches = (await c.query(
-      `select * from saved_search_engine_list($1)`, [['instant', 'daily', 'weekly']])).rows;
+      `select * from saved_search_engine_list($1)`, [['instant', 'daily', 'weekly']])).rows.filter(onJobsPage);
     const hits = [];
     for (const s of searches) {
       if (!jobMatchesFilters(job, s.filters, { now, locationTier: tier })) continue;
@@ -345,7 +364,7 @@ export async function runSavedSearchSweep(opts = {}) {
   const tier = await locationTierFunction();
 
   const plan = await withUser(ENGINE, async (c) => {
-    const searches = (await c.query(`select * from saved_search_engine_list($1)`, [kinds])).rows;
+    const searches = (await c.query(`select * from saved_search_engine_list($1)`, [kinds])).rows.filter(onJobsPage);
     // Due: instant always; a digest once a slot has passed since it was
     // last processed - or since it was made, so a daily search saved at
     // 15:00 waits for tomorrow's 08:00 instead of firing at 15:10.

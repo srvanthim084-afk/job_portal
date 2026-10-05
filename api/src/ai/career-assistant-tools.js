@@ -157,7 +157,9 @@ const OPEN = `select j.*, co.name as company_name from jobs_open j left join com
 
 async function searchOpenJobs(c, input = {}) {
   const lim = Math.max(1, Math.min(10, Number.isInteger(input.limit) ? input.limit : 5));
-  const where = ['j.id not in (select job_id from hidden_jobs where candidate_id = app_candidate_id())'];
+  /* 0113: the assistant searches the Jobs page's dataset - TeamLink jobs only. */
+  const where = ["j.source_type = 'TEAMLINK'",
+    'j.id not in (select job_id from hidden_jobs where candidate_id = app_candidate_id())'];
   const vals = [];
   const add = (sql, v) => { vals.push(v); where.push(sql.replace(/\$\?/g, `$${vals.length}`)); };
   const q = clip(input.query, 120);
@@ -176,7 +178,7 @@ async function searchOpenJobs(c, input = {}) {
 }
 
 async function openJob(c, id) {
-  const r = (await c.query(`${OPEN} where j.id = $1`, [String(id || '').slice(0, 80)])).rows[0];
+  const r = (await c.query(`${OPEN} where j.id = $1 and j.source_type = 'TEAMLINK'`, [String(id || '').slice(0, 80)])).rows[0];
   if (!r) throw new Error('that job is not open, or does not exist');
   return r;
 }

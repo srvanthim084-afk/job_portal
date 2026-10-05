@@ -22,7 +22,8 @@ import { toCandidate } from '../shapes.js';
 import {
   normalizeFilters, labelFor, isEmptySearch, jobMatchesFilters, locationTierFunction,
 } from '../search/saved-match.js';
-import { verifyStopToken, asMatchable } from '../notify/saved-search-alerts.js';
+import { verifyStopToken, asMatchable, asMatchableExternal } from '../notify/saved-search-alerts.js';
+import { SOURCE_TYPES, TEAMLINK, EXTERNAL, teamlinkOnly } from '../jobs/source-scope.js';
 
 const ENGINE = { userId: '', role: 'admin', profileId: null };
 const FREQ = ['off', 'instant', 'daily', 'weekly'];
@@ -36,6 +37,9 @@ const body = z.object({
   filters: z.unknown().optional(),
   alert_frequency: z.enum(FREQ).optional(),
   channels: z.array(z.enum(CH)).max(4).optional(),
+  /* 0113: the page the search was made on. Stored, and always kept: the
+     Jobs page's searches are TEAMLINK, the External Jobs page's EXTERNAL. */
+  sourceType: z.enum(SOURCE_TYPES).optional(),
 }).strict();
 
 function parse(input, { requireFilters }) {
@@ -64,6 +68,7 @@ function shape(r, newCount) {
     id: r.id,
     label: r.label,
     filters: r.filters || {},
+    sourceType: r.source_type === EXTERNAL ? EXTERNAL : TEAMLINK,
     alertFrequency: r.alert_frequency,
     channels: r.channels || [],
     newCount: newCount ?? 0,
@@ -96,19 +101,31 @@ function explain(err) {
   return fromPgError(err) || err;
 }
 
-/** newCount for each search: open jobs published since it was last viewed. */
+/** newCount for each search: open jobs published since it was last viewed -
+    in the dataset the search was saved on, and only that one (0113). */
 async function withNewCounts(c, rows) {
   if (!rows.length) return [];
-  const jobs = (await c.query(
-    `select j.*, co.name as company_name
-       from jobs j left join companies co on co.id = j.company_id
-      where j.status = 'open' and not coalesce(j.paused,false) and not coalesce(j.archived,false)`)).rows
-    .map(asMatchable);
+  const pool = { [TEAMLINK]: null, [EXTERNAL]: null };
+  if (rows.some((r) => r.source_type !== EXTERNAL)) {
+    pool[TEAMLINK] = (await c.query(
+      `select j.*, co.name as company_name
+         from jobs j left join companies co on co.id = j.company_id
+        where j.status = 'open' and not coalesce(j.paused,false) and not coalesce(j.archived,false)
+          and ${teamlinkOnly('j')}`)).rows
+      .map(asMatchable);
+  }
+  if (rows.some((r) => r.source_type === EXTERNAL)) {
+    pool[EXTERNAL] = (await c.query(
+      `select x.*, s.name as source_name
+         from external_jobs x left join job_sources s on s.id = x.source_id
+        where x.status = 'open'`)).rows.map(asMatchableExternal);
+  }
   const hidden = new Set((await c.query(`select job_id from hidden_jobs`)).rows.map((r) => r.job_id));
   const tier = await locationTierFunction();
   const now = Date.now();
   return rows.map((r) => {
     const since = new Date(r.last_viewed_at).getTime();
+    const jobs = pool[r.source_type === EXTERNAL ? EXTERNAL : TEAMLINK] || [];
     const n = jobs.filter((j) => !hidden.has(j.id) && j.publishedAt && Date.parse(j.publishedAt) > since
       && jobMatchesFilters(j, r.filters, { now, locationTier: tier })).length;
     return shape(r, n);
@@ -164,10 +181,10 @@ export default function savedSearchRoutes() {
       const me = (await c.query(`select * from candidates where id = $1`, [req.session.profileId])).rows[0];
       if (!me) throw notFound('Your profile could not be found.');
 
-      // The same search saved again is the one already there.
+      // The same search saved again (on the same page) is the one already there.
       const same = (await c.query(
-        `select * from candidate_saved_searches where filters_key = md5($1::jsonb::text)`,
-        [JSON.stringify(b.filters)])).rows[0];
+        `select * from candidate_saved_searches where filters_key = md5($1::jsonb::text) and source_type = $2`,
+        [JSON.stringify(b.filters), b.sourceType || TEAMLINK])).rows[0];
       if (same) return { duplicate: same };
 
       const label = b.label || labelFor(b.filters);
@@ -181,10 +198,10 @@ export default function savedSearchRoutes() {
         }
       }
       const row = (await c.query(
-        `insert into candidate_saved_searches (id, candidate_id, label, filters, alert_frequency, channels)
-         values ($1,$2,$3,$4::jsonb,$5,$6) returning *`,
+        `insert into candidate_saved_searches (id, candidate_id, label, filters, alert_frequency, channels, source_type)
+         values ($1,$2,$3,$4::jsonb,$5,$6,$7) returning *`,
         [newId(), req.session.profileId, finalLabel, JSON.stringify(b.filters),
-         b.alert_frequency || 'daily', b.channels || reachable(toCandidate(me))])).rows[0];
+         b.alert_frequency || 'daily', b.channels || reachable(toCandidate(me)), b.sourceType || TEAMLINK])).rows[0];
       return { row };
     }).catch((err) => { throw explain(err); });
 
@@ -213,9 +230,18 @@ export default function savedSearchRoutes() {
     if (!sets.length) throw badRequest('Nothing to change.');
     vals.push(req.params.id);
 
-    const row = await withUser(req.session, async (c) =>
-      (await c.query(`update candidate_saved_searches set ${sets.join(', ')} where id = $${vals.length} returning *`,
-        vals)).rows[0])
+    const row = await withUser(req.session, async (c) => {
+      /* 0113: the dataset a search runs on is fixed when it is saved. */
+      if (b.sourceType !== undefined) {
+        const cur = (await c.query(`select source_type from candidate_saved_searches where id = $1`, [req.params.id])).rows[0];
+        if (cur && cur.source_type !== b.sourceType) {
+          throw new ApiError(400, 'SOURCE_SCOPE', 'A saved search stays on the page it was saved from.',
+            { sourceType: cur.source_type });
+        }
+      }
+      return (await c.query(`update candidate_saved_searches set ${sets.join(', ')} where id = $${vals.length} returning *`,
+        vals)).rows[0];
+    })
       .catch((err) => {
         if (err && err.code === '23505' && /filters/.test(err.constraint || '')) {
           throw conflict('DUPLICATE_SEARCH', 'You already have another saved search with exactly these filters.');
