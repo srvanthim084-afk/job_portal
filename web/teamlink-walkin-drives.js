@@ -7,6 +7,12 @@
  *            #/candidate/walkins?id=<drive>&done=1  the confirmation, with Add to Calendar
  * Recruiter  #/recruiter/walkins                    my drives, create / edit / cancel
  *            #/recruiter/walkins?id=<drive>         registrations: search, status, attendance, export
+ * Admin      #/admin/walkins                        every recruiter's drives: filters (status, city,
+ *                                                   recruiter, dates, keyword), edit / cancel
+ *            #/admin/walkins?id=<drive>             the same registrations screen as a recruiter's
+ * Public     #/walkins                              signed-out visitors: upcoming and ongoing drives
+ *            #/walkins?id=<drive>                   details (no contact phone); Register while signed
+ *                                                   out -> register / log in -> registered for that drive
  *
  * Everything is read from and written to /api (walkin-drives routes);
  * nothing about a drive or a registration is kept in the browser. The
@@ -24,7 +30,12 @@
 
   var C = { list: null, cities: [], myCity: '', loading: false, f: { city: '', role: '', date: '', q: '' }, cityTouched: false,
             mine: null, detail: {}, busy: false, at: 0 };
-  var R = { list: null, jobs: [], companies: [], loading: false, form: null, errors: {}, regs: {}, q: '', status: '', busy: false };
+  var R = { list: null, jobs: [], companies: [], loading: false, form: null, errors: {}, regs: {}, q: '', status: '', busy: false,
+            recruiters: [], cities: [] };
+  /* the admin screen's filters (sent to the server, which filters) */
+  var AF = { status: '', city: '', recruiterId: '', from: '', to: '', q: '' };
+  /* the public (signed-out) list and pages */
+  var P = { list: null, cities: [], loading: false, f: { city: '', role: '', date: '', q: '' }, detail: {}, at: 0, err: null };
 
   var api = function () { return window.TL && TL.api; };
   var role = function () { return window.STATE && STATE.session ? STATE.session.role : null; };
@@ -38,6 +49,8 @@
   var rerender = function () { if (typeof window.render === 'function') render(); };
   var params = function () { try { return currentRoute().params || {}; } catch (e) { return {}; } };
   var go = function (hash) { if (location.hash === hash) rerender(); else location.hash = hash; };
+  /* The recruiter screens serve the admin too; only the address differs. */
+  var staffBase = function () { return role() === 'admin' ? '#/admin/walkins' : '#/recruiter/walkins'; };
 
   function daysBadge(d) {
     if (d.status === 'ONGOING') return '<span class="wk-badge live">Happening now</span>';
@@ -300,8 +313,13 @@
   function loadRecruiter(force) {
     if (!api() || R.loading || (R.list && !force)) return;
     R.loading = true;
-    api().get('/recruiter/walkin-drives').then(function (out) {
-      R.list = out.drives || []; R.jobs = out.jobs || []; R.companies = out.companies || []; R.loading = false; rerender();
+    var q = [];
+    if (role() === 'admin') {
+      Object.keys(AF).forEach(function (k) { if (AF[k]) q.push(k + '=' + encodeURIComponent(AF[k])); });
+    }
+    api().get('/recruiter/walkin-drives' + (q.length ? '?' + q.join('&') : '')).then(function (out) {
+      R.list = out.drives || []; R.jobs = out.jobs || []; R.companies = out.companies || []; R.loading = false;
+      R.recruiters = out.recruiters || []; R.cities = out.cities || []; R.err = null; rerender();
     }).catch(function (err) { R.loading = false; R.list = []; R.err = errText(err); rerender(); });
   }
 
@@ -396,7 +414,7 @@
       skills: (d.skills || []).join(', '), documentsToCarry: (d.documentsToCarry || []).join(', '), contactPersonName: d.contactPersonName,
       contactPhone: d.contactPhone, maxSeats: d.maxSeats == null ? '' : String(d.maxSeats) };
     R.errors = {};
-    go('#/recruiter/walkins');
+    go(staffBase());
     rerender();
     setTimeout(function () { var e = document.getElementById('wkForm'); if (e) e.scrollIntoView({ block: 'start' }); }, 30);
   };
@@ -461,7 +479,7 @@
               + '<td><span class="wk-st ' + d.status.toLowerCase() + '">' + h(STATUS_LABEL[d.status] || d.status) + '</span></td>'
               + '<td>' + (n.REGISTERED || 0) + (d.maxSeats != null ? ' / ' + d.maxSeats : '') + '</td>'
               + '<td>' + (n.ATTENDED || 0) + '</td>'
-              + '<td class="wk-act"><button class="btn btn-sm" onclick="location.hash=\'#/recruiter/walkins?id=' + encodeURIComponent(d.id) + '\'">Registrations</button>'
+              + '<td class="wk-act"><button class="btn btn-sm" onclick="location.hash=\'' + staffBase() + '?id=' + encodeURIComponent(d.id) + '\'">Registrations</button>'
               + (live ? '<button class="btn btn-ghost btn-sm" onclick="tlwkrEdit(\'' + js(d.id) + '\')">Edit</button>'
                 + '<button class="btn btn-ghost btn-sm" onclick="tlwkrCancelDrive(\'' + js(d.id) + '\')">Cancel</button>' : '')
               + '</td></tr>';
@@ -495,7 +513,7 @@
   function recruiterRegs(id) {
     loadRegs(id, false);
     var st = R.regs[id] || {};
-    var back = '<div class="wk-back"><a onclick="location.hash=\'#/recruiter/walkins\'">← All drives</a></div>';
+    var back = '<div class="wk-back"><a onclick="location.hash=\'' + staffBase() + '\'">← All drives</a></div>';
     if (st.loading) return back + '<div class="empty-note">Loading…</div>';
     if (st.error) return back + '<div class="wk-err">' + h(st.error) + '</div>';
     var d = st.drive; var t = st.totals || {};
@@ -504,7 +522,8 @@
     var opt = function (v, l) { return '<option value="' + v + '"' + (R.status === v ? ' selected' : '') + '>' + l + '</option>'; };
     return back
       + '<div class="panel"><div class="panel-head"><div><h2>' + h(d.title) + '</h2><div class="desc">' + h(d.dateLabel) + ' · ' + h(d.timeLabel) + ' · ' + h(d.venueName) + ', ' + h(d.city)
-      + ' · <span class="wk-st ' + d.status.toLowerCase() + '">' + h(STATUS_LABEL[d.status] || d.status) + '</span></div></div>'
+      + ' · <span class="wk-st ' + d.status.toLowerCase() + '">' + h(STATUS_LABEL[d.status] || d.status) + '</span>'
+      + (role() === 'admin' ? ' · Run by ' + h(d.recruiterName || 'an admin') : '') + '</div></div>'
       + '<div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-sm" onclick="tlwkrExport(\'' + js(id) + '\',\'csv\')">Export CSV</button>'
       + '<button class="btn btn-sm" onclick="tlwkrExport(\'' + js(id) + '\',\'xlsx\')">Export Excel</button></div></div>'
       + '<div class="panel-body">'
@@ -535,12 +554,448 @@
 
   function recruiterPage() {
     var p = params();
-    return p.id ? recruiterRegs(p.id) : recruiterList();
+    return p.id ? recruiterRegs(p.id) : role() === 'admin' ? adminList() : recruiterList();
+  }
+
+  /* ================================================================== *
+   * ADMIN - every recruiter's drives, through the same API and actions
+   * ================================================================== */
+
+  window.tlwkaFilter = function (k, v) { AF[k] = String(v || '').trim(); R.list = null; loadRecruiter(true); rerender(); };
+  window.tlwkaClear = function () { AF = { status: '', city: '', recruiterId: '', from: '', to: '', q: '' }; R.list = null; loadRecruiter(true); rerender(); };
+
+  function adminFilters() {
+    var opt = function (v, label, sel) { return '<option value="' + h(v) + '"' + (sel ? ' selected' : '') + '>' + h(label) + '</option>'; };
+    var any = AF.status || AF.city || AF.recruiterId || AF.from || AF.to || AF.q;
+    return '<div class="wk-filters wk-afil">'
+      + '<div class="wk-f"><label for="wkaStatus">Status</label><select id="wkaStatus" onchange="tlwkaFilter(\'status\',this.value)">'
+      + opt('', 'All statuses', !AF.status) + ['UPCOMING', 'ONGOING', 'COMPLETED', 'CANCELLED'].map(function (s) { return opt(s, STATUS_LABEL[s], AF.status === s); }).join('')
+      + '</select></div>'
+      + '<div class="wk-f"><label for="wkaCity">City</label><select id="wkaCity" onchange="tlwkaFilter(\'city\',this.value)">'
+      + opt('', 'All cities', !AF.city) + (R.cities || []).map(function (c) { return opt(c, c, AF.city === c); }).join('')
+      + '</select></div>'
+      + '<div class="wk-f"><label for="wkaRec">Recruiter</label><select id="wkaRec" onchange="tlwkaFilter(\'recruiterId\',this.value)">'
+      + opt('', 'All recruiters', !AF.recruiterId) + (R.recruiters || []).map(function (r) { return opt(r.id, r.name, AF.recruiterId === r.id); }).join('')
+      + opt('none', 'Created by an admin', AF.recruiterId === 'none')
+      + '</select></div>'
+      + '<div class="wk-f"><label for="wkaFrom">From</label><input id="wkaFrom" type="date" value="' + h(AF.from) + '" onchange="tlwkaFilter(\'from\',this.value)"></div>'
+      + '<div class="wk-f"><label for="wkaTo">To</label><input id="wkaTo" type="date" value="' + h(AF.to) + '" onchange="tlwkaFilter(\'to\',this.value)"></div>'
+      + '<div class="wk-f grow"><label for="wkaQ">Keyword</label><input id="wkaQ" placeholder="Drive, role, venue, company" value="' + h(AF.q) + '" onkeydown="if(event.key===\'Enter\')tlwkaFilter(\'q\',this.value)" onchange="tlwkaFilter(\'q\',this.value)"></div>'
+      + (any ? '<button class="btn btn-sm" style="align-self:flex-end" onclick="tlwkaClear()">Clear</button>' : '')
+      + '</div>';
+  }
+
+  function adminList() {
+    loadRecruiter(false);
+    var rows = R.list;
+    var any = AF.status || AF.city || AF.recruiterId || AF.from || AF.to || AF.q;
+    var totals = { drives: 0, upcoming: 0, registered: 0, attended: 0 };
+    (rows || []).forEach(function (d) {
+      var n = d.counts || {};
+      totals.drives += 1;
+      if (d.status === 'UPCOMING' || d.status === 'ONGOING') totals.upcoming += 1;
+      totals.registered += (n.REGISTERED || 0) + (n.ATTENDED || 0) + (n.NO_SHOW || 0);
+      totals.attended += n.ATTENDED || 0;
+    });
+    var table = !rows ? '<div class="empty-note">Loading…</div>'
+      : !rows.length ? '<div class="empty-note">' + (any ? 'No drives match these filters.' : 'No walk-in drives yet. Recruiters create them from their Walk-in Drives screen.') + '</div>'
+        : '<div class="wk-tblwrap"><table class="data wk-table"><thead><tr><th>Drive</th><th>Recruiter</th><th>When</th><th>Where</th><th>Status</th><th>Registered</th><th>Attended</th><th></th></tr></thead><tbody>'
+          + rows.map(function (d) {
+            var n = d.counts || {};
+            var live = d.status === 'UPCOMING' || d.status === 'ONGOING';
+            return '<tr data-drive="' + h(d.id) + '"><td><b>' + h(d.title) + '</b><div class="wk-dim">' + h(d.jobRole) + (d.companyName ? ' · ' + h(d.companyName) : '') + '</div></td>'
+              + '<td>' + (d.recruiterName ? h(d.recruiterName) : '<span class="wk-dim">Admin</span>') + '</td>'
+              + '<td>' + h(d.dateLabel) + '<div class="wk-dim">' + h(d.timeLabel) + '</div></td>'
+              + '<td>' + h(d.venueName) + '<div class="wk-dim">' + h(d.city) + '</div></td>'
+              + '<td><span class="wk-st ' + d.status.toLowerCase() + '">' + h(STATUS_LABEL[d.status] || d.status) + '</span></td>'
+              + '<td>' + (n.REGISTERED || 0) + (d.maxSeats != null ? ' / ' + d.maxSeats : '') + '</td>'
+              + '<td>' + (n.ATTENDED || 0) + '</td>'
+              + '<td class="wk-act"><button class="btn btn-sm" onclick="location.hash=\'#/admin/walkins?id=' + encodeURIComponent(d.id) + '\'">Registrations</button>'
+              + (live ? '<button class="btn btn-ghost btn-sm" onclick="tlwkrEdit(\'' + js(d.id) + '\')">Edit</button>'
+                + '<button class="btn btn-ghost btn-sm" onclick="tlwkrCancelDrive(\'' + js(d.id) + '\')">Cancel</button>' : '')
+              + '</td></tr>';
+          }).join('') + '</tbody></table></div>';
+    var tile = function (n, l) { return '<div><b>' + n + '</b><span>' + l + '</span></div>'; };
+    return (R.form ? formHtml() : '')
+      + '<div class="panel"><div class="panel-head"><div><h2>All walk-in drives</h2><div class="desc">Every recruiter\'s drives. Open one to see who registered, mark attendance and export; editing or cancelling tells registered candidates, exactly as when the recruiter does it.</div></div></div>'
+      + '<div class="panel-body">'
+      + (rows ? '<div class="wk-totals">' + tile(totals.drives, any ? 'Drives (filtered)' : 'Drives') + tile(totals.upcoming, 'Upcoming or running')
+        + tile(totals.registered, 'Registrations') + tile(totals.attended, 'Attended') + '</div>' : '')
+      + '<div style="margin-top:12px">' + adminFilters() + '</div></div>'
+      + '<div class="panel-body pad0">' + (R.err ? '<div class="wk-err">' + h(R.err) + '</div>' : '') + table + '</div></div>';
+  }
+
+  /* ================================================================== *
+   * PUBLIC - signed-out visitors browse upcoming and ongoing drives
+   *
+   * Read from /api/public/walkin-drives, which carries public-safe fields
+   * only (0103: no contact phone, no recruiter, no registrations). A
+   * signed-in candidate is sent to their own drive pages instead, which
+   * show their registration, the match and the contact.
+   * ================================================================== */
+
+  var session = function () { return (window.STATE && STATE.session) || null; };
+  var isCandidate = function () { var s = session(); return !!(s && s.role === 'candidate'); };
+
+  function loadPublic(force) {
+    if (!api()) return;
+    if (P.loading || (!force && P.list && Date.now() - P.at < 20000)) return;
+    P.loading = true;
+    var q = [];
+    ['city', 'role', 'date', 'q'].forEach(function (k) { if (P.f[k]) q.push(k + '=' + encodeURIComponent(P.f[k])); });
+    api().get('/public/walkin-drives' + (q.length ? '?' + q.join('&') : '')).then(function (out) {
+      P.list = out.drives || []; P.cities = out.cities || []; P.at = Date.now(); P.loading = false; P.err = null;
+      P.list.forEach(function (d) { P.detail[d.id] = { drive: d }; });
+      rerender();
+    }).catch(function (err) { P.loading = false; P.list = P.list || []; P.err = errText(err); rerender(); });
+  }
+
+  function loadPublicDetail(id, force) {
+    if (!api() || (P.detail[id] && !P.detail[id].loading && !force)) return Promise.resolve(P.detail[id] && P.detail[id].drive);
+    if (!P.detail[id]) P.detail[id] = { loading: true };
+    return api().get('/public/walkin-drives/' + encodeURIComponent(id)).then(function (out) {
+      P.detail[id] = { drive: out.drive }; return out.drive;
+    }, function (err) { P.detail[id] = { error: errText(err) }; return null; });
+  }
+
+  function publicRegisterButton(d, big) {
+    var full = d.maxSeats != null && d.seatsLeft <= 0;
+    if (full) return '<button class="cp-btn" disabled>' + (big ? 'All seats are taken' : 'Full') + '</button>';
+    return '<button class="cp-btn pri" onclick="tlwkPublicRegister(\'' + js(d.id) + '\')">' + (big ? 'Register for this drive' : 'Register') + '</button>';
+  }
+
+  function publicCard(d) {
+    var open = '#/walkins?id=' + encodeURIComponent(d.id);
+    return '<div class="wk-card" data-drive="' + h(d.id) + '" onclick="location.hash=\'' + open + '\'">'
+      + '<div class="wk-top"><div style="min-width:0;flex:1">'
+      + '<h3>' + h(d.title) + '</h3>'
+      + '<div class="wk-sub">' + (d.companyName ? h(d.companyName) + ' · ' : '') + h(d.jobRole) + '</div></div>'
+      + '<div class="wk-badges">' + daysBadge(d) + '</div></div>'
+      + '<div class="wk-meta">'
+      + '<span>📅 ' + h(d.dateLabel) + '</span><span>🕒 ' + h(d.timeLabel) + '</span>'
+      + '<span>📍 ' + h(d.venueName) + ', ' + h(d.city) + '</span>'
+      + (d.salaryRange ? '<span>💰 ' + h(d.salaryRange) + '</span>' : '')
+      + (d.experienceRequired ? '<span>💼 ' + h(d.experienceRequired) + '</span>' : '')
+      + '</div>'
+      + '<div class="wk-foot" onclick="event.stopPropagation()">'
+      + '<span class="wk-seats">' + h(seatsText(d)) + '</span>'
+      + '<span style="flex:1"></span>'
+      + '<button class="cp-btn" onclick="location.hash=\'' + open + '\'">Details</button>'
+      + publicRegisterButton(d, false)
+      + '</div></div>';
+  }
+
+  function publicFilters() {
+    var opt = function (v, label, sel) { return '<option value="' + h(v) + '"' + (sel ? ' selected' : '') + '>' + h(label) + '</option>'; };
+    return '<div class="wk-filters">'
+      + '<div class="wk-f"><label for="wkpCity">City</label><select id="wkpCity" onchange="tlwkpFilter(\'city\',this.value)">'
+      + opt('', 'All cities', !P.f.city) + P.cities.map(function (c) { return opt(c, c, P.f.city === c); }).join('')
+      + (P.f.city && P.cities.indexOf(P.f.city) < 0 ? opt(P.f.city, P.f.city, true) : '')
+      + '</select></div>'
+      + '<div class="wk-f"><label for="wkpRole">Role</label><input id="wkpRole" placeholder="e.g. Sales, Nurse" value="' + h(P.f.role) + '" onchange="tlwkpFilter(\'role\',this.value)"></div>'
+      + '<div class="wk-f"><label for="wkpDate">Date</label><input id="wkpDate" type="date" value="' + h(P.f.date) + '" onchange="tlwkpFilter(\'date\',this.value)"></div>'
+      + '<div class="wk-f grow"><label for="wkpQ">Keyword</label><input id="wkpQ" placeholder="Search drives, venues, skills" value="' + h(P.f.q) + '" onkeydown="if(event.key===\'Enter\')tlwkpFilter(\'q\',this.value)" onchange="tlwkpFilter(\'q\',this.value)"></div>'
+      + ((P.f.city || P.f.role || P.f.date || P.f.q) ? '<button class="cp-btn" onclick="tlwkpClear()">Clear</button>' : '')
+      + '</div>';
+  }
+  window.tlwkpFilter = function (k, v) { P.f[k] = String(v || '').trim(); P.list = null; loadPublic(true); rerender(); };
+  window.tlwkpClear = function () { P.f = { city: '', role: '', date: '', q: '' }; P.list = null; loadPublic(true); rerender(); };
+
+  var signInNote = function () {
+    var s = session();
+    if (s && s.role !== 'candidate') return '<div class="wk-note">You are signed in as staff. Candidates register for drives from their own account.</div>';
+    return '<div class="wk-note">Registering needs a free TeamLink candidate profile. <a href="#/login/candidate">Log in</a> or <a href="#/register/candidate">create one</a> - you are brought back to the drive you chose.</div>';
+  };
+
+  function publicList() {
+    loadPublic(false);
+    var any = P.f.city || P.f.role || P.f.date || P.f.q;
+    var body;
+    if (!P.list) body = '<div class="cp-card cp-empty"><p>Loading drives…</p></div>';
+    else if (!P.list.length) {
+      body = '<div class="cp-card cp-empty"><div style="font-size:30px">📍</div>'
+        + '<h3>' + (P.f.city ? 'No upcoming drives in ' + h(P.f.city) : any ? 'No upcoming drives match these filters' : 'No upcoming walk-in drives right now') + '</h3>'
+        + '<p>New walk-in drives appear here as soon as recruiters announce them.</p>'
+        + (any ? '<button class="cp-btn pri" onclick="tlwkpClear()">Show all drives</button>' : '')
+        + '</div>';
+    } else body = '<div class="wk-list">' + P.list.map(publicCard).join('') + '</div>';
+    return header('Walk in, meet the recruiter, get interviewed the same day. Register so they expect you.')
+      + signInNote() + publicFilters()
+      + (P.err ? '<div class="wk-err">' + h(P.err) + '</div>' : '')
+      + body;
+  }
+
+  function publicDetail(id) {
+    var st = P.detail[id];
+    if (!st) { loadPublicDetail(id, false).then(rerender); st = P.detail[id] || { loading: true }; }
+    if (st.loading) return '<div class="cp-card cp-empty"><p>Loading…</p></div>';
+    if (st.error || !st.drive) {
+      return '<div class="cp-card cp-empty"><div style="font-size:30px">🔎</div><h3>Drive not available</h3><p>'
+        + h(st.error || 'This drive could not be found.') + '</p><button class="cp-btn pri" onclick="location.hash=\'#/walkins\'">See all drives</button></div>';
+    }
+    var d = st.drive;
+    var docs = d.documentsToCarry || [];
+    return '<div class="wk-back"><a onclick="location.hash=\'#/walkins\'">← All walk-in drives</a></div>'
+      + '<div class="wk-detail">'
+      + '<div class="cp-card">'
+      + '<div class="wk-top"><div style="min-width:0;flex:1"><h1 class="wk-title">' + h(d.title) + '</h1>'
+      + '<div class="wk-sub">' + (d.companyName ? h(d.companyName) + ' · ' : '') + h(d.jobRole) + '</div></div>'
+      + '<div class="wk-badges">' + daysBadge(d) + '</div></div>'
+      + '<div class="wk-grid">'
+      + item('📅 Date', d.dateLabel) + item('🕒 Time', d.timeLabel)
+      + item('💰 Salary', d.salaryRange) + item('💼 Experience', d.experienceRequired)
+      + item('🎓 Qualification', d.qualification) + item('🪑 Seats', seatsText(d) || 'Open to all')
+      + '</div>'
+      + (d.description ? '<h3 class="wk-h3">About this drive</h3><p class="wk-p">' + h(d.description).replace(/\n/g, '<br>') + '</p>' : '')
+      + (d.skills && d.skills.length ? '<h3 class="wk-h3">Skills</h3><div>' + d.skills.map(function (s) { return '<span class="wk-chip">' + h(s) + '</span>'; }).join('') + '</div>' : '')
+      + '<div class="wk-actions">' + publicRegisterButton(d, true) + '</div>'
+      + signInNote()
+      + '</div>'
+      + '<div class="wk-side">'
+      + '<div class="cp-card"><h3 class="wk-h3" style="margin-top:0">📍 Venue</h3>'
+      + '<p class="wk-p"><b>' + h(d.venueName) + '</b><br>' + h(d.fullAddress) + '<br>' + h(d.city) + '</p>'
+      + '<a class="cp-btn" href="' + h(mapsUrl(d)) + '" target="_blank" rel="noopener noreferrer">Open in Google Maps</a></div>'
+      + '<div class="cp-card"><h3 class="wk-h3" style="margin-top:0">📄 Documents to carry</h3>'
+      + (docs.length ? '<ul class="wk-docs">' + docs.map(function (x) { return '<li>' + h(x) + '</li>'; }).join('') + '</ul>' : '<p class="wk-p">No documents listed - carry your resume.</p>')
+      + '</div>'
+      + '<div class="cp-card"><h3 class="wk-h3" style="margin-top:0">☎️ Contact</h3><p class="wk-p">The recruiter\'s contact details are shown once you register.</p></div>'
+      + '</div></div>';
+  }
+
+  function publicPage() {
+    var p = params();
+    if (isCandidate()) {
+      // a candidate's own drive pages carry their registration and the contact
+      var to = '#/candidate/walkins' + (p.id ? '?id=' + encodeURIComponent(p.id) : '');
+      setTimeout(function () { if (/^#\/walkins/.test(location.hash)) location.replace(to); }, 0);
+      return '<section class="block"><div class="wrap"><p>Opening your walk-in drives…</p></div></section>';
+    }
+    var html = p.id ? publicDetail(p.id) : publicList();
+    var page = '<section class="block wk-pub" style="padding-top:28px"><div class="wrap"><div class="wk-wrap">' + html + '</div></div></section>';
+    return typeof window.withChrome === 'function' ? withChrome('walkins', page) : page;
+  }
+
+  /* ================================================================== *
+   * REGISTER WHILE SIGNED OUT -> sign up / log in -> registered
+   *
+   * The same pattern as teamlink-apply-auth.js for jobs: the drive is
+   * remembered as an ID in sessionStorage (this tab only, an hour at
+   * most), never as a copy of the drive; the register and login pages say
+   * "You're registering for: <drive>"; Cancel returns to the drive. Once
+   * the candidate is signed in, POST /walkin-drives/:id/register runs
+   * with their session - the server still refuses a duplicate, a full,
+   * past or cancelled drive, and anybody who is not a candidate.
+   * ================================================================== */
+
+  var IKEY = 'tl_walkin_intent_v1';
+  var ITTL = 60 * 60 * 1000;
+  function wIntent() {
+    try {
+      var v = JSON.parse(sessionStorage.getItem(IKEY) || 'null');
+      if (!v || !v.driveId) return null;
+      if (!(Date.now() - Number(v.at) < ITTL)) { wClear(); return null; }
+      return v;
+    } catch (e) { return null; }
+  }
+  function wRemember(id) { try { sessionStorage.setItem(IKEY, JSON.stringify({ driveId: String(id), at: Date.now() })); } catch (e) {} }
+  function wClear() { try { sessionStorage.removeItem(IKEY); } catch (e) {} }
+
+  window.tlwkPublicRegister = function (id) {
+    var s = session();
+    if (s && s.role === 'candidate') { go('#/candidate/walkins?id=' + encodeURIComponent(id)); return; }
+    if (s) { say('Sign in with a candidate account to register for a walk-in drive', 'ℹ️'); return; }
+    var st = P.detail[id];
+    var d = st && st.drive;
+    if (d && d.maxSeats != null && d.seatsLeft <= 0) { say('Sorry, all seats for this drive are taken', '⚠️'); return; }
+    // one errand at a time: a job application waiting for sign-in is dropped
+    try { if (window.TLApplyAuth && TLApplyAuth.clear) TLApplyAuth.clear(); } catch (e) {}
+    wRemember(id);
+    window.navigate('/register/candidate');
+  };
+
+  function intentBanner(where) {
+    var it = wIntent();
+    if (!it || isCandidate()) return '';
+    var st = P.detail[it.driveId];
+    var d = st && st.drive;
+    if (!d) loadPublicDetail(it.driveId, false).then(function (x) {
+      // fill the banner in place: re-rendering would wipe what was typed
+      var el = document.querySelector('.tl-walkin-intent .wk-what');
+      if (el) el.innerHTML = x ? whatHtml(x) : '<b>the drive you selected</b> (it may no longer be open)';
+    });
+    var other = where === 'register'
+      ? 'Already have an account? <a href="#/login/candidate" style="font-weight:800;color:var(--brand-600)">Log in to register</a>'
+      : 'New to TeamLink? <a href="#/register/candidate" style="font-weight:800;color:var(--brand-600)">Create your profile</a>';
+    var after = where === 'register'
+      ? 'Create your profile and you are registered for this drive straight after.'
+      : 'Sign in and you are registered for this drive straight after.';
+    return '<div class="tl-walkin-intent" role="status" style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;'
+      + 'background:#eef8fb;border:1px solid #bfe3ee;border-radius:12px;padding:12px 14px;margin:0 0 16px;font-size:13.5px;color:#16323d;text-align:left">'
+      + '<div style="font-size:20px;line-height:1">🚶</div>'
+      + '<div style="flex:1;min-width:200px"><div>You\'re registering for: <span class="wk-what">' + (d ? whatHtml(d) : '<b>the walk-in drive you selected</b>') + '</span></div>'
+      + '<div style="font-size:12.5px;color:#4b6470;margin-top:3px">' + after + '</div>'
+      + '<div style="font-size:12.5px;margin-top:6px">' + other + '</div></div>'
+      + '<button type="button" class="btn btn-ghost btn-sm" onclick="tlwkIntentCancel()">Cancel</button>'
+      + '</div>';
+  }
+  function whatHtml(d) {
+    return '<b>' + h(d.title) + '</b>' + (d.companyName ? ' · ' + h(d.companyName) : '')
+      + ' · ' + h(d.dateLabel) + ' · ' + h(d.city);
+  }
+
+  /** Cancel: back to the drive, and the errand is over. */
+  window.tlwkIntentCancel = function () {
+    var it = wIntent();
+    wClear();
+    window.navigate(it ? '/walkins?id=' + encodeURIComponent(it.driveId) : '/walkins');
+  };
+
+  var wResuming = false;
+  function wResume(it) {
+    if (wResuming || !api()) return;
+    wResuming = true;
+    wClear();
+    var id = it.driveId;
+    C.busy = true;
+    var to = '#/candidate/walkins?id=' + encodeURIComponent(id);
+    if (location.hash !== to) location.hash = to; else rerender();
+    api().post('/walkin-drives/' + encodeURIComponent(id) + '/register', {}).then(function (out) {
+      wResuming = false; C.busy = false;
+      C.detail[id] = { drive: out.drive };
+      C.list = null; C.mine = null; loadDrives(true); loadMine(true);
+      go('#/candidate/walkins?id=' + encodeURIComponent(id) + '&done=1');
+    }, function (err) {
+      wResuming = false; C.busy = false;
+      if (err && err.code === 'WALKIN_ALREADY_REGISTERED') say('You are already registered for this drive', '✓');
+      else say(errText(err), '⚠️');
+      C.detail[id] = null; loadDetail(id, true); rerender();
+    });
+  }
+
+  function wrapAuthPages() {
+    var prevRegister = window.pageRegisterCandidate;
+    if (typeof prevRegister === 'function' && !prevRegister.__tlwk) {
+      var nr = function () {
+        var out = prevRegister.apply(this, arguments);
+        var b = intentBanner('register');
+        if (!b || typeof out !== 'string') return out;
+        var at = out.indexOf('<div class="reg-wrap">');
+        if (at < 0) return out;
+        at += '<div class="reg-wrap">'.length;
+        return out.slice(0, at) + b + out.slice(at);
+      };
+      nr.__tlwk = true;
+      window.pageRegisterCandidate = nr;
+    }
+    var prevLogin = window.pageLogin;
+    if (typeof prevLogin === 'function' && !prevLogin.__tlwk) {
+      var nl = function (r) {
+        var out = prevLogin.apply(this, arguments);
+        if (r !== 'candidate' || typeof out !== 'string') return out;
+        var b = intentBanner('login');
+        if (!b) return out;
+        var m = out.match(/<form class="auth-form"[^>]*>/);
+        if (!m) return out;
+        var at = out.indexOf(m[0]) + m[0].length;
+        return out.slice(0, at) + b + out.slice(at);
+      };
+      nl.__tlwk = true;
+      window.pageLogin = nl;
+    }
+    /* Login and registration both finish by taking the candidate to their
+       dashboard (navigate('/candidate/...')): that is the moment. */
+    var prevNav = window.navigate;
+    if (typeof prevNav === 'function' && !prevNav.__tlwk) {
+      var nn = function (path) {
+        var it = wIntent();
+        if (it && !wResuming && isCandidate() && /^\/?candidate(\/|$)/.test(String(path || ''))) { wResume(it); return; }
+        return prevNav.apply(this, arguments);
+      };
+      nn.__tlwk = true;
+      window.navigate = nn;
+    }
+  }
+
+  /* Wandering off while signed out ends the errand; signed in by a path
+     that never reached the dashboard (a refresh), it is completed. */
+  function intentOnRoute() {
+    var it = wIntent();
+    if (!it) return;
+    if (isCandidate()) {
+      if (window.TL && TL.ready === true && !/^#\/(register|login)\b/.test(location.hash)) wResume(it);
+      return;
+    }
+    var hsh = String(location.hash || '').replace(/^#\/?/, '');
+    var head = hsh.split('?')[0].split('/');
+    var sameDrive = head[0] === 'walkins' && new RegExp('(^|[?&])id=' + encodeURIComponent(it.driveId).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(&|$)').test(hsh.split('?')[1] || '');
+    var keep = head[0] === 'register' || head[0] === 'login' || head[0] === 'forgot-password'
+      || head[0] === 'reset-password' || sameDrive || location.pathname === '/reset-password';
+    if (!keep) wClear();
+  }
+
+  /* "Walk-in Drives" under the Find Jobs heading (home and #/jobs share it). */
+  function withEntry(out) {
+    if (typeof out !== 'string' || out.indexOf('wk-jobs-entry') >= 0) return out;
+    var link = '<a class="wk-jobs-entry" href="' + (isCandidate() ? '#/candidate/walkins' : '#/walkins') + '">🚶 <b>Walk-in Drives</b> - meet recruiters in person, get interviewed the same day <span aria-hidden="true">→</span></a>';
+    return out.replace(/(<h2>Find your next role<\/h2><p>[\s\S]*?<\/p>)/, function (m) { return m + link; });
+  }
+
+  /* The public pages, the header link and the jobs-page entry. */
+  function wrapPublic() {
+    var prevHome = window.pageHome;
+    if (typeof prevHome === 'function' && !prevHome.__tlwk) {
+      // the router sends any address it does not know to pageHome()
+      var nh = function () {
+        try { if (currentRoute().parts[0] === 'walkins') return publicPage(); } catch (e) { /* fall through */ }
+        return withEntry(prevHome.apply(this, arguments));
+      };
+      nh.__tlwk = true;
+      window.pageHome = nh;
+    }
+    var prevHeader = window.siteHeader;
+    if (typeof prevHeader === 'function' && !prevHeader.__tlwk) {
+      var nhd = function (active) {
+        var out = prevHeader.apply(this, arguments);
+        if (typeof out !== 'string' || out.indexOf('href="#/walkins"') >= 0) return out;
+        return out.replace(/(<nav class="main-nav">[\s\S]*?)(<\/nav>)/, function (_m, a, b) {
+          return a + '<a href="#/walkins" style="' + (active === 'walkins' ? 'color:var(--text)' : '') + '" class="wk-nav" title="Walk-in Drives">Walk-ins</a>' + b;
+        });
+      };
+      nhd.__tlwk = true;
+      window.siteHeader = nhd;
+    }
+    var prevJobs = window.pageJobs;
+    if (typeof prevJobs === 'function' && !prevJobs.__tlwk) {
+      var nj = function () {
+        return withEntry(prevJobs.apply(this, arguments));
+      };
+      nj.__tlwk = true;
+      window.pageJobs = nj;
+    }
   }
 
   /* ================================================================== *
    * wiring
    * ================================================================== */
+
+  function wrapAdmin() {
+    try {
+      if (typeof NAV_CONFIG === 'object' && Array.isArray(NAV_CONFIG.admin)
+          && !NAV_CONFIG.admin.some(function (x) { return x && x[0] === 'walkins'; })) {
+        NAV_CONFIG.admin.push(['walkins', 'Walk-in Drives', '🚶']);
+      }
+    } catch (e) { /* the nav is cosmetic */ }
+    var prev = window.pageAdminDash;
+    if (typeof prev !== 'function' || prev.__tlwk) return;
+    var next = function (section) {
+      if (section === 'walkins' && role() === 'admin') {
+        return dashShell('admin', 'walkins', 'Walk-in Drives', 'Admin · TeamLink Platform', '<div class="wk-wrap wk-rec">' + recruiterPage() + '</div>');
+      }
+      return prev.apply(this, arguments);
+    };
+    next.__tlwk = true;
+    window.pageAdminDash = next;
+  }
 
   function wrapCandidate() {
     var prev = window.pageCandidateDash;
@@ -648,9 +1103,15 @@
       }
       var m = /^#\/candidate\/walkins\?(?:.*&)?id=([^&]+)/.exec(hash);
       if (m && was !== null) loadDetail(decodeURIComponent(m[1]), true);
-      var r = /^#\/recruiter\/walkins\?(?:.*&)?id=([^&]+)/.exec(hash);
+      var r = /^#\/(?:recruiter|admin)\/walkins\?(?:.*&)?id=([^&]+)/.exec(hash);
       if (r) loadRegs(decodeURIComponent(r[1]), true);
-      else if (/^#\/recruiter\/walkins/.test(hash) && was !== null) loadRecruiter(true);
+      else if (/^#\/(?:recruiter|admin)\/walkins/.test(hash) && was !== null) loadRecruiter(true);
+      // the public pages: fresh seats every time somebody arrives
+      if (!isCandidate()) {
+        var pd = /^#\/walkins\?(?:.*&)?id=([^&]+)/.exec(hash);
+        if (pd && was !== null) loadPublicDetail(decodeURIComponent(pd[1]), true).then(rerender);
+        else if (/^#\/walkins/.test(hash) && was !== null && !/^#\/walkins/.test(was)) { P.at = 0; loadPublic(true); }
+      }
     }
   }
 
@@ -700,6 +1161,16 @@
       '.wk-back{margin-bottom:10px;font-size:13px}.wk-back a{color:#1d6ff2;font-weight:700;cursor:pointer}',
       '.wk-err{background:#fdecec;color:#9b1c1c;border:1px solid #f5c2c2;border-radius:10px;padding:9px 12px;font-size:12.5px;margin:10px 0}',
       '.wk-dim{font-size:11.5px;color:#7b8794;margin-top:2px}',
+      '.wk-pub .wk-wrap{margin:0 auto}',
+      '.wk-note{background:#f4f8ff;border:1px solid #d9e6fb;border-radius:10px;padding:9px 12px;font-size:12.5px;color:#33404f;margin:0 0 14px}',
+      '.wk-note a{color:#1d6ff2;font-weight:800}.wk-actions+.wk-note{margin-top:12px}',
+      '.wk-jobs-entry{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:10px;padding:8px 13px;border-radius:999px;background:#eef8fb;border:1px solid #bfe3ee;color:#16323d;font-size:13px;text-decoration:none}',
+      '.wk-jobs-entry:hover{border-color:#8fcfe2}',
+      '.wk-afil .wk-f{min-width:130px}',
+      '.main-nav a.wk-nav{white-space:nowrap}',
+      /* the header has room for a fourth link only on a wide screen; narrower
+         ones reach drives from the Find Jobs / home page entry instead */
+      '@media (min-width:1280px){.main-nav{gap:14px}}@media (max-width:1279px){.main-nav a.wk-nav{display:none}}',
       '.wk-st,.wk-rs{display:inline-block;font-size:11px;font-weight:800;border-radius:999px;padding:2px 9px;background:#e7f0ff;color:#1b4f9e;white-space:nowrap}',
       '.wk-st.ongoing,.wk-rs.attended{background:#e8f6ee;color:#0f7a44}.wk-st.completed,.wk-st.cancelled,.wk-rs.cancelled{background:#eef1f6;color:#5a6a7d}.wk-rs.no_show{background:#fdecec;color:#9b1c1c}',
       '.wk-tblwrap{overflow-x:auto;-webkit-overflow-scrolling:touch}.wk-table{width:100%}',
@@ -720,7 +1191,8 @@
     if (window.__tlwkInstalled) return;
     window.__tlwkInstalled = true;
     addStyle();
-    wrapCandidate(); wrapShell(); wrapDrawer(); wrapRecruiter(); wrapBell();
+    wrapCandidate(); wrapShell(); wrapDrawer(); wrapRecruiter(); wrapBell(); wrapAdmin();
+    wrapPublic(); wrapAuthPages();
     var prev = window.render;
     if (typeof prev === 'function' && !prev.__tlwk) {
       var next = function () {
@@ -735,11 +1207,26 @@
        before that is sent to the login screen. Otherwise the render that
        follows the session finds these wrappers in place. */
     if (window.TL && TL.ready === true && window.STATE && STATE.session
-        && /^#\/(candidate|recruiter)\/walkins/.test(location.hash)) rerender();
+        && /^#\/(candidate|recruiter|admin)\/walkins/.test(location.hash)) rerender();
+    /* The public pages need no session: draw them as soon as the wrappers
+       are in (the first paint may have run before this script). */
+    if (/^#\/walkins/.test(location.hash) && document.getElementById('app')
+        && !document.querySelector('#app .wk-pub')) rerender();
   }
+
+  /* The public page, header link and sign-in banners are installed at once:
+     the very first paint of #/walkins happens before the window 'load'. */
+  try { addStyle(); wrapPublic(); wrapAuthPages(); } catch (e) { /* install() tries again */ }
 
   if (document.readyState === 'complete') install();
   else window.addEventListener('load', install);
+
+  window.addEventListener('hashchange', function () { try { intentOnRoute(); } catch (e) { /* never block navigation */ } });
+  /* After a refresh the session is known only once TL is ready. */
+  (function waitReady(n) {
+    if (window.TL && TL.ready === true) { try { intentOnRoute(); } catch (e) { /* ignore */ } return; }
+    if (n < 120) setTimeout(function () { waitReady(n + 1); }, 250);
+  })(0);
 
   window.TLWalkins = { reload: function () { C.list = null; C.mine = null; R.list = null; loadDrives(true); loadMine(true); loadRecruiter(true); } };
 })();

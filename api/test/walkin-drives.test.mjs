@@ -10,9 +10,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { startTestDb, applyTestEnv, makeClient, startMockProvider } from './harness.mjs';
 
-const DB_PORT = 5469;
-const API_PORT = 9989;
-const MOCK_PORT = 9865;
+// The suite's own ports; overridable so a parallel worktree can run it on its own.
+const DB_PORT = Number(process.env.WALKIN_TEST_DB_PORT) || 5469;
+const API_PORT = Number(process.env.WALKIN_TEST_API_PORT) || 9989;
+const MOCK_PORT = Number(process.env.WALKIN_TEST_MOCK_PORT) || 9865;
 const IST = 330 * 60000;
 
 let dbh, server, mock, base, raw, walkin;
@@ -189,6 +190,62 @@ test('candidates list upcoming drives with filters, nearest first, and see a mat
   assert.equal(one.body.drive.myRegistration, null);
 });
 
+test('public: signed-out visitors browse upcoming drives with public-safe fields only', async () => {
+  const anon = makeClient(base);
+  await anon.get('/api/health');
+  const r = await anon.get('/api/public/walkin-drives');
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual(r.body.drives.map((d) => d.title), ['Customer Support Walk-in', 'Warehouse Picker Drive']);
+  assert.ok(r.body.cities.includes('Nellore') && r.body.cities.includes('Ongole'));
+  const d = r.body.drives[0];
+  // the company name, exactly as a public job card shows it
+  assert.equal(d.companyName, 'Nellore Services Pvt Ltd');
+  assert.equal(d.venueName, 'Hotel Grand');
+  assert.deepEqual(d.documentsToCarry, ['Resume', 'Aadhaar card', 'Passport photo']);
+  assert.equal(d.maxSeats, 2);
+  assert.equal(d.seatsLeft, 2);
+  assert.equal(d.daysLeft, 2);
+  const allowed = ['id', 'title', 'companyName', 'jobRole', 'description', 'driveDate', 'startTime', 'endTime',
+    'dateLabel', 'timeLabel', 'startsAt', 'endsAt', 'daysLeft', 'venueName', 'fullAddress', 'city', 'mapLink',
+    'salaryRange', 'experienceRequired', 'qualification', 'skills', 'documentsToCarry', 'maxSeats', 'seatsTaken',
+    'seatsLeft', 'status'];
+  for (const x of r.body.drives) assert.deepEqual(Object.keys(x).sort(), [...allowed].sort(), 'only public-safe fields');
+  const text = JSON.stringify(r.body);
+  for (const secret of ['9000011111', 'Ravi', 'rw1', 'createdBy', 'contactPhone', 'myRegistration', 'counts', 'companyId', 'jobId']) {
+    assert.ok(!text.includes(secret), `the public list leaks ${secret}`);
+  }
+
+  assert.equal((await anon.get('/api/public/walkin-drives?city=ongole')).body.drives.length, 1);
+  assert.equal((await anon.get('/api/public/walkin-drives?role=support')).body.drives.length, 1);
+  assert.equal((await anon.get(`/api/public/walkin-drives?date=${istDay(5)}`)).body.drives[0].title, 'Warehouse Picker Drive');
+  assert.equal((await anon.get('/api/public/walkin-drives?q=forklift')).body.drives.length, 1);
+  assert.equal((await anon.get('/api/public/walkin-drives?q=Nellore%20Services')).body.drives.length, 2);
+  assert.equal((await anon.get('/api/public/walkin-drives?date=not-a-date')).status, 400);
+
+  const one = await anon.get(`/api/public/walkin-drives/${D1.id}`);
+  assert.equal(one.status, 200);
+  assert.equal(one.body.drive.title, 'Customer Support Walk-in');
+  assert.ok(!JSON.stringify(one.body).includes('9000011111'), 'no contact phone on the public page');
+  assert.equal((await anon.get('/api/public/walkin-drives/wd_nope')).status, 404);
+
+  // the same answer whoever asks: a signed-in recruiter gets no more here
+  const asStaff = (await R2.get('/api/public/walkin-drives')).body;
+  assert.equal(asStaff.drives.length, 2);
+  assert.ok(!JSON.stringify(asStaff).includes('9000011111'));
+
+  // signed out, registering is still refused by the server
+  const reg = await anon.post(`/api/walkin-drives/${D1.id}/register`);
+  assert.equal(reg.status, 401, JSON.stringify(reg.body));
+
+  // the policy itself is unchanged: an anonymous caller reads no drive row directly
+  const { withUser } = await import('../src/db.js');
+  const rows = await withUser(null, async (c) => (await c.query(`select id from walkin_drives`)).rows);
+  assert.equal(rows.length, 0, 'anon reads walkin_drives directly');
+  const viaFn = await withUser(null, async (c) => (await c.query(`select * from walkin_public_drives()`)).rows);
+  assert.equal(viaFn.length, 2);
+  assert.ok(!('contact_phone' in viaFn[0]) && !('created_by_recruiter_id' in viaFn[0]));
+});
+
 test('register: confirmation on every opted-in channel, no duplicates, no overbooking', async () => {
   const before = mock.received.length;
   const r = await A.post(`/api/walkin-drives/${D1.id}/register`);
@@ -226,6 +283,11 @@ test('register: confirmation on every opted-in channel, no duplicates, no overbo
   const full = await C.post(`/api/walkin-drives/${D1.id}/register`);
   assert.equal(full.status, 409);
   assert.equal(full.body.error.code, 'WALKIN_FULL');
+
+  // the public page counts the seats, never the people
+  const pub = (await makeClient(base).get(`/api/public/walkin-drives/${D1.id}`)).body.drive;
+  assert.equal(pub.seatsTaken, 2);
+  assert.equal(pub.seatsLeft, 0);
 });
 
 test('cancel frees the seat; re-registering reuses the one row; each candidate sees only their own', async () => {
@@ -374,6 +436,11 @@ test('cancelling a drive tells everyone registered, closes it, and keeps it in M
   assert.ok(mail.length >= 2 && JSON.stringify(mail[0].body).includes('Venue unavailable'));
 
   assert.ok(!(await B.get('/api/walkin-drives')).body.drives.some((d) => d.id === D1.id));
+  const anon = makeClient(base);
+  assert.ok(!(await anon.get('/api/public/walkin-drives')).body.drives.some((d) => d.id === D1.id || d.id === 'wd_past'),
+    'cancelled and past drives are not public');
+  assert.equal((await anon.get(`/api/public/walkin-drives/${D1.id}`)).status, 404);
+  assert.equal((await anon.get('/api/public/walkin-drives/wd_past')).status, 404);
   const mine = (await B.get('/api/my-walkin-registrations')).body;
   assert.ok(mine.past.some((d) => d.id === D1.id && d.status === 'CANCELLED'));
   const late = await C.del(`/api/walkin-drives/${D1.id}/register`);
@@ -391,10 +458,72 @@ test('cancelling a drive tells everyone registered, closes it, and keeps it in M
     'no reminders for a cancelled drive');
 });
 
-test('admin sees every drive', async () => {
+test('admin: every recruiter\'s drives, with filters, the owner\'s name, registrations, attendance, edit and cancel', async () => {
   const admin = await staff('aw1', 'aw1@tl-sink.local', 'admin');
-  const all = (await admin.get('/api/recruiter/walkin-drives')).body.drives;
-  assert.ok(all.length >= 3);
+  const r2drive = await R2.post('/api/recruiter/walkin-drives', drive({
+    title: 'Pharmacy Assistant Drive', jobRole: 'Pharmacy Assistant', driveDate: istDay(4), city: 'Guntur', maxSeats: 10,
+  }));
+  assert.equal(r2drive.status, 201, JSON.stringify(r2drive.body));
+  const P = r2drive.body.drive;
+  assert.equal((await B.post(`/api/walkin-drives/${P.id}/register`)).status, 201);
+  await walkin.settleWalkinNotifications();
+
+  const all = (await admin.get('/api/recruiter/walkin-drives')).body;
+  assert.ok(all.drives.length >= 5, 'every recruiter\'s drives');
+  assert.ok(all.drives.some((d) => d.recruiterName === 'Recruiter rw1') && all.drives.some((d) => d.recruiterName === 'Recruiter rw2'));
+  assert.ok(all.recruiters.some((x) => x.id === 'rw2'), 'the recruiter filter list');
+  assert.ok(all.cities.includes('Guntur'));
+  // a recruiter's own list carries none of the admin extras
+  const own = (await R2.get('/api/recruiter/walkin-drives')).body;
+  assert.equal(own.drives.length, 1);
+  assert.ok(!('recruiters' in own) && !('recruiterName' in own.drives[0]));
+
+  const q = async (qs) => (await admin.get(`/api/recruiter/walkin-drives?${qs}`)).body.drives.map((d) => d.title).sort();
+  assert.deepEqual(await q('recruiterId=rw2'), ['Pharmacy Assistant Drive']);
+  assert.deepEqual(await q('city=guntur'), ['Pharmacy Assistant Drive']);
+  assert.deepEqual(await q('status=CANCELLED'), ['Customer Support Walk-in']);
+  assert.deepEqual(await q('status=COMPLETED'), ['Old Drive']);
+  assert.ok((await q('status=ONGOING')).includes('Today Drive'));
+  assert.deepEqual(await q(`from=${istDay(4)}&to=${istDay(4)}`), ['Pharmacy Assistant Drive']);
+  assert.deepEqual(await q('q=pharmacy'), ['Pharmacy Assistant Drive']);
+  assert.equal((await admin.get('/api/recruiter/walkin-drives?status=SOMETIME')).status, 400);
+  // a recruiter cannot widen their list with the admin's filter
+  assert.deepEqual((await R2.get('/api/recruiter/walkin-drives?recruiterId=rw1')).body.drives, []);
+
+  const regs = await admin.get(`/api/recruiter/walkin-drives/${P.id}/registrations`);
+  assert.equal(regs.status, 200);
+  assert.equal(regs.body.drive.recruiterName, 'Recruiter rw2');
+  assert.deepEqual(regs.body.registrations.map((x) => x.name), ['Bala Krishna']);
+  const csv = await rawFetch(admin, `/api/recruiter/walkin-drives/${P.id}/registrations/export?format=csv`);
+  assert.equal(csv.status, 200);
+  assert.ok((await csv.text()).includes('Bala Krishna'));
+
+  // attendance on another recruiter's running drive
+  const today = (await admin.get('/api/recruiter/walkin-drives?status=ONGOING')).body.drives.find((d) => d.title === 'Today Drive');
+  const tregs = (await admin.get(`/api/recruiter/walkin-drives/${today.id}/registrations`)).body.registrations;
+  const mark = await fetchJson(admin, 'PATCH', `/api/recruiter/walkin-drives/${today.id}/registrations/${tregs[0].id}`, { status: 'NO_SHOW' });
+  assert.equal(mark.status, 200, JSON.stringify(mark.body));
+  assert.equal((await raw(`select status from walkin_registrations where id = $1`, [tregs[0].id])).rows[0].status, 'NO_SHOW');
+
+  // edit: the candidate is told, exactly as when the recruiter edits
+  const edit = await admin.put(`/api/recruiter/walkin-drives/${P.id}`, drive({
+    title: 'Pharmacy Assistant Drive', jobRole: 'Pharmacy Assistant', driveDate: istDay(4), city: 'Guntur', maxSeats: 10,
+    venueName: 'Guntur Town Hall',
+  }));
+  assert.equal(edit.status, 200, JSON.stringify(edit.body));
+  assert.equal(edit.body.notified, true);
+  const owner = (await raw(`select created_by_recruiter_id from walkin_drives where id = $1`, [P.id])).rows[0];
+  assert.equal(owner.created_by_recruiter_id, 'rw2', 'an admin edit keeps the owner');
+  await walkin.settleWalkinNotifications();
+  assert.deepEqual((await ledger(`kind = 'updated' and channel = 'portal' and drive_id = $1`, [P.id])).map((x) => x.candidate_id), [B.id]);
+
+  // cancel: the same message to everyone registered
+  const cancel = await admin.del(`/api/recruiter/walkin-drives/${P.id}?reason=Hall%20unavailable`);
+  assert.equal(cancel.status, 200);
+  assert.equal(cancel.body.drive.status, 'CANCELLED');
+  await walkin.settleWalkinNotifications();
+  assert.deepEqual((await ledger(`kind = 'cancelled' and channel = 'portal' and drive_id = $1`, [P.id])).map((x) => x.candidate_id), [B.id]);
+  assert.equal((await makeClient(base).get(`/api/public/walkin-drives/${P.id}`)).status, 404);
 });
 
 test('shutdown', async () => {

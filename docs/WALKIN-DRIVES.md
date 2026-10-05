@@ -1,9 +1,10 @@
 # Walk-in drives
 
 A **walk-in drive** is an event: a date, a time window, a venue and a list of
-who is coming. Candidates find drives near them and register; the recruiter
-who runs the drive sees who registered, marks attendance on the day and
-exports the list. Registered candidates get a confirmation, a reminder the day
+who is coming. Anyone can browse the upcoming drives on the public site;
+candidates register (signing up or logging in first when they are signed
+out); the recruiter who runs the drive sees who registered, marks attendance
+on the day and exports the list; admins manage every recruiter's drives. Registered candidates get a confirmation, a reminder the day
 before and on the morning of the drive, and a message if the drive is changed
 or cancelled.
 
@@ -31,14 +32,21 @@ without one shows only the role. The word "Client" never appears in anything a
 candidate is sent (migration `0051`): the messages say "walk-in drive", the
 company's name and nothing about the commercial arrangement.
 
+The **public** drive pages (signed-out visitors, 0103) follow the same rule
+as the public job board: `#/jobs` shows every visitor the company's name on a
+job card (`companies` is readable by anyone since `0002`), so a public drive
+card shows the same name in the same place, and nothing more about the
+company.
+
 ## Where things are
 
 | Piece | File |
 |---|---|
 | Tables, RLS, register/cancel functions, seat count, status refresh | `supabase/migrations/0099_walkin_drives.sql` |
-| Routes (candidate + recruiter) | `api/src/routes/walkin-drives.js` |
+| The public (signed-out) view: `walkin_public_drives()` | `supabase/migrations/0103_walkin_public_and_admin.sql` |
+| Routes (public + candidate + recruiter/admin) | `api/src/routes/walkin-drives.js` |
 | Messages, reminders, the sweep, never-twice claims | `api/src/notify/walkin.js` |
-| Candidate pages, recruiter section, nav entries, bell links | `web/teamlink-walkin-drives.js` |
+| Candidate pages, recruiter and admin sections, public pages, register-after-sign-in, nav entries, bell links | `web/teamlink-walkin-drives.js` |
 | API tests | `api/test/walkin-drives.test.mjs` |
 | Browser check | `tools/verify-walkin-drives.mjs` |
 
@@ -67,6 +75,7 @@ sweep (`walkin_refresh_statuses()`, engine only) then stores it.
 
 | | Drives | Registrations |
 |---|---|---|
+| Signed-out visitor | nothing directly (the policy has no anonymous branch); `UPCOMING`/`ONGOING` drives through `walkin_public_drives()` only, with public-safe columns | none (a seat count only) |
 | Candidate | `UPCOMING`/`ONGOING` drives, plus any drive they registered for (so My Registrations can show past and cancelled ones) | their own only |
 | Recruiter | the drives they created | the registrations on those drives |
 | Admin | all | all |
@@ -83,6 +92,31 @@ policy alone would hide them). Seats taken are counted by
 
 ## API
 
+Public (anyone; a signed-out visitor included):
+
+| Method | Path | |
+|---|---|---|
+| GET | `/api/public/walkin-drives?city=&role=&date=YYYY-MM-DD&q=` | Upcoming and ongoing drives, nearest first, plus `cities`. |
+| GET | `/api/public/walkin-drives/:id` | One upcoming or ongoing drive; `404` for a past, cancelled or unknown one. |
+
+**What is public, decided once.** Both routes read only
+`walkin_public_drives()` (0103, `SECURITY DEFINER`, granted to the API role),
+whose column list is the decision, and `shapePublicDrive()` copies those
+fields one by one (never a spread of the row): title, company name, role,
+description, date and times with their labels, days left, venue, full
+address, city, map link, salary, experience, qualification, skills,
+documents to carry, max seats, seats taken / left, status.
+**Not public:** the contact person and **contact phone** (shown to a
+signed-in candidate on the drive page and in every message they are sent; a
+public page would hand recruiters' mobile numbers to scrapers), the
+recruiter who owns the drive, the linked job id, version, cancel reason, and
+any registration or registrant. The answer is the same whoever asks: a
+signed-in recruiter gets nothing extra from the public routes.
+
+Registering stays where it was: `POST /api/walkin-drives/:id/register`
+needs a signed-in candidate (`401` signed out) and still refuses duplicates,
+full, past and cancelled drives.
+
 Candidate (signed in as a candidate):
 
 | Method | Path | |
@@ -98,12 +132,12 @@ Recruiter (own drives) and admin (all):
 
 | Method | Path | |
 |---|---|---|
-| GET | `/api/recruiter/walkin-drives` | Drives with per-status counts, plus the recruiter's jobs (walk-in postings first) and companies for the form. |
+| GET | `/api/recruiter/walkin-drives?status=&city=&recruiterId=&from=&to=&q=` | Drives with per-status counts, plus the recruiter's jobs (walk-in postings first) and companies for the form. Filters: live `status`, `city` (contains), `recruiterId` (`none` = created by an admin), drive date `from`/`to`, keyword (title, role, venue, city, company). For an **admin** each drive also carries `recruiterId` and `recruiterName`, and the answer adds `recruiters` and `cities` for the filter lists; a recruiter's answer is unchanged (RLS already limits it to their own drives, so the filters cannot widen it). |
 | POST | `/api/recruiter/walkin-drives` | Create. Every field validated on the server (zod + table checks): a real date, not in the past, at most a year ahead, end after start, `https://` map link, phone pattern, seats 1–100000, unknown fields refused. |
 | GET | `/api/recruiter/walkin-drives/:id` | |
 | PUT | `/api/recruiter/walkin-drives/:id` | Edit. Not allowed once `COMPLETED` or `CANCELLED`; seats cannot go below the people already registered. A change to the date, times, venue, address, city, map link, documents, contact, title or role bumps `version` and tells everyone registered (`notified: true`). |
 | DELETE | `/api/recruiter/walkin-drives/:id?reason=` | Cancel (the row stays). Everyone registered is told, with the reason. |
-| GET | `/api/recruiter/walkin-drives/:id/registrations?q=&status=` | Registrations with name, contact, title, skills, resume present; totals per status. |
+| GET | `/api/recruiter/walkin-drives/:id/registrations?q=&status=` | Registrations with name, contact, title, skills, resume present; totals per status. For an admin the drive carries `recruiterName`. |
 | PATCH | `/api/recruiter/walkin-drives/:id/registrations/:regId` | `{ status: ATTENDED | NO_SHOW | REGISTERED }` (`REGISTERED` undoes a mark). Only once the drive has started: `409 WALKIN_NOT_STARTED` before. |
 | GET | `/api/recruiter/walkin-drives/:id/registrations/export?format=csv|xlsx&q=&status=` | CSV (with BOM; cells that look like formulas are neutralised) or a real `.xlsx` from `api/src/xlsx.js`. Same filters as the screen. |
 
@@ -177,11 +211,51 @@ drive list with counts, create / edit / cancel, and per drive the
 registrations table with search, status filter, Attended / No-show / Undo,
 and Export CSV / Excel.
 
+Admin — **Walk-in Drives** in the admin sidebar (`#/admin/walkins`): every
+recruiter's drives with totals (drives, upcoming or running, registrations,
+attended), filters for status, city, recruiter (or "Created by an admin"),
+date from / to and keyword, and a Recruiter column. Registrations, Edit and
+Cancel are the recruiter screens and API, unchanged: an admin's edit or
+cancel sends registered candidates the same messages as the recruiter's
+(the drive keeps its owner). `#/admin/walkins?id=<id>` is the registrations
+screen (search, status filter, attendance, CSV / Excel), headed "Run by
+<recruiter>". Admins do not create drives from this screen (a drive belongs
+to the recruiter who runs it).
+
+Public (signed out) — **Walk-ins** in the site header (shown on screens
+1280 px and wider, where the header has room) and a **Walk-in Drives**
+entry under "Find your next role" on the home and `#/jobs` pages (every
+width, phones included):
+
+- `#/walkins` — the same filters (city, role, date, keyword) and cards as the
+  candidate list, without a match % or registration badge, and a note that
+  registering needs a free candidate profile.
+- `#/walkins?id=<id>` — details: venue, address, map, documents, skills,
+  seats. The contact card says the recruiter's contact is shown once you
+  register.
+- **Register while signed out** (same pattern as `teamlink-apply-auth.js`
+  for jobs): the drive id is remembered in `sessionStorage`
+  (`tl_walkin_intent_v1`, this tab only, at most an hour; never a copy of
+  the drive, and any job application waiting for sign-in is dropped), and
+  the visitor goes to the registration form, headed **"You're registering
+  for: <drive> · <company> · <date> · <city>"** with *Log in to register* and
+  **Cancel** (Cancel forgets it and returns to the drive). It survives a
+  refresh, a refused registration and a wrong password. When registration
+  or login finishes (the hand-off to the candidate dashboard), the module
+  calls `POST /api/walkin-drives/:id/register` with the new session and
+  opens `#/candidate/walkins?id=<id>&done=1` (the usual confirmation and
+  Add to Calendar). A refusal (full, closed, already registered) is the
+  server's message on that drive's page. Wandering off to an unrelated page
+  while signed out forgets the drive.
+- A signed-in candidate who opens `#/walkins…` is taken to the matching
+  `#/candidate/walkins…` page (their registration, match and contact).
+
 ## Not done / limits
 
-- Admins use the same API (they see every drive) but have no screen of their
-  own; the recruiter sidebar item is recruiter-only.
 - Phone (push) notifications are not used for drives; the spec named mail,
   SMS and WhatsApp.
-- A drive is not shown to signed-out visitors: registering needs a signed-in
-  candidate, and the list is part of the candidate portal.
+- The public pages are client-rendered (`#/walkins`), like the rest of the
+  portal; there is no server-rendered share page or sitemap entry for a drive.
+- Below 1280 px the header has no room for a fourth link, so the header
+  "Walk-ins" link is hidden there; the Find Jobs / home entry is always shown.
+- Admins manage but do not create drives (see Screens).

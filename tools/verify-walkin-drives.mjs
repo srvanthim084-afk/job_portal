@@ -14,6 +14,16 @@
  *             11  export CSV and Excel downloads
  *             12  edit a drive -> the candidate is told; the bell opens the drive
  *             13  phone width: no sideways scroll, cards stack
+ *   public    14  signed out: header link and jobs-page entry; list and filters; the API has no contact phone
+ *             15  details while signed out: venue, documents, map, no contact phone
+ *             16  Register -> registration form "You're registering for: <drive>"; refresh keeps it; Cancel
+ *             17  sign up -> registered for that same drive, automatically (and #/walkins now opens the
+ *                 candidate's own page)
+ *             18  Register -> Log in (a wrong password first) -> registered for that drive
+ *   admin     19  every recruiter's drives with status / city / recruiter / date filters
+ *             20  registrations, attendance and CSV on another recruiter's drive
+ *             21  edit and cancel through the admin screen; the candidates are told
+ *             22  phone width: the public list does not scroll sideways
  *
  * Creates accounts and drives, so it refuses :4323. Run against an isolated instance:
  *   TL_URL=http://127.0.0.1:4425/ node tools/verify-walkin-drives.mjs
@@ -309,6 +319,224 @@ await check('13. phone width: no sideways scroll, and the drawer has Walk-in Dri
   await mp.waitForTimeout(500);
   must(await mp.$('.nk-draw.on button:has-text("Walk-in Drives")'), 'not in the mobile drawer');
   await shot(mp, '13-mobile-drawer');
+  await mc.close();
+});
+
+/* ---------------- public (signed out) ---------------- */
+const pc = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+const pp = await open(pc, '#/jobs');
+const fresh = { email: `walkin.public.${stamp}@tl-verify.test`, name: 'Walkin Public ' + stamp };
+const pubText = () => pp.evaluate(() => ((document.querySelector('#app') || {}).innerText || ''));
+const intentText = () => pp.evaluate(() => ((document.querySelector('.tl-walkin-intent') || {}).innerText || '').split(String.fromCharCode(10)).join(' '));
+
+await check('14. signed out: "Walk-in Drives" in the header and on the jobs page; the list and filters work', async () => {
+  must(await pp.evaluate(() => !STATE.session), 'should be signed out');
+  must(await pp.$('header .main-nav a[href="#/walkins"]'), 'no Walk-in Drives link in the site header');
+  const entry = await pp.$('a.wk-jobs-entry');
+  must(entry, 'no Walk-in Drives entry on the jobs page');
+  await shot(pp, '14-public-jobs-entry');
+  await entry.click();
+  await pp.waitForTimeout(1500);
+  must((await pp.evaluate(() => location.hash)) === '#/walkins', 'did not open #/walkins');
+  let t = await pubText();
+  must(t.includes(TITLE) && t.includes(`Today Drive ${stamp}`), 'the drives are not listed: ' + t.slice(0, 300));
+  must(/Happening now/.test(t), 'the running drive is not marked');
+  must(!/% match/.test(t), 'a match % shown to a visitor');
+  await shot(pp, '14-public-list');
+  await pp.selectOption('#wkpCity', CITY); await pp.waitForTimeout(1200);
+  t = await pubText();
+  must(t.includes(TITLE), 'city filter lost the drive');
+  await pp.fill('#wkpRole', 'warehouse'); await pp.press('#wkpRole', 'Tab'); await pp.waitForTimeout(1200);
+  t = await pubText();
+  must(t.includes(`Today Drive ${stamp}`) && !t.includes(TITLE), 'role filter');
+  await pp.click('text=Clear'); await pp.waitForTimeout(1200);
+  await pp.fill('#wkpQ', 'nothing-matches-' + stamp); await pp.press('#wkpQ', 'Enter'); await pp.waitForTimeout(1200);
+  must(/No upcoming drives/.test(await pubText()), 'no empty state');
+  await pp.click('text=Show all drives'); await pp.waitForTimeout(1200);
+  // the public API carries no contact phone, no recruiter, no registrations
+  const api = await pp.evaluate(() => fetch('/api/public/walkin-drives').then((r) => r.text()));
+  must(!api.includes('9000011111') && !/contactPhone|recruiter|myRegistration/i.test(api), 'the public API leaks: ' + api.slice(0, 200));
+});
+
+await check('15. details while signed out: venue, documents, map; no contact phone', async () => {
+  await go(pp, '#/walkins?id=' + encodeURIComponent(driveId));
+  const t = await pubText();
+  for (const s of ['Hotel Grand Annexe', 'Documents to carry', 'Passport-size photo', 'Any degree']) must(t.includes(s), 'missing ' + s);
+  must(!t.includes('9000011111'), 'the contact phone is shown to a visitor');
+  must(await pp.$('a:has-text("Open in Google Maps")'), 'no maps link');
+  await shot(pp, '15-public-detail');
+});
+
+await check('16. Register while signed out -> registration with "You\'re registering for"; Cancel returns to the drive', async () => {
+  await pp.click('text=Register for this drive');
+  await pp.waitForTimeout(1200);
+  must(/^#\/register\/candidate/.test(await pp.evaluate(() => location.hash)), 'not on the registration page');
+  let b = await intentText();
+  must(b.includes("You're registering for") && b.includes(TITLE), 'banner: ' + b);
+  await shot(pp, '16-register-banner');
+  await pp.reload(); await ready(pp); await pp.waitForTimeout(1500);
+  must((await intentText()).includes(TITLE), 'the drive was lost on a refresh');
+  await pp.click('.tl-walkin-intent button:has-text("Cancel")');
+  await pp.waitForTimeout(1200);
+  must((await pp.evaluate(() => location.hash)).includes(encodeURIComponent(driveId)), 'Cancel did not return to the drive');
+  must(await pp.evaluate(() => sessionStorage.getItem('tl_walkin_intent_v1')) === null, 'still remembered after Cancel');
+});
+
+await check('17. Register -> sign up -> registered for that same drive, automatically', async () => {
+  await pp.click('text=Register for this drive');
+  await pp.waitForTimeout(1200);
+  await pp.fill('#regName', fresh.name);
+  await pp.fill('#regMobile', phone());
+  await pp.fill('#regLocation', CITY);
+  await pp.fill('#regEmail', fresh.email);
+  await pp.fill('#regPassword', 'Walk' + stamp + '7');
+  await pp.evaluate(() => {
+    const q = document.getElementById('regQualification');
+    const opt = Array.from(q.options).find((o) => o.value); q.value = opt.value; q.dispatchEvent(new Event('change', { bubbles: true }));
+    const n = document.getElementById('regNotice');
+    const o2 = Array.from(n.options).find((o) => o.value); n.value = o2.value; n.dispatchEvent(new Event('change', { bubbles: true }));
+    const m = document.querySelector('#regWorkModeGroup input[type="checkbox"]'); if (m && !m.checked) m.click();
+    ['regConsentTerms', 'regConsentResume'].forEach((id) => { const c = document.getElementById(id); if (!c.checked) c.click(); });
+  });
+  await pp.fill('#regSkills', 'Communication, Telugu');
+  await pp.fill('#regPrefLocation', CITY);
+  await pp.fill('#regExpSalary', '3');
+  await pp.evaluate(() => { ['regPrefLocation', 'regExpSalary', 'regNotice'].forEach((id) => window.regTouch && regTouch(id)); validateRegisterForm(); });
+  must(await pp.evaluate(() => !document.getElementById('regSubmitBtn').disabled), 'the form did not validate');
+  await pp.click('#regSubmitBtn');
+  await pp.waitForFunction(() => STATE.session && STATE.session.role === 'candidate', null, { timeout: 20000 });
+  await pp.waitForTimeout(3500);
+  await wizardAway(pp);
+  const hash = await pp.evaluate(() => location.hash);
+  must(hash.includes(encodeURIComponent(driveId)) && /done=1/.test(hash), 'not on the drive confirmation: ' + hash);
+  must(/You are registered!/.test(await pubText()), 'no confirmation');
+  const mine = await pp.evaluate(() => TL.api.get('/my-walkin-registrations'));
+  must(mine.upcoming.filter((d) => d.id === driveId && d.myRegistration.status === 'REGISTERED').length === 1, 'not registered on the server');
+  must(await pp.evaluate(() => sessionStorage.getItem('tl_walkin_intent_v1')) === null, 'the drive is still remembered');
+  await shot(pp, '17-registered-after-signup');
+  // signed in now: the public address opens the candidate's own drive page
+  await go(pp, '#/walkins?id=' + encodeURIComponent(driveId));
+  await pp.waitForTimeout(800);
+  must((await pp.evaluate(() => location.hash)).startsWith('#/candidate/walkins'), 'a candidate stays on the public page');
+  must((await pubText()).includes('9000011111'), 'the signed-in candidate does not see the contact');
+});
+
+await check('18. Register -> Log in (existing account) -> registered for that drive', async () => {
+  const LOGIN_T = `Login Path Drive ${stamp}`;
+  const made = await rp.evaluate((b) => TL.api.post('/recruiter/walkin-drives', b), {
+    title: LOGIN_T, jobRole: 'Retail Associate', driveDate: istDay(6), startTime: '09:30', endTime: '13:00',
+    venueName: 'Town Mall', fullAddress: '1 Market Street', city: CITY, documentsToCarry: ['Resume'],
+  });
+  const loginId = made.drive.id;
+  const lc = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const lp = await open(lc, '#/walkins?id=' + encodeURIComponent(loginId));
+  await lp.waitForTimeout(800);
+  await lp.click('text=Register for this drive');
+  await lp.waitForTimeout(1200);
+  await lp.click('.tl-walkin-intent a:has-text("Log in to register")');
+  await lp.waitForTimeout(1200);
+  const b = await lp.evaluate(() => ((document.querySelector('.tl-walkin-intent') || {}).innerText || ''));
+  must(b.includes(LOGIN_T), 'no banner on the login page: ' + b);
+  await shot(lp, '18-login-banner');
+  // one wrong password first: the drive is kept
+  await lp.fill('form.auth-form input[name="email"]', cand.email);
+  await lp.fill('form.auth-form input[name="password"]', 'wrong-' + stamp);
+  await lp.click('form.auth-form button[type="submit"]');
+  await lp.waitForTimeout(1500);
+  must(await lp.evaluate(() => !STATE.session), 'signed in with a wrong password?');
+  must((await lp.evaluate(() => ((document.querySelector('.tl-walkin-intent') || {}).innerText || ''))).includes(LOGIN_T), 'the drive was lost after a failed sign-in');
+  await lp.fill('form.auth-form input[name="email"]', cand.email);
+  await lp.fill('form.auth-form input[name="password"]', cand.password);
+  await lp.click('form.auth-form button[type="submit"]');
+  await lp.waitForFunction(() => STATE.session && STATE.session.role === 'candidate', null, { timeout: 20000 });
+  await lp.waitForTimeout(3000);
+  await wizardAway(lp);
+  const hash = await lp.evaluate(() => location.hash);
+  must(hash.includes(encodeURIComponent(loginId)) && /done=1/.test(hash), 'not on the drive confirmation: ' + hash);
+  const regs = await lp.evaluate(() => TL.api.get('/my-walkin-registrations'));
+  must(regs.upcoming.filter((d) => d.id === loginId).length === 1, 'not registered on the server');
+  await lc.close();
+});
+
+/* ---------------- admin ---------------- */
+await check('19. admin: Walk-in Drives lists every recruiter\'s drives, with filters', async () => {
+  const ac = await browser.newContext({ viewport: { width: 1360, height: 900 }, acceptDownloads: true });
+  const ap = await open(ac, '#/');
+  await signIn(ap, process.env.TL_ADMIN_EMAIL || 'admin@teamlink.com', process.env.TL_ADMIN_PASSWORD || RECRUITER_PW, 'admin', '#/admin/walkins');
+  globalThis.__ap = ap; globalThis.__ac = ac;
+  must(/Walk-in Drives/.test(await text(ap, '.sidebar')), 'no Walk-in Drives in the admin sidebar');
+  await ap.waitForTimeout(800);
+  let t = await text(ap);
+  must(t.includes(TITLE) && t.includes(`Today Drive ${stamp}`), 'drives not listed: ' + t.slice(0, 300));
+  const recName = await ap.$eval(`tr:has-text("${TITLE}") td:nth-child(2)`, (td) => td.innerText.trim());
+  must(recName && recName !== 'Admin', 'no recruiter name: ' + recName);
+  await shot(ap, '19-admin-list');
+  await ap.selectOption('#wkaStatus', 'ONGOING'); await ap.waitForTimeout(1200);
+  t = await text(ap);
+  must(t.includes(`Today Drive ${stamp}`) && !t.includes(TITLE), 'status filter');
+  await ap.selectOption('#wkaStatus', ''); await ap.waitForTimeout(1000);
+  await ap.selectOption('#wkaCity', CITY); await ap.waitForTimeout(1000);
+  const recOpt = await ap.$eval('#wkaRec', (s) => Array.from(s.options).filter((o) => o.value && o.value !== 'none').map((o) => o.value));
+  must(recOpt.length >= 1, 'no recruiters to filter by');
+  await ap.fill('#wkaFrom', istDay(3)); await ap.dispatchEvent('#wkaFrom', 'change'); await ap.waitForTimeout(1000);
+  t = await text(ap);
+  must(t.includes(TITLE) && !t.includes(`Today Drive ${stamp}`), 'date filter');
+  await ap.click('button:has-text("Clear")'); await ap.waitForTimeout(1000);
+});
+
+await check('20. admin: registrations, attendance and export on another recruiter\'s drive', async () => {
+  const ap = globalThis.__ap;
+  await go(ap, '#/admin/walkins?id=' + encodeURIComponent(todayId));
+  let t = await text(ap);
+  must(t.includes(cand.name) && /Run by/.test(t), 'registrations not shown: ' + t.slice(0, 200));
+  const row = `tr:has-text("${cand.name}")`;
+  const btn = await ap.$(`${row} button:has-text("No-show")`);
+  must(btn, 'no attendance buttons');
+  await btn.click(); await ap.waitForTimeout(1200);
+  t = await text(ap);
+  must(/No-show/.test(t) && await ap.$(`${row} button:has-text("Undo")`), 'attendance not marked');
+  const [csv] = await Promise.all([ap.waitForEvent('download'), ap.click('text=Export CSV')]);
+  const pth = join(SHOTS, `admin-registrations-${stamp}.csv`);
+  await csv.saveAs(pth);
+  const { readFileSync } = await import('node:fs');
+  must(readFileSync(pth, 'utf8').includes(cand.name), 'CSV content');
+  await shot(ap, '20-admin-registrations');
+  await ap.click(`${row} button:has-text("Undo")`); await ap.waitForTimeout(800);
+});
+
+await check('21. admin: edit and cancel tell the registered candidates', async () => {
+  const ap = globalThis.__ap;
+  await go(ap, '#/admin/walkins');
+  await ap.click(`tr:has-text("${TITLE}") button:has-text("Edit")`);
+  await ap.waitForSelector('#wkForm');
+  await ap.fill('#wkF_venueName', 'Hotel Grand Main Hall');
+  await ap.click('#wkForm button.btn-primary');
+  await ap.waitForTimeout(2500);
+  let d = (await ap.evaluate(() => TL.api.get('/recruiter/walkin-drives'))).drives.find((x) => x.title === TITLE);
+  must(d.venueName === 'Hotel Grand Main Hall' && d.version === 3, 'admin edit not saved: ' + d.venueName + ' v' + d.version);
+  ap.once('dialog', (dlg) => dlg.accept('Venue closed for repairs'));
+  await ap.click(`tr:has-text("${TITLE}") button:has-text("Cancel")`);
+  await ap.waitForTimeout(2500);
+  d = (await ap.evaluate(() => TL.api.get('/recruiter/walkin-drives'))).drives.find((x) => x.title === TITLE);
+  must(d.status === 'CANCELLED', 'not cancelled: ' + d.status);
+  must(/Cancelled/.test(await ap.$eval(`tr:has-text("${TITLE}")`, (tr) => tr.innerText)), 'the list does not say Cancelled');
+  await shot(ap, '21-admin-cancelled');
+  // the candidates registered for it were told (portal bell), and the drive left the public list
+  const notes = await pp.evaluate(() => TL.api.get('/notifications').then((r) => (r.notifications || []).map((n) => n.title)));
+  must(notes.includes('Walk-in drive details changed') && notes.includes('Walk-in drive cancelled'), 'notifications: ' + JSON.stringify(notes));
+  const pub = await ap.evaluate(() => fetch('/api/public/walkin-drives').then((r) => r.json()));
+  must(!pub.drives.some((x) => x.title === TITLE), 'a cancelled drive is still public');
+  await globalThis.__ac.close();
+});
+
+await check('22. phone width: the public list and the admin screen do not scroll sideways', async () => {
+  const mc = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const mp = await open(mc, '#/walkins');
+  await mp.waitForTimeout(1200);
+  const wide = await mp.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  must(wide <= 1, `public list is ${wide}px wider than the screen`);
+  must((await text(mp)).includes(`Today Drive ${stamp}`), 'list not shown on a phone');
+  await shot(mp, '22-mobile-public');
   await mc.close();
 });
 

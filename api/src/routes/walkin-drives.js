@@ -1,6 +1,11 @@
 /**
  * Walk-in drives (0099).
  *
+ * Public (anyone; signed-out visitors included - 0103):
+ *   GET    /api/public/walkin-drives          upcoming + ongoing, public-safe fields only
+ *                                             ?city=&role=&date=YYYY-MM-DD&q=
+ *   GET    /api/public/walkin-drives/:id      one upcoming/ongoing drive
+ *
  * Candidate (signed in, role candidate):
  *   GET    /api/walkin-drives                 upcoming + ongoing, nearest first
  *                                             ?city=&role=&date=YYYY-MM-DD&q=
@@ -11,7 +16,7 @@
  *   GET    /api/my-walkin-registrations       upcoming and past
  *
  * Recruiter (their own drives) and admin (all):
- *   GET    /api/recruiter/walkin-drives
+ *   GET    /api/recruiter/walkin-drives       ?status=&city=&recruiterId=&from=&to=&q=
  *   POST   /api/recruiter/walkin-drives
  *   GET    /api/recruiter/walkin-drives/:id
  *   PUT    /api/recruiter/walkin-drives/:id
@@ -157,6 +162,50 @@ function shapeDrive(r, extra = {}) {
   };
 }
 
+/**
+ * What a signed-out visitor is shown (0103). Built field by field from the
+ * public function's columns, never by spreading a drive row, so a column
+ * added to walkin_drives later cannot reach the public page by accident.
+ */
+function shapePublicDrive(r) {
+  const d = shapeDrive({ ...r, status: r.live_status });
+  return {
+    id: d.id,
+    title: d.title,
+    companyName: d.companyName,
+    jobRole: d.jobRole,
+    description: d.description,
+    driveDate: d.driveDate,
+    startTime: d.startTime,
+    endTime: d.endTime,
+    dateLabel: d.dateLabel,
+    timeLabel: d.timeLabel,
+    startsAt: d.startsAt,
+    endsAt: d.endsAt,
+    daysLeft: d.daysLeft,
+    venueName: d.venueName,
+    fullAddress: d.fullAddress,
+    city: d.city,
+    mapLink: d.mapLink,
+    salaryRange: d.salaryRange,
+    experienceRequired: d.experienceRequired,
+    qualification: d.qualification,
+    skills: d.skills,
+    documentsToCarry: d.documentsToCarry,
+    maxSeats: d.maxSeats,
+    seatsTaken: d.seatsTaken,
+    seatsLeft: d.seatsLeft,
+    status: d.status,
+  };
+}
+
+const listQuery = z.object({
+  city: z.string().trim().max(80).optional(),
+  role: z.string().trim().max(120).optional(),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().or(z.literal('')),
+  q: z.string().trim().max(120).optional(),
+}).passthrough();
+
 function shapeRegistration(r) {
   return {
     id: r.id,
@@ -255,15 +304,45 @@ export default function walkinDriveRoutes() {
   const candidate = [requireAuth(), requireRole('candidate')];
   const staff = [requireAuth(), requireRole('recruiter', 'admin')];
 
+  /* ---------------- public (anyone, signed in or not) ---------------- */
+
+  // Everything a signed-out visitor sees comes from walkin_public_drives()
+  // (0103), whose column list is the public-safe decision; the shape below
+  // adds only labels computed from those columns.
+  r.get('/public/walkin-drives', wrap(async (req, res) => {
+    const q = parse(listQuery, req.query);
+    const where = ['true'];
+    const vals = [];
+    const add = (sql, v) => { vals.push(v); where.push(sql.replace(/\$\?/g, `$${vals.length}`)); };
+    if (q.city) add(`p.city ilike $?`, `%${q.city}%`);
+    if (q.role) add(`(p.job_role ilike $? or p.title ilike $?)`, `%${q.role}%`);
+    if (q.date) add(`p.drive_date = $?::date`, q.date);
+    if (q.q) {
+      add(`(p.title ilike $? or p.job_role ilike $? or p.city ilike $? or p.venue_name ilike $?
+             or coalesce(p.description,'') ilike $? or coalesce(p.company_name,'') ilike $?
+             or array_to_string(p.skills, ' ') ilike $?)`, `%${q.q}%`);
+    }
+    const out = await withUser(null, async (c) => ({
+      rows: (await c.query(`select * from walkin_public_drives() p where ${where.join(' and ')}
+        order by p.drive_date, p.start_time limit 200`, vals)).rows,
+      cities: (await c.query(`select distinct city from walkin_public_drives() order by 1`)).rows.map((x) => x.city),
+    }));
+    res.setHeader('cache-control', 'no-store');
+    res.json({ drives: out.rows.map(shapePublicDrive), cities: out.cities });
+  }));
+
+  r.get('/public/walkin-drives/:id', wrap(async (req, res) => {
+    const d = await withUser(null, async (c) =>
+      (await c.query(`select * from walkin_public_drives($1)`, [String(req.params.id).slice(0, 80)])).rows[0]);
+    if (!d) throw notFound('That walk-in drive could not be found, or it is no longer open.');
+    res.setHeader('cache-control', 'no-store');
+    res.json({ drive: shapePublicDrive(d) });
+  }));
+
   /* ---------------- candidate ---------------- */
 
   r.get('/walkin-drives', ...candidate, wrap(async (req, res) => {
-    const q = parse(z.object({
-      city: z.string().trim().max(80).optional(),
-      role: z.string().trim().max(120).optional(),
-      date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().or(z.literal('')),
-      q: z.string().trim().max(120).optional(),
-    }).passthrough(), req.query);
+    const q = parse(listQuery, req.query);
 
     const where = [`walkin_live_status(d.status, d.drive_date, d.start_time, d.end_time) in ('UPCOMING','ONGOING')`];
     const vals = [];
@@ -429,10 +508,45 @@ export default function walkinDriveRoutes() {
     return m;
   }
 
+  // Filters for the list (the admin screen uses all of them; a recruiter's
+  // list is already only their own drives, which RLS decides, not these).
+  const staffQuery = z.object({
+    status: z.enum(STATUSES).optional().or(z.literal('')),
+    city: z.string().trim().max(80).optional(),
+    recruiterId: z.string().trim().max(60).optional(),
+    from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use the date picker (YYYY-MM-DD).').optional().or(z.literal('')),
+    to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use the date picker (YYYY-MM-DD).').optional().or(z.literal('')),
+    q: z.string().trim().max(120).optional(),
+  }).passthrough();
+
   r.get('/recruiter/walkin-drives', ...staff, wrap(async (req, res) => {
+    const f = parse(staffQuery, req.query);
+    const where = ['true'];
+    const vals = [];
+    const add = (sql, v) => { vals.push(v); where.push(sql.replace(/\$\?/g, `$${vals.length}`)); };
+    if (f.status) add(`walkin_live_status(d.status, d.drive_date, d.start_time, d.end_time) = $?`, f.status);
+    if (f.city) add(`d.city ilike $?`, `%${f.city}%`);
+    if (f.recruiterId === 'none') where.push('d.created_by_recruiter_id is null');
+    else if (f.recruiterId) add(`d.created_by_recruiter_id = $?`, f.recruiterId);
+    if (f.from) add(`d.drive_date >= $?::date`, f.from);
+    if (f.to) add(`d.drive_date <= $?::date`, f.to);
+    if (f.q) {
+      add(`(d.title ilike $? or d.job_role ilike $? or d.venue_name ilike $? or d.city ilike $?
+             or coalesce(co.name,'') ilike $?)`, `%${f.q}%`);
+    }
     const out = await withUser(req.session, async (c) => {
-      const rows = (await c.query(`${SELECT} order by d.drive_date desc, d.start_time desc limit 500`)).rows;
+      const rows = (await c.query(`${SELECT} where ${where.join(' and ')}
+        order by d.drive_date desc, d.start_time desc limit 500`, vals)).rows;
       const n = await counts(c, rows.map((x) => x.id));
+      // Who runs each drive: the admin screen lists and filters by it.
+      const isAdmin = req.session.role === 'admin';
+      const recruiters = isAdmin
+        ? (await c.query(`select id, name from recruiters order by name limit 1000`)).rows
+        : [];
+      const names = new Map(recruiters.map((x) => [x.id, x.name]));
+      const cities = isAdmin
+        ? (await c.query(`select distinct city from walkin_drives order by 1 limit 500`)).rows.map((x) => x.city)
+        : [];
       const jobs = (await c.query(
         `select j.id, j.title, j.company_id, j.posting_kind from jobs j
           where j.status <> 'closed' and not coalesce(j.archived,false)
@@ -440,9 +554,16 @@ export default function walkinDriveRoutes() {
           order by (j.posting_kind = 'walkin') desc, j.created_at desc limit 300`)).rows;
       const companies = (await c.query(`select id, name from companies order by name limit 1000`)).rows;
       return {
-        drives: rows.map((d) => shapeDrive(d, { counts: n.get(d.id) || { REGISTERED: 0, ATTENDED: 0, NO_SHOW: 0, CANCELLED: 0 } })),
+        drives: rows.map((d) => shapeDrive(d, {
+          counts: n.get(d.id) || { REGISTERED: 0, ATTENDED: 0, NO_SHOW: 0, CANCELLED: 0 },
+          ...(isAdmin ? {
+            recruiterId: d.created_by_recruiter_id || null,
+            recruiterName: d.created_by_recruiter_id ? (names.get(d.created_by_recruiter_id) || '') : '',
+          } : {}),
+        })),
         jobs: jobs.map((j) => ({ id: j.id, title: j.title, companyId: j.company_id, walkin: j.posting_kind === 'walkin' })),
         companies,
+        ...(isAdmin ? { recruiters, cities } : {}),
       };
     });
     res.json(out);
@@ -562,6 +683,11 @@ export default function walkinDriveRoutes() {
     return withUser(req.session, async (c) => {
       const d = await ownDrive(c, req.params.id);
       const rows = (await c.query(`select * from walkin_drive_registrations($1)`, [d.id])).rows;
+      // the admin screen says whose drive it is
+      if (req.session.role === 'admin' && d.created_by_recruiter_id) {
+        const who = (await c.query(`select name from recruiters where id = $1`, [d.created_by_recruiter_id])).rows[0];
+        d.recruiter_name = who ? who.name : '';
+      }
       return { drive: d, rows };
     });
   }
@@ -586,7 +712,9 @@ export default function walkinDriveRoutes() {
     const list = filterRegs(rows, req.query.q, status).map(shapeRegRow);
     const totals = { REGISTERED: 0, ATTENDED: 0, NO_SHOW: 0, CANCELLED: 0 };
     rows.forEach((x) => { totals[x.status] += 1; });
-    res.json({ drive: shapeDrive(drive), registrations: list, totals });
+    const extra = req.session.role === 'admin'
+      ? { recruiterId: drive.created_by_recruiter_id || null, recruiterName: drive.recruiter_name || '' } : {};
+    res.json({ drive: shapeDrive(drive, extra), registrations: list, totals });
   }));
 
   r.patch('/recruiter/walkin-drives/:id/registrations/:regId', ...staff, wrap(async (req, res) => {
