@@ -84,6 +84,8 @@ check(known && known.unknown === false, '  while an unknown address is free');
 /* ---- typing ------------------------------------------------------- */
 for (const [id, text] of [['regName', 'Meghana Rao'], ['regEmail', 'meghana@example.com'],
                           ['regLocation', 'Hyderabad'], ['regPassword', 'Str0ngPass']]) {
+  /* 0109: the form is in seven steps; the password lives on step 6. */
+  await page.evaluate((i) => window.TLRegistration && window.TLRegistration.reveal(i), id);
   await page.click(`#${id}`);
   await page.type(`#${id}`, text, { delay: 15 });
   const got = await page.evaluate((i) => document.getElementById(i).value, id);
@@ -97,6 +99,7 @@ for (const [id, text] of [['regName', 'Meghana Rao'], ['regEmail', 'meghana@exam
  * than whether the key reached the field.
  */
 await page.evaluate(() => {
+  if (window.TLRegistration) window.TLRegistration.reveal('regMobile');
   const el = document.getElementById('regMobile');
   el.value = ''; delete el.dataset.userSet;
 });
