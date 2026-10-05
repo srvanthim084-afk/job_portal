@@ -18,6 +18,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import { toJob, toCandidate } from '../shapes.js';
+import { dateLabel, timeRange } from './walkin-jobs.js';
 import { matchCandidate, scoreSkills } from '../ai/match.js';
 import { scoreApplication, loadAiSettings } from '../ai/screening.js';
 
@@ -60,6 +61,10 @@ export const QUICK_CHIPS = [
   { key: 'urgent', label: 'Urgent hiring' },
   { key: 'salary3', label: 'Salary 3 LPA+' },
   { key: 'walkin', label: 'Walk-in' },
+  /* 0106: walk-in dates, in India - today, and today to Sunday. */
+  { key: 'walkin_today', label: 'Walk-in today' },
+  { key: 'walkin_week', label: 'Walk-in this week' },
+  { key: 'internship', label: 'Internship' },
 ];
 export const CHIP_KEYS = new Set(QUICK_CHIPS.map((c) => c.key));
 
@@ -79,6 +84,11 @@ export const CHIP_SQL = {
   urgent: `(urgent and urgent_until > now())`,
   salary3: `(coalesce(salary_max, salary_min, 0) >= 3)`,
   walkin: `(coalesce(employment_type,'') ~* '^walk' or posting_kind = 'walkin' or walkin_date is not null)`,
+  internship: `(posting_kind = 'internship' or coalesce(employment_type,'') ~* 'intern')`,
+  walkin_today: `(posting_kind = 'walkin' and walkin_date = to_char(now() at time zone 'Asia/Kolkata', 'YYYY-MM-DD'))`,
+  walkin_week: `(posting_kind = 'walkin' and length(coalesce(walkin_date,'')) = 10
+                 and walkin_date >= to_char(now() at time zone 'Asia/Kolkata', 'YYYY-MM-DD')
+                 and walkin_date <= to_char(date_trunc('week', now() at time zone 'Asia/Kolkata') + interval '6 days', 'YYYY-MM-DD'))`,
 };
 
 /** "fresher,urgent" -> ['fresher','urgent'], unknown keys dropped. */
@@ -306,7 +316,14 @@ export function shareText(job, link) {
   ];
   if (location) lines.push(`📍 *Location:* ${location}`);
   if (jobType) lines.push(`💼 *Job Type:* ${jobType}`);
-  if (location || jobType) lines.push('');
+  /* 0106: a walk-in says when and where, from the job's own record. */
+  const walkin = job && (job.jobType === 'walk-in' || job.postingKind === 'walkin');
+  const wDate = walkin ? cleanField(dateLabel(job.walkinDate)) : '';
+  const wTime = walkin ? cleanField(timeRange(job.walkinStartTime || job.walkinFrom, job.walkinEndTime || job.walkinTo)) : '';
+  const wVenue = walkin ? cleanField(job.walkinVenue) : '';
+  if (wDate) lines.push(`📅 *Walk-in Date:* ${wDate}${wTime ? `, ${wTime}` : ''}`);
+  if (wVenue) lines.push(`🏢 *Venue:* ${wVenue}`);
+  if (location || jobType || wDate || wVenue) lines.push('');
   lines.push('👉 *View Job & Apply:*', link, '',
     'Please check the job details and apply if interested.', '',
     '*TeamLink Consultancy*');
