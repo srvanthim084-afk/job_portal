@@ -377,6 +377,13 @@ export function toApplication(r) {
       ? new Date(r.ai_interview_due_at).toISOString() : undefined,
     resumeFile: nz(r.resume_path),
     primary: !!r.is_primary,
+    /* 0107: the walk-in ATS. `version` is what a stage save quotes back
+       (23.8); status is derived from the stage, never set on its own. */
+    ...(r.version != null ? { version: Number(r.version) } : {}),
+    ...(r.application_status ? { applicationStatus: r.application_status } : {}),
+    ...(r.checked_in_at ? { checkedInAt: new Date(r.checked_in_at).toISOString() } : {}),
+    ...(r.attended_at ? { attendedAt: new Date(r.attended_at).toISOString() } : {}),
+    ...(r.interviewed_at ? { interviewedAt: new Date(r.interviewed_at).toISOString() } : {}),
   };
 }
 
@@ -585,7 +592,10 @@ export function attachPrimary(candidates, applications) {
      */
     c.appliedJobId = null;
     const best = furthestAlong(byCandidate.get(c.id));
-    c.stage = best ? best.stage : 'registered';
+    /* 0107: a walk-in stage is read here as its regular equivalent. The
+       candidate-level 'registered' means "no applications at all" and a
+       walk-in applicant at Registered has applied. */
+    c.stage = best ? (WALKIN_EQUIV[best.stage] || best.stage) : 'registered';
     c.matchScore = best ? (best.matchScore ?? 0) : (c.matchScore ?? 0);
   }
   return extra;
@@ -603,7 +613,10 @@ const PROGRESS = {
   applied: 10, ai_screening: 20, shortlisted: 30, with_bde: 35,
   interview_scheduled: 40, ai_interview_done: 50, client_review: 60,
   offer_extended: 70, selected: 80, joined: 90,
+  /* 0107 walk-in stages; No Show, like Rejected, is not progress */
+  registered: 10, attended: 30, interviewed: 40,
 };
+const WALKIN_EQUIV = { registered: 'applied', attended: 'shortlisted', interviewed: 'interview_scheduled', no_show: 'rejected' };
 
 /** The application that best answers "where is this person up to?". */
 function furthestAlong(apps) {

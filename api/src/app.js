@@ -67,6 +67,9 @@ import sharedCandidateRoutes, { engagementRefusalAudit } from './routes/shared-c
 import availabilityRoutes from './routes/availability.js';
 import { startAvailabilitySweep } from './notify/availability-checks.js';
 import { startOutboundHoldSweep } from './notify/apply-hold.js';
+/* 0107: the walk-in ATS (stages, check-in, notes, ratings, resumes, No Show, reminders). */
+import walkinAtsRoutes, { walkinAtsKick } from './routes/walkin-ats.js';
+import { startWalkinAtsSweep } from './notify/walkin-ats.js';
 
 /*
  * The background work belongs to the APPLICATION, not to one entry point.
@@ -133,6 +136,9 @@ function startBackgroundWork(logger) {
     /* One-click apply (0104): candidate messages held through the Undo
        window that a restart left unsent. */
     backgroundStops.push(startOutboundHoldSweep());
+    /* Walk-in ATS (0107): No Show after end + grace, day-before / morning
+       reminders, settled reschedules, recruiter alerts. Every minute, idempotent. */
+    backgroundStops.push(startWalkinAtsSweep());
   } catch (err) {
     console.error('[background] could not start:', err.message);
   }
@@ -324,6 +330,7 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
     res.json({ ok: true });
   });
 
+  app.use('/api', walkinAtsKick());
   app.use('/api', bootstrapRoutes());
   app.use('/api', authRoutes());
   app.use('/api', companyRoutes());
@@ -352,6 +359,7 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', voiceSearchRoutes());
   app.use('/api', sharedCandidateRoutes());
   app.use('/api', availabilityRoutes());
+  app.use('/api', walkinAtsRoutes());
   app.use('/api', candidateRoutes());
   app.use('/api', applicationRoutes());
   app.use('/api', screeningRoutes());

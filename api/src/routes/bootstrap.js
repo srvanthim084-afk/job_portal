@@ -69,7 +69,11 @@ export default function bootstrapRoutes() {
       const admins      = await c.query(`select * from admins limit 1`);
       const stages      = await c.query(
         `select id, label, kanban, candidate_label, owner, next_stage
-           from stages order by sort_order`);
+           from stages
+          /* 0107: the walk-in-only stages stay out of every regular
+             pipeline list; web/teamlink-walkin-ats.js resolves them. */
+          where coalesce(applies_to, 'regular') <> 'walkin'
+          order by sort_order`);
       const settings    = await c.query(`select value from app_settings where key='ai'`);
       // AI interview aggregates, scoped by RLS: a candidate gets their
       // own, a recruiter/client their company's, an admin everything.
