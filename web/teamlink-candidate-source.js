@@ -32,7 +32,10 @@
   }
   function toast(m, i) { if (typeof window.toast === 'function') window.toast(m, i || 'ℹ️'); }
 
+  /* 0111 added the owner's channels first; the 0075 values stay valid. */
   var SOURCES = [
+    'Direct Registration', 'Referral', 'LinkedIn', 'Naukri', 'Indeed', 'Shine',
+    'External Jobs', 'TeamLink Website', 'Walk-in Application',
     'Career Site', 'Job Board', 'Employee Referral', 'Agency/Vendor',
     'Campus/Event', 'Social Media', 'Talent Community Signup',
     'Manual Entry', 'Bulk Import', 'Other',
