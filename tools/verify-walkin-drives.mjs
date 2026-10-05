@@ -3,7 +3,7 @@
  *
  *   recruiter  1  creates a drive through the form (and the form refuses a bad one)
  *              2  the drive is listed with its counts
- *   candidate  3  "Walk-in Drives" is in the header nav and the mobile drawer
+ *   candidate  3  no "Walk-in Drives" tab in the candidate header; the drawer keeps it
  *              4  the list shows the drive card: company, role, date, venue, "X days left", AI match
  *              5  filters: city, role, date, keyword; an empty result says so
  *              6  details: documents to carry, Google Maps link, contact
@@ -155,12 +155,12 @@ await cp.evaluate(async () => {
   await TL.api.put('/candidates/' + id, { title: 'Customer Support Executive', skills: ['Communication', 'Telugu'] }).catch(() => null);
 });
 
-await check('3. "Walk-in Drives" is in the header nav and opens the list', async () => {
+await check('3. no "Walk-in Drives" tab in the candidate header (owner, 2026-10-05); External Jobs stays; the list still opens', async () => {
   await go(cp, '#/candidate/home');
   await wizardAway(cp);
-  const link = await cp.$('nav.cp-nav a:has-text("Walk-in Drives")');
-  must(link, 'no header link');
-  await link.click();
+  must(!(await cp.$('nav.cp-nav a:has-text("Walk-in Drives")')), 'the header still has a Walk-in Drives tab');
+  must(!(await cp.$('.cp-mscroll button:has-text("Walk-in Drives")')), 'the phone header still has a Walk-in Drives tab');
+  await go(cp, '#/candidate/walkins');
   await cp.waitForTimeout(1500);
   must((await cp.evaluate(() => location.hash)).startsWith('#/candidate/walkins'), 'did not navigate');
 });
@@ -329,13 +329,12 @@ const fresh = { email: `walkin.public.${stamp}@tl-verify.test`, name: 'Walkin Pu
 const pubText = () => pp.evaluate(() => ((document.querySelector('#app') || {}).innerText || ''));
 const intentText = () => pp.evaluate(() => ((document.querySelector('.tl-walkin-intent') || {}).innerText || '').split(String.fromCharCode(10)).join(' '));
 
-await check('14. signed out: "Walk-in Drives" in the header and on the jobs page; the list and filters work', async () => {
+await check('14. signed out: no walk-in links in the header or on the jobs page (owner, 2026-10-05); #/walkins still lists and filters', async () => {
   must(await pp.evaluate(() => !STATE.session), 'should be signed out');
-  must(await pp.$('header .main-nav a[href="#/walkins"]'), 'no Walk-in Drives link in the site header');
-  const entry = await pp.$('a.wk-jobs-entry');
-  must(entry, 'no Walk-in Drives entry on the jobs page');
+  must(!(await pp.$('header .main-nav a[href="#/walkins"]')), 'a Walk-ins link is in the signed-out header');
+  must(!(await pp.$('a.wk-jobs-entry')), 'a Walk-in Drives entry is on the signed-out jobs page');
   await shot(pp, '14-public-jobs-entry');
-  await entry.click();
+  await pp.evaluate(() => { location.hash = '#/walkins'; });
   await pp.waitForTimeout(1500);
   must((await pp.evaluate(() => location.hash)) === '#/walkins', 'did not open #/walkins');
   let t = await pubText();

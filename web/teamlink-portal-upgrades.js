@@ -112,6 +112,15 @@
     + '.tlpu-acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}.tlpu-acts button{flex:1 1 auto;min-height:44px}'
     + '.tlpu-sharegrid{display:grid;grid-template-columns:1fr 1fr;gap:8px}'
     + '.tlpu-sharegrid button{min-height:48px;border:1px solid #d5dde8;border-radius:10px;background:#fff;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit}'
+    + '.tlpu-sharegrid button:focus-visible{outline:3px solid #93c5fd;outline-offset:2px}'
+    + '.tlpu-sp{display:flex;gap:12px;align-items:center;border:1px solid #e6ebf2;border-radius:12px;padding:12px;margin:6px 0 14px;background:#f8fafd}'
+    + '.tlpu-sp-logo{flex:0 0 44px;height:44px;border-radius:10px;color:#fff;font-weight:800;display:flex;align-items:center;justify-content:center;font-size:15px}'
+    + '.tlpu-sp-txt{min-width:0;font-size:13px;color:#3a4a5e}'
+    + '.tlpu-sp-txt b{display:block;font-size:14.5px;color:#16202c;overflow-wrap:anywhere}'
+    + '.tlpu-sp-meta{color:#5b6878;margin-top:2px;overflow-wrap:anywhere}'
+    + '.tlpu-sp-walk{display:inline-block;margin-top:6px;font-size:11.5px;font-weight:800;color:#7c2d12;background:#ffedd5;border-radius:999px;padding:2px 9px}'
+    + '.tlpu-sp-label{font-size:11.5px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:#7b8794;margin:0 0 8px}'
+    + '#tlpuShareLink{white-space:pre-wrap;user-select:all;max-height:220px;overflow:auto}'
     + '.tlpu-link{font-size:12px;color:#5b6676;word-break:break-all;background:#f5f7fa;border-radius:8px;padding:8px 10px;margin:10px 0 0}'
     + '.tlpu-jp .panel-body{display:flex;flex-direction:column;gap:9px}'
     + '.tlpu-kv{display:flex;gap:8px;font-size:13px;line-height:1.45}.tlpu-kv .k{flex:0 0 96px;color:#5b6676;font-weight:600}'
@@ -553,50 +562,92 @@
   }
   window.tlpuCloseSheet = closeOverlay;
 
+  /* The sheet: "Share this Job", a preview of the job, then WhatsApp, Copy
+     Link (the link only), Copy Job Details (the whole message) and More
+     (the device's own share sheet, where the browser has one). The
+     message and the link come from the server for THIS job (POST
+     /jobs/:id/share), never built here. */
+  var NATIVE = Object.create(null);    // jobId -> share answer, fetched when the sheet opens
   window.tlpuShare = function (jobId) {
-    var job = jobOf(jobId);
     if (!ready()) return;
-    var phone = (navigator.maxTouchPoints || 0) > 0 && window.matchMedia && window.matchMedia('(max-width: 820px)').matches;
-    if (phone && typeof navigator.share === 'function') {
-      makeShare(jobId, 'native').then(function (s) {
-        return navigator.share({ title: job ? job.title : 'Job on TeamLink', text: s.text, url: s.url });
-      }).catch(function (err) {
-        if (err && err.name === 'AbortError') return;
-        shareSheet(jobId);
-      });
-      return;
-    }
     shareSheet(jobId);
   };
+  function initials(name) {
+    return String(name || '').split(/\s+/).filter(Boolean).slice(0, 2).map(function (w) { return w[0]; }).join('').toUpperCase() || 'TL';
+  }
+  function companyOf(job) {
+    try { return job && DATA.companyById ? DATA.companyById(job.companyId) : null; } catch (e) { return null; }
+  }
   function shareSheet(jobId) {
-    var job = jobOf(jobId);
-    overlay('<h3>Share this job</h3><p>' + h(job ? job.title : '') + (job && job.location ? ' · ' + h(job.location) : '') + '</p>'
+    var job = jobOf(jobId) || {};
+    var co = companyOf(job) || {};
+    var coName = /\bclient\b/i.test(co.name || '') ? '' : (co.name || '');
+    var walk = job.postingKind === 'walkin' || job.jobType === 'walk-in' || /^walk.?in$/i.test(job.type || '');
+    var bits = [job.location, job.pay, job.exp].map(function (x) { return x == null ? '' : String(x).trim(); })
+      .filter(function (x) { return x && !/^(undefined|null)$/i.test(x); });
+    var logo = '<span class="tlpu-sp-logo" aria-hidden="true" style="background:linear-gradient(135deg,'
+      + h(co.color1 || '#1d6ff2') + ',' + h(co.color2 || '#38bdf8') + ')">' + h(initials(coName || job.title)) + '</span>';
+    var canNative = typeof navigator.share === 'function';
+    overlay('<h3 id="tlpuShareH">Share this Job</h3>'
+      + '<div class="tlpu-sp">' + logo + '<div class="tlpu-sp-txt"><b>' + h(job.title || 'Job') + '</b>'
+      + (coName ? '<div>' + h(coName) + '</div>' : '')
+      + (bits.length ? '<div class="tlpu-sp-meta">' + bits.map(h).join(' · ') + '</div>' : '')
+      + (walk ? '<span class="tlpu-sp-walk">🚶 Walk-in Interview</span>' : '') + '</div></div>'
+      + '<div class="tlpu-sp-label">Share via</div>'
       + '<div class="tlpu-sharegrid">'
       + '<button type="button" data-ch="whatsapp" onclick="tlpuShareVia(\'' + h(jobId) + '\',\'whatsapp\')">🟢 WhatsApp</button>'
-      + '<button type="button" data-ch="copy" onclick="tlpuShareVia(\'' + h(jobId) + '\',\'copy\')">🔗 Copy link</button>'
-      + '<button type="button" data-ch="email" onclick="tlpuShareVia(\'' + h(jobId) + '\',\'email\')">✉️ Email</button>'
-      + '<button type="button" data-ch="linkedin" onclick="tlpuShareVia(\'' + h(jobId) + '\',\'linkedin\')">in LinkedIn</button>'
-      + '</div><div class="tlpu-link" id="tlpuShareLink" style="display:none"></div>'
+      + '<button type="button" data-ch="copy" onclick="tlpuShareVia(\'' + h(jobId) + '\',\'copy\')">📋 Copy Link</button>'
+      + '<button type="button" data-ch="details" onclick="tlpuShareVia(\'' + h(jobId) + '\',\'details\')">📄 Copy Job Details</button>'
+      + (canNative ? '<button type="button" data-ch="native" onclick="tlpuShareVia(\'' + h(jobId) + '\',\'native\')">📤 More</button>' : '')
+      + '</div><div class="tlpu-link" id="tlpuShareLink" style="display:none" tabindex="0"></div>'
       + '<div class="tlpu-acts"><button type="button" class="btn btn-ghost" onclick="tlpuCloseSheet()">Close</button></div>');
+    var sheet = document.querySelector('#tlpuOverlay .tlpu-sheet');
+    if (sheet) {
+      sheet.setAttribute('aria-labelledby', 'tlpuShareH');
+      var first = sheet.querySelector('.tlpu-sharegrid button');
+      if (first) try { first.focus(); } catch (e) {}
+      sheet.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeOverlay(); });
+    }
+    /* The device's share sheet must open inside the tap, so its message is
+       fetched now, while the person reads the preview. */
+    if (canNative && !NATIVE[jobId]) {
+      makeShare(jobId, 'native').then(function (r) { NATIVE[jobId] = r; }, function () {});
+    }
+  }
+  function copyText(text, done, fallbackText) {
+    var box = document.getElementById('tlpuShareLink');
+    var show = function () {
+      if (box) { box.style.display = 'block'; box.textContent = fallbackText || text; }
+      say('Copy it from the box below', '📋');
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, show);
+    } else show();
   }
   window.tlpuShareVia = function (jobId, channel) {
+    var job = jobOf(jobId) || {};
+    if (channel === 'native') {
+      var ready0 = NATIVE[jobId];
+      var go = function (s) {
+        return navigator.share({ title: job.title || 'Job on TeamLink', text: s.body || s.text, url: s.url })
+          .then(function () { closeOverlay(); }, function () { /* cancelled - the sheet stays */ });
+      };
+      if (ready0) { go(ready0); return; }
+      makeShare(jobId, 'native').then(function (s) { NATIVE[jobId] = s; go(s); }, function (err) { if (api() && api().say) api().say(err); });
+      return;
+    }
     /* Opened inside the tap, filled in when the link exists - a window
        opened after an await is a pop-up, and blocked. */
-    var win = (channel === 'whatsapp' || channel === 'linkedin') ? window.open('about:blank', '_blank') : null;
-    makeShare(jobId, channel).then(function (s) {
-      var box = document.getElementById('tlpuShareLink');
-      if (box) { box.style.display = 'block'; box.textContent = s.text; }
+    var win = channel === 'whatsapp' ? window.open('about:blank', '_blank') : null;
+    makeShare(jobId, channel === 'details' ? 'copy' : channel).then(function (s) {
       window.TLPortalUpgrades.lastShare = s;
-      if (channel === 'whatsapp' || channel === 'linkedin') {
-        var url = channel === 'whatsapp' ? s.links.whatsapp : s.links.linkedin;
+      if (channel === 'whatsapp') {
+        var url = s.links.whatsapp;
         if (win && !win.closed) { try { win.opener = null; } catch (e) {} win.location.href = url; } else window.open(url, '_blank', 'noopener');
-      } else if (channel === 'email') {
-        location.href = s.links.email;
-      } else {
-        var done = function () { say('Link copied', '🔗'); };
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(s.text).then(done, function () { say('Copy the link below', '🔗'); });
-        } else say('Copy the link below', '🔗');
+      } else if (channel === 'copy') {
+        copyText(s.url, function () { say('✓ Job link copied!', '🔗'); }, s.url);
+      } else if (channel === 'details') {
+        copyText(s.text, function () { say('✓ Job details copied!', '📋'); }, s.text);
       }
     }, function (err) {
       if (win) try { win.close(); } catch (e) {}
