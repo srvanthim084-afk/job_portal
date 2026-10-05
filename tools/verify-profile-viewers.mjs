@@ -13,7 +13,8 @@
  * Creates accounts and a job, so it refuses :4323. Run against an isolated
  * instance:
  *   TL_URL=http://127.0.0.1:4422/ TL_CLIENT_EMAIL=... node tools/verify-profile-viewers.mjs
- * Without TL_CLIENT_EMAIL the client step is skipped and says so.
+ * Without TL_CLIENT_EMAIL the administrator creates a client login for the job's
+ * company (POST /api/staff/clients, temporary password changed at first sign-in).
  */
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
@@ -78,7 +79,7 @@ const job = await rp.evaluate(async (s) => {
   const j = await TL.api.post('/jobs', { title: `Medical Coder ${s}`, companyId: co.id, location: 'Hyderabad',
     mode: 'Onsite', exp: '0-2 yrs', pay: '₹3 LPA', salaryMin: 3, salaryMax: 3, type: 'Full-time',
     status: 'open', skills: ['ICD-10'], description: 'Verification job - safe to delete.' });
-  return { id: j.job.id, title: j.job.title, company: co.name };
+  return { id: j.job.id, title: j.job.title, company: co.name, companyId: co.id };
 }, stamp);
 
 const cc = await browser.newContext({ viewport: { width: 1280, height: 900 } });
@@ -114,13 +115,48 @@ await check('1. a recruiter opens the profile twice -> one view, first name and 
   await shot(cp, 'viewers-recruiter');
 });
 
+/*
+ * The client login. TL_CLIENT_EMAIL uses an existing one; otherwise the
+ * administrator creates one for the job's company through the supported
+ * API (POST /api/staff/clients - a temporary password the client must
+ * change at first sign-in), and the client changes it, as a real client
+ * would. The passwords are generated here and never printed.
+ */
+let client = CLIENT ? { email: CLIENT, password: process.env.TL_CLIENT_PASSWORD || PW, made: false } : null;
+async function makeClientLogin() {
+  const ac = await browser.newContext({ viewport: { width: 1366, height: 900 } });
+  const ap = await open(ac, '#/');
+  await signIn(ap, ADMIN, PW);
+  const temp = `Tmp${stamp}#${Math.random().toString(36).slice(2, 8)}A1`;
+  const made = await ap.evaluate((b) => TL.api.post('/staff/clients', b).then((r) => r, (e) => ({ error: e.message })), {
+    name: `Hiring Lead ${stamp}`, email: `client.${stamp}@tl-verify.test`, password: temp, confirmPassword: temp,
+    companyId: job.companyId, title: 'Hiring Manager',
+  });
+  await ac.close();
+  must(made && made.client && made.mustChangePassword === true, 'could not create the client login: ' + JSON.stringify(made));
+  must(!JSON.stringify(made).includes(temp), 'the create response carried the password');
+  return { email: made.client.email, password: temp, made: true };
+}
+
 await check('2. the client opens their shortlist -> "A hiring team"', async () => {
-  if (!CLIENT) { skipped += 1; throw new Error('SKIPPED - set TL_CLIENT_EMAIL to a client login on this instance'); }
+  if (!client) client = await makeClientLogin();
   const ok = await rp.evaluate((id) => TL.api.put(`/applications/${id}/status`, { stage: 'shortlisted' }).then(() => 'ok', (e) => e.message), appId);
   must(ok === 'ok', 'could not shortlist: ' + ok);
   const kc = await browser.newContext({ viewport: { width: 1366, height: 900 } });
   const kp = await open(kc, '#/');
-  await signIn(kp, CLIENT, process.env.TL_CLIENT_PASSWORD || PW);
+  if (client.made) {
+    /* first sign-in with the temporary password: it must be changed */
+    const first = await kp.evaluate(({ e, p }) => TL.api.post('/auth/login', { email: e, password: p }), { e: client.email, p: client.password });
+    must(first.session && first.session.role === 'client' && first.session.mustChangePassword === true,
+      'the temporary password was not flagged: ' + JSON.stringify(first.session));
+    const next = `Own${stamp}#${Math.random().toString(36).slice(2, 8)}B2`;
+    const ch = await kp.evaluate(({ c, n }) => TL.api.post('/auth/password', { current: c, next: n }).then(() => 'ok', (e) => e.message),
+      { c: client.password, n: next });
+    must(ch === 'ok', 'could not change the temporary password: ' + ch);
+    client.password = next;
+  }
+  await signIn(kp, client.email, client.password);
+  must(await kp.evaluate(() => STATE.session && STATE.session.role === 'client'), 'not signed in as the client');
   await go(kp, '#/client/shortlisted');
   await kp.waitForTimeout(1500);
   await kc.close();
@@ -134,7 +170,7 @@ await check('2. the client opens their shortlist -> "A hiring team"', async () =
 await check('3. the page never shows an email, a company name or the word "client"', async () => {
   const text = await cp.evaluate(() => document.querySelector('.tlpv-two').innerText + ' ' + document.querySelector('.tlpv-stats').innerText);
   must(!/client/i.test(text), 'the word "client" is on the page');
-  must(!text.includes(RECRUITER) && !text.includes(CLIENT || '@@'), 'an email is on the page');
+  must(!text.includes(RECRUITER) && !text.includes((client && client.email) || '@@'), 'an email is on the page');
   must(!text.includes(job.company), `the company "${job.company}" is on the page`);
   const json = JSON.stringify(await viewers(cp));
   must(!/client/i.test(json) && !json.includes(job.company) && !json.includes('@'), 'the API response carries something it must not');
