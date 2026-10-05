@@ -5,7 +5,7 @@
  *      five tips each with points and a Fix now button
  *   2  Profile shows the score card; "Fix now" opens that exact field
  *   3  the profile improves -> Re-score -> "Score improved from X to Y"
- *   4  score under 60 -> Apply shows a gentle hint; "Apply anyway" applies
+ *   4  score under 60 -> the application form shows a gentle hint line; it still applies
  *   5  a resume upload -> "Your resume scored N/100", optional (Later)
  *   6  an unreadable file -> "We could not read your resume. Try a PDF or
  *      DOCX", never a 0
@@ -17,6 +17,7 @@
  *   TL_URL=http://127.0.0.1:4422/ node tools/verify-resume-score.mjs
  */
 import { chromium } from 'playwright';
+import { completeApplyForm, closeApplyForm } from './lib/apply-form.mjs';
 import { mkdirSync } from 'node:fs';
 
 const BASE = (process.env.TL_URL || 'http://127.0.0.1:4422/').replace(/\/?$/, '/');
@@ -159,7 +160,7 @@ await check('3. the profile improves -> Re-score -> "Score improved from X to Y"
 const deskCtx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
 const B = await newCandidate(deskCtx, 'b');
 
-await check('4. a score under 60: Apply shows a gentle hint, "Apply anyway" applies', async () => {
+await check('4. a score under 60: the application form shows a gentle hint, and applying still works', async () => {
   /* The hint is for a profile that is complete but thin. A profile still
      missing what one-click apply needs gets "Fill N things to apply"
      instead (one nudge, not two) - so B gets those things, thinly. */
@@ -175,14 +176,17 @@ await check('4. a score under 60: Apply shows a gentle hint, "Apply anyway" appl
   const s = await B.p.evaluate(() => TLResumeScore.load(true));
   must(s && s.status === 'scored' && s.total < 60, 'score ' + (s && s.total));
   await go(B.p, `#/job/${job.id}`);
-  await B.p.evaluate((id) => applyToJob(id), job.id);
-  await B.p.waitForSelector('#tlrsApplyAnyway', { timeout: 8000 });
-  const text = await B.p.evaluate(() => document.querySelector('.fcr-jd-head').innerText);
-  must(/Improve your profile to get more calls/.test(text), text);
+  /* Since 0106 the hint is one line inside the application form
+     (teamlink-walkin-jobs.js) rather than a pop-up before it. */
+  await B.p.evaluate((id) => { applyToJob(id); }, job.id);
+  await B.p.waitForSelector('#tlafForm .tlaf-hint', { timeout: 8000 });
+  const text = await B.p.evaluate(() => document.querySelector('#tlafForm .tlaf-hint').innerText);
+  must(/resume score is \d+\/100/.test(text) && /Improve it/.test(text), text);
   await shot(B.p, 'score-apply-hint');
-  must(await B.p.evaluate(() => !!document.getElementById('tlrsImprove')), 'no Improve button');
-  await B.p.click('#tlrsApplyAnyway');
-  await B.p.waitForTimeout(2000);
+  const done = await completeApplyForm(B.p);
+  must(done.state === 'done', 'form: ' + JSON.stringify(done));
+  await closeApplyForm(B.p);
+  await B.p.waitForTimeout(1000);
   const n = await B.p.evaluate((id) => TL.api.get('/applications').then((o) => o.applications.filter((a) => a.jobId === id).length), job.id);
   must(n === 1, `applications: ${n}`);
 });

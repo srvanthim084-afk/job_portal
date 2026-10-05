@@ -38,7 +38,7 @@ import staffRoutes from './routes/staff.js';
 import externalJobRoutes from './routes/external-jobs.js';
 import savedSearchRoutes from './routes/saved-searches.js';
 import pushRoutes from './routes/push.js';
-import walkinDriveRoutes from './routes/walkin-drives.js';
+import applyFormRoutes from './routes/apply-form.js';
 import careerAssistantRoutes from './routes/career-assistant.js';
 import portalUpgradeRoutes, { mountPublicJobPage } from './routes/portal-upgrades.js';
 import profileViewerRoutes from './routes/profile-viewers.js';
@@ -56,7 +56,7 @@ import { startBulkMessageSweep } from './notify/bulk.js';
 import { startExternalSyncSweep } from './external/service.js';
 import { startApplyReminderSweep } from './external/reminder.js';
 import { startSavedSearchAlerts } from './notify/saved-search-alerts.js';
-import { startWalkinSweep } from './notify/walkin.js';
+import { startWalkinJobs } from './notify/walkin-jobs.js';
 import { startPortalSweep } from './portal/alerts.js';
 import { startProfileViewDigest } from './notify/profile-view-digest.js';
 import { startResumeScoreSweep } from './resume/score.js';
@@ -116,9 +116,9 @@ function startBackgroundWork(logger) {
     /* Saved-search alerts: instant ones the publish hook missed, and the
        08:00 IST daily / Monday weekly digests. Idempotent per slot. */
     backgroundStops.push(startSavedSearchAlerts());
-    /* Walk-in drives (0099): statuses move to ONGOING/COMPLETED, and the
-       day-before / morning-of reminders go out. Idempotent per message. */
-    backgroundStops.push(startWalkinSweep());
+    /* Walk-in jobs (0106): the old walk-in drives move into Jobs once,
+       and a walk-in closed before its date tells its applicants, once. */
+    backgroundStops.push(startWalkinJobs());
     /* Job portal upgrades (0095): urgent-hiring and last-date alerts,
        closing jobs past their last date, urgent auto-off, retries. */
     backgroundStops.push(startPortalSweep());
@@ -337,6 +337,10 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', bdeRoutes());
   /* Ahead of the job and application routes: it adds rules to applying
      and chips to the job board on their own paths (0095). */
+  /* 0106: the application form hands each submission on to POST
+     /applications, so it is mounted ahead of the routes that guard and
+     make an application. */
+  app.use('/api', applyFormRoutes());
   app.use('/api', portalUpgradeRoutes());
   app.use('/api', jobRoutes());
   // Before candidateRoutes: /candidates/export must not be read as
@@ -350,7 +354,6 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', savedSearchRoutes());
   app.use('/api', savedJobAlertRoutes());
   app.use('/api', pushRoutes());
-  app.use('/api', walkinDriveRoutes());
   app.use('/api', careerAssistantRoutes());
   /* Before candidateRoutes: /candidates/search-appearances is a literal
      path, and /candidates/:id/viewed belongs to who-viewed (0093). */

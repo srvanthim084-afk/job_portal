@@ -57,6 +57,55 @@ export function toCompany(r) {
   };
 }
 
+/**
+ * When a walk-in ends, as an instant: 'YYYY-MM-DD' + 'HH:MM' read in IST
+ * (the same rule as walkin_ends_at() in 0106). No end time means the end
+ * of that day. A date that is not a calendar date gives null - an older
+ * form let recruiters type "05 Oct" - and such a walk-in is never closed
+ * by the clock.
+ */
+export function walkinEndsAt(date, to) {
+  const d = String(date || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return null;
+  const t = /^\d{1,2}:\d{2}/.test(String(to || '').trim()) ? String(to).trim().slice(0, 5).padStart(5, '0') : '23:59';
+  const at = Date.parse(`${d}T${t}:00+05:30`);
+  return Number.isFinite(at) ? at : null;
+}
+export function walkinStartsAt(date, from) {
+  const d = String(date || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return null;
+  const t = /^\d{1,2}:\d{2}/.test(String(from || '').trim()) ? String(from).trim().slice(0, 5).padStart(5, '0') : '00:00';
+  const at = Date.parse(`${d}T${t}:00+05:30`);
+  return Number.isFinite(at) ? at : null;
+}
+
+function walkinShape(r, now = Date.now()) {
+  const ends = walkinEndsAt(r.walkin_date, r.walkin_to);
+  const open = r.status === 'open' && !r.paused && !r.archived;
+  const cap = r.walkin_capacity == null ? null : Number(r.walkin_capacity);
+  const taken = r.walkin_registered == null ? null : Number(r.walkin_registered);
+  return {
+    walkinDate: nz(r.walkin_date),
+    walkinStartTime: nz(r.walkin_from),
+    walkinEndTime: nz(r.walkin_to),
+    walkinVenue: nz(r.walkin_venue),
+    walkinAddress: nz(r.walkin_address),
+    walkinMapLink: nz(r.walkin_map_link),
+    walkinContactPerson: nz(r.walkin_contact),
+    walkinContactNumber: nz(r.walkin_phone),
+    walkinDocumentsToCarry: nz(r.walkin_documents),
+    walkinInstructions: nz(r.walkin_instructions),
+    walkinSlotCapacity: cap == null ? undefined : cap,
+    ...(cap != null && taken != null ? {
+      walkinRegistered: taken,
+      walkinSlotsLeft: Math.max(0, cap - taken),
+      walkinFull: taken >= cap,
+    } : {}),
+    walkinEndsAt: ends == null ? undefined : new Date(ends).toISOString(),
+    walkinStatus: (!open || (ends != null && now > ends)) ? 'closed' : 'open',
+  };
+}
+
 export function toJob(r) {
   const j = {
     id: r.id,
@@ -100,6 +149,20 @@ export function toJob(r) {
       walkinContact: nz(r.walkin_contact),
       walkinPhone: nz(r.walkin_phone),
     } : {}),
+
+    /*
+     * 0106. Walk-in is a JOB TYPE. `jobType` follows the posting kind;
+     * a job that never said (every job before this) is 'regular', and
+     * an internship keeps its own kind. The walk-in keys are the names
+     * the owner's spec uses, beside the 0083 names above (other code
+     * reads those). `walkinStatus` is derived at READ time: closed once
+     * the walk-in's date and end time have passed in IST, or when the
+     * posting itself is not open - no cron job, and reopening is an
+     * edit of the date.
+     */
+    jobType: r.posting_kind === 'walkin' ? 'walk-in'
+      : r.posting_kind === 'internship' ? 'internship' : 'regular',
+    ...(r.posting_kind === 'walkin' ? walkinShape(r) : {}),
 
     ...(r.internship_duration || r.internship_type || r.stipend != null ? {
       internshipDuration: nz(r.internship_duration),

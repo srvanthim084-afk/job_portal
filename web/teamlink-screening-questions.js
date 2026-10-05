@@ -430,6 +430,21 @@
     },
     pendingFor: pendingFor,
     open: openDetail,
+    /* 0106: the application form (teamlink-walkin-jobs.js) asks the
+       job's questions as a section of itself, with this same form and
+       its same checks, instead of a second pop-up. */
+    questionsFor: function (jobId) {
+      if (!jobId || isExternal(jobId) || role() !== 'candidate' || !api()) return Promise.resolve(null);
+      return api().get('/jobs/' + encodeURIComponent(jobId) + '/screening-questions').then(function (data) {
+        return data && data.questions && data.questions.length ? data : null;
+      }, function () { return null; });
+    },
+    mountForm: function (host, data, onChange) {
+      css();
+      var state = { questions: data.questions, answers: {} };
+      Object.keys(data.prefill || {}).forEach(function (k) { state.answers[k] = data.prefill[k]; });
+      return mountForm(host, state, onChange);
+    },
   };
 
   /* Apply Now (and Easy Apply, which goes through it) asks first. */
