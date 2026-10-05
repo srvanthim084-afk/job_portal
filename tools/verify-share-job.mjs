@@ -50,7 +50,8 @@ const J = await sp.evaluate(async ({ e, pw, s }) => {
     exp: '0-Any', pay: '₹3 LPA', salaryMin: 3, salaryMax: 3, type: 'Walk-in', postingKind: 'walkin', education: 'Any Degree',
     requirements: ['Good Communication Skills', 'Telugu & English are Mandatory'],
     walkinDate: '2026-10-10', walkinFrom: '10:00', walkinTo: '16:00',
-    walkinVenue: 'TeamLink Consultants (OPC) Pvt. Ltd.', walkinContact: 'HR Desk', walkinPhone: '9032321414',
+    walkinVenue: 'TeamLink Consultants (OPC) Pvt. Ltd.', walkinAddress: 'Plot 12, KPHB Phase 1, Hyderabad 500072',
+    walkinContact: 'HR Desk', walkinPhone: '9032321414',
     desc: 'Verification job - safe to delete.' });
   const reg = await TL.api.post('/jobs', { ...base, title: `Software Developer ${s}`, location: 'Hyderabad', mode: 'Hybrid',
     exp: '1-3 yrs', pay: '₹5-8 LPA', salaryMin: 5, salaryMax: 8, type: 'Full-time', education: 'B.Tech / M.Tech',
@@ -126,7 +127,7 @@ await check('1. walk-in job: preview with the Walk-in badge; the WhatsApp messag
     '🎓 Qualification: Any Degree', '🌟 Freshers Can Apply', '💰 Salary: ₹3 LPA', '📍 Location: KPHB, Hyderabad',
     '🚶 Walk-In Interview', '📅 Walk-In Date: 10 October 2026', '⏰ Interview Time: 10:00 AM – 4:00 PM',
     '⚠️ Important: The job post copy must be shown at the main gate entrance.', '📍 Venue:',
-    'TeamLink Consultants (OPC) Pvt. Ltd.', '📞 Contact: HR Desk – 9032321414', '• Telugu & English are Mandatory']) {
+    'TeamLink Consultants (OPC) Pvt. Ltd.', 'Plot 12, KPHB Phase 1, Hyderabad 500072', '📞 Contact: HR Desk – 9032321414', '• Telugu & English are Mandatory']) {
     must(lines(t).includes(l), `missing: ${l}`);
   }
   must(new RegExp(`👉 View Job & Apply: \\S+/job/${J.walk}\\?ref=`).test(t), 'no link to this job');
