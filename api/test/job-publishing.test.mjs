@@ -30,9 +30,9 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { startTestDb, applyTestEnv, makeClient } from './harness.mjs';
 
-const DB_PORT = 5491;
-const API_PORT = 9991;
-const PARTNER_PORT = 9893;
+const DB_PORT = 5597;
+const API_PORT = 9997;
+const PARTNER_PORT = 9897;
 const WEB = resolve(dirname(fileURLToPath(import.meta.url)), '../../web');
 
 const NAUKRI_KEY = 'nk_live_TEST_ONLY_8f3a91c2d4e5b6a7';
