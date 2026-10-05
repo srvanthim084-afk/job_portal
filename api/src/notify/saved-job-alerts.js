@@ -12,8 +12,10 @@
  *   same role       app_role_key() of the two titles is the same
  *                   ("Senior Java Developer" = "Java Developer")
  *   similar role    the distinctive title words overlap by half or more,
- *                   both ways ("ICU Nurse" ~ "Staff Nurse"), and where
- *                   both jobs list skills they share at least one
+ *                   both ways ("ICU Nurse" ~ "Staff Nurse"), or one title
+ *                   is wholly inside the other; sharing more than a level
+ *                   or shift word ("Sales Manager" !~ "Store Manager");
+ *                   and where both jobs list skills they share one
  *   shared skills   two or more skills in common covering 60% of the
  *                   shorter list, with some title overlap - or three or
  *                   more skills in common on their own
@@ -108,11 +110,31 @@ const stopUrl = (candidateId) =>
 
 const norm = (v) => String(v || '').toLowerCase().replace(/\s+/g, ' ').trim();
 
-/** How much of a's distinctive title words b's title shares (0..1). */
+/*
+ * Words that say what LEVEL or SHIFT a job is, not what it is: two titles
+ * that share only these ("Sales Manager" / "Store Manager") are not the
+ * same kind of job. The match engine's own STOP_TITLE already drops
+ * "senior", "developer", "executive" and the like.
+ */
+const GENERIC = new Set([
+  'manager', 'officer', 'assistant', 'operator', 'technician', 'worker', 'staff', 'head', 'helper',
+  'supervisor', 'trainee', 'intern', 'internship', 'coordinator', 'incharge', 'member', 'team', 'boy', 'girl',
+  'night', 'day', 'shift', 'remote', 'onsite', 'hybrid', 'full', 'part', 'time', 'walk', 'walkin', 'fresher',
+  'freshers', 'iii', 'level', 'grade', 'new', 'job', 'jobs', 'vacancy', 'opening', 'openings', 'post',
+]);
+
+/**
+ * How much of a's distinctive title words b's title shares (0..1), and
+ * whether any shared word is more than a level or a shift - through the
+ * match engine's role scorer (ai/match.js scoreRole).
+ */
 function titleShare(a, b) {
   const r = scoreRole({ title: a.title }, { title: b.title });
-  if (r.weak) return norm(a.title) && norm(a.title) === norm(b.title) ? 1 : 0;
-  return r.ratio || 0;
+  if (r.weak) {
+    const same = !!norm(a.title) && norm(a.title) === norm(b.title);
+    return { ratio: same ? 1 : 0, real: same };
+  }
+  return { ratio: r.ratio || 0, real: (r.matched || []).some((w) => !GENERIC.has(w)) };
 }
 
 /** The skills of `a` that `b` also lists, in a's own spelling. */
@@ -141,7 +163,12 @@ export function relatedJob(job, saved) {
   if (job.roleKey && saved.roleKey && job.roleKey === saved.roleKey) {
     return { related: true, reason: 'same role', why: 'it is the same role as the job you saved', strength: 100 };
   }
-  const t = Math.min(titleShare(job, saved), titleShare(saved, job));
+  const ab = titleShare(job, saved), ba = titleShare(saved, job);
+  /* Half or more of each title's words in the other, or one title wholly
+     inside the other ("Staff Nurse" in "ICU Staff Nurse (Night Shift)") -
+     and in either case sharing a word that is more than a level. */
+  const real = ab.real || ba.real;
+  const t = real ? Math.max(Math.min(ab.ratio, ba.ratio), Math.max(ab.ratio, ba.ratio) === 1 ? 0.5 : 0) : 0;
   const nJob = skillCount(job), nSaved = skillCount(saved);
   const both = nJob > 0 && nSaved > 0;
   const shared = both ? sharedSkills(job, saved) : [];
@@ -201,11 +228,15 @@ async function attempt(fn, args) {
  * ------------------------------------------------------------------ */
 
 const JOB_SQL = `
-  select j.*, co.name as company_name, app_role_key(j.title, j.department) as role_key
+  select j.*, co.name as company_name, app_role_key(j.title, j.department) as role_key,
+         case when j.posting_kind = 'walkin' then walkin_ends_at(j.walkin_date, j.walkin_to) end as walkin_ends
     from jobs j left join companies co on co.id = j.company_id`;
 
+/* A walk-in whose day and end time have passed (IST, 0106) is over,
+   whatever its status still says. */
 const isLive = (j, now) => !!j && j.status === 'open' && !j.paused && !j.archived
-  && (!j.expires_at || new Date(j.expires_at).getTime() > now);
+  && (!j.expires_at || new Date(j.expires_at).getTime() > now)
+  && (!j.walkin_ends || new Date(j.walkin_ends).getTime() > now);
 
 /*
  * Every saved job of every candidate who could be told about `$1`: not
@@ -489,6 +520,9 @@ export async function runSavedJobSweep(opts = {}) {
        left join saved_job_alert_jobs p on p.job_id = j.id
       where j.status = 'open' and not coalesce(j.paused, false) and not coalesce(j.archived, false)
         and (j.expires_at is null or j.expires_at > $1)
+        and (j.posting_kind is distinct from 'walkin'
+             or walkin_ends_at(j.walkin_date, j.walkin_to) is null
+             or walkin_ends_at(j.walkin_date, j.walkin_to) > $1)
         and coalesce(j.published_at, j.created_at) >= $2
         and (p.job_id is null or p.published_at is distinct from coalesce(j.published_at, j.created_at))
       order by coalesce(j.published_at, j.created_at)`, [new Date(now), since])).rows.map((r) => r.id));
