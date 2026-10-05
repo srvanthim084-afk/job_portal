@@ -9,6 +9,7 @@
 
 import { emailLayout } from './layout.js';
 import { houseMessage, houseText } from './messages.js';
+import { walkinFacts, dateLabel, timeRange } from '../portal/walkin-jobs.js';
 
 const esc = (s) => String(s ?? '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -36,14 +37,28 @@ function human(ts) {
 
 export function buildMessages({
   candidateName, jobTitle, company, jobId, interviewUrl, expiry, appliedAt,
+  walkin, reference,
 }) {
   const name = String(candidateName || 'there').split(' ')[0];
   const when = human(expiry);
+  /* 0106: a walk-in's confirmation carries the Application ID and the
+     walk-in details - date, time, venue, address, map, documents to
+     carry and the person to ask for - from the job's own record. */
+  const wFacts = walkinFacts(walkin);
+  const wBlock = wFacts.length
+    ? `\n\n*Walk-in interview*\n${wFacts.map((f) => `${f[0]}: ${f[1]}`).join('\n')}`
+      + (reference ? `\nApplication ID: ${reference}` : '')
+    : (reference ? `\n\nApplication ID: ${reference}` : '');
+  const wText = wBlock.replace(/\*/g, '');
+  const wSms = walkin
+    ? ` Walk-in: ${[dateLabel(walkin.date), timeRange(walkin.from, walkin.to)].filter(Boolean).join(' ')}`
+      + (walkin.venue ? `, ${walkin.venue}` : '') + '.' + (reference ? ` App ID ${reference}.` : '')
+    : '';
 
   // SMS is billed per segment and truncated by carriers, so it carries only
   // what a candidate needs to act: the role, the link, the deadline.
   const sms =
-    `TeamLink: Your application for ${jobTitle} at ${company} is confirmed. ` +
+    `TeamLink: Your application for ${jobTitle} at ${company} is confirmed.${wSms} ` +
     `Complete your AI interview by ${when}: ${interviewUrl}`;
 
   const whatsapp =
@@ -55,7 +70,8 @@ export function buildMessages({
     `• Find a quiet place with a stable connection\n` +
     `• Allow microphone and camera access when prompted\n` +
     `• It takes about 15 minutes — 10 questions, spoken answers\n` +
-    `• Speak clearly; you cannot go back to a previous question\n\n` +
+    `• Speak clearly; you cannot go back to a previous question` +
+    `${wBlock}\n\n` +
     `_Job ref: ${jobId}_`;
 
   const text =
@@ -69,7 +85,8 @@ export function buildMessages({
     `  - Find somewhere quiet with a stable internet connection\n` +
     `  - Allow microphone and camera access when prompted\n` +
     `  - You will be asked 10 questions and answer out loud\n` +
-    `  - You cannot return to a previous question, so take a moment before answering\n\n` +
+    `  - You cannot return to a previous question, so take a moment before answering` +
+    `${wText}\n\n` +
     `Job reference: ${jobId}\n` +
     `Applied: ${human(appliedAt)}\n\n` +
     `— TeamLink Consultants`;
@@ -113,6 +130,15 @@ export function buildMessages({
             </ul>
           </div>
         </td></tr>
+        ${wFacts.length || reference ? `<tr><td style="padding:12px 26px 0">
+          <div style="background:#eef8fb;border:1px solid #bfe3ee;border-radius:8px;padding:14px 16px">
+            <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#0f6a85;margin-bottom:8px">${wFacts.length ? 'Walk-in interview' : 'Your application'}</div>
+            <table role="presentation" cellpadding="0" cellspacing="0" style="font-size:13.5px;line-height:1.6;color:#2c3648">
+              ${reference ? `<tr><td style="padding:2px 12px 2px 0;color:#5b6678;vertical-align:top">Application ID</td><td style="padding:2px 0"><strong>${esc(reference)}</strong></td></tr>` : ''}
+              ${wFacts.map((f) => `<tr><td style="padding:2px 12px 2px 0;color:#5b6678;vertical-align:top">${esc(f[0])}</td><td style="padding:2px 0">${f[0] === 'Map' ? `<a href="${esc(f[1])}" style="color:#4f46e5">View on Map</a>` : esc(f[1])}</td></tr>`).join('')}
+            </table>
+          </div>
+        </td></tr>` : ''}
         <tr><td style="padding:18px 26px 24px;font-size:12px;color:#8a94a6;line-height:1.6">
           Job reference ${esc(jobId)} &middot; Applied ${esc(human(appliedAt))}<br>
           If the button does not work, paste this into your browser:<br>
@@ -124,7 +150,7 @@ export function buildMessages({
 
   // What Naukri shows inside the candidate's Applications / Messages view.
   const naukri =
-    `Your application for ${jobTitle} at ${company} has been confirmed. ` +
+    `Your application for ${jobTitle} at ${company} has been confirmed.${wSms} ` +
     `Complete your AI interview before ${when}: ${interviewUrl} (Job ref ${jobId})`;
 
   return {
@@ -167,6 +193,15 @@ const SUBJECTS = {
 };
 
 const BODIES = {
+  /* 0106: the short form (SMS, the call) of the confirmation. A walk-in
+     says when and where; any other job keeps the house wording. */
+  APPLICATION_SUBMITTED: (c) => (c.walkin
+    ? `Walk-in for ${c.jobTitle} confirmed${c.reference ? `, Application ID ${c.reference}` : ''}: `
+      + [dateLabel(c.walkin.date), timeRange(c.walkin.from, c.walkin.to)].filter(Boolean).join(' ')
+      + (c.walkin.venue ? ` at ${c.walkin.venue}` : '')
+    : `Your application for the ${c.jobTitle} position has been successfully `
+      + 'submitted using your registered TeamLink resume.'),
+
   // Without a stage name this says the application has moved, which is
   // still true and still worth reading; naming a stage of "undefined" is
   // not.

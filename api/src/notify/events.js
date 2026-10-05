@@ -19,6 +19,7 @@ import { config } from '../config.js';
 import { withUser } from '../db.js';
 import { providers } from './providers.js';
 import { buildEventMessages } from './templates.js';
+import { walkinOf } from '../portal/walkin-jobs.js';
 
 /** Which channels an event goes to. In-app always happens elsewhere. */
 const CHANNELS = ['email', 'sms', 'whatsapp', 'ivr'];
@@ -52,6 +53,10 @@ async function send(session, event, ctx) {
               -- The house format lists these, and they were not being
               -- read, so "Location:" and "Department:" came out blank.
               j.location as job_location, j.department as job_department,
+              -- 0106: a walk-in's when and where, for the confirmation.
+              j.posting_kind, j.walkin_date, j.walkin_from, j.walkin_to, j.walkin_venue,
+              j.walkin_address, j.walkin_map_link, j.walkin_documents, j.walkin_instructions,
+              j.walkin_contact, j.walkin_phone,
               co.name as company_name
          from applications a
          join candidates cand on cand.id = a.candidate_id
@@ -106,6 +111,7 @@ async function send(session, event, ctx) {
       : undefined,
     reference: ctx.reference || meta.reference || undefined,
     dueAt: meta.ai_interview_due_at || undefined,
+    walkin: walkinOf(meta) || undefined,
     portalUrl,
     ...ctx,
   });

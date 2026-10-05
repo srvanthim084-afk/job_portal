@@ -499,7 +499,9 @@
   };
 
   function isLocalOnly(k) {
-    return LOCAL_ONLY[k] === 1 || k.indexOf('tl_ai_last_qset_') === 0;
+    return LOCAL_ONLY[k] === 1 || k.indexOf('tl_ai_last_qset_') === 0
+      /* 0106: an unsent application form draft stays on this device. */
+      || k.indexOf('tl_apply_draft_') === 0;
   }
 
   /**
@@ -706,6 +708,12 @@
         walkinVenue: j.walkinVenue || '',
         walkinContact: j.walkinContact || '',
         walkinPhone: j.walkinPhone || '',
+        /* 0106: the rest of a walk-in (teamlink-walkin-jobs.js sets them). */
+        walkinAddress: j.walkinAddress || '',
+        walkinMapLink: j.walkinMapLink || '',
+        walkinDocuments: j.walkinDocumentsToCarry || j.walkinDocuments || '',
+        walkinInstructions: j.walkinInstructions || '',
+        walkinCapacity: j.walkinSlotCapacity == null || j.walkinSlotCapacity === '' ? null : Number(j.walkinSlotCapacity),
       } : {}),
       ...(j.internshipDuration || j.internshipType || j.stipend != null ? {
         internshipDuration: j.internshipDuration || '',

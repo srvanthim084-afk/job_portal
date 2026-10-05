@@ -138,7 +138,7 @@ test('the chip list comes from app_settings and the admin can reorder and hide c
   const r = await anon.get('/api/quick-filters');
   assert.equal(r.status, 200);
   assert.deepEqual(r.body.chips.map((c) => c.key),
-    ['fresher', 'wfh', 'immediate', 'near_me', 'today', 'urgent', 'salary3', 'walkin']);
+    ['fresher', 'wfh', 'immediate', 'near_me', 'today', 'urgent', 'salary3', 'walkin', 'walkin_today', 'walkin_week', 'internship']);
 
   assert.equal((await recruiter.put('/api/admin/quick-filters', { chips: [{ key: 'urgent' }] })).status, 403);
   const put = await admin.put('/api/admin/quick-filters', {
