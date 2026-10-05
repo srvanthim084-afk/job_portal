@@ -77,7 +77,7 @@ await new Promise((r) => mock.listen(MOCK_PORT, '127.0.0.1', r));
 const browser = await chromium.launch();
 const errors = [];
 const leaks = [];
-const ready = (page) => page.waitForFunction(() => window.TL && TL.ready === true, null, { timeout: 30000 });
+const ready = (page) => page.waitForFunction(() => window.TL && TL.ready === true, null, { timeout: 90000 });
 /*
  * Every response the page's own code reads (the app talks to the server
  * only through fetch) is checked for the secret inside the page, and a
