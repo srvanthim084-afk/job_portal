@@ -1300,6 +1300,15 @@ const STATE = {
 
 function initials(name){ return name.split(' ').map(w=>w[0]).slice(0,2).join('').toUpperCase(); }
 function esc(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+/* A job or company field for display. A job saved in the database without
+   an experience, pay, mode or type label, or a company without an about /
+   industry / founded year, comes back with the key missing - and esc()
+   printed it as the word "undefined". Escaped, with a plain fallback only
+   when the field really is empty. */
+function orNS(v, fallback){
+  const s = v==null ? '' : String(v).trim();
+  return (!s || s==='undefined' || s==='null') ? esc(fallback==null?'Not specified':fallback) : esc(s);
+}
 function scoreClass(n){ return n>=80?'hi':n>=65?'mid':'lo'; }
 function scoreColor(n){ return n>=80?'var(--ok-600)':n>=65?'var(--warn-600)':'var(--bad-600)'; }
 function stageBadge(stageId, audience){
@@ -1323,7 +1332,9 @@ function jobStatusBadge(job){
 function companyLogo(companyId, size){
   const co = DATA.companyById(companyId) || {color1:'var(--brand-600)',color2:'var(--brand-400)',name:'TeamLink'};
   const s = size||42;
-  return `<div class="co-logo" style="width:${s}px;height:${s}px;background:linear-gradient(155deg,${co.color1},${co.color2});font-size:${Math.round(s*0.32)}px">${esc(initials(co.name))}</div>`;
+  /* a company from the database may carry no colours - the logo used to be
+     an invisible "linear-gradient(undefined,undefined)" square */
+  return `<div class="co-logo" style="width:${s}px;height:${s}px;background:linear-gradient(155deg,${co.color1||'var(--brand-600)'},${co.color2||co.color1||'var(--brand-400)'});font-size:${Math.round(s*0.32)}px">${esc(initials(String(co.name||'TeamLink')))}</div>`;
 }
 function toast(msg, icon, actionLabel, actionFn){
   const host = document.getElementById('toastHost');
@@ -1503,7 +1514,7 @@ function matchScoreBadge(score){
 }
 function jobCard(job, opts){
   opts = opts || {};
-  const co = DATA.companyById(job.companyId);
+  const co = DATA.companyById(job.companyId) || {name:job.company||''};
   const saved = STATE.savedJobs.has(job.id);
   const cand = opts.cand !== undefined ? opts.cand : currentCandidate();
   const score = cand ? computeMatchScore(cand, job) : null;
@@ -1515,7 +1526,7 @@ function jobCard(job, opts){
       ${companyLogo(job.companyId)}
       <div style="flex:1;min-width:0">
         <h3>${esc(job.title)}</h3>
-        <div class="co-name">${esc(co.name)} · ${esc(job.location)}</div>
+        <div class="co-name">${orNS(co.name)} · ${orNS(job.location)}</div>
       </div>
       <div class="jc-actions" onclick="event.stopPropagation()">
         <button class="icon-btn-sm ${saved?'active':''}" title="${saved?'Saved':'Save job'}" onclick="toggleSaveJob('${job.id}')">${saved?'★':'☆'}</button>
@@ -1523,9 +1534,9 @@ function jobCard(job, opts){
       </div>
     </div>
     <div class="job-meta">
-      <span>💼 ${esc(job.exp)}</span>
-      <span>🏠 ${esc(job.mode)}</span>
-      <span>🕒 ${esc(job.type)}</span>
+      <span>💼 ${orNS(job.exp,'Experience not specified')}</span>
+      <span>🏠 ${orNS(job.mode,'Work mode not specified')}</span>
+      <span>🕒 ${orNS(job.type,'Type not specified')}</span>
       ${closed?'<span class="badge badge-bad" style="margin-left:auto">Closed</span>':''}
     </div>
     <div class="jc-badges">
@@ -1536,8 +1547,8 @@ function jobCard(job, opts){
       ${alreadyApplied?'<span class="badge badge-good">✓ Applied</span>':''}
     </div>
     <div class="foot">
-      <span class="pay">${esc(job.pay)}</span>
-      <span style="font-size:11.5px;color:var(--text-soft)">${job.applicants} applicants · ${esc(job.posted)}</span>
+      <span class="pay">${orNS(job.pay,'Salary not specified')}</span>
+      <span style="font-size:11.5px;color:var(--text-soft)">${Number(job.applicants)||0} applicants${job.posted?` · ${esc(job.posted)}`:''}</span>
     </div>
   </div>`;
 }
@@ -1563,7 +1574,7 @@ function toggleInsight(jobId, kind){
    title/company/location, experience, salary, skills, posted date, AI match score, save, apply/Easy
    Apply, and inline "Why This Job?" / "Should I Apply?" AI explainability toggles. */
 function jobListRow(job, cand){
-  const co = DATA.companyById(job.companyId);
+  const co = DATA.companyById(job.companyId) || {name:job.company||''};
   const saved = STATE.savedJobs.has(job.id);
   const score = cand ? computeMatchScore(cand, job) : null;
   const closed = job.status==='closed';
@@ -1579,22 +1590,22 @@ function jobListRow(job, cand){
         ${companyLogo(job.companyId,46)}
         <div class="jr-headline">
           <h3>${esc(job.title)} ${closed?'<span class="badge badge-bad">Closed</span>':''}</h3>
-          <div class="co-name">${esc(co.name)} · ${esc(job.location)}</div>
+          <div class="co-name">${orNS(co.name)} · ${orNS(job.location)}</div>
         </div>
         ${matchScoreBadge(score)}
       </div>
       <div class="job-meta">
-        <span>💼 ${esc(job.exp)}</span><span>💰 ${esc(job.pay)}</span><span>🏠 ${esc(job.mode)}</span><span>🕒 ${esc(job.type)}</span>
+        <span>💼 ${orNS(job.exp,'Experience not specified')}</span><span>💰 ${orNS(job.pay,'Salary not specified')}</span><span>🏠 ${orNS(job.mode,'Work mode not specified')}</span><span>🕒 ${orNS(job.type,'Type not specified')}</span>
       </div>
       ${job.desc ? `<div class="jr-desc">📄 ${esc(job.desc.length>150 ? job.desc.slice(0,150)+'…' : job.desc)}</div>` : ''}
-      <div class="jr-skills-inline">${job.skills.slice(0,7).map(s=>esc(s)).join(' · ')}${job.skills.length>7?` +${job.skills.length-7} more`:''}</div>
+      <div class="jr-skills-inline">${(job.skills||[]).slice(0,7).map(s=>esc(s)).join(' · ')}${(job.skills||[]).length>7?` +${job.skills.length-7} more`:''}</div>
       <div class="jc-badges">
         ${job.featured?'<span class="badge badge-ai">Featured</span>':''}
         ${easyApplyBadge(job)}
         ${jobTagsHtml(job)}
         ${alreadyApplied?'<span class="badge badge-good">✓ Applied</span>':''}
       </div>
-      <div class="jr-foot-meta"><span>🕓 Posted ${esc(job.posted)}</span></div>
+      <div class="jr-foot-meta"><span>🕓 Posted ${orNS(job.posted,'date not specified')}</span></div>
     </div>
     <div class="jr-actions" onclick="event.stopPropagation()">
       ${closed ? `<button class="btn btn-block" disabled style="background:var(--bad-100);color:var(--bad-600)">Closed</button>`
@@ -1865,12 +1876,14 @@ function setExpFromSlider(v){
 }
 function toggleAdvancedFilters(){ STATE.advancedFiltersOpen = !STATE.advancedFiltersOpen; render(); }
 function filterSidebarHtml(f, results){
-  const companies = DATA.companies.map(c=>c.name);
-  const industries = [...new Set(DATA.companies.map(c=>c.industry))];
-  const departments = [...new Set(DATA.jobs.map(j=>j.department))];
-  const modes = [...new Set(DATA.jobs.map(j=>j.mode))];
-  const types = [...new Set(DATA.jobs.map(j=>j.type))];
-  const locations = [...new Set(DATA.openJobs().map(j=>j.location))].sort();
+  /* a job or company from the database may leave any of these empty: an
+     empty value is not a filter option (it printed as "undefined") */
+  const companies = DATA.companies.map(c=>c.name).filter(Boolean);
+  const industries = [...new Set(DATA.companies.map(c=>c.industry))].filter(Boolean);
+  const departments = [...new Set(DATA.jobs.map(j=>j.department))].filter(Boolean);
+  const modes = [...new Set(DATA.jobs.map(j=>j.mode))].filter(Boolean);
+  const types = [...new Set(DATA.jobs.map(j=>j.type))].filter(Boolean);
+  const locations = [...new Set(DATA.openJobs().map(j=>j.location))].filter(Boolean).sort();
   const categories = categoryList().map(c=>c.title);
   const topSkills = allSkillsList().slice(0,14);
   const chips = activeFilterChips(f);
@@ -2152,10 +2165,39 @@ function similarJobs(job, cand, limit){
   }).filter(s=>s.rank>0).sort((a,b)=>b.rank-a.rank || (b.score||0)-(a.score||0));
   return scored.slice(0, limit||3);
 }
+/* The complete Job Details page, #/job/<id>. The id in the URL is the job;
+   the page never sends the candidate anywhere by itself - a job that is not
+   loaded yet is fetched (direct URL / refresh), and one that does not exist
+   says so, with "← Back to Jobs" (tlJobBack, below) as the only way out. */
+function jobDetailBackBar(){
+  return `<div class="tljd-backbar"><button type="button" class="btn btn-ghost btn-sm tljd-back" onclick="tlJobBack()">← Back to Jobs</button></div>`;
+}
+function jobDetailNotice(icon, title, text, busy){
+  return withChrome('jobs', `
+  <section class="block tljd" style="padding-top:24px"><div class="wrap">
+    ${jobDetailBackBar()}
+    <div class="panel"><div class="panel-body" style="text-align:center;padding:44px 24px"${busy?' aria-busy="true"':''}>
+      <div style="font-size:30px;line-height:1" aria-hidden="true">${icon}</div>
+      <h1 style="font-size:19px;margin-top:12px">${title}</h1>
+      <p style="color:var(--text-soft);margin-top:8px;font-size:13.5px">${text}</p>
+      ${busy?'':`<button type="button" class="btn btn-primary" style="margin-top:16px" onclick="tlJobBack()">← Back to Jobs</button>`}
+    </div></div>
+  </div></section>`);
+}
 function pageJobDetail(jobId){
   const job = DATA.jobById(jobId);
-  if(!job) return withChrome('jobs', `<div class="wrap" style="padding:60px 24px"><div class="empty-note">That job posting isn't available. <a href="#/jobs" style="color:var(--brand-600);font-weight:700">Browse open roles</a></div></div>`);
-  const co = DATA.companyById(job.companyId);
+  if(!job){
+    /* tlJobFetchState is defined further down the page; a paint during
+       parsing, before it exists, is still loading */
+    const st = typeof window.tlJobFetchState==='function' ? window.tlJobFetchState(jobId)
+      : (window.TL&&TL.ready===true ? 'missing' : 'loading');
+    if(st==='loading') return jobDetailNotice('⏳', 'Loading the job…', 'Fetching this role from TeamLink.', true);
+    return jobDetailNotice('🔍', 'Job not found', 'This job does not exist or is no longer available.');
+  }
+  /* A job's company may not be in the loaded set (or carry no profile yet):
+     the page still opens, with the company's own name where it is known. */
+  const co = DATA.companyById(job.companyId) || { id:job.companyId, name:job.company||job.companyName||'' };
+  const coName = String(co.name||'').trim() || 'the company';
   const saved = STATE.savedJobs.has(job.id);
   const hidden = STATE.hiddenJobs.has(job.id);
   const cand = STATE.session && STATE.session.role==='candidate' ? DATA.candidateById(STATE.session.id) : null;
@@ -2164,17 +2206,24 @@ function pageJobDetail(jobId){
   const otherJobs = DATA.openJobsFor(job.companyId).filter(j=>j.id!==job.id);
   if(cand) recordJobView(job.id);
 
-  const explain = cand ? matchExplanation(cand, job) : null;
-  const should = cand ? shouldApplyRecommendation(cand, job) : null;
-  const readiness = cand ? applicationReadiness(cand, job) : null;
-  const salFit = cand ? salaryFit(cand, job) : null;
-  const similar = similarJobs(job, cand, 3);
+  /* prose from the matching helpers, minus any field the job does not have */
+  const prose = s => String(s==null?'':s).replace(/\s*\b(?:undefined|null)\b/g,'').replace(/\s+([.,;:])/g,'$1').replace(/\s{2,}/g,' ').trim();
+  let explain=null, should=null, readiness=null, salFit=null, similar=[];
+  try{
+    if(cand){
+      explain = matchExplanation(cand, job);
+      should = shouldApplyRecommendation(cand, job);
+      readiness = applicationReadiness(cand, job);
+      salFit = salaryFit(cand, job);
+    }
+  }catch(e){ console.warn('Job page: match details unavailable for '+job.id, e); explain=should=readiness=salFit=null; }
+  try{ similar = similarJobs(job, cand, 3); }catch(e){ similar = []; }
 
-  const aiPanels = cand ? `
+  const aiPanels = cand && explain && should && readiness && salFit ? `
         <div class="panel ai-panel">
           <div class="panel-head"><h2>🤖 Why this job matches you</h2><span class="badge badge-ai badge-match-${explain.score>=80?'hi':explain.score>=60?'mid':'lo'}">${explain.score}% match</span></div>
           <div class="panel-body">
-            <p style="font-size:13px">${esc(explain.text)}</p>
+            <p style="font-size:13px">${esc(prose(explain.text))}</p>
             ${explain.matched.length?`<div style="margin-top:8px"><div class="k" style="margin-bottom:5px">Matched skills</div>${explain.matched.map(s=>`<span class="skill-tag skill-tag-good">${esc(s)}</span>`).join('')}</div>`:''}
             ${explain.missing.length?`<div style="margin-top:8px"><div class="k" style="margin-bottom:5px">Skills you're missing</div>${explain.missing.map(s=>`<span class="skill-tag skill-tag-gap">${esc(s)}</span>`).join('')}</div>`:''}
           </div>
@@ -2183,28 +2232,32 @@ function pageJobDetail(jobId){
           <div class="panel-head"><h2>Should I apply?</h2></div>
           <div class="panel-body">
             <div class="verdict-line verdict-${should.tone}">${should.label}</div>
-            <p style="font-size:12.5px;color:var(--text-soft);margin-top:6px">${esc(should.detail)}</p>
+            <p style="font-size:12.5px;color:var(--text-soft);margin-top:6px">${esc(prose(should.detail))}</p>
             <div class="kv" style="grid-template-columns:1fr 1fr;margin-top:10px">
-              <div class="item"><div class="k">Application readiness</div><div class="v">${readiness.score}% · ${esc(readiness.label)}</div></div>
-              <div class="item"><div class="k">Salary fit</div><div class="v" style="font-size:12.5px">${esc(salFit.label)}</div></div>
+              <div class="item"><div class="k">Application readiness</div><div class="v">${readiness.score}% · ${orNS(prose(readiness.label))}</div></div>
+              <div class="item"><div class="k">Salary fit</div><div class="v" style="font-size:12.5px">${orNS(prose(salFit.label))}</div></div>
             </div>
-            <p style="font-size:11.5px;color:var(--text-soft);margin-top:6px">${esc(salFit.detail)}</p>
+            <p style="font-size:11.5px;color:var(--text-soft);margin-top:6px">${esc(prose(salFit.detail))}</p>
           </div>
-        </div>` : `
+        </div>` : cand ? '' : `
         <div class="panel"><div class="panel-body req-note" style="background:var(--ai-100);color:var(--ai-600)">🤖 <a href="#/login/candidate" style="color:inherit;font-weight:700">Log in as a candidate</a> to see your personalized AI match score, salary fit and application readiness for this role.</div></div>`;
 
+  const list = arr => (arr&&arr.length)
+    ? `<ul style="margin:0;padding-left:20px;display:flex;flex-direction:column;gap:7px">${arr.map(r=>`<li>${esc(r)}</li>`).join('')}</ul>`
+    : `<p style="color:var(--text-soft)">Not specified</p>`;
   const body = `
-  <section class="block" style="padding-top:32px">
+  <section class="block tljd" style="padding-top:24px" data-job-id="${esc(job.id)}">
+    <div class="wrap">${jobDetailBackBar()}</div>
     <div class="wrap two-col">
       <div>
         <div class="panel">
           <div class="panel-body" style="display:flex;gap:16px;align-items:flex-start">
             ${companyLogo(job.companyId,56)}
-            <div style="flex:1">
+            <div style="flex:1;min-width:0">
               <h1 style="font-size:22px">${esc(job.title)} ${closed?'<span class="badge badge-bad">Closed</span>':''}</h1>
-              <div style="color:var(--text-soft);font-size:13.5px;margin-top:3px"><a href="#/company/${co.id}" style="font-weight:700;color:var(--brand-600)">${esc(co.name)}</a> · ${esc(job.location)}</div>
+              <div style="color:var(--text-soft);font-size:13.5px;margin-top:3px">${co.id&&DATA.companyById(co.id)?`<a href="#/company/${esc(co.id)}" style="font-weight:700;color:var(--brand-600)">${orNS(co.name)}</a>`:`<b>${orNS(co.name)}</b>`} · ${orNS(job.location,'Location not specified')}</div>
               <div class="job-meta" style="margin-top:12px">
-                <span>💼 ${esc(job.exp)}</span><span>🏠 ${esc(job.mode)}</span><span>🕒 ${esc(job.type)}</span><span>💰 ${esc(job.pay)}</span><span>📅 Posted ${esc(job.posted)}</span><span>👥 ${job.applicants} applicants</span>
+                <span>💼 ${orNS(job.exp,'Experience not specified')}</span><span>🏠 ${orNS(job.mode,'Work mode not specified')}</span><span>🕒 ${orNS(job.type,'Employment type not specified')}</span><span>💰 ${orNS(job.pay,'Salary not specified')}</span>${job.department?`<span>🏷️ ${esc(job.department)}</span>`:''}<span>📅 Posted ${orNS(job.posted,'date not specified')}</span><span>👥 ${Number(job.applicants)||0} applicants</span>
               </div>
               <div class="jc-badges" style="margin-top:10px">${job.featured?'<span class="badge badge-ai">Featured</span>':''}${easyApplyBadge(job)}${jobTagsHtml(job)}</div>
             </div>
@@ -2213,17 +2266,17 @@ function pageJobDetail(jobId){
 
         <!-- the description comes first: it is what the candidate opened the
              page to read. The AI match panels follow it. -->
-        ${job.desc?`<div class="panel"><div class="panel-head"><h2>Job description</h2></div><div class="panel-body"><p>${esc(job.desc)}</p></div></div>`:''}
-        ${(job.responsibilities&&job.responsibilities.length)?`<div class="panel"><div class="panel-head"><h2>Responsibilities</h2></div><div class="panel-body"><ul style="margin:0;padding-left:20px;display:flex;flex-direction:column;gap:7px">${job.responsibilities.map(r=>`<li>${esc(r)}</li>`).join('')}</ul></div></div>`:''}
-        ${(job.requirements&&job.requirements.length)?`<div class="panel"><div class="panel-head"><h2>Requirements</h2></div><div class="panel-body"><ul style="margin:0;padding-left:20px;display:flex;flex-direction:column;gap:7px">${job.requirements.map(r=>`<li>${esc(r)}</li>`).join('')}</ul></div></div>`:''}
-        <div class="panel"><div class="panel-head"><h2>Key skills</h2></div><div class="panel-body">${(job.skills||[]).map(s=>`<span class="skill-tag">${esc(s)}</span>`).join('')||'—'}</div></div>
-        ${(job.education||job.department)?`<div class="panel"><div class="panel-head"><h2>Education &amp; team</h2></div><div class="panel-body"><div class="kv" style="grid-template-columns:1fr 1fr">${job.education?`<div class="item"><div class="k">Education</div><div class="v" style="font-size:12.5px">${esc(job.education)}</div></div>`:''}${job.department?`<div class="item"><div class="k">Team</div><div class="v" style="font-size:12.5px">${esc(job.department)}</div></div>`:''}</div></div></div>`:''}
+        <div class="panel"><div class="panel-head"><h2>Job description</h2></div><div class="panel-body">${job.desc?`<p style="white-space:pre-line">${esc(job.desc)}</p>`:'<p style="color:var(--text-soft)">Not specified</p>'}</div></div>
+        <div class="panel"><div class="panel-head"><h2>Responsibilities</h2></div><div class="panel-body">${list(job.responsibilities)}</div></div>
+        <div class="panel"><div class="panel-head"><h2>Requirements</h2></div><div class="panel-body">${list(job.requirements)}</div></div>
+        <div class="panel"><div class="panel-head"><h2>Key skills</h2></div><div class="panel-body">${(job.skills||[]).map(s=>`<span class="skill-tag">${esc(s)}</span>`).join('')||'<span style="color:var(--text-soft)">Not specified</span>'}</div></div>
+        <div class="panel"><div class="panel-head"><h2>Education &amp; team</h2></div><div class="panel-body"><div class="kv" style="grid-template-columns:1fr 1fr"><div class="item"><div class="k">Education</div><div class="v" style="font-size:12.5px">${orNS(job.education)}</div></div><div class="item"><div class="k">Team</div><div class="v" style="font-size:12.5px">${orNS(job.department)}</div></div></div></div></div>
 
         ${aiPanels}
       </div>
 
       <div>
-        <div class="panel">
+        <div class="panel tljd-act">
           <div class="panel-body" style="display:flex;flex-direction:column;gap:10px">
             ${closed
               ? `<button class="btn btn-block" disabled style="background:var(--bad-100);color:var(--bad-600)">This role is closed</button>`
@@ -2236,12 +2289,12 @@ function pageJobDetail(jobId){
           </div>
         </div>
         <div class="panel">
-          <div class="panel-head"><h2>About ${esc(co.name)}</h2></div>
+          <div class="panel-head"><h2>About ${esc(coName)}</h2></div>
           <div class="panel-body">
-            <p style="font-size:13px;color:var(--text-soft)">${esc(co.about)}</p>
+            <p style="font-size:13px;color:var(--text-soft)">${orNS(co.about)}</p>
             <div class="kv" style="grid-template-columns:1fr 1fr">
-              <div class="item"><div class="k">Industry</div><div class="v" style="font-size:12.5px">${esc(co.industry)}</div></div>
-              <div class="item"><div class="k">Founded</div><div class="v">${co.founded}</div></div>
+              <div class="item"><div class="k">Industry</div><div class="v" style="font-size:12.5px">${orNS(co.industry)}</div></div>
+              <div class="item"><div class="k">Founded</div><div class="v">${orNS(co.founded)}</div></div>
             </div>
           </div>
         </div>
@@ -2249,14 +2302,14 @@ function pageJobDetail(jobId){
         <div class="panel">
           <div class="panel-head"><h2>Similar jobs</h2></div>
           <div class="panel-body" style="display:flex;flex-direction:column;gap:10px">
-            ${similar.map(s=>`<a href="#/job/${s.job.id}" style="display:flex;justify-content:space-between;gap:8px;font-size:13px;padding:8px 10px;border:1px solid var(--line);border-radius:8px"><span><b>${esc(s.job.title)}</b><br><span style="color:var(--text-soft);font-size:11.5px">${esc(DATA.companyById(s.job.companyId).name)} · ${esc(s.job.location)}</span></span>${s.score!=null?`<span class="badge badge-ai" style="align-self:flex-start">${s.score}%</span>`:''}</a>`).join('')}
+            ${similar.map(s=>`<a href="#/job/${s.job.id}" style="display:flex;justify-content:space-between;gap:8px;font-size:13px;padding:8px 10px;border:1px solid var(--line);border-radius:8px"><span><b>${esc(s.job.title)}</b><br><span style="color:var(--text-soft);font-size:11.5px">${orNS((DATA.companyById(s.job.companyId)||{}).name)} · ${orNS(s.job.location)}</span></span>${s.score!=null?`<span class="badge badge-ai" style="align-self:flex-start">${s.score}%</span>`:''}</a>`).join('')}
           </div>
         </div>`:''}
         ${otherJobs.length? `
         <div class="panel">
-          <div class="panel-head"><h2>More roles at ${esc(co.name)}</h2></div>
+          <div class="panel-head"><h2>More roles at ${esc(coName)}</h2></div>
           <div class="panel-body" style="display:flex;flex-direction:column;gap:10px">
-            ${otherJobs.map(j=>`<a href="#/job/${j.id}" style="display:flex;justify-content:space-between;font-size:13px;padding:8px 10px;border:1px solid var(--line);border-radius:8px"><b>${esc(j.title)}</b><span class="mono" style="color:var(--text-soft)">${esc(j.pay)}</span></a>`).join('')}
+            ${otherJobs.map(j=>`<a href="#/job/${j.id}" style="display:flex;justify-content:space-between;gap:8px;font-size:13px;padding:8px 10px;border:1px solid var(--line);border-radius:8px"><b>${esc(j.title)}</b><span class="mono" style="color:var(--text-soft)">${orNS(j.pay,'Salary not specified')}</span></a>`).join('')}
           </div>
         </div>`:''}
       </div>
@@ -24865,6 +24918,10 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
     window.pageJobDetail=function(id){
       var known=(typeof DATA!=='undefined'&&DATA.jobById)?DATA.jobById(id):null;
       if(!known&&id&&inflight[id]){
+        /* the same loading page as the job page's own, with the header and
+           "← Back to Jobs" */
+        if(typeof jobDetailNotice==='function')
+          return jobDetailNotice('⏳','Loading the job…','Fetching this role from TeamLink.',true);
         return '<section class="block" style="padding-top:48px"><div class="wrap">'+
           '<div class="panel"><div class="panel-body" style="text-align:center;padding:44px 24px">'+
           '<div style="font-size:30px;line-height:1">🔗</div>'+
@@ -24884,9 +24941,13 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
     return TL_API.getJob(id).then(function(job){
       delete inflight[id];
       if(!job){
-        if(typeof toast==='function') toast('That job is no longer available on TeamLink','⚠️');
-        if(typeof navigate==='function') navigate('/jobs');
+        /* NO REDIRECT. This used to toast and navigate('/jobs'), so a
+           refresh or a direct link that could not be resolved threw the
+           candidate back to the job list. The job page now says "Job not
+           found", with "← Back to Jobs", and the URL keeps the id. */
         setPending('');
+        if(typeof window.tlJobMarkMissing==='function') window.tlJobMarkMissing(id);
+        if(location.hash==='#/job/'+id&&typeof render==='function') render();
         return false;
       }
       ensureJob(job);
@@ -25007,6 +25068,178 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
         'into TL_SUPA.anonKey to go live.');
     }
   }catch(e){}
+})();
+</script>
+
+<style>
+/* =====================================================================
+   JOB DETAILS PAGE (#/job/<id>) - "← Back to Jobs", and on a phone the
+   Apply / Save / Not interested buttons directly under the job's heading
+   instead of below every other panel.
+   ===================================================================== */
+.tljd-backbar{margin:0 0 14px}
+@media (max-width:920px){
+  .tljd .two-col{display:flex;flex-direction:column;gap:0}
+  .tljd .two-col > div{display:contents}
+  .tljd .two-col > div > *{order:3}
+  .tljd .two-col > div:first-child > .panel:first-child{order:0}
+  .tljd .two-col .tljd-act{order:1}
+}
+</style>
+<script>
+/* =====================================================================
+   JOB DETAILS PAGE - the job in the URL, and the way back
+
+   Every "View Job" / "Open full job page" goes to #/job/<real id>. This
+   block makes that page hold:
+
+   1. A job that is not loaded yet (a direct link, a refresh, a job the
+      list never had) is FETCHED from GET /api/jobs/:id and shown - never
+      a redirect. Unknown ids say "Job not found".
+   2. While the portal is still starting, the page says it is loading
+      instead of staying blank.
+   3. "← Back to Jobs" returns to the listing the candidate came from:
+      browser history when the job was opened from that listing (so the
+      search, filters and scroll position come back), otherwise the jobs
+      list. Nothing goes back by itself.
+   ===================================================================== */
+(function(){
+  'use strict';
+  var JOB_RE=/^#\/job\/([^/?&]+)/;
+  function jobIdOf(hash){ var m=JOB_RE.exec(String(hash||'')); if(!m) return null; try{ return decodeURIComponent(m[1]); }catch(e){ return m[1]; } }
+  function isCand(){ return !!(typeof STATE!=='undefined'&&STATE.session&&STATE.session.role==='candidate'); }
+  function base(hash){ return String(hash||'').split('?')[0]; }
+
+  /* ---- 1. fetch a job the page does not have ---- */
+  var FETCH={};                 /* id -> 'loading' | 'missing' */
+  window.tlJobMarkMissing=function(id){ if(id) FETCH[String(id)]='missing'; };
+  window.tlJobFetchState=function(id){
+    id=String(id||'');
+    if(!id||id==='undefined'||id==='null') return 'missing';
+    if(FETCH[id]) return FETCH[id];
+    /* Pages paint while the document is still parsing, before the portal
+       has loaded its jobs or asked who is signed in: that is "loading",
+       not "not found". The render that follows readiness decides. */
+    if(!(window.TL&&TL.ready===true)) return 'loading';
+    var api=TL.api;
+    if(!api||typeof api.get!=='function') return 'missing';
+    FETCH[id]='loading';
+    api.get('/jobs/'+encodeURIComponent(id)).then(function(r){
+      var job=r&&r.job;
+      if(job&&String(job.id)===id){
+        if(!DATA.jobById(job.id)) DATA.jobs.push(job);
+        delete FETCH[id];
+      } else FETCH[id]='missing';
+    },function(){ FETCH[id]='missing'; }).then(function(){
+      if(jobIdOf(location.hash)===id&&typeof window.render==='function') window.render();
+    });
+    return 'loading';
+  };
+
+  /* ---- 2. not blank while the portal starts ---- */
+  function paintLoading(){
+    var app=document.getElementById('app');
+    if(!app||app.children.length||!jobIdOf(location.hash)) return;
+    if(window.TL&&TL.ready===true) return;
+    try{ app.innerHTML=jobDetailNotice('⏳','Loading the job…','Fetching this role from TeamLink.',true); }catch(e){}
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',paintLoading);
+  else paintLoading();
+
+  /* ---- 3. where "← Back to Jobs" goes ---- */
+  var KEY='tl_job_back_v1';
+  function readCtx(){ try{ return JSON.parse(sessionStorage.getItem(KEY)||'null'); }catch(e){ return null; } }
+  function writeCtx(c){ try{ if(c) sessionStorage.setItem(KEY,JSON.stringify(c)); else sessionStorage.removeItem(KEY); }catch(e){} }
+  var AUTH=/^#\/(login|register|forgot-password|reset-password)\b/;
+  /* the listing's scroll position; the job page's own scrolling is not it */
+  var lastY=window.scrollY||0;
+  addEventListener('scroll',function(){ if(!jobIdOf(location.hash)) lastY=window.scrollY||0; },{passive:true});
+  /* and the card that was clicked, with where it sat in the window: lists
+     shift a little between visits (a card now says "Applied", a panel
+     arrives), so coming back puts THAT card where it was */
+  var CARD='.rj-card,.cp-card,.job-card,.job-row,article';
+  var lastClick=null;
+  document.addEventListener('click',function(e){
+    try{
+      var el=e.target&&e.target.closest&&e.target.closest('[onclick*="/job/"],a[href*="#/job/"]');
+      if(!el||jobIdOf(location.hash)) return;
+      var m=/\/job\/([^'"?&/)]+)/.exec(el.getAttribute('onclick')||el.getAttribute('href')||'');
+      if(!m) return;
+      var card=el.closest(CARD)||el;
+      lastClick={id:decodeURIComponent(m[1]),top:card.getBoundingClientRect().top,at:Date.now()};
+    }catch(err){}
+  },true);
+  addEventListener('hashchange',function(e){
+    var from='#'+(String(e.oldURL||'').split('#')[1]||'/');
+    var to=location.hash;
+    var c=readCtx();
+    if(jobIdOf(to)&&!jobIdOf(from)&&!AUTH.test(from)){
+      /* opened from a listing: remember it, and that the previous history
+         entry IS that listing */
+      var lc=lastClick&&lastClick.id===jobIdOf(to)&&Date.now()-lastClick.at<5000?lastClick:null;
+      writeCtx({from:from,y:lastY,entry:to,len:history.length,hops:0,card:lc?lc.id:null,top:lc?lc.top:null});
+      lastClick=null;
+      return;
+    }
+    if(!c) return;
+    if(!jobIdOf(to)&&base(to)===base(c.from)){ writeCtx(null); return; }   /* browser Back to the listing */
+    c.hops=(c.hops||0)+1; writeCtx(c);   /* history no longer lines up: Back to Jobs navigates instead */
+  });
+
+  var restoreTo=null;
+  function restore(){
+    var r=restoreTo; if(!r) return;
+    if(Date.now()>r.until){ restoreTo=null; return; }
+    if(base(location.hash)!==base(r.hash)) return;
+    var y=r.y;
+    if(r.card!=null&&r.top!=null){
+      var el=document.querySelector('#app [onclick*="/job/'+r.card+'\'"],#app a[href="#/job/'+r.card+'"]');
+      var card=el&&(el.closest(CARD)||el);
+      if(card&&card.offsetParent) y=(window.scrollY||0)+card.getBoundingClientRect().top-r.top;
+    }
+    y=Math.max(0,Math.round(y));
+    if(Math.abs((window.scrollY||0)-y)>1) window.scrollTo(0,y);
+  }
+  /* the candidate's own scrolling ends it at once */
+  ['wheel','touchstart','keydown'].forEach(function(ev){ addEventListener(ev,function(){ restoreTo=null; },{passive:true,capture:true}); });
+
+  window.tlJobBack=function(){
+    var c=readCtx(), here=location.hash;
+    if(c&&c.from&&!jobIdOf(c.from)){
+      restoreTo={hash:c.from,y:Number(c.y)||0,card:c.card||null,top:c.top==null?null:Number(c.top),until:Date.now()+1500};
+      writeCtx(null);
+      if(c.entry===here&&!c.hops&&history.length>1&&history.length>=Number(c.len||0)){ history.back(); return; }
+      navigate(c.from.replace(/^#/,''));
+      return;
+    }
+    restoreTo=null;
+    navigate(isCand()?'/candidate/search':'/jobs');
+  };
+
+  /* An external job's own page (teamlink-portal-external.js) had a bare
+     history.back() - which, on a direct link, leaves the portal. It gets
+     the same Back to Jobs; the page itself stays as it is. */
+  function externalBack(){
+    var id=jobIdOf(location.hash); if(!id||!/^xjob_/.test(id)) return;
+    var app=document.getElementById('app'); if(!app) return;
+    Array.prototype.forEach.call(app.querySelectorAll('button[onclick="history.back()"]'),function(b){
+      b.setAttribute('onclick','tlJobBack()'); b.textContent='← Back to Jobs'; b.classList.add('tljd-back');
+    });
+  }
+
+  var prevRender=window.render;
+  if(typeof prevRender==='function'){
+    window.render=function(){
+      var out=prevRender.apply(this,arguments);
+      try{ externalBack(); }catch(e){}
+      if(restoreTo&&base(location.hash)===base(restoreTo.hash)){
+        restore();
+        try{ requestAnimationFrame(restore); }catch(e){}
+        [80,250,600,1000].forEach(function(t){ setTimeout(restore,t); });
+      }
+      return out;
+    };
+  }
 })();
 </script>
 
