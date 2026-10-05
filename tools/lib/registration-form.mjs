@@ -18,7 +18,10 @@
  *   opts: name, email, password, phone, location, qualification,
  *         specialization, expBand, skills, prefRole, prefLocation,
  *         expSalary, notice, resume (a path; TL_TEST_RESUME by default),
- *         skip (ids to leave as they are, e.g. fields the resume filled)
+ *         skip (ids to leave as they are),
+ *         resumeFirst (upload the resume before typing, as a candidate who
+ *           lets the parser fill the form does) and onlyEmpty (then type
+ *           only into fields the parser left empty)
  */
 export const TEST_RESUME = process.env.TL_TEST_RESUME || 'var/test-resumes/Resume - Sravanthi.pdf';
 
@@ -26,13 +29,16 @@ export async function fillRegistration(page, opts = {}) {
   await page.waitForFunction(() => window.TLRegistration && document.getElementById('regName'), null, { timeout: 15000 });
   const skip = new Set(opts.skip || []);
   const reveal = (id) => page.evaluate((i) => window.TLRegistration.reveal(i), id);
+  const filled = (id) => page.evaluate((i) => !!String((document.getElementById(i) || {}).value || '').trim(), id);
   const put = async (id, v) => {
     if (skip.has(id) || v === undefined || v === null) return;
+    if (opts.onlyEmpty && !/^reg(Email|Password|ConfirmPassword)$/.test(id) && await filled(id)) return;
     await reveal(id);
     await page.fill('#' + id, String(v));
   };
   const pick = async (id, v) => {
     if (skip.has(id)) return;
+    if (opts.onlyEmpty && await filled(id)) return;
     await reveal(id);
     await page.evaluate(({ i, want }) => {
       const s = document.getElementById(i);
@@ -42,6 +48,16 @@ export async function fillRegistration(page, opts = {}) {
       s.dispatchEvent(new Event('change', { bubbles: true }));
     }, { i: id, want: v || '' });
   };
+
+  const upload = async () => {
+    if (await page.evaluate(() => !!(window.TL && TL.pendingResume))) return;
+    await reveal('regPassword');
+    await page.evaluate(() => window.triggerRegisterResumeUpload());
+    await page.setInputFiles('#regResumeFileInput', opts.resume || TEST_RESUME);
+    await page.waitForFunction(() => /analyzed|could|couldn/i.test((document.getElementById('regResumeStatus') || {}).textContent || ''),
+      null, { timeout: 30000 });
+  };
+  if (opts.resumeFirst) await upload();
 
   /* 1 Basic */
   await put('regName', opts.name || 'Verify Candidate');
@@ -64,13 +80,7 @@ export async function fillRegistration(page, opts = {}) {
     if (m && !document.querySelector('#regWorkModeGroup input[type="checkbox"]:checked')) m.click();
   });
   /* 5 Resume */
-  if (!(await page.evaluate(() => !!(window.TL && TL.pendingResume)))) {
-    await reveal('regPassword');
-    await page.evaluate(() => window.triggerRegisterResumeUpload());
-    await page.setInputFiles('#regResumeFileInput', opts.resume || TEST_RESUME);
-    await page.waitForFunction(() => /analyzed|could|couldn/i.test((document.getElementById('regResumeStatus') || {}).textContent || ''),
-      null, { timeout: 30000 });
-  }
+  await upload();
   /* 6 Account */
   const pw = opts.password || ('Verify' + Date.now().toString(36) + '7');
   await put('regPassword', pw);

@@ -20,6 +20,8 @@
  * removed at the end.
  */
 import { chromium } from 'playwright';
+import { fillRegistration } from './lib/registration-form.mjs';
+import { TINY_PDF } from './lib/apply-form.mjs';
 
 const BASE = (process.env.TL_URL || 'http://localhost:4323/').replace(/\/$/, '');
 const fail = [];
@@ -135,6 +137,15 @@ try {
    * button is clicked. Dispatching a submit event bypasses whatever the
    * button is guarded by, which would test a path nobody uses.
    */
+  /* 0109: the form is seven steps and wants what it did not before -
+     branch, total experience, preferred role, confirm password, the
+     consents and a resume FILE. Those are answered as a candidate would
+     (tools/lib/registration-form.mjs), touching only fields the pasted CV
+     left empty. The file is a PDF with no text, so it cannot add to, or
+     change, what the paste extracted - which is what this checks. */
+  const left = await fillRegistration(page, { onlyEmpty: true, email: EMAIL, password: PASSWORD,
+    resume: { name: 'resume.pdf', mimeType: 'application/pdf', buffer: TINY_PDF } });
+  check(!left.length, `the seven-step form is complete (${JSON.stringify(left)})`);
   const ready = await page.evaluate((pw) => {
     const el = document.getElementById('regPassword');
     el.value = pw;
