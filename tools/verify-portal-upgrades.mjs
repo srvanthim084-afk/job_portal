@@ -4,7 +4,7 @@
  *   1  signed out: the chip row, "Log in to see your match", the link preview
  *   2  candidate Search Jobs: tap "Fresher" -> the results change, ?qf= in the URL
  *   3  the card carries the server's match line ("82% match · ✓ … · ✗ …")
- *   4  Share -> WhatsApp opens wa.me with the job and no client name
+ *   4  Share -> WhatsApp opens wa.me with the job, the company its card shows, and its link
  *   5  Apply -> the application form (0106) with only what is missing; submit
  *      applies; the one-click API stays idempotent
  *   6  urgent + "3 days left" badges on the card
@@ -163,12 +163,12 @@ await check('1. signed out: chips above the jobs, and "Log in to see your match"
   await ctx.close();
 });
 
-await check('1b. the shared link serves Open Graph tags without the client name, and opens the job', async () => {
+await check('1b. the shared link serves Open Graph tags (title – company, the job facts), and opens the job', async () => {
   const res = await fetch(`${BASE}job/${senior.id}`, { headers: { 'user-agent': 'WhatsApp/2.24' } });
   const html = await res.text();
   must(res.status === 200, 'status ' + res.status);
-  must(html.includes(`og:title" content="${senior.title} - Hyderabad"`), 'no og:title');
-  must(!html.slice(0, 5000).includes(CLIENT), 'the client name is in the preview');
+  must(html.includes(`og:title" content="${senior.title} – ${CLIENT}"`), 'no og:title');
+  must(/og:description" content="[^"]*2-4 yrs \| Hyderabad \| ₹3-5 LPA/.test(html), 'no og:description with the job facts');
   const ctx = await browser.newContext(PHONE);
   const p = await ctx.newPage();
   await p.goto(`${BASE}job/${senior.id}`);
@@ -225,7 +225,7 @@ await check('6. urgent and "3 days left" badges on the card', async () => {
   must(/Urgent hiring/.test(b) && /3 days left/.test(b), 'badges: ' + b);
 });
 
-await check('4. Share -> WhatsApp opens wa.me with the job and no client name', async () => {
+await check('4. Share -> WhatsApp opens wa.me with the job, the company its card shows, and its link', async () => {
   await cp.click(`${cardFor(senior.id)} .tlpu-share`);
   await cp.waitForSelector('.tlpu-sheet [data-ch="whatsapp"]', { timeout: 5000 });
   await shot(cp, '04-share-sheet');
@@ -237,7 +237,9 @@ await check('4. Share -> WhatsApp opens wa.me with the job and no client name', 
   const wa = decodeURIComponent(popup.url().replace(/\+/g, ' '));
   must(/wa\.me\/\?text=/.test(popup.url()) || /whatsapp/.test(popup.url()), 'opened ' + popup.url());
   must(wa.includes(senior.title) && wa.includes('I found this job opportunity') && wa.includes('View Job & Apply') && wa.includes(`/job/${senior.id}?ref=`), 'text: ' + wa);
-  must(!wa.includes(CLIENT) && !/apollo/i.test(wa), 'the client name is in the share');
+  /* the owner's share spec: the company the job card shows (never a name containing "client") */
+  must(wa.split(String.fromCharCode(10)).includes(`🏢 ${CLIENT}`), 'no company line in the share');
+  for (const w of ['undefined', 'null', 'NaN']) must(!wa.includes(w), `"${w}" in the share`);
   await popup.close();
   await cp.evaluate(() => window.tlpuCloseSheet());
 });
