@@ -1607,7 +1607,7 @@ function jobListRow(job, cand){
       ${!closed && !alreadyApplied?`<button class="icon-btn-sm" title="Not interested" onclick="hideJob('${job.id}')">✕</button>`:''}
     </div>
     ${showWhy && explain ? `<div class="jr-insight" onclick="event.stopPropagation()">
-      <div class="k" style="margin-bottom:5px">🤖 Why this job matches you — ${explain.score}% match</div>
+      <div class="k" style="margin-bottom:5px">🤖 Why this job matches you${explain.score!=null?` — ${explain.score}% AI Match`:''}</div>
       <p style="font-size:12.5px">${esc(explain.text)}</p>
       ${explain.matched.length?`<div style="margin-top:6px">${explain.matched.map(s=>`<span class="skill-tag skill-tag-good">${esc(s)}</span>`).join('')}</div>`:''}
       ${explain.missing.length?`<div style="margin-top:6px">${explain.missing.map(s=>`<span class="skill-tag skill-tag-gap">${esc(s)}</span>`).join('')}</div>`:''}
@@ -2172,7 +2172,7 @@ function pageJobDetail(jobId){
 
   const aiPanels = cand ? `
         <div class="panel ai-panel">
-          <div class="panel-head"><h2>🤖 Why this job matches you</h2><span class="badge badge-ai badge-match-${explain.score>=80?'hi':explain.score>=60?'mid':'lo'}">${explain.score}% match</span></div>
+          <div class="panel-head"><h2>🤖 Why this job matches you</h2>${explain.score!=null?`<span class="badge badge-ai badge-match-${explain.score>=80?'hi':explain.score>=60?'mid':'lo'}">${explain.score}% AI Match</span>`:''}</div>
           <div class="panel-body">
             <p style="font-size:13px">${esc(explain.text)}</p>
             ${explain.matched.length?`<div style="margin-top:8px"><div class="k" style="margin-bottom:5px">Matched skills</div>${explain.matched.map(s=>`<span class="skill-tag skill-tag-good">${esc(s)}</span>`).join('')}</div>`:''}
