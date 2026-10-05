@@ -76,6 +76,7 @@ import walkinAtsRoutes, { walkinAtsKick } from './routes/walkin-ats.js';
 import { startWalkinAtsSweep } from './notify/walkin-ats.js';
 /* 0110: "New job like one you saved". */
 import savedJobAlertRoutes from './routes/saved-job-alerts.js';
+import atsRecordRoutes from './routes/ats-record.js';
 import { startSavedJobAlerts } from './notify/saved-job-alerts.js';
 
 /*
@@ -345,6 +346,9 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
 
   app.use('/api', walkinAtsKick());
   app.use('/api', bootstrapRoutes());
+  /* 0111: tracker, ATS record, audit log, analytics (mounted early: its
+     paths are specific and must not be read as /candidates/:id etc.). */
+  app.use('/api', atsRecordRoutes());
   app.use('/api', authRoutes());
   app.use('/api', companyRoutes());
   app.use('/api', resumeRoutes());

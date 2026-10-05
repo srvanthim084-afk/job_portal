@@ -247,6 +247,19 @@ export default function candidateRoutes() {
                          where rs.candidate_id = candidates.id and rs.status = 'scored'
                            and rs.total_score >= $${params.length})`);
         }
+        /* Assessment score (0111 extension point): a completed assessment
+           whose name matches, at or above a percentage of its maximum. */
+        if ((q.assessment && String(q.assessment).trim()) || (q.assessmentMin !== undefined && q.assessmentMin !== '')) {
+          const name = String(q.assessment || '').trim().slice(0, 120);
+          const min = Number.isFinite(Number(q.assessmentMin)) ? Math.max(0, Math.min(100, Number(q.assessmentMin))) : 0;
+          params.push(name ? `%${name}%` : '%');
+          const ni = params.length;
+          params.push(min);
+          push(`exists (select 1 from candidate_assessments ca
+                         where ca.candidate_id = candidates.id and ca.status = 'completed'
+                           and (ca.name ilike $${ni} or ca.category ilike $${ni})
+                           and ca.score is not null and 100 * ca.score / ca.max_score >= $${params.length})`);
+        }
         if (q.hasComments === 'true') {
           push(`exists (select 1 from candidate_comments cc where cc.candidate_id = candidates.id)`);
         }
