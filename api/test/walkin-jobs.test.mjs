@@ -9,7 +9,7 @@
  * Acceptance tests (specs/Walkin-Job-Type-Task.md §21) covered here at the
  * API level: 1, 2, 3, 5, 6, 7, 11, 13, 15, 16, 17, 19, 22 (server side),
  * 23, plus the confirmation (13.1), the cancellation notice (13.4), the
- * share text (15), the drive -> job migration and the removed routes.
+ * drive -> job migration and the removed routes. (Share, §15, is the lead's.)
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -344,16 +344,6 @@ test('10 (server): a mobile + email of another account -> sign in with it; split
   assert.deepEqual(rev.body.reviews[0].mobileCandidateIds, [D.id]);
   assert.deepEqual(rev.body.reviews[0].emailCandidateIds, [E.id]);
   assert.equal((await E.get('/api/candidate-identity-reviews')).status, 403, 'a candidate never reads reviews');
-});
-
-test('15 (share): the share message carries the walk-in date and venue', async () => {
-  const r = await makeClient(base).post(`/api/jobs/${WJ}/share`, { channel: 'whatsapp' });
-  assert.equal(r.status, 201, JSON.stringify(r.body));
-  assert.match(r.body.text, /Walk-in Date:\* .*2026|Walk-in Date:/);
-  assert.ok(r.body.text.includes('TeamLink Office, 3rd floor'));
-  assert.equal(r.body.text.includes('Walkin Works'), false, 'no company name');
-  const reg = await makeClient(base).post(`/api/jobs/${REG}/share`, { channel: 'whatsapp' });
-  assert.equal(/Walk-in Date/.test(reg.body.text), false);
 });
 
 test('13.4: closing a walk-in before its date tells its applicants, once', async () => {

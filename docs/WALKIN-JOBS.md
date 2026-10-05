@@ -23,7 +23,6 @@ Section 23 (migration `0107`, agent W2) and is not described here.
 | Duplicate + capacity at save time | `api/src/routes/applications.js` (POST) |
 | Confirmation with walk-in details | `api/src/notify/templates.js` `buildMessages()`, `api/src/notify/messages.js` `APPLICATION_SUBMITTED`, `events.js`, `dispatch.js` |
 | Cancellation notice, the drive move at boot | `api/src/notify/walkin-jobs.js` |
-| Share text | `api/src/portal/core.js` `shareText()` |
 | Quick filter chips (Walk-in today / this week, Internship) | `api/src/portal/core.js` `QUICK_CHIPS`, `CHIP_SQL` |
 | Everything in the browser | `web/teamlink-walkin-jobs.js` |
 | API tests | `api/test/walkin-jobs.test.mjs` |
@@ -126,8 +125,9 @@ everyone who applied and was not rejected: portal, email, SMS, WhatsApp
 quiet hours (21:00–08:00 IST) rather than being dropped. Every outcome is
 recorded with the provider's answer.
 
-**Share**: the existing share message gains `📅 Walk-in Date` and `🏢 Venue`
-lines for a walk-in. No second share.
+**Share** (Section 15) is not part of this change: the lead owns the share
+message (`api/src/portal/core.js` `shareText()`), which reads the walk-in
+columns above by these exact names.
 
 ## In the browser (`web/teamlink-walkin-jobs.js`)
 

@@ -18,7 +18,6 @@
  */
 import { randomBytes } from 'node:crypto';
 import { toJob, toCandidate } from '../shapes.js';
-import { dateLabel, timeRange } from './walkin-jobs.js';
 import { matchCandidate, scoreSkills } from '../ai/match.js';
 import { scoreApplication, loadAiSettings } from '../ai/screening.js';
 
@@ -316,14 +315,7 @@ export function shareText(job, link) {
   ];
   if (location) lines.push(`📍 *Location:* ${location}`);
   if (jobType) lines.push(`💼 *Job Type:* ${jobType}`);
-  /* 0106: a walk-in says when and where, from the job's own record. */
-  const walkin = job && (job.jobType === 'walk-in' || job.postingKind === 'walkin');
-  const wDate = walkin ? cleanField(dateLabel(job.walkinDate)) : '';
-  const wTime = walkin ? cleanField(timeRange(job.walkinStartTime || job.walkinFrom, job.walkinEndTime || job.walkinTo)) : '';
-  const wVenue = walkin ? cleanField(job.walkinVenue) : '';
-  if (wDate) lines.push(`📅 *Walk-in Date:* ${wDate}${wTime ? `, ${wTime}` : ''}`);
-  if (wVenue) lines.push(`🏢 *Venue:* ${wVenue}`);
-  if (location || jobType || wDate || wVenue) lines.push('');
+  if (location || jobType) lines.push('');
   lines.push('👉 *View Job & Apply:*', link, '',
     'Please check the job details and apply if interested.', '',
     '*TeamLink Consultancy*');
