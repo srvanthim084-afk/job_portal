@@ -228,7 +228,9 @@ await check('7. recruiter: a score badge in Talent Pool, and the 70+ filter', as
   await go(rp, '#/recruiter/talent-pool');
   await rp.evaluate((n) => { tpSet('q', n); }, `Score b ${stamp}`);
   await rp.waitForSelector('[data-tlrs-b]', { timeout: 15000 });
-  const badge = await rp.evaluate(() => document.querySelector('[data-tlrs-b]').textContent);
+  /* read it in one step: the list repaints when the badges land, and the element found a moment ago can be gone */
+  const badge = await (await rp.waitForFunction(() => { const b = document.querySelector('[data-tlrs-b]'); return b && b.textContent; },
+    null, { timeout: 15000 })).jsonValue();
   must(/\d+/.test(badge), badge);
   await shot(rp, 'score-talent-pool');
   const total = await rp.evaluate(() => STATE.talentPool.total);
@@ -280,6 +282,7 @@ await check('8. recruiter: Find Candidates, the 70+ filter narrows the results o
     must(after.ids.slice().sort().join() === high.slice().sort().join() && after.cards === high.length,
       `with 70+: ${JSON.stringify(after)}; scores ${JSON.stringify(before.ids.map((id) => scores[id] && scores[id].total))}`);
     must(after.ids.length < before.ids.length, `the filter did not narrow (${before.ids.length} -> ${after.ids.length})`);
+    console.log(`        Find Candidates: ${before.ids.length} -> ${after.ids.length} with 70+ (scores ${before.ids.map((id) => (scores[id] ? scores[id].total : 'none')).join(', ')}); asked the server: resumeScoreMin=70`);
     /* and off again: both back */
     sent.length = 0;
     await rp.click('#tlrsFilter input');

@@ -382,13 +382,13 @@ const cards = (page, surface) => page.evaluate((s) => (s === 'candidate'
   /* Search Jobs draws two card styles: the plain list (.rj-card) and, with a
      place picked, the "Jobs in <place>" groups - read the title (h3) and
      the card's own text for the place, whichever style is on screen */
-  ? Array.from(document.querySelectorAll('.rj-page h3')).filter((h3) => !h3.closest('.rj-head, .rj-aibox, .rj-side, .fcr-jd-head'))
-    .map((h3) => {
-      let card = h3.parentElement;
-      while (card && card.querySelectorAll('h3').length === 1 && card.parentElement && card.parentElement.querySelectorAll('h3').length === 1) card = card.parentElement;
-      const loc = card ? (card.innerText.split('\n').find((l) => /📍|·/.test(l) && l !== h3.textContent) || '') : '';
-      return { title: h3.textContent || '', where: loc };
-    })
+  ? [
+    ...Array.from(document.querySelectorAll('.rj-card')).map((c) => ({ title: (c.querySelector('.rj-t') || {}).textContent || '', where: (c.querySelector('.rj-c') || {}).textContent || '' })),
+    /* tlJobCard: the "Jobs in <place>" bands */
+    ...Array.from(document.querySelectorAll('.rj-page .cp-card')).filter((c) => c.querySelector('[onclick*="cpEasyApply"], [onclick*="tlMatchModal"]'))
+      .map((c) => ({ title: (c.querySelector('div[style*="font-size:16px"]') || {}).textContent || '',
+        where: (c.innerText.split('\n').find((l) => l.includes('📍')) || '') })),
+  ]
   : Array.from(document.querySelectorAll('.job-list .job-row')).map((c) => ({ title: (c.querySelector('h3') || {}).textContent || '', where: (c.querySelector('.co-name') || {}).textContent || '' }))
 ).map((x) => ({ title: x.title.replace(/\s+/g, ' ').trim(), where: x.where.replace(/\s+/g, ' ').trim() })), surface);
 async function uiCase(page, phrase, surface) {
