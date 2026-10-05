@@ -55,7 +55,11 @@ await check('a recruiter reaches Find Candidates with results', async () => {
   // A candidate with a number, so the call button is offered.
   const reg = await api('post', '/auth/register', {
     name: 'UI Call Target', email: `uicall.${stamp}@example.test`, password: 'UiCall@2026',
+    /* What registration requires now (0082: the four preferences, and a phone). */
+    phone: '9' + String(Math.floor(1e8 + Math.random() * 9e8)), preferredLocation: 'Hyderabad',
+    expectedCtc: 9, noticePeriod: '30 days', preferredWorkModes: ['Hybrid'],
   });
+  if (!reg || !reg.candidateId) throw new Error('registration failed: ' + JSON.stringify(reg).slice(0, 200));
   candidateId = reg.candidateId;
   await api('put', `/candidates/${candidateId}`, {
     phone: '+91 90000 55555', title: 'React Developer', location: 'Hyderabad',
