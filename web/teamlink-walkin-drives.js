@@ -936,6 +936,8 @@
   /* "Walk-in Drives" under the Find Jobs heading (home and #/jobs share it). */
   function withEntry(out) {
     if (typeof out !== 'string' || out.indexOf('wk-jobs-entry') >= 0) return out;
+    // no walk-in links for signed-out visitors (the owner asked, 2026-10-05)
+    if (!isCandidate()) return out;
     var link = '<a class="wk-jobs-entry" href="' + (isCandidate() ? '#/candidate/walkins' : '#/walkins') + '">🚶 <b>Walk-in Drives</b> - meet recruiters in person, get interviewed the same day <span aria-hidden="true">→</span></a>';
     return out.replace(/(<h2>Find your next role<\/h2><p>[\s\S]*?<\/p>)/, function (m) { return m + link; });
   }
@@ -952,7 +954,9 @@
       nh.__tlwk = true;
       window.pageHome = nh;
     }
-    var prevHeader = window.siteHeader;
+    /* No "Walk-ins" link in the signed-out header (the owner asked,
+       2026-10-05); #/walkins itself still opens from a shared drive link. */
+    var prevHeader = null;
     if (typeof prevHeader === 'function' && !prevHeader.__tlwk) {
       var nhd = function (active) {
         var out = prevHeader.apply(this, arguments);
