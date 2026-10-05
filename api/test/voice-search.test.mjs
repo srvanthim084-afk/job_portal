@@ -225,6 +225,24 @@ test('rate limited per address (20 a minute in production)', async () => {
   assert.ok(limited > 0, 'the limit was reached');
 });
 
+test('Telugu and Hindi words reach the filters whole (vowel signs, virama, ZWNJ kept)', async () => {
+  /* Reported: "No jobs for న య ర ల ..." - the cleaner kept letters and
+     digits but turned every combining mark into a space. */
+  const { parseVoice } = await import('../src/search/voice-parse.js');
+  for (const [text, lang, word] of [
+    ['నాకు హైదరాబాద్‌లో Python jobs కావాలి', 'te-IN', 'హైదరాబాద్‌లో'],
+    ['తెలుగు సాఫ్ట్‌వేర్ డెవలపర్', 'te-IN', 'సాఫ్ట్‌వేర్'],
+    ['मुझे हैदराबाद में Python jobs चाहिए', 'hi-IN', 'हैदराबाद'],
+  ]) {
+    const r = await parseVoice(text, lang, {});
+    assert.ok(r.filters.q.split(' ').includes(word), `${word} is not whole in q: ${r.filters.q}`);
+    assert.ok(r.chips.some((c) => c.label.split(' ').includes(word)), `${word} is not whole in the chips`);
+    assert.equal(/(^| )[\u0C15-\u0C39\u0915-\u0939]( |$)/.test(r.filters.q), false, 'a lone consonant: the marks were stripped');
+  }
+  const en = await parseVoice('Python jobs in Hyderabad', 'en-IN', {});
+  assert.equal(en.filters.q, 'python hyderabad', 'English is cleaned exactly as before');
+});
+
 test('shutdown', async () => {
   await new Promise((r) => server.close(r));
   const { closePool } = await import('../src/db.js');
