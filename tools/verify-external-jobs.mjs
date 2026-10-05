@@ -134,15 +134,26 @@ try {
 
   /* A source with no key cannot collect from a feed, and says so rather
      than silently returning nothing. */
-  const feedSrc = (await api('post', '/external/sources', {
+  const feedBody = {
     name: `Verify Feed ${Date.now()}`,
     sourceType: 'partner_api',
     collectionMethod: 'api',
     applicationMethod: 'api',
-    active: true,
     feedUrl: 'https://example.invalid/jobs',
     credentialEnv: 'VERIFY_NO_SUCH_KEY',
-  })).source;
+  };
+  /* 0108: a partner API cannot be switched on until its licence is on
+     record - the refusal is part of what is checked. */
+  let refusedCode = null;
+  await api('post', '/external/sources', { ...feedBody, active: true }).catch((e) => { refusedCode = e.code; });
+  check(refusedCode === 'LICENCE_REQUIRED', `  an unlicensed partner API cannot be switched on (${refusedCode})`);
+  const feedSrc = (await api('post', '/external/sources', { ...feedBody, active: false })).source;
+  await api('put', `/external/sources/${feedSrc.id}/licence`, {
+    collectionMethod: 'licensed_api', licenceStatus: 'active', consentStatus: 'granted',
+    termsUrl: 'https://partner.example.org/terms', dataUsageAllowed: true, applicationRedirectAllowed: true,
+    owner: 'verify-external-jobs', notes: 'verification only',
+  });
+  await api('post', '/external/sources', { ...feedBody, id: feedSrc.id, active: true });
   const feedSync = await api('post', `/external/sources/${feedSrc.id}/sync`, {});
   check(feedSync.status === 'not_configured',
     `  an unkeyed API source refuses to sync (${feedSync.status}: ${feedSync.error || ''})`);
@@ -266,7 +277,9 @@ try {
 
   const applied = await api('post', '/external/apply', { candidateId, externalJobId: extJob.id });
   check(!!applied.application, `  an external application was recorded (${applied.status})`);
-  check(applied.application.status === 'applied_unconfirmed',
+  /* 'clicked' since 0076: handing somebody a link is not an application;
+     only the candidate's own answer moves it on. */
+  check(applied.application.status === 'clicked',
     `  a redirect is recorded honestly as "${applied.application.statusLabel}"`);
   check(!!applied.redirectUrl, '  and the caller is given the employer’s URL to open');
 
@@ -318,15 +331,19 @@ try {
     }],
   })).jobs[0];
 
+  /* Since 0088 the stored link is validated BEFORE anything is recorded,
+     and a .invalid host is not a public site - so the apply is refused
+     outright ("Redirect unavailable") and no application row is written. */
+  const appsBefore = ((await api('get', `/external/applications?candidateId=${candidateId}`)).applications || []).length;
   const sampleOut = await api('post', '/external/apply', {
     candidateId, externalJobId: sampleJob.id,
-  });
-  check(sampleOut.status === 'sample_posting',
-    `  a .invalid posting is refused as a sample (${sampleOut.status})`);
-  check(sampleOut.application && sampleOut.application.status === 'ready',
-    `  and is NOT recorded as applied (${sampleOut.application && sampleOut.application.status})`);
-  check(/sample posting/i.test(sampleOut.note || ''),
-    '  with a note the candidate can understand');
+  }).catch((e) => ({ refused: e.code, message: e.message }));
+  check(sampleOut.refused === 'INVALID_URL',
+    `  a .invalid posting is refused before anything opens (${sampleOut.refused || sampleOut.status})`);
+  const appsAfter = ((await api('get', `/external/applications?candidateId=${candidateId}`)).applications || []).length;
+  check(appsAfter === appsBefore, `  and is NOT recorded as applied (${appsAfter} external application(s), was ${appsBefore})`);
+  check(/redirect unavailable/i.test(sampleOut.message || ''),
+    '  with a message the candidate can understand');
 
   /* A source that cannot report back says so rather than inventing news. */
   const recheck = await api('post', `/external/applications/${appId}/refresh`, {})
@@ -336,7 +353,12 @@ try {
 
   /* Applying twice is not an error and not a second record. */
   const again = await api('post', '/external/apply', { candidateId, externalJobId: extJob.id });
-  check(again.status === 'already_applied', '  applying again is reported, not duplicated');
+  /* Within ten seconds the double-press guard answers ('already_open');
+     later the database does ('already_applied'). Either way, one row. */
+  const rowsAgain = ((await api('get', `/external/applications?candidateId=${candidateId}`)).applications || [])
+    .filter((x) => x.externalJobId === extJob.id).length;
+  check(['already_applied', 'already_open'].includes(again.status) && rowsAgain === 1,
+    `  applying again is reported, not duplicated (${again.status}, ${rowsAgain} row)`);
 
   /* ---- 1, 2, 3, 8 · nothing in TeamLink moved -------------------- */
   console.log('\nTests 1, 2, 3, 8 — the existing product is untouched\n');
@@ -360,7 +382,9 @@ try {
   const routes = readFileSync('api/src/routes/external-jobs.js', 'utf8');
   const layer = svc + store + routes;
 
-  check(!/notify\/|sendMail|dispatch\(|placeCall|startCall/.test(layer),
+  /* What is IMPORTED or called - a comment naming notify/retry.js as an
+     example of a sweep is not a notification path. */
+  check(!/from\s+['"][^'"]*notify\/|import\(\s*['"][^'"]*notify\/|sendMail|dispatch\(|placeCall|startCall/.test(layer),
     '  the external layer imports no notification or calling code');
   check(!/insert\s+into\s+applications|update\s+applications|update\s+candidates|update\s+jobs/i
     .test(layer),

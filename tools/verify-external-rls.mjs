@@ -324,19 +324,87 @@ check(intoTeamLink.length === 1 && intoTeamLink[0] === 'candidates',
   `external tables reference only: ${parents.join(', ')}`);
 
 /* And nothing in TeamLink references an external table, which is what
-   makes the feature removable without touching the existing schema. */
+   makes the feature removable without touching the existing schema.
+
+   The external layer is every table named external_* or job_source*,
+   plus career_boards and search_query_cache (0067) - tables of the layer
+   pointing at each other are not "TeamLink pointing in". This check used
+   to list only the first four tables, so 0067/0076/0088's own tables were
+   counted as intruders and it failed before 0108 was written. */
+const EXT_LAYER = `(%s like 'external\\_%%' or %s like 'job\\_source%%' or %s in ('career_boards','search_query_cache','candidate_external_job_matches'))`;
+const layer = (col) => EXT_LAYER.replace(/%s/g, col).replace(/%%/g, '%');
 const inbound = await q(`
   select tc.table_name as child, ccu.table_name as parent
     from information_schema.table_constraints tc
     join information_schema.constraint_column_usage ccu
       on ccu.constraint_name = tc.constraint_name
    where tc.constraint_type = 'FOREIGN KEY'
-     and ccu.table_name in ('job_sources','external_jobs',
-                            'candidate_external_job_matches','external_applications')
-     and tc.table_name not in ('job_sources','external_jobs',
-                               'candidate_external_job_matches','external_applications')`);
+     and ${layer('ccu.table_name')}
+     and not ${layer('tc.table_name')}`);
 check(inbound.length === 0,
-  `no existing table points at an external one (${inbound.length} found)`);
+  `no existing table points at an external one (${inbound.length} found${inbound.length ? ': ' + inbound.map((r) => r.child).join(', ') : ''})`);
+
+/* 0108's tables reference only the external layer and candidates. */
+const fks108 = await q(`
+  select distinct tc.table_name as child, ccu.table_name as parent
+    from information_schema.table_constraints tc
+    join information_schema.constraint_column_usage ccu
+      on ccu.constraint_name = tc.constraint_name
+   where tc.constraint_type = 'FOREIGN KEY'
+     and tc.table_name in ('external_source_licences','external_job_url_changes','external_job_quarantine',
+                           'external_job_events','external_saved_jobs','external_audit_log')`);
+const out108 = fks108.filter((f) => !(new RegExp('^(external_|job_source)').test(f.parent)) && f.parent !== 'candidates');
+check(out108.length === 0, `0108's tables point only into the external layer and at candidates (${fks108.map((f) => f.child + '->' + f.parent).join(', ')})`);
+
+/* ---- 6 · 0108: who may read and write the new tables ---------------- */
+console.log('\n0108 — licences, audit, quarantine, events, saved jobs\n');
+await asService();
+await db.exec(`
+  select external_source_save('xsrc_t2','Second Board','job_board','manual','redirect',false,true,null,null);
+  select external_job_save('xjob_t2','xsrc_t2','ext-2','QA Engineer','Test Co','Pune','A real description',
+    array['Selenium'], null, null, null, null, null, null, 'Full-time', null, null, 'https://example.org/qa', null,
+    now(), 'open', null, '{}'::jsonb);
+  select external_source_save('xsrc_t3','Third Board','job_board','manual','redirect',false,false,null,null);
+  insert into external_source_licences (source_id, licence_status) values ('xsrc_t2', 'active');
+  select external_quarantine_put('xsrc_t2','fp1','e9','Bad posting','Co',null,array['missing_url'],'quarantined','{}'::jsonb);
+  select external_job_event_add('xjob_t2','external_job_view','');`);
+check((await q(`select (select count(*) from external_source_licences)::int l, (select count(*) from external_job_quarantine)::int q,
+                       (select count(*) from external_job_events)::int e`))
+  .every((r) => r.l === 1 && r.q === 1 && r.e === 1), 'fixtures: one licence, one quarantined posting, one event');
+for (const [t, role, pid] of [['external_audit_log', 'recruiter', 'r1'], ['external_source_licences', 'candidate', 'cand1'],
+  ['external_job_quarantine', 'candidate', 'cand1'], ['external_job_events', 'candidate', 'cand1']]) {
+  await as(pid, role);
+  const n = (await q(`select count(*)::int n from ${t}`))[0].n;
+  check(n === 0, `${role} reads nothing from ${t} (${n})`);
+}
+await as('a1', 'admin');
+check((await q(`select count(*)::int n from external_audit_log`))[0].n > 0, 'an administrator reads the audit trail');
+let auditWrite = 'allowed';
+try { await db.exec(`insert into external_audit_log (action, entity) values ('forged', 'x')`); }
+catch (e) { auditWrite = 'refused'; }
+check(auditWrite === 'refused', `nobody, not even an administrator, can write the audit trail directly (${auditWrite})`);
+let licWrite = 'allowed';
+try { await db.exec(`insert into external_source_licences (source_id) values ('xsrc_t3')`); }
+catch (e) { licWrite = 'refused'; }
+check(licWrite === 'refused', `a licence is written only through its definer function (${licWrite})`);
+
+/* A candidate saves for themselves only, through the function. */
+await as('cand1', 'candidate');
+await q(`select external_saved_set('xjob_t2', true)`);
+check((await q(`select count(*)::int n from external_saved_jobs`))[0].n === 1, 'cand1 saved a job and sees it');
+let savedWrite = 'allowed';
+try { await db.exec(`insert into external_saved_jobs (candidate_id, external_job_id) values ('cand5','xjob_t2')`); }
+catch (e) { savedWrite = 'refused'; }
+check(savedWrite === 'refused', `nobody saves for somebody else (${savedWrite})`);
+await as('cand5', 'candidate');
+check((await q(`select count(*)::int n from external_saved_jobs`))[0].n === 0, 'cand5 does not see cand1\'s saved job');
+let licFn = 'allowed';
+try { await q(`select external_source_licence_save('xsrc_t2','manual_entry','active','granted','https://x.org',true,true,null,null,'me',null)`); }
+catch (e) { licFn = 'refused'; }
+check(licFn === 'refused', `a candidate cannot record a licence even through the function (${licFn})`);
+await asService();
+await q(`select external_source_delete('xsrc_t2')`);
+await q(`select external_source_delete('xsrc_t3')`);
 
 console.log(fail.length
   ? `\nEXTERNAL RLS VERIFICATION FAILED (${fail.length})`
