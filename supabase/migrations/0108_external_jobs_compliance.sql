@@ -458,6 +458,10 @@ alter table external_jobs add constraint external_jobs_status_check
   check (status in ('open', 'closed', 'expired', 'removed', 'archived'));
 
 alter table external_jobs
+  /* The original URL in one spelling: scheme + lower-case host without
+     www, no fragment, no tracking parameters, no trailing slash. The
+     second dedupe key after (source, source job id). */
+  add column if not exists canonical_url text,
   add column if not exists content_hash text,
   /* A status an administrator set (closed / removed / archived). A re-sync
      cannot silently reopen a posting somebody deliberately took down. */
@@ -465,6 +469,7 @@ alter table external_jobs
     check (admin_hold is null or admin_hold in ('closed', 'removed', 'archived', 'expired'));
 
 create index if not exists external_jobs_updated_idx on external_jobs (updated_at desc);
+create index if not exists external_jobs_canonical_idx on external_jobs (source_id, canonical_url);
 create index if not exists external_jobs_source_status_idx on external_jobs (source_id, status);
 create index if not exists external_jobs_seen_idx on external_jobs (source_id, synced_at) where status = 'open';
 
@@ -474,9 +479,27 @@ language sql immutable as $$
     j.salary, j.employment_type, j.education, array_to_string(j.skills, chr(30)), j.application_url))
 $$;
 
+create or replace function external_canonical_url(p_url text) returns text
+language sql immutable as $$
+  select case when coalesce(btrim(p_url), '') !~* '^https?://' then null else
+    regexp_replace(
+      regexp_replace(
+        regexp_replace(
+          regexp_replace(lower(substring(btrim(p_url) from '^[a-zA-Z]+://[^/?#]*')), '^(https?://)www\.', '\1')
+          || coalesce(substring(btrim(p_url) from '^[a-zA-Z]+://[^/?#]*([^?#]*)'), ''),
+          '/+$', '')
+        || coalesce('?' || nullif(array_to_string(array(
+             select kv from unnest(string_to_array(substring(btrim(p_url) from '\?([^#]*)'), '&')) kv
+              where kv <> '' and kv !~* '^(utm_[a-z]+|gclid|fbclid|ref|source)='
+              order by kv), '&'), ''), ''),
+        '\s', '', 'g'),
+      '^$', '') end
+$$;
+
 create or replace function external_jobs_before_write() returns trigger
 language plpgsql as $$
 begin
+  new.canonical_url := external_canonical_url(new.application_url);
   if new.admin_hold is not null then new.status := new.admin_hold; end if;
   new.content_hash := external_job_content_hash(new);
   if tg_op = 'UPDATE' then new.updated_at := now(); end if;
@@ -487,7 +510,15 @@ drop trigger if exists external_jobs_before_write on external_jobs;
 create trigger external_jobs_before_write before insert or update on external_jobs
   for each row execute function external_jobs_before_write();
 
-update external_jobs set content_hash = external_job_content_hash(external_jobs) where content_hash is null;
+update external_jobs set content_hash = external_job_content_hash(external_jobs),
+                         canonical_url = external_canonical_url(application_url)
+ where content_hash is null;
+
+/* "Apply Clicked" is what a click IS - never "Applied". (0076's label was
+   "Clicked".) */
+update external_application_statuses set label = 'Apply Clicked' where id = 'clicked';
+update external_application_statuses set label = 'Applied on External Site (candidate''s own report)'
+ where id = 'applied_unconfirmed';
 
 create table if not exists external_job_url_changes (
   id                bigserial primary key,
@@ -864,6 +895,8 @@ create or replace function external_portal_search(
   employment_type text, education text, posted_at timestamptz, synced_at timestamptz,
   status text, source_key text, source_name text, original_publisher text,
   exp_min numeric, exp_max numeric, last_seen_at timestamptz, provider text,
+  source_job_id text, application_url text, canonical_url text, connector text, allowed_domains text[],
+  created_at timestamptz, updated_at timestamptz,
   score int, total bigint
 )
 language sql stable security definer set search_path = public as $$
@@ -876,6 +909,7 @@ language sql stable security definer set search_path = public as $$
   ),
   hits as (
     select j.*, s.name as s_name, s.provider as s_provider, s.health_status as s_health,
+           s.connector as s_connector, s.allowed_domains as s_domains,
            coalesce(j.posted_at, j.synced_at) as fresh_at
       from external_jobs j join job_sources s on s.id = j.source_id, params p
      where j.status = 'open'
@@ -929,6 +963,8 @@ language sql stable security definer set search_path = public as $$
          x.employment_type, x.education, x.posted_at, x.synced_at,
          x.status, x.source_id, x.s_name, x.original_publisher,
          x.exp_min, x.exp_max, x.last_seen_at, x.s_provider,
+         x.external_job_id, x.application_url, x.canonical_url, x.s_connector, x.s_domains,
+         x.created_at, x.updated_at,
          x.score, count(*) over () as total
     from scored x
    order by case when coalesce(p_sort, '') = 'relevance' then x.score end desc nulls last,
@@ -944,7 +980,9 @@ returns table (
   salary_min numeric, salary_max numeric, skills text[], description text,
   employment_type text, education text, posted_at timestamptz, synced_at timestamptz,
   status text, source_key text, source_name text, original_publisher text,
-  exp_min numeric, exp_max numeric, last_seen_at timestamptz, provider text, source_active boolean
+  exp_min numeric, exp_max numeric, last_seen_at timestamptz, provider text, source_active boolean,
+  source_job_id text, application_url text, canonical_url text, connector text, allowed_domains text[],
+  created_at timestamptz, updated_at timestamptz
 )
 language sql stable security definer set search_path = public as $$
   select j.id, j.title, j.company, j.location, j.experience, j.salary,
@@ -952,7 +990,9 @@ language sql stable security definer set search_path = public as $$
          j.employment_type, j.education, j.posted_at, j.synced_at,
          case when s.active then j.status else 'removed' end,
          j.source_id, s.name, j.original_publisher,
-         j.exp_min, j.exp_max, j.last_seen_at, s.provider, s.active
+         j.exp_min, j.exp_max, j.last_seen_at, s.provider, s.active,
+         j.external_job_id, j.application_url, j.canonical_url, s.connector, s.allowed_domains,
+         j.created_at, j.updated_at
     from external_jobs j join job_sources s on s.id = j.source_id
    where j.id = p_id
 $$;
@@ -1009,7 +1049,8 @@ begin
       external_portal_search(text, text, text, text, text, numeric, numeric, text[], int, int, text, int, int),
       external_portal_job_v2(text),
       external_portal_apply_target_v2(text),
-      external_portal_version()
+      external_portal_version(),
+      external_canonical_url(text)
       to app_api;
   end if;
 end $$;

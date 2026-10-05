@@ -129,6 +129,9 @@ try {
   })).source;
   sourceId = src.id;
   check(!!sourceId, `  a source was created (${src.name})`);
+  /* 0108: a candidate is only ever sent to an APPROVED domain of the
+     source - the allowlist is the open-redirect guard. */
+  await api('put', `/external/sources/${sourceId}/config`, { allowedDomains: ['example.com'] });
   check(src.collectionMethod === 'manual' && src.applicationMethod === 'redirect',
     '  it collects manually and applies by redirect');
 

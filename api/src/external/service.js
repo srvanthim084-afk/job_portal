@@ -18,6 +18,7 @@ import { sourcePolicy, PRESERVED } from './source-config.js';
 import { validateJob, fingerprintOf, reasonCodes } from './quality.js';
 import { validateExternalUrl } from './redirect.js';
 import { afterSync, safe } from './health.js';
+import { createHash } from 'node:crypto';
 
 /**
  * What this desk's candidates are actually looking for.
@@ -404,7 +405,10 @@ async function runChecked(session, source, policy, startedAt) {
   const problems = [];
   const accepted = [];
   const seen = new Set();
-  for (const raw of all) {
+  for (const rawIn of all) {
+    /* No id from the source: the posting is keyed by a hash of its
+       normalised URL, so the next sync finds the same row. */
+    const raw = withUrlKey(rawIn);
     const job = normaliseExternalJob(raw, source);
     const fp = fingerprintOf(raw, job);
     if (seen.has(fp)) continue;            // the same posting from another search term
@@ -415,7 +419,7 @@ async function runChecked(session, source, policy, startedAt) {
     if (!verdict.ok) {
       quarantined += 1;
       const codes = reasonCodes(verdict);
-      if (codes.some((c) => /url|domain/.test(c))) urlFailures += 1;
+      if (codes.some((c) => /url|domain|https/.test(c))) urlFailures += 1;
       await safe('quarantine', () => cx.quarantine(session, sourceId, {
         fingerprint: fp, externalJobId: job?.externalJobId || null, title: job?.title || raw?.title,
         company: job?.company || raw?.company, url: job?.applicationUrl || raw?.applyUrl || null,
@@ -424,7 +428,7 @@ async function runChecked(session, source, policy, startedAt) {
          keeps the link it had, and the refusal is on record. */
       if (prev && job && prev.url !== job.applicationUrl) {
         urlChanges += 1;
-        const bad = verdict.issues.find((i) => /url|domain/.test(i.code));
+        const bad = verdict.issues.find((i) => /url|domain|https/.test(i.code));
         await safe('url change', () => cx.noteUrlChange(session, { jobId: prev.id, oldUrl: prev.url,
           newUrl: job.applicationUrl || raw?.applyUrl || null, valid: false,
           reason: bad ? bad.message : 'the posting failed validation', applied: false }));
@@ -470,6 +474,37 @@ async function runChecked(session, source, policy, startedAt) {
     fetched: all.length, created, updated: saved - created, failed, quarantined, urlChanges,
     health: shapeHealth(h.health),
   };
+}
+
+/** The URL as the same posting will always present it. */
+export function normaliseUrl(url) {
+  try {
+    const u = new URL(String(url).trim());
+    u.hash = '';
+    u.hostname = u.hostname.toLowerCase().replace(/^www\./, '');
+    for (const k of [...u.searchParams.keys()]) {
+      if (/^(utm_|gclid$|fbclid$|ref$|source$)/i.test(k)) u.searchParams.delete(k);
+    }
+    u.searchParams.sort();
+    return `${u.protocol}//${u.host}${u.pathname.replace(/\/+$/, '')}${u.search}`;
+  } catch { return null; }
+}
+/**
+ * The dedupe key when a source sends no id of its own: source + source job
+ * id first (the unique key on external_jobs), then the canonical URL, then
+ * company + title + location. The same posting therefore lands on the same
+ * row on every sync, and a repeat sync updates it.
+ */
+export function withUrlKey(raw) {
+  const id = String(raw?.externalJobId ?? raw?.external_job_id ?? raw?.id ?? raw?.jobId ?? '').trim();
+  if (id) return raw;
+  const sha = (v) => createHash('sha1').update(v).digest('hex').slice(0, 32);
+  const url = normaliseUrl(raw?.applicationUrl ?? raw?.application_url ?? raw?.url ?? raw?.applyUrl ?? '');
+  if (url) return { ...raw, externalJobId: `url:${sha(url)}` };
+  const fold = (v) => String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const ctl = [raw?.company ?? raw?.companyName, raw?.title ?? raw?.jobTitle, raw?.location].map(fold);
+  if (ctl[0] && ctl[1]) return { ...raw, externalJobId: `ctl:${sha(ctl.join('|'))}` };
+  return raw;
 }
 
 const shapeHealth = (h) => (h ? {

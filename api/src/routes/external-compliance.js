@@ -24,9 +24,9 @@ import { config } from '../config.js';
 import * as store from '../external/store.js';
 import * as cx from '../external/compliance-store.js';
 import { bump, cached } from '../external/cache.js';
-import { validateExternalUrl } from '../external/redirect.js';
+import { checkLink } from '../external/link.js';
 import {
-  sourcePolicy, hostAllowed, cleanDomains, providerCatalogue, PROVIDER_IDS,
+  sourcePolicy, cleanDomains, providerCatalogue, PROVIDER_IDS,
 } from '../external/source-config.js';
 import { toSource, toLicence, toPortalJobV2, licenceRequirement } from '../external/shapes.js';
 import { syncSource } from '../external/service.js';
@@ -335,10 +335,9 @@ export default function externalComplianceRoutes() {
           if (!j.source_active) { fail(id, 'its source is switched off'); continue; }
           if (!gaps.has(j.source_id)) gaps.set(j.source_id, await cx.licenceGap(req.session, j.source_id));
           if (gaps.get(j.source_id)) { fail(id, gaps.get(j.source_id)); continue; }
-          const v = validateExternalUrl(j.application_url, j.connector || j.source_id);
+          const v = checkLink(j.application_url, { provider: j.provider, connector: j.connector,
+            sourceId: j.source_id, allowedDomains: j.allowed_domains });
           if (!v.ok) { fail(id, `its link cannot be followed: ${v.reason}`); continue; }
-          const p = sourcePolicy({ provider: j.provider, connector: j.connector, allowed_domains: j.allowed_domains });
-          if (!hostAllowed(v.url, p.allowedDomains)) { fail(id, 'its link is not on an allowed domain'); continue; }
           if (j.status === 'open' && !j.admin_hold) { results.push({ id, ok: true, status: 'open', unchanged: true }); continue; }
           await cx.setJobStatus(req.session, id, { status: 'open', hold: null });
           results.push({ id, ok: true, status: 'open' });

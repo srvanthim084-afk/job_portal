@@ -12,11 +12,15 @@
  *     external source);
  *   - #/job/<id> opens an external job's own details page.
  *
- * APPLY NOW goes to the ORIGINAL job page. Nothing is created in
- * TeamLink's applications. A signed-in candidate's click goes through
- * the existing tracked flow (xjApply -> "Clicked", which asks later
- * whether they applied); anybody else is sent by the server's redirect,
- * which reads the URL from the database and validates it.
+ * APPLY NOW (the owner's final rule, 2026-10-05) opens the stored ORIGINAL
+ * job URL directly in a new tab (noopener) - no TeamLink page in between,
+ * never a TeamLink URL in its place, never the TeamLink application form.
+ * The server hands the page that URL only after the one link rule
+ * (api/src/external/link.js: https, a public host, an approved domain for
+ * the source); otherwise the card says "Application link unavailable", and
+ * a closed posting says "Job no longer available". The click is recorded as
+ * "Apply Clicked" - against the candidate when signed in, as a bare count
+ * otherwise - and never as an application.
  *
  * TeamLink jobs are untouched: their cards, Apply button and application
  * flow are exactly what they were.
@@ -167,9 +171,21 @@
   var label = function (j) {
     return '<span title="Applied for on the original website" style="display:inline-block;font-size:11px;font-weight:800;'
       + 'color:#4a3aa8;background:#f1eefe;border-radius:10px;padding:2px 8px;white-space:nowrap">'
-      + '<span class="tlpx-sr">Job type: </span>External • '
-      + h(j.sourceName || j.source) + '</span>';
+      + 'Source: ' + h(j.jobSourceName || j.sourceName || j.source) + '<span class="tlpx-sr"> (external job)</span></span>';
   };
+  /* Which Apply this card may offer. */
+  var linkState = function (j) {
+    if (!j || j.missing || (j.status && j.status !== 'ACTIVE') || j.applyLink === 'job_unavailable') return 'gone';
+    return j.originalJobUrl ? 'ok' : 'nolink';
+  };
+  /* Apply Now - or, with no button, why there is none. */
+  function applyControl(j, cls, stop) {
+    var st = linkState(j);
+    if (st === 'gone') return '<span class="tlpx-na" role="status">Job no longer available</span>';
+    if (st === 'nolink') return '<span class="tlpx-na" role="status">Application link unavailable</span>';
+    return '<button type="button" class="' + cls + '" aria-label="' + h(applyLabel(j)) + '" onclick="'
+      + (stop ? 'event.stopPropagation();' : '') + 'tlpxApply(\'' + js(j.id) + '\')">Apply Now <span aria-hidden="true">↗</span></button>';
+  }
   /* The Apply button says, to a screen reader as well, that it leaves
      TeamLink and opens another site. */
   var applyLabel = function (j) {
@@ -198,7 +214,7 @@
       + ' · <span style="color:#8a94a6">You apply on the original website</span></div>'
       + '<button type="button" class="rj-btn" aria-label="View job: ' + h(j.title) + '" onclick="navigate(\'/job/' + js(j.id) + '\')">View Job</button>'
       + saveButton(j, 'rj-btn')
-      + '<button type="button" class="rj-btn pri" aria-label="' + h(applyLabel(j)) + '" onclick="tlpxApply(\'' + js(j.id) + '\')">Apply Now <span aria-hidden="true">↗</span></button>'
+      + applyControl(j, 'rj-btn pri')
       + '</div></article>';
   }
 
@@ -210,7 +226,7 @@
       + '<span>🕒 ' + h(j.employmentType || '—') + '</span></div>'
       + '<div style="margin-top:6px">' + label(j) + ' <span style="font-size:12px;color:#8a94a6;margin-left:6px">' + h(posted(j)) + '</span></div>'
       + '</div><div style="display:flex;align-items:center;padding:0 14px">'
-      + '<button type="button" class="btn btn-primary btn-sm" aria-label="' + h(applyLabel(j)) + '" onclick="event.stopPropagation();tlpxApply(\'' + js(j.id) + '\')">Apply Now <span aria-hidden="true">↗</span></button>'
+      + applyControl(j, 'btn btn-primary btn-sm', true)
       + '</div></div>';
   }
 
@@ -350,12 +366,13 @@
       + '<div style="flex:1;min-width:240px"><h1 id="tlpxTitle" style="font-size:22px;margin:0">' + h(j.title) + '</h1>'
       + '<div style="color:#42505f;margin-top:4px">' + h(j.company || '—') + ' · ' + h(j.location || '—') + '</div>'
       + '<div style="margin-top:8px">' + label(j) + '</div></div>'
-      + '<div style="text-align:right"><button type="button" class="btn btn-primary" aria-label="' + h(applyLabel(j)) + '" onclick="tlpxApply(\'' + js(j.id) + '\')">Apply Now <span aria-hidden="true">↗</span></button>'
+      + '<div style="text-align:right">' + applyControl(j, 'btn btn-primary')
       + (isCand() ? '<div style="margin-top:6px">' + saveButton(j, 'btn btn-ghost btn-sm') + '</div>' : '')
-      + '<div style="font-size:12px;color:#5b6676;margin-top:6px;max-width:240px">You will be redirected to ' + h(siteOf(j)) + ' to apply. TeamLink does not submit this application for you.</div></div>'
+      + (linkState(j) === 'ok' ? '<div style="font-size:12px;color:#5b6676;margin-top:6px;max-width:240px">Apply Now opens ' + h(siteOf(j)) + ' in a new tab. You apply there; TeamLink does not submit the application for you.</div>' : '') + '</div>'
       + '</div>'
       + '<dl class="cap-kv" style="margin:16px 0 0;display:grid;grid-template-columns:160px 1fr;gap:6px 14px;font-size:13.5px">'
-      + row('Job type', 'External') + row('Source', siteOf(j) === (j.sourceName || j.source) ? (j.sourceName || j.source) : siteOf(j) + ' (via ' + (j.sourceName || j.source) + ')')
+      + row('Source', siteOf(j) === (j.sourceName || j.source) ? (j.sourceName || j.source) : siteOf(j) + ' (via ' + (j.sourceName || j.source) + ')')
+      + row('Job type', 'External')
       + row('Experience', j.experience) + row('Salary', j.salary) + row('Employment type', j.employmentType)
       + row('Qualifications', j.education) + row('Posted', postedOn)
       + row('Last checked', seen ? 'on the source ' + when(seen) : '')
@@ -388,91 +405,83 @@
     window.pageJobDetail = next;
   }
 
-  /* ---- the notice before leaving TeamLink (0108, master prompt 28/32) ----
-   *
-   * Said before anything opens, in plain words, and never implying that
-   * TeamLink submits the application. A real dialog: labelled, focus moved
-   * into it and kept there, Escape and "Stay on TeamLink" cancel, focus
-   * goes back to the button that opened it.
-   */
-  var NOTICE = null;
-  function notice(j) {
-    return new Promise(function (resolve) {
-      var site = siteOf(j);
-      var opener = document.activeElement;
-      var wrap = document.createElement('div');
-      wrap.className = 'tlpx-veil';
-      wrap.innerHTML = '<div class="tlpx-dlg" role="dialog" aria-modal="true" aria-labelledby="tlpxNoticeT" aria-describedby="tlpxNoticeD">'
-        + '<h2 id="tlpxNoticeT">You are leaving TeamLink Job Portal</h2>'
-        + '<p id="tlpxNoticeD">You will continue your application on <b>' + h(site) + '</b>. '
-        + 'TeamLink does not submit this application for you, and you complete it on their website.'
-        + (j && j.title ? '<br><span class="tlpx-job">' + h(j.title) + (j.company ? ' · ' + h(j.company) : '') + '</span>' : '')
-        + '</p>'
-        + '<div class="tlpx-acts"><button type="button" class="btn btn-ghost" data-act="stay">Stay on TeamLink</button>'
-        + '<button type="button" class="btn btn-primary" data-act="go">Continue to ' + h(site) + ' <span aria-hidden="true">↗</span></button></div></div>';
-      var done = function (ok) {
-        document.removeEventListener('keydown', key, true);
-        if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
-        NOTICE = null;
-        try { if (opener && opener.focus) opener.focus(); } catch (e) { /* ignore */ }
-        resolve(ok);
-      };
-      var key = function (e) {
-        if (e.key === 'Escape') { e.preventDefault(); done(false); return; }
-        if (e.key === 'Tab') {
-          var b = wrap.querySelectorAll('button');
-          if (!b.length) return;
-          if (e.shiftKey && document.activeElement === b[0]) { e.preventDefault(); b[b.length - 1].focus(); }
-          else if (!e.shiftKey && document.activeElement === b[b.length - 1]) { e.preventDefault(); b[0].focus(); }
-        }
-      };
-      wrap.addEventListener('click', function (e) {
-        var act = e.target && e.target.closest ? e.target.closest('[data-act]') : null;
-        if (act) done(act.getAttribute('data-act') === 'go');
-        else if (e.target === wrap) done(false);
-      });
-      if (NOTICE) NOTICE(false);
-      NOTICE = done;
-      document.body.appendChild(wrap);
-      document.addEventListener('keydown', key, true);
-      var go = wrap.querySelector('[data-act="go"]');
-      if (go) go.focus();
-    });
+  /* ---- Apply Now: straight to the stored original URL ----------------- */
+  var api = function () { return window.TL && window.TL.api; };
+  function record(id) {
+    /* "Apply Clicked": against the candidate (POST /external/apply - an
+       external_applications row, never an `applications` one), or a bare
+       count for a visitor. Fire and forget: the tab is already open. */
+    try {
+      if (isCand() && api()) {
+        /* The candidate's own "Did you apply?" may follow later (the
+           External Jobs page asks for clicks still unanswered) - their
+           report, labelled as theirs; the click itself is only a click. */
+        api().post('/external/apply', { externalJobId: id })
+          .then(null, function () { /* the click stands; the record is best effort */ });
+      } else {
+        fetch('/api/portal/external-jobs/' + encodeURIComponent(id) + '/click',
+          { method: 'POST', credentials: 'same-origin', keepalive: true }).catch(function () {});
+      }
+    } catch (e) { /* ignore */ }
   }
-
-  /* ---- Apply Now: to the original website ---- */
-  var rawXjApply = null;          // the tracked flow, without the notice
-  function proceed(id) {
-    /* A signed-in candidate: the existing tracked flow - it opens the
-       original page and later asks whether they applied. Still not a
-       TeamLink application. */
-    var tracked = rawXjApply || window.xjApply;
-    if (isCand() && typeof tracked === 'function') { tracked(id); return; }
-    /* Anybody else: the server's validated redirect. */
-    var url = '/api/portal/external-jobs/' + encodeURIComponent(id) + '/apply';
+  function openUrl(url) {
     var win = null;
     try { win = window.open(url, '_blank', 'noopener,noreferrer'); } catch (e) { win = null; }
-    if (!win) location.href = url;
+    /* noopener returns null in most browsers even when the tab opened; a
+       real block is rare here because this runs inside the click. */
+    return win;
   }
   window.tlpxApply = function (id) {
     var j = X.byId[id];
-    if (j && (j.missing || (j.status && j.status !== 'ACTIVE'))) {
-      if (typeof window.toast === 'function') toast('This job is no longer available.', 'ℹ️');
-      return;
-    }
-    notice(j || { id: id }).then(function (ok) { if (ok) proceed(id); });
+    var go = function (job) {
+      var st = linkState(job);
+      if (st === 'gone') { if (typeof window.toast === 'function') toast('Job no longer available', 'ℹ️'); return; }
+      if (st === 'nolink') { if (typeof window.toast === 'function') toast('Application link unavailable', 'ℹ️'); return; }
+      openUrl(job.originalJobUrl);
+      record(job.id);
+      if (typeof window.toast === 'function') toast('Opened ' + siteOf(job) + ' in a new tab — apply there', '↗️');
+    };
+    if (j && (j.__full || j.originalJobUrl !== undefined)) { go(j); return; }
+    /* Not in the page's list (e.g. opened from another screen): ask once.
+       A blank tab is opened inside the click so the browser allows it, and
+       pointed at the original URL when the answer comes. */
+    var tab = null;
+    try { tab = window.open('', '_blank'); if (tab) tab.opener = null; } catch (e) { tab = null; }
+    one(id).then(function (full) {
+      if (linkState(full) === 'ok' && tab) { tab.location.replace(full.originalJobUrl); record(full.id); return; }
+      if (tab) try { tab.close(); } catch (e) { /* ignore */ }
+      go(full);
+    });
   };
-  /* The External Jobs page's own Apply / "Open job again" get the same notice. */
+
+  /* The External Jobs page's own Apply / "Open job again" take the same
+     path: the original URL, opened from the click. */
   function wrapTracked() {
     var prev = window.xjApply;
     if (typeof prev !== 'function' || prev.__tlpx) return;
-    rawXjApply = prev;
-    var next = function (id) {
-      var self = this, args = arguments;
-      return notice(X.byId[id] || { id: id }).then(function (ok) { if (ok) return prev.apply(self, args); return null; });
-    };
+    var next = function (id) { window.tlpxApply(id); };
     next.__tlpx = true;
+    next.__prev = prev;
     window.xjApply = next;
+  }
+
+  /*
+   * NEVER THE TEAMLINK FORM FOR AN EXTERNAL JOB. W1's application form
+   * wraps applyToJob / easyApply / cpEasyApply / capApply at load (after
+   * this file) and hands an xjob_ id to the function it wrapped - which is
+   * this guard, so an external id always ends in tlpxApply.
+   */
+  function guardTeamLinkApply() {
+    ['applyToJob', 'easyApply', 'cpEasyApply', 'capApply', 'rjApplyJob'].forEach(function (fn) {
+      var prev = window[fn];
+      if (typeof prev !== 'function' || prev.__tlpxGuard) return;
+      var g = function (jobId) {
+        if (/^xjob_/.test(String(jobId || ''))) { window.tlpxApply(String(jobId)); return undefined; }
+        return prev.apply(this, arguments);
+      };
+      g.__tlpxGuard = true;
+      window[fn] = g;
+    });
   }
 
   /* ---- saved external jobs (0108) -------------------------------------
@@ -481,7 +490,6 @@
    * posting that closes stays saved and says so; only the candidate removes
    * it. TeamLink's own saved jobs are untouched.
    */
-  var api = function () { return window.TL && window.TL.api; };
   function loadSaved(force) {
     if (!isCand() || !api()) return;
     var who = STATE.session && STATE.session.id;
@@ -527,7 +535,7 @@
           + (open ? '' : '<div role="status" style="font-size:11.5px;font-weight:800;color:#8a3b12;background:#fdeee6;border-radius:12px;padding:4px 10px">No longer available</div>')
           + '</div><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:11px;border-top:1px solid #f0f3f7;padding-top:11px">'
           + '<button type="button" class="cp-btn" onclick="navigate(\'/job/' + js(j.id) + '\')">View Job</button>'
-          + (open ? '<button type="button" class="cp-btn pri" aria-label="' + h(applyLabel(j)) + '" onclick="tlpxApply(\'' + js(j.id) + '\')">Apply Now <span aria-hidden="true">↗</span></button>' : '')
+          + (open ? applyControl(j, 'cp-btn pri') : '')
           + '<button type="button" class="cp-btn" onclick="tlpxSave(\'' + js(j.id) + '\')">Remove</button></div></div>';
       }).join('') + '</section>';
   }
@@ -555,12 +563,8 @@
   function addStyle() {
     if (document.getElementById('tlpx-css')) return;
     var css = '.tlpx-sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}'
-      + '.tlpx-veil{position:fixed;inset:0;background:rgba(15,23,32,.55);display:flex;align-items:center;justify-content:center;z-index:10050;padding:16px}'
-      + '.tlpx-dlg{background:#fff;color:#16202c;border-radius:14px;max-width:440px;width:100%;padding:22px 22px 18px;box-shadow:0 18px 50px rgba(0,0,0,.25)}'
-      + '.tlpx-dlg h2{font-size:18px;margin:0 0 8px}.tlpx-dlg p{margin:0 0 16px;color:#33404f;font-size:14px;line-height:1.55}'
-      + '.tlpx-job{display:inline-block;margin-top:8px;font-size:12.5px;color:#5b6676}'
-      + '.tlpx-acts{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}'
-      + '[data-external] button:focus-visible,.tlpx-dlg button:focus-visible,.tlpx-link:focus-visible{outline:3px solid #1d6ff2;outline-offset:2px}'
+      + '.tlpx-na{display:inline-block;font-size:12.5px;font-weight:700;color:#7a4b00;background:#fff6e5;border-radius:8px;padding:6px 10px}'
+      + '[data-external] button:focus-visible,.tlpx-link:focus-visible{outline:3px solid #1d6ff2;outline-offset:2px}'
       + '.tlpx-link{color:inherit;text-decoration:none}.tlpx-link:hover{text-decoration:underline}';
     var tag = document.createElement('style');
     tag.id = 'tlpx-css';
@@ -574,6 +578,7 @@
     wrapPublic();
     wrapDetail();
     wrapTracked();
+    guardTeamLinkApply();
     wrapSaved();
     load();
     loadSaved(false);
@@ -592,8 +597,27 @@
       window.render = r2;
     }
   }
+  /* The details page is wrapped AT ONCE, not at load: a reload on
+     #/job/xjob_… renders before the load event, and the page's own job
+     view would treat an external id as unknown and move away. */
+  wrapDetail();
+  /* The deep-link opener (index.html tlOpenJobById) looks a job up in
+     TeamLink's own table and sends the visitor to #/jobs when it is not
+     there - which an external id never is. It is answered here instead. */
+  (function guardDeepLink() {
+    var prev = window.tlOpenJobById;
+    if (typeof prev !== 'function' || prev.__tlpx) return;
+    var next = function (id) {
+      if (!/^xjob_/.test(String(id || ''))) return prev.apply(this, arguments);
+      var want = '#/job/' + id;
+      if (location.hash !== want) location.hash = want;
+      return one(String(id)).then(function () { return true; });
+    };
+    next.__tlpx = true;
+    window.tlOpenJobById = next;
+  })();
   if (document.readyState === 'complete') install();
   else window.addEventListener('load', install);
 
-  window.TLPortalExternal = { load: load, state: X, notice: notice, ranked: ranked, loadSaved: loadSaved };
+  window.TLPortalExternal = { load: load, state: X, ranked: ranked, loadSaved: loadSaved, linkState: linkState };
 })();

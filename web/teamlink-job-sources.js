@@ -54,6 +54,12 @@
   function isAdmin() { return !!(window.STATE && STATE.session && STATE.session.role === 'admin'); }
   var q = function (v) { return encodeURIComponent(v); };
 
+  function day(iso) {
+    if (!iso) return '—';
+    try { return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }); }
+    catch (e) { return String(iso); }
+  }
+
   function when(iso) {
     if (!iso) return 'never';
     try {
@@ -456,9 +462,11 @@
       + '</div>' : '';
     var table = S.jobs.length ? '<div class="js-scroll"><table class="js-tbl"><caption class="js-sr">External jobs</caption><thead><tr>'
       + (isAdmin() ? '<th scope="col"><input type="checkbox" aria-label="Select all jobs on this page" onchange="jsPickAll(this.checked)"></th>' : '')
-      + '<th scope="col">Job ID</th><th scope="col">Job type</th><th scope="col">Source</th><th scope="col">Source job ID</th><th scope="col">Title</th>'
-      + '<th scope="col">Original job URL</th><th scope="col">Source company URL</th><th scope="col">Last synced</th><th scope="col">Last seen</th>'
-      + '<th scope="col">Sync status</th><th scope="col">Active / closed</th></tr></thead><tbody>'
+      + '<th scope="col">Title</th><th scope="col">Company</th><th scope="col">Source</th><th scope="col">Original URL</th>'
+      + '<th scope="col">Status</th><th scope="col">Date collected</th><th scope="col">Last updated</th>'
+      + (isAdmin() ? '<th scope="col">Job ID</th><th scope="col">Source job ID</th><th scope="col">Source company URL</th>'
+        + '<th scope="col">Last synced</th><th scope="col">Last seen</th><th scope="col">Sync status</th>' : '')
+      + '</tr></thead><tbody>'
       + S.jobs.map(function (j) {
         var link = function (u) {
           return u ? '<a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">' + esc(u) + '<span class="js-sr"> (opens in a new tab)</span></a>' : '—';
@@ -466,17 +474,19 @@
         return '<tr>'
           + (isAdmin() ? '<td><input type="checkbox" aria-label="Select ' + esc(j.title) + '"' + (S.picked[j.id] ? ' checked' : '')
             + ' onchange="jsPick(&quot;' + esc(j.id) + '&quot;, this.checked)"></td>' : '')
-          + '<td><span class="js-code">' + esc(j.id) + '</span></td>'
-          + '<td>External</td>'
+          + '<td>' + esc(j.title) + '</td><td>' + esc(j.company || '—') + '</td>'
           + '<td>' + esc(j.sourceName) + '<div class="js-sub">' + esc(j.source) + '</div></td>'
-          + '<td><span class="js-code">' + esc(j.sourceJobId || '') + '</span></td>'
-          + '<td>' + esc(j.title) + '<div class="js-sub">' + esc(j.company || '') + '</div></td>'
           + '<td class="js-url">' + link(j.originalJobUrl) + '</td>'
-          + '<td class="js-url">' + link(j.sourceCompanyUrl) + '</td>'
-          + '<td>' + esc(when(j.lastSyncedAt)) + '</td><td>' + esc(when(j.lastSeenAt)) + '</td>'
-          + '<td>' + statusPill({ lastSyncStatus: j.syncStatus }) + '</td>'
-          + '<td>' + (j.active ? '<span class="js-pill ok">active</span>' : '<span class="js-pill wait">' + esc(j.status) + '</span>')
-          + (j.heldBy ? '<div class="js-sub">set by an administrator</div>' : '') + '</td></tr>';
+          + '<td>' + (j.active ? '<span class="js-pill ok">Active</span>' : '<span class="js-pill wait">'
+            + esc(j.status === 'closed' || j.status === 'expired' ? 'Expired' : 'Unavailable') + '</span>')
+          + (j.heldBy ? '<div class="js-sub">set by an administrator</div>' : '') + '</td>'
+          + '<td>' + esc(day(j.createdAt)) + '</td><td>' + esc(day(j.updatedAt)) + '</td>'
+          + (isAdmin() ? '<td><span class="js-code">' + esc(j.id) + '</span></td>'
+            + '<td><span class="js-code">' + esc(j.sourceJobId || '') + '</span></td>'
+            + '<td class="js-url">' + link(j.sourceCompanyUrl) + '</td>'
+            + '<td>' + esc(when(j.lastSyncedAt)) + '</td><td>' + esc(when(j.lastSeenAt)) + '</td>'
+            + '<td>' + statusPill({ lastSyncStatus: j.syncStatus }) + '</td>' : '')
+          + '</tr>';
       }).join('') + '</tbody></table></div>'
       : '<div class="js-empty">No external jobs match.</div>';
     var pages = S.jobsTotal > f.limit ? '<div class="js-pager">'
@@ -666,6 +676,30 @@
           nav.push(['job-sources', 'Job Sources', '🌐']);
         }
       } catch (e) { /* the screen is still reachable by URL */ }
+
+      /* Recruiters: the list of external jobs only - no sources, no
+         licences, no configuration (all of that is the admin screen). */
+      try {
+        var rnav = (typeof NAV_CONFIG !== 'undefined' && NAV_CONFIG.recruiter) || null;
+        if (rnav && !rnav.some(function (n) { return n[0] === 'external-jobs'; })) {
+          rnav.push(['external-jobs', 'External Jobs', '🌐']);
+        }
+      } catch (e) { /* reachable by URL */ }
+      var prevR = window.pageRecruiterDash;
+      if (typeof prevR === 'function' && !prevR.__js) {
+        var r2 = function (section) {
+          if (section !== 'external-jobs') return prevR.apply(this, arguments);
+          setTimeout(function () { S.jobFilter.status = 'open'; loadJobs(); }, 0);
+          var body = '<section class="panel" aria-labelledby="jsJobsHostH"><div class="panel-head"><div>'
+            + '<h2 id="jsJobsHostH">External jobs</h2><div class="desc">Jobs collected from other job sites and shown in '
+            + 'the portal. Candidates apply on the original website; nothing here is a TeamLink application.</div>'
+            + '</div></div><div class="panel-body"><div id="jsJobsHost"><div class="js-empty" role="status">Loading…</div></div></div></section>';
+          return (typeof window.dashShell === 'function')
+            ? window.dashShell('recruiter', 'external-jobs', 'External Jobs', 'Recruiter · External jobs', body) : body;
+        };
+        r2.__js = true;
+        window.pageRecruiterDash = r2;
+      }
 
       var prev = window.pageAdminDash;
       window.pageAdminDash = function (section) {

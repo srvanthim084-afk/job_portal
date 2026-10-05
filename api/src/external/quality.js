@@ -14,8 +14,7 @@
  * tests.
  */
 import { createHash } from 'node:crypto';
-import { validateExternalUrl } from './redirect.js';
-import { hostAllowed } from './source-config.js';
+import { checkLink } from './link.js';
 
 const str = (v) => String(v == null ? '' : v);
 
@@ -75,11 +74,14 @@ export function validateJob(job, raw, policy = {}, { now = new Date() } = {}) {
       ? 'The application link is not an http(s) web address.'
       : 'The posting has no link to the original advert, so there would be nowhere to apply.');
   } else {
-    const v = validateExternalUrl(job.applicationUrl, policy.urlRuleKey);
-    if (!v.ok) err('invalid_url', 'originalJobUrl', `The application link is not safe to send a candidate to: ${v.reason}.`);
-    else if (!hostAllowed(job.applicationUrl, policy.allowedDomains)) {
-      err('domain_not_allowed', 'originalJobUrl',
-        `The application link is not on an allowed domain for this source (${policy.allowedDomains.join(', ')}).`);
+    /* The same rule Apply Now uses, so nothing is stored that a candidate
+       could not be sent to (link.js). */
+    const v = checkLink(job.applicationUrl, { provider: policy.provider, connector: policy.urlRuleKey,
+      allowedDomains: policy.allowedDomains });
+    if (!v.ok) {
+      err(v.code, 'originalJobUrl', v.code === 'invalid_url'
+        ? `The application link is not safe to send a candidate to: ${v.reason}.`
+        : `The application link cannot be used: ${v.reason}.`);
     } else if (!/^https:/i.test(job.applicationUrl)) {
       warn('insecure_url', 'originalJobUrl', 'The application link uses http, not https.');
     }

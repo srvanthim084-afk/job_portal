@@ -266,10 +266,18 @@ test('sync: validation, quarantine, dedupe, health', async () => {
   const out = await admin.post('/api/external/sources/nk_feed/sync');
   assert.equal(out.status, 200, JSON.stringify(out.body));
   assert.equal(out.body.status, 'ok');
-  assert.equal(out.body.created, 5);
-  assert.equal(out.body.quarantined, 6);
+  /* The posting with no id is keyed by its canonical URL - stored, not refused. */
+  assert.equal(out.body.created, 6);
+  assert.equal(out.body.quarantined, 5);
   assert.equal(out.body.health.status, 'healthy');
-  assert.equal(await count(`select count(*) n from external_jobs where source_id = 'nk_feed'`), 5);
+  assert.equal(await count(`select count(*) n from external_jobs where source_id = 'nk_feed'`), 6);
+  const urlKeyed = (await raw(`select external_job_id, canonical_url from external_jobs where title = 'No id at all'`)).rows;
+  assert.equal(urlKeyed.length, 1);
+  assert.match(urlKeyed[0].external_job_id, /^url:[0-9a-f]{32}$/);
+  assert.equal(urlKeyed[0].canonical_url, 'https://naukri.com/x');
+  const again = await admin.post('/api/external/sources/nk_feed/sync');
+  assert.equal(again.body.created, 0, 'a repeat sync creates nothing');
+  assert.equal(await count(`select count(*) n from external_jobs where source_id = 'nk_feed'`), 6, 'and no duplicate');
 
   const q = (await recruiter.get('/api/external/quarantine?sourceId=nk_feed')).body.items;
   const reasons = Object.fromEntries(q.map((x) => [x.sourceJobId || x.title, x.reasons]));
@@ -278,15 +286,14 @@ test('sync: validation, quarantine, dedupe, health', async () => {
   assert.deepEqual(reasons['NK-8'], ['missing_company']);
   assert.deepEqual(reasons['NK-9'], ['description_unusable']);
   assert.deepEqual(reasons['NK-10'], ['posted_in_future']);
-  assert.ok(reasons['No id at all'].includes('missing_source_job_id'));
   assert.ok(q.every((x) => x.action === 'quarantined'));
 
   const run = (await raw(`select * from external_sync_runs where source_id = 'nk_feed' order by id desc limit 1`)).rows[0];
   assert.equal(run.provider, 'naukri');
-  assert.equal(run.quarantined, 6);
-  assert.equal(run.created, 5);
+  assert.equal(run.quarantined, 5);
+  assert.equal(run.created, 0, 'the latest run is the repeat');
   assert.ok(run.duration_ms >= 0);
-  assert.match(run.error_summary, /6 posting\(s\) quarantined/);
+  assert.match(run.error_summary, /5 posting\(s\) quarantined/);
 
   ids.nk = Object.fromEntries((await raw(`select external_job_id, id from external_jobs where source_id='nk_feed'`)).rows
     .map((r) => [r.external_job_id, r.id]));
@@ -466,7 +473,14 @@ test('provider contract: every adapter, against the mock', async () => {
     const job = p.normalizeJob(out.jobs[0], { id: `src_${id}` });
     assert.equal(job.title, title);
     assert.ok(job.applicationUrl, `${id} keeps its original URL`);
-    const v = p.validateJob(job, out.jobs[0], { id: `src_${id}`, connector: id });
+    /* JSearch and SerpApi link to employers' own sites: their links are
+       usable only once an administrator approves the domains. */
+    const domains = { jsearch: ['jscorp-testing.in'], serpapi: ['naukri.com'] }[id];
+    const v = p.validateJob(job, out.jobs[0], { id: `src_${id}`, connector: id, ...(domains ? { allowed_domains: domains } : {}) });
+    if (domains) {
+      const bare = p.validateJob(job, out.jobs[0], { id: `src_${id}`, connector: id });
+      assert.deepEqual(quality.reasonCodes(bare), ['domain_not_allowed'], `${id} without approved domains`);
+    }
     assert.equal(v.ok, true, `${id}: ${JSON.stringify(v.issues)}`);
   }
   /* serpapi's posting is published on Naukri - attributed, not claimed. */
@@ -496,6 +510,7 @@ test('provider contract: every adapter, against the mock', async () => {
   assert.deepEqual(code('https://www.naukri.com/x'), []);
   assert.deepEqual(code('https://naukri.com.evil.in/x'), ['domain_not_allowed']);
   assert.deepEqual(code('http://10.1.2.3/x'), ['invalid_url']);
+  assert.deepEqual(code('http://www.naukri.com/x'), ['not_https'], 'https only');
   assert.deepEqual(code(null), ['missing_url']);
   assert.equal(refused.length, 0, 'nothing tried to reach the internet');
 
@@ -510,6 +525,8 @@ test('search: ranking, filters, pagination, freshness - and TeamLink search unto
   const s = await admin.post('/api/external/sources', { id: 'rank', name: 'Ranking Board', collectionMethod: 'manual',
     applicationMethod: 'redirect', active: true });
   assert.equal(s.status, 200, JSON.stringify(s.body));
+  /* No approved domain yet: the jobs list, but their links are unavailable. */
+  assert.equal((await admin.put('/api/external/sources/rank/config', { allowedDomains: ['rankingboard-testing.in'] })).status, 200);
   const u = (n) => `https://careers.rankingboard-testing.in/jobs/${n}`;
   const jobs = [
     { id: 'r1', title: 'Java Developer', company: 'Rank One', location: 'Hyderabad', skills: ['Java', 'SQL'],
@@ -609,11 +626,35 @@ test('apply: backend-controlled redirect, four analytics events, no application'
   assert.equal(await count(`select count(*) n from notifications where recipient_id='acx' and type='EXTERNAL_REDIRECT_FAILURE'`), 1);
   const badCand = await cand.post('/api/external/apply', { externalJobId: r1 });
   assert.equal(badCand.status, 422);
-  assert.equal((await admin.put('/api/external/sources/rank/config', { allowedDomains: [] })).status, 200);
+  assert.equal((await admin.put('/api/external/sources/rank/config', { allowedDomains: ['rankingboard-testing.in'] })).status, 200);
+
+  /* The listing hands the browser the validated original URL to open
+     directly - or nothing, with the reason as a state. */
+  const listed = (await list('source=rank&limit=50')).jobs.find((j) => j.id === r1);
+  assert.equal(listed.originalJobUrl, 'https://careers.rankingboard-testing.in/jobs/1');
+  assert.equal(listed.applyLink, 'available');
+  assert.equal(listed.jobSourceType, 'OTHER_EXTERNAL');
+  assert.equal(listed.jobSourceName, 'Ranking Board');
+  assert.equal(listed.externalJobId, 'r1');
+  assert.equal(listed.externalStatus, 'Active');
+  for (const k of ['canonicalJobUrl', 'sourcePostedDate', 'collectedAt', 'lastExternalSyncAt', 'lastExternalUpdateAt']) assert.ok(listed[k], k);
+  await raw(`update external_jobs set application_url = 'http://careers.rankingboard-testing.in/jobs/1' where id = $1`, [r1]);
+  const insecure = (await list('source=rank&limit=50')).jobs.find((j) => j.id === r1);
+  assert.equal(insecure.originalJobUrl, null, 'an http link is never handed out');
+  assert.equal(insecure.applyLink, 'link_unavailable');
+  await raw(`update external_jobs set application_url = 'https://careers.rankingboard-testing.in/jobs/1' where id = $1`, [r1]);
+
+  /* A visitor's click: counted, nobody identified, no application. */
+  const before = await count(`select coalesce(sum(n),0) n from external_job_events where event = 'external_apply_click'`);
+  const click = await realFetch(`${BASE}/api/portal/external-jobs/${r1}/click`, { method: 'POST' }).then((x) => x.json());
+  assert.equal(click.status, 'Apply Clicked');
+  assert.ok(await count(`select coalesce(sum(n),0) n from external_job_events where event = 'external_apply_click'`) > before);
 
   /* The signed-in flow: a click record, never a TeamLink application. */
   const ok = await cand.post('/api/external/apply', { externalJobId: r1 });
   assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(ok.body.application.status, 'clicked');
+  assert.equal(ok.body.application.statusLabel, 'Apply Clicked', 'a click is "Apply Clicked", never "Applied"');
   assert.equal(ok.body.applyUrl, 'https://careers.rankingboard-testing.in/jobs/1');
   assert.equal(await count(`select count(*) n from applications`), apps, 'no TeamLink application');
   assert.equal(await count(`select count(*) n from external_applications where external_job_id = $1`, [r1]), 1);

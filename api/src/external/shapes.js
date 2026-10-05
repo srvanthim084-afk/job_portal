@@ -13,6 +13,8 @@
  * secrets a deployment holds.
  */
 
+import { checkLink } from './link.js';
+
 const iso = (v) => (v ? new Date(v).toISOString() : null);
 const num = (v) => (v == null || v === '' ? null : Number(v));
 
@@ -281,13 +283,39 @@ export function freshnessOf(r, activeDays = 14) {
   };
 }
 
-export const toPortalJobV2 = (r, activeDays = 14) => ({
-  ...toPortalJob(r),
-  origin: 'EXTERNAL',
-  provider: String(r.provider || 'other').toUpperCase(),
-  expMin: num(r.exp_min),
-  expMax: num(r.exp_max),
-  lastSeenAt: iso(r.last_seen_at),
-  freshness: freshnessOf(r, activeDays),
-  ...(r.score != null ? { rank: Number(r.score) } : {}),
-});
+/* The owner's source types. Every other provider is OTHER_EXTERNAL and
+   says which in jobSourceName. TeamLink's own jobs are TEAMLINK (shapes.js). */
+const SOURCE_TYPE = { naukri: 'NAUKRI', shine: 'SHINE', indeed: 'INDEED', linkedin: 'LINKEDIN' };
+const EXTERNAL_STATUS = { open: 'Active', closed: 'Expired', expired: 'Expired', removed: 'Unavailable', archived: 'Unavailable' };
+
+export const toPortalJobV2 = (r, activeDays = 14) => {
+  /* Apply Now opens this URL directly, so it is handed out ONLY when it
+     passes the one link rule (link.js); otherwise null, and the card says
+     "Application link unavailable". */
+  const link = r.application_url
+    ? checkLink(r.application_url, { provider: r.provider, connector: r.connector, sourceId: r.source_key,
+        allowedDomains: r.allowed_domains })
+    : { ok: false };
+  const active = r.status === 'open';
+  return {
+    ...toPortalJob(r),
+    origin: 'EXTERNAL',
+    provider: String(r.provider || 'other').toUpperCase(),
+    jobSourceType: SOURCE_TYPE[r.provider] || 'OTHER_EXTERNAL',
+    jobSourceName: r.source_name || null,
+    externalJobId: r.source_job_id || null,
+    originalJobUrl: active && link.ok ? link.url : null,
+    canonicalJobUrl: active && link.ok ? (r.canonical_url || null) : null,
+    applyLink: !active ? 'job_unavailable' : (link.ok ? 'available' : 'link_unavailable'),
+    sourcePostedDate: iso(r.posted_at),
+    externalStatus: EXTERNAL_STATUS[r.status] || 'Unavailable',
+    collectedAt: iso(r.created_at),
+    lastExternalSyncAt: iso(r.synced_at),
+    lastExternalUpdateAt: iso(r.updated_at),
+    expMin: num(r.exp_min),
+    expMax: num(r.exp_max),
+    lastSeenAt: iso(r.last_seen_at),
+    freshness: freshnessOf(r, activeDays),
+    ...(r.score != null ? { rank: Number(r.score) } : {}),
+  };
+};

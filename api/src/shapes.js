@@ -186,6 +186,11 @@ export function toJob(r) {
   /* 0095. The last date to apply, and urgent hiring while it lasts -
      present only when set, like the walk-in fields above. */
   if (r.expires_at) j.expiresAt = new Date(r.expires_at).toISOString();
+  /* 0108: the TeamLink/external split, named as the owner names it. An
+     external job is never a row here (it is external_jobs, shown beside
+     these), so every job from this table is TeamLink's own. */
+  j.jobSourceType = 'TEAMLINK';
+  j.originalJobUrl = null;
   if (r.urgent && r.urgent_until && new Date(r.urgent_until) > new Date()) {
     j.urgent = true;
     j.urgentUntil = new Date(r.urgent_until).toISOString();

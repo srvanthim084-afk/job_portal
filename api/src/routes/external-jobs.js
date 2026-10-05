@@ -38,6 +38,8 @@ import * as cx from '../external/compliance-store.js';
 import { cached, bump } from '../external/cache.js';
 import { sourcePolicy, hostAllowed, PROVIDER_IDS } from '../external/source-config.js';
 import { redirectRefused } from '../external/health.js';
+import { checkLink } from '../external/link.js';
+import { withUrlKey } from '../external/service.js';
 import { toLicence, licenceRequirement, toPortalJob, toPortalJobV2 } from '../external/shapes.js';
 
 const STAFF = ['recruiter', 'bde', 'admin'];
@@ -184,17 +186,31 @@ h1{font-size:19px;margin:0 0 8px}p{margin:0 0 14px;color:#42505f}a{color:#1d6ff2
    * (source-config.js; null for Greenhouse and other employer-site boards,
    * so their behaviour is unchanged).
    */
-  const destination = (t) => {
-    const ok = validateExternalUrl(t.application_url, t.connector || t.source_key);
-    if (!ok.ok) return { ok: false, code: 'invalid_url', reason: ok.reason };
-    const policy = sourcePolicy({ provider: t.provider, connector: t.connector, id: t.source_key,
-      allowed_domains: t.allowed_domains });
-    if (!hostAllowed(ok.url, policy.allowedDomains)) {
-      return { ok: false, code: 'domain_not_allowed',
-        reason: `the link is not on an allowed domain for this source (${policy.allowedDomains.join(', ')})` };
+  const destination = (t) => checkLink(t.application_url, { provider: t.provider, connector: t.connector,
+    sourceId: t.source_key, allowedDomains: t.allowed_domains });
+
+  /*
+   * POST /api/portal/external-jobs/:id/click
+   *
+   * Apply Now on an external job opens the stored original URL straight
+   * from the page (no TeamLink URL in between). This only COUNTS it - an
+   * "Apply Clicked" per job per day, nobody identified - for a visitor who
+   * is not signed in. A signed-in candidate's click goes to POST
+   * /external/apply, which records it against them as "Apply Clicked".
+   * Neither ever creates an application.
+   */
+  r.post('/portal/external-jobs/:id/click', wrap(async (req, res) => {
+    const id = String(req.params.id).slice(0, 80);
+    const t = await cx.applyTarget(PORTAL, id);
+    await event(id, 'external_apply_click');
+    if (!t || t.status !== 'open') {
+      await event(id, 'external_redirect_failure', t ? 'closed' : 'not_found');
+      return res.json({ recorded: true, status: 'Apply Clicked', applyLink: 'job_unavailable' });
     }
-    return { ok: true, url: ok.url, policy };
-  };
+    const d = destination(t);
+    await event(id, d.ok ? 'external_redirect_success' : 'external_redirect_failure', d.ok ? '' : d.code);
+    res.json({ recorded: true, status: 'Apply Clicked', applyLink: d.ok ? 'available' : 'link_unavailable' });
+  }));
 
   r.get('/portal/external-jobs/:id/apply', wrap(async (req, res) => {
     const id = String(req.params.id).slice(0, 80);
@@ -565,7 +581,8 @@ h1{font-size:19px;margin:0 0 8px}p{margin:0 0 14px;color:#42505f}a{color:#1d6ff2
     const saved = [];
     const rejected = [];
     for (const raw of list) {
-      const job = normaliseExternalJob(raw || {}, source);
+      /* No id: keyed by canonical URL, then company + title + location. */
+      const job = normaliseExternalJob(withUrlKey(raw || {}), source);
       if (!job) {
         rejected.push({ raw: String(raw?.title || raw?.id || '(unnamed)').slice(0, 80),
           reason: 'a posting needs both an id and a title' });
