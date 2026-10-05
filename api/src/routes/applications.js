@@ -165,8 +165,9 @@ export default function applicationRoutes() {
        * `undefined%` for every candidate who applied through the portal,
        * which is worse than a wrong number because it looks broken.
        *
-       * Same engine as the job alerts, so the percentage a recruiter sees
-       * on an application means the same thing as the one on an alert.
+       * The recruiter's screening score (matchCandidate, multi-factor). It
+       * is not the candidate's AI Match (ai/ai-match.js, skills only),
+       * which is what candidates and the alerts see.
        */
       let matchScore = null;
       try {

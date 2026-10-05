@@ -13,7 +13,9 @@
  * Three things it deliberately does NOT do:
  *
  *   - message on one keyword. api/src/ai/match.js applies hard gates
- *     before the score is even consulted;
+ *     before the score is even consulted, and the bar itself is the
+ *     candidate's AI Match (ai/ai-match.js: JD skills matched / JD skills
+ *     required), so a job that lists no skills alerts nobody here;
  *   - message the same candidate about the same job twice. The unique
  *     (job_id, candidate_id) row is the guard, and an already-notified
  *     match is skipped;
@@ -118,12 +120,12 @@ export async function runJobAlerts(jobId, opts = {}) {
       (await c.query(
         `select job_match_record($1,$2,$3,$4,$5,$6,$7,$8::jsonb) as id`,
         [id, jobId, cand.id, m.score, threshold, m.reason,
-         m.matchedSkills, JSON.stringify(m.breakdown)])).rows[0].id);
+         m.matchedSkills, JSON.stringify({ ...m.breakdown, aiMatch: m.aiMatch })])).rows[0].id);
 
     if (!m.notify) continue;
 
     out.matches.push({
-      matchId, candidateId: cand.id, score: m.score,
+      matchId, candidateId: cand.id, score: m.score, aiMatch: m.aiMatch ? m.aiMatch.score : null,
       matchedSkills: m.matchedSkills, reason: m.reason,
     });
 

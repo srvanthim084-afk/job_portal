@@ -138,7 +138,7 @@ export const T = {
       + ' Update it on [Profile](#/candidate/profile).',
     noJobs: () => 'I don\'t see an open job to recommend right now - check [Search Jobs](#/candidate/search) again soon.',
     jobsHead: () => 'Your best matches right now:',
-    jobLine: (link, loc, score) => `- ${link} - ${loc || 'location not stated'}, **${score}% match**`,
+    jobLine: (link, loc, score) => `- ${link} - ${loc || 'location not stated'}${score == null ? '' : `, **${score}% match**`}`,
     jobsTail: () => 'Open a job to see why it fits and to apply.',
     noJobToEvaluate: () => 'I don\'t see an open job to evaluate right now.',
     verdict: (s) => (s >= 70 ? 'Yes - you are a strong fit, apply.'
@@ -178,7 +178,7 @@ export const T = {
       + ' [ప్రొఫైల్](#/candidate/profile)లో అప్‌డేట్ చేయండి.',
     noJobs: () => 'ప్రస్తుతం మీకు సూచించడానికి ఓపెన్ ఉద్యోగం ఏదీ కనిపించడం లేదు - కొంచెం తర్వాత మళ్ళీ [ఉద్యోగాలు వెతకండి](#/candidate/search).',
     jobsHead: () => 'ప్రస్తుతం మీకు బాగా సరిపోయే ఉద్యోగాలు:',
-    jobLine: (link, loc, score) => `- ${link} - ${loc || 'ప్రాంతం పేర్కొనలేదు'}, **${score}% మ్యాచ్**`,
+    jobLine: (link, loc, score) => `- ${link} - ${loc || 'ప్రాంతం పేర్కొనలేదు'}${score == null ? '' : `, **${score}% మ్యాచ్**`}`,
     jobsTail: () => 'అది మీకు ఎందుకు సరిపోతుందో చూడటానికి, అప్లై చేయడానికి ఆ ఉద్యోగాన్ని తెరవండి.',
     noJobToEvaluate: () => 'ప్రస్తుతం పరిశీలించడానికి ఓపెన్ ఉద్యోగం ఏదీ కనిపించడం లేదు.',
     verdict: (s) => (s >= 70 ? 'అవును - మీరు దీనికి బాగా సరిపోతారు, అప్లై చేయండి.'
@@ -218,7 +218,7 @@ export const T = {
       + ' [Profile](#/candidate/profile) lo update cheyandi.',
     noJobs: () => 'Ippudu meeku suggest cheyyadaniki open job edi kanipinchatledu - konchem tarvata malli [Search Jobs](#/candidate/search) chudandi.',
     jobsHead: () => 'Ippudu meeku baaga saripoye jobs:',
-    jobLine: (link, loc, score) => `- ${link} - ${loc || 'location ivvaledu'}, **${score}% match**`,
+    jobLine: (link, loc, score) => `- ${link} - ${loc || 'location ivvaledu'}${score == null ? '' : `, **${score}% match**`}`,
     jobsTail: () => 'Adi meeku enduku saripotundo chudataniki, apply cheyyadaniki aa job ni open cheyandi.',
     noJobToEvaluate: () => 'Ippudu chudadaniki open job edi kanipinchatledu.',
     verdict: (s) => (s >= 70 ? 'Avunu - meeru deeniki baaga saripotaru, apply cheyandi.'
@@ -258,7 +258,7 @@ export const T = {
       + ' इसे [प्रोफ़ाइल](#/candidate/profile) पर अपडेट करें।',
     noJobs: () => 'अभी आपको सुझाने के लिए कोई खुली नौकरी नहीं दिख रही - थोड़ी देर बाद फिर से [नौकरियाँ खोजें](#/candidate/search)।',
     jobsHead: () => 'अभी आपके लिए सबसे अच्छी नौकरियाँ:',
-    jobLine: (link, loc, score) => `- ${link} - ${loc || 'जगह नहीं बताई गई'}, **${score}% मैच**`,
+    jobLine: (link, loc, score) => `- ${link} - ${loc || 'जगह नहीं बताई गई'}${score == null ? '' : `, **${score}% मैच**`}`,
     jobsTail: () => 'यह आपके लिए क्यों सही है, यह देखने और अप्लाई करने के लिए जॉब खोलें।',
     noJobToEvaluate: () => 'अभी परखने के लिए कोई खुली नौकरी नहीं दिख रही।',
     verdict: (s) => (s >= 70 ? 'हाँ - आप इसके लिए काफ़ी उपयुक्त हैं, अप्लाई करें।'
@@ -298,7 +298,7 @@ export const T = {
       + ' Ise [Profile](#/candidate/profile) par update kijiye.',
     noJobs: () => 'Abhi aapko suggest karne ke liye koi open job nahi dikh rahi - thodi der baad phir se [Search Jobs](#/candidate/search) dekhiye.',
     jobsHead: () => 'Abhi aapke liye sabse achhi jobs:',
-    jobLine: (link, loc, score) => `- ${link} - ${loc || 'location nahi di gayi'}, **${score}% match**`,
+    jobLine: (link, loc, score) => `- ${link} - ${loc || 'location nahi di gayi'}${score == null ? '' : `, **${score}% match**`}`,
     jobsTail: () => 'Yeh aapke liye kyun sahi hai dekhne aur apply karne ke liye job kholiye.',
     noJobToEvaluate: () => 'Abhi dekhne ke liye koi open job nahi dikh rahi.',
     verdict: (s) => (s >= 70 ? 'Haan - aap iske liye kaafi fit hain, apply kijiye.'

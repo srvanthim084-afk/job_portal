@@ -22,8 +22,8 @@ import { buildSoundIndex, soundMatch, SOUND_MIN_POPULATION } from '../search/pla
 import { hasIndicScript } from '../search/indic-translit.js';
 import { boardWordIndex, rankJobs, cleanSearch } from '../search/voice-semantic.js';
 import { locationTierFunction, nameOnlyTier } from '../search/saved-match.js';
-import { matchCandidate } from '../ai/match.js';
 import { jobsPageScope, teamlinkOnly } from '../jobs/source-scope.js';
+import { aiMatch } from '../ai/ai-match.js';
 
 let warming = null;
 
@@ -64,7 +64,8 @@ async function rankFor(session, search) {
   const profile = data.cand ? (job) => {
     if (!memo.has(job.id)) {
       let s = 0;
-      try { s = Number(matchCandidate(job, data.cand).score) || 0; } catch { s = 0; }
+      /* the candidate's AI Match (skills vs the JD), the number on the card */
+      try { s = Number(aiMatch(job, data.cand).score) || 0; } catch { s = 0; }
       memo.set(job.id, s);
     }
     return memo.get(job.id);

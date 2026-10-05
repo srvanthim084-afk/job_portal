@@ -383,7 +383,8 @@ const cards = (page, surface) => page.evaluate((s) => (s === 'candidate'
      place picked, the "Jobs in <place>" groups - read the title (h3) and
      the card's own text for the place, whichever style is on screen */
   ? [
-    ...Array.from(document.querySelectorAll('.rj-card')).map((c) => ({ title: (c.querySelector('.rj-t') || {}).textContent || '', where: (c.querySelector('.rj-c') || {}).textContent || '' })),
+    /* the one candidate card (rjCardHtml): company in .rj-c, the place in .rj-meta's 📍 */
+    ...Array.from(document.querySelectorAll('.rj-card')).map((c) => ({ title: (c.querySelector('.rj-t') || {}).textContent || '', where: [(c.querySelector('.rj-c') || {}).textContent || '', (c.querySelector('.rj-meta') || {}).textContent || ''].join(' · ') })),
     /* tlJobCard: the "Jobs in <place>" bands */
     ...Array.from(document.querySelectorAll('.rj-page .cp-card')).filter((c) => c.querySelector('[onclick*="cpEasyApply"], [onclick*="tlMatchModal"]'))
       .map((c) => ({ title: (c.querySelector('div[style*="font-size:16px"]') || {}).textContent || '',

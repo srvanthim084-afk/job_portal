@@ -6,10 +6,11 @@
  *   B  deadline_2d      the last date is two days away     (daily, 09:00 IST)
  *   C  deadline_today   the last date is today              (daily, 09:00 IST)
  *
- * WHO. Every candidate whose match with the job - the screening match,
- * explainMatch() in core.js - is ABOVE NOTIFY_MATCH_THRESHOLD (60 unless
- * configured): 60 exactly gets nothing, 60.01 does. Anybody who already
- * applied is skipped. For B and C the match is worked out again on the
+ * WHO. Every candidate whose AI Match with the job - explainMatch() in
+ * core.js: JD skills matched / JD skills required, nothing else - is ABOVE
+ * NOTIFY_MATCH_THRESHOLD (60 unless configured): 60 exactly gets nothing,
+ * 60.01 does. A job that lists no skills has no AI Match and alerts
+ * nobody. Anybody who already applied is skipped. For B and C the match is worked out again on the
  * day, because a profile edited since the job was posted is the profile
  * that counts.
  *
@@ -35,7 +36,7 @@ import { providers } from '../notify/providers.js';
 import { emailLayout } from '../notify/layout.js';
 import { claimNewJobNotice, releaseNewJobNotice } from '../notify/new-job-notice.js';
 import {
-  explainMatch, loadAiSettings, aboveThreshold, notifyThreshold, daysLeft, istDay,
+  explainMatch, aboveThreshold, notifyThreshold, daysLeft, istDay,
 } from './core.js';
 
 const ENGINE = { userId: '', role: 'admin', profileId: null };
@@ -243,12 +244,11 @@ export async function alertJob(jobId, event, { now = Date.now(), deps = defaultD
   if (!data.job) return { jobId, event, skipped: 'no such job', considered: 0, eligible: 0, delivered: 0 };
   if (data.skip) return { jobId, event, skipped: data.skip, considered: 0, eligible: 0, delivered: 0 };
 
-  const settings = await loadAiSettings();
   const out = { jobId, event, threshold, considered: 0, eligible: 0, delivered: 0, skippedApplied: 0, results: [] };
   for (const cand of data.candidates) {
     out.considered += 1;
     let score;
-    try { score = explainMatch(data.job, cand, settings).score; } catch { continue; }
+    try { score = explainMatch(data.job, cand).score; } catch { continue; }
     if (!aboveThreshold(score, threshold)) continue;
     if (data.applied.has(cand.id)) { out.skippedApplied += 1; continue; }
     out.eligible += 1;
