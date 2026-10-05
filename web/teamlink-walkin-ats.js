@@ -372,7 +372,7 @@
     }
 
     var allOn = rows.length && rows.every(function (a) { return S.sel[a.applicationId]; });
-    var table = '<div class="panel"><div class="panel-body pad0"><div class="tbl-wrap"><table class="data tlwa-table"><thead><tr>'
+    var table = '<div class="panel"><div class="panel-body pad0"><div class="tlwa-scroll"><table class="data tlwa-table"><thead><tr>'
       + '<th style="width:30px"><input type="checkbox" ' + (allOn ? 'checked' : '') + ' onchange="TLWalkinAts.selAll(this.checked)" title="Select this page"></th>'
       + '<th>Application ID</th><th>Candidate</th><th>Mobile / Email</th><th>Location</th><th>Qualification</th>'
       + '<th>Experience</th><th>Salary (current / expected)</th><th>Notice</th><th>Resume</th><th>Job</th><th>Applied</th>'
@@ -431,7 +431,7 @@
       + (c.msg ? '<div class="tlwa-note">' + h(c.msg) + '</div>' : '')
       + (c.results == null ? '<div class="empty-note">Search for the person at the desk.</div>'
         : !c.results.length ? '<div class="empty-note">Nobody on this walk-in matches.</div>'
-          : '<div class="tbl-wrap"><table class="data"><thead><tr><th>Candidate</th><th>Mobile</th><th>Application ID</th><th>Stage</th><th>Checked in</th><th>Attended</th><th></th></tr></thead><tbody>'
+          : '<div class="tlwa-scroll"><table class="data"><thead><tr><th>Candidate</th><th>Mobile</th><th>Application ID</th><th>Stage</th><th>Checked in</th><th>Attended</th><th></th></tr></thead><tbody>'
             + c.results.map(function (a) {
               var attended = ['attended', 'interviewed', 'selected'].indexOf(a.stage) >= 0;
               var done = a.checkedInAt && attended;
@@ -481,8 +481,8 @@
     return '<div class="panel"><div class="panel-head"><div><h2>New-application alerts</h2><div class="desc">How you hear about new applicants to this job (in the bell and by email).</div></div>'
       + '<select onchange="TLWalkinAts.alerts(this.value)">' + [['auto', 'Automatic (instant; daily digest when busy)'], ['instant', 'Every application'], ['digest', 'Daily digest'], ['off', 'Off']]
         .map(function (o) { return '<option value="' + o[0] + '"' + (S.alerts === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></div></div>'
-      + (res ? '<div class="panel"><div class="panel-head"><h2>Applicants notified of changes</h2></div><div class="panel-body pad0"><div class="tbl-wrap"><table class="data"><thead><tr><th>Changed</th><th>What</th><th>Status</th><th>Result</th><th></th></tr></thead><tbody>' + res + '</tbody></table></div></div></div>' : '')
-      + '<div class="panel"><div class="panel-head"><h2>Job update history</h2></div><div class="panel-body pad0"><div class="tbl-wrap"><table class="data"><thead><tr><th>When</th><th>Field</th><th>Old value</th><th>New value</th><th>By</th></tr></thead><tbody>'
+      + (res ? '<div class="panel"><div class="panel-head"><h2>Applicants notified of changes</h2></div><div class="panel-body pad0"><div class="tlwa-scroll"><table class="data"><thead><tr><th>Changed</th><th>What</th><th>Status</th><th>Result</th><th></th></tr></thead><tbody>' + res + '</tbody></table></div></div></div>' : '')
+      + '<div class="panel"><div class="panel-head"><h2>Job update history</h2></div><div class="panel-body pad0"><div class="tlwa-scroll"><table class="data"><thead><tr><th>When</th><th>Field</th><th>Old value</th><th>New value</th><th>By</th></tr></thead><tbody>'
       + (rows || '<tr><td colspan="5"><div class="empty-note">No changes recorded since this job was created.</div></td></tr>') + '</tbody></table></div></div></div>';
   }
 
@@ -569,7 +569,7 @@
       + '<textarea id="tlwaNewNote" rows="3" maxlength="4000" placeholder="Add a note" style="width:100%;margin-top:8px"></textarea>'
       + '<button class="btn btn-primary btn-sm" onclick="TLWalkinAts.addNote(\'' + js(a.applicationId) + '\')">Add note</button></div></div>'
       + '<div class="panel"><div class="panel-head"><h2>Timeline</h2></div><div class="panel-body">' + (tl || '<div class="empty-note">Nothing recorded yet.</div>') + '</div></div>'
-      + '<div class="panel tlwa-wide"><div class="panel-head"><div><h2>All applications of this candidate</h2><div class="desc">One candidate (' + h(c.candidateId) + '), every application you can see.</div></div></div><div class="panel-body pad0"><div class="tbl-wrap"><table class="data"><thead><tr><th>Application ID</th><th>Job ID</th><th>Job</th><th>Type</th><th>Stage</th><th>Applied</th></tr></thead><tbody>'
+      + '<div class="panel tlwa-wide"><div class="panel-head"><div><h2>Every application by this candidate</h2><div class="desc">One candidate (' + h(c.candidateId) + '), every application you can see.</div></div></div><div class="panel-body pad0"><div class="tlwa-scroll"><table class="data"><thead><tr><th>Application ID</th><th>Job ID</th><th>Job</th><th>Type</th><th>Stage</th><th>Applied</th></tr></thead><tbody>'
       + '<tr class="tlwa-cur"><td class="tlwa-mono">' + h(a.reference) + '</td><td>' + h(j.jobId) + '</td><td>' + h(j.title) + ' <span class="tlwa-soft">(this one)</span></td><td>' + h(j.jobType) + '</td><td>' + stageChip(a.stage, a.stageLabel) + '</td><td>' + h(fmtD(a.applicationDate)) + '</td></tr>'
       + others + '</tbody></table></div></div></div>'
       + '</div>';
@@ -904,7 +904,7 @@
     '.tlwa-head{display:flex;gap:12px;align-items:flex-start;margin-bottom:12px}.tlwa-head h2{margin:0;font-size:18px}',
     '.tlwa-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;margin-bottom:14px}',
     '.tlwa-tiles .stat-tile{padding:12px}.tlwa-tiles .val{font-size:22px}',
-    '.tlwa-table td{vertical-align:top;font-size:12.5px}.tlwa-mono{font-family:ui-monospace,Consolas,monospace;font-size:12px;white-space:nowrap}',
+    '.tlwa-scroll{overflow-x:auto}.tlwa-table td{vertical-align:top;font-size:12.5px}.tlwa-mono{font-family:ui-monospace,Consolas,monospace;font-size:12px;white-space:nowrap}',
     '.tlwa-link{cursor:pointer}.tlwa-soft{color:var(--text-soft,#7b8a9c);font-size:12px}',
     '.tlwa-stars{color:#f5a623;letter-spacing:1px}.tlwa-stars .off{color:#d5dbe3}',
     '.tlwa-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px;margin-top:12px}.tlwa-grid .panel{margin:0}.tlwa-wide{grid-column:1/-1}',

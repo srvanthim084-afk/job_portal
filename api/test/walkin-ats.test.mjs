@@ -239,8 +239,13 @@ test('23.20 #4 resume: logged out / other candidate / other recruiter refused; c
   assert.deepEqual(log.map((x) => `${x.actor_role}:${x.action}`), ['candidate:view', 'recruiter:download', 'admin:view']);
   // refused attempts leave nothing behind
   assert.equal(log.length, 3);
-  // a recruiter can read the log of their own application; another cannot
-  assert.equal((await raw(`select count(*)::int n from resume_access_log`)).rows[0].n, 3);
+  // the profile resume route (shared candidates, 0091) is logged too
+  const link = await RA.get(`/api/candidates/${C1.id}/resume`);
+  assert.equal(link.status, 200, JSON.stringify(link.body));
+  assert.equal((await RA.get(link.body.url)).status, 200);
+  assert.equal((await anon.get(link.body.url)).status, 401, 'the "signed" link alone is not enough');
+  const prof = (await raw(`select actor_role, action, application_id from resume_access_log order by id desc limit 1`)).rows[0];
+  assert.deepEqual([prof.actor_role, prof.action, prof.application_id], ['recruiter', 'download', null]);
 });
 
 test('23.20 #5 search by name, email, mobile, Candidate ID and Application ID', async () => {
@@ -389,9 +394,13 @@ test('23.20 #13 every stage change is in the audit trail and the timeline: times
   assert.equal(t[1].actor, 'Recruiter ra');
   assert.equal(t[1].source, 'Recruiter');
   // append-only: no signed-in identity may rewrite a history row
-  await assert.rejects(() => raw(
-    `with s as (select set_config('app.role', 'admin', true) as x)
-     update application_stage_history h set note = 'x' from s where h.application_id = $1`, [aW1.id]), /append-only/);
+  await dbh.db.exec('set role app_api');
+  try {
+    const r = await raw(`update application_stage_history set note = 'x' where application_id = $1`, [aW1.id])
+      .then((x) => x.affectedRows || 0, (e) => { assert.match(e.message, /append-only|permission denied/); return 0; });
+    assert.equal(r, 0, 'no history row can be rewritten by the API role');
+  } finally { await dbh.db.exec('reset role'); }
+  assert.equal((await raw(`select count(*)::int n from application_stage_history where note = 'x'`)).rows[0].n, 0);
 });
 
 test('23.20 #14 notes: never to candidates; only the author edits / deletes; an admin deletes', async () => {
@@ -720,6 +729,9 @@ test('23.20 #24 a job with 160 applicants: paginated, searched, fast', async () 
   const one = await RA.get(`/api/jobs/${BIG}/applicants?q=Bulk%20Person%20137`);
   assert.equal(one.body.total, 1);
   assert.equal(p1.body.job.tiles.registered, 160, 'inserted directly, still Registered by the trigger');
+  // Section 14: a closed walk-in keeps every applicant visible to its recruiter
+  assert.equal((await RA.put(`/api/jobs/${BIG}`, { title: 'Walk-in: Mega Drive', companyId: 'co_a', status: 'closed' })).status, 200);
+  assert.equal((await RA.get(`/api/jobs/${BIG}/applicants`)).body.total, 160);
   console.log(`      160 applicants: first page in ${ms} ms`);
 });
 

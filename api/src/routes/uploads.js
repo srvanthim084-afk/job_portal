@@ -556,7 +556,14 @@ export default function uploadRoutes() {
 
     const allowed = await withUser(req.session, async (c) => {
       const { rows } = await c.query(
-        `select resume_file, resume_mime from candidates where resume_storage_path=$1`, [key]);
+        `select id, resume_file, resume_mime from candidates where resume_storage_path=$1`, [key]);
+      /* 0107 (23.10): every resume file served is logged - who, whose, when. */
+      if (rows[0] && req.session.userId) {
+        await c.query(
+          `insert into resume_access_log (candidate_id, accessed_by, actor_role, action, file_path, ip)
+           values ($1,$2,$3,'download',$4,$5)`,
+          [rows[0].id, req.session.userId, req.session.role, key, req.ip || null]);
+      }
       return rows[0] || null;
     });
     if (!allowed) throw notFound('That file is no longer available.');

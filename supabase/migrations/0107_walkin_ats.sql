@@ -69,13 +69,14 @@ update stages set applies_to = 'all' where id in ('selected', 'rejected');
  * recruiter, with a template, never automatically; No Show is never
  * announced). candidate_label is what the candidate's own screens print
  * (0051): "Missed" rather than No Show, "Under review" rather than an
- * internal step name.
+ * internal step name. sort_order 101+ puts them after every regular stage,
+ * so nothing that walks the regular order meets them first.
  */
 insert into stages (id, label, kanban, sort_order, notify_candidate, client_visible, candidate_label, applies_to) values
-  ('registered',  'Registered',  false, 11, false, false, 'Registered',   'walkin'),
-  ('attended',    'Attended',    false, 13, false, true,  'Attended',     'walkin'),
-  ('interviewed', 'Interviewed', false, 15, false, true,  'Under review', 'walkin'),
-  ('no_show',     'No Show',     false, 92, false, false, 'Missed',       'walkin')
+  ('registered',  'Registered',  false, 101, false, false, 'Registered',   'walkin'),
+  ('attended',    'Attended',    false, 102, false, true,  'Attended',     'walkin'),
+  ('interviewed', 'Interviewed', false, 103, false, true,  'Under review', 'walkin'),
+  ('no_show',     'No Show',     false, 104, false, false, 'Missed',       'walkin')
 on conflict (id) do update set
   applies_to       = excluded.applies_to,
   notify_candidate = excluded.notify_candidate,
@@ -207,13 +208,14 @@ begin
   return new;
 end $$;
 
-/* Append-only: no signed-in caller (the API always sets app.role) may
-   rewrite a history row. Deletion only ever happens by cascade, with the
+/* Append-only: the API's role (app_api, which every request runs as) may
+   never rewrite a history row - it has no UPDATE grant either; this is the
+   second lock. Deletion only ever happens by cascade, with the
    application, which an administrator alone may delete (0002). */
 create or replace function stage_history_append_only() returns trigger
 language plpgsql as $$
 begin
-  if coalesce(current_setting('app.role', true), '') <> '' then
+  if current_user::text = 'app_api' then
     raise exception 'The application history is append-only.' using errcode = '42501';
   end if;
   return new;
