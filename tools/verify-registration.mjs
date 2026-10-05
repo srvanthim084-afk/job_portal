@@ -165,14 +165,20 @@ await check('email and mobile format messages', async () => {
 });
 
 await check('duplicate email and duplicate mobile are said inline, under the field', async () => {
+  /* The answer comes from the server (POST /auth/register/check), so it is
+     waited for - up to 8 s on a busy machine - rather than given 900 ms. */
+  const errSoon = async (id, want) => {
+    for (let i = 0; i < 32; i++) { if (await errText(p, id) === want) return want; }
+    return errText(p, id);
+  };
   await fill(p, 'regEmail', existing.email);
   await p.press('#regEmail', 'Tab');
-  await p.waitForTimeout(900);
-  must(await errText(p, 'regEmail') === 'An account with this email already exists. Please Login.', 'email: ' + await errText(p, 'regEmail'));
+  const em = await errSoon('regEmail', 'An account with this email already exists. Please Login.');
+  must(em === 'An account with this email already exists. Please Login.', 'email: ' + em);
   await fill(p, 'regMobile', existing.phone);
   await p.press('#regMobile', 'Tab');
-  await p.waitForTimeout(900);
-  must(await errText(p, 'regMobile') === 'An account with this mobile number already exists.', 'mobile: ' + await errText(p, 'regMobile'));
+  const mo = await errSoon('regMobile', 'An account with this mobile number already exists.');
+  must(mo === 'An account with this mobile number already exists.', 'mobile: ' + mo);
 });
 
 await check('Continue moves on once step 1 is right; Back keeps everything', async () => {
