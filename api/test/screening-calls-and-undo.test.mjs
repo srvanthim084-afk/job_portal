@@ -34,7 +34,10 @@ const PHONES = Array.from({ length: 24 }, (_, i) => `98765${String(43000 + i).pa
 let phoneAt = 0;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/* 0109: registering now sends the welcome email (with the Candidate ID).
+   It belongs to the registration, not to the application under test. */
 const msgsFor = (c) => mock.received.filter((m) => {
+  if (/^Welcome to TeamLink!/.test(String((m.body && m.body.subject) || ''))) return false;
   const j = JSON.stringify(m.body);
   return j.includes(c.email) || j.includes(c.phone);
 });
