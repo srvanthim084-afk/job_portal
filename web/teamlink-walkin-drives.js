@@ -936,6 +936,8 @@
   /* "Walk-in Drives" under the Find Jobs heading (home and #/jobs share it). */
   function withEntry(out) {
     if (typeof out !== 'string' || out.indexOf('wk-jobs-entry') >= 0) return out;
+    // no walk-in links for signed-out visitors (the owner asked, 2026-10-05)
+    if (!isCandidate()) return out;
     var link = '<a class="wk-jobs-entry" href="' + (isCandidate() ? '#/candidate/walkins' : '#/walkins') + '">🚶 <b>Walk-in Drives</b> - meet recruiters in person, get interviewed the same day <span aria-hidden="true">→</span></a>';
     return out.replace(/(<h2>Find your next role<\/h2><p>[\s\S]*?<\/p>)/, function (m) { return m + link; });
   }
@@ -952,7 +954,9 @@
       nh.__tlwk = true;
       window.pageHome = nh;
     }
-    var prevHeader = window.siteHeader;
+    /* No "Walk-ins" link in the signed-out header (the owner asked,
+       2026-10-05); #/walkins itself still opens from a shared drive link. */
+    var prevHeader = null;
     if (typeof prevHeader === 'function' && !prevHeader.__tlwk) {
       var nhd = function (active) {
         var out = prevHeader.apply(this, arguments);
@@ -1017,9 +1021,8 @@
     var next = function (section) {
       var html = prev.apply(this, arguments);
       if (typeof html !== 'string') return html;
-      var link = '<a class="' + (section === 'walkins' ? 'on' : '') + '" onclick="location.hash=\'#/candidate/walkins\'">Walk-in Drives</a>';
-      html = html.replace(/(<nav class="cp-nav">[\s\S]*?)(<\/nav>)/, function (_m, a, b) { return a + link + b; });
-      html = html.replace('<div class="cp-mscroll">', '<div class="cp-mscroll"><button onclick="location.hash=\'#/candidate/walkins\';cpOpen(\'\')">🚶 Walk-in Drives</button>');
+      /* No "Walk-in Drives" tab in the candidate header (the owner asked,
+         2026-10-05). */
       return html;
     };
     next.__tlwk = true;

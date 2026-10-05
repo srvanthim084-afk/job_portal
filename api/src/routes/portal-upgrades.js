@@ -35,7 +35,7 @@ import { requireAuth, requireRole } from '../auth.js';
 import { toJob, toApplication } from '../shapes.js';
 import {
   CHIP_SQL, parseChips, normaliseChipSettings, nearMeFilter, explainMatch, loadAiSettings,
-  missingForOneClick, newShareCode, shareText, toPublicUrl, isLocalUrl, ogTags, SHARE_CHANNELS, endOfIstDay, escHtml,
+  missingForOneClick, newShareCode, shareText, shareLines, toPublicUrl, isLocalUrl, ogTags, SHARE_CHANNELS, endOfIstDay, escHtml,
 } from '../portal/core.js';
 import { kickUrgent } from '../portal/alerts.js';
 
@@ -58,6 +58,33 @@ function shareBase(req) {
   const host = req && req.get ? req.get('host') : '';
   return host ? `${req.protocol}://${host}` : cfg;
 }
+/*
+ * The job as a share needs it: the public shape, plus the walk-in details a
+ * walk-in job carries (address, map link, documents, instructions - read
+ * from the row as a whole so a column that does not exist yet is simply
+ * absent), plus the company name its card shows.
+ */
+async function shareableJob(c, id) {
+  const row = (await c.query(`select * from jobs_open where id=$1`, [id])).rows[0];
+  if (!row) return null;
+  const all = (await c.query(`select to_jsonb(j) as r from jobs j where j.id=$1`, [id])).rows[0];
+  const raw = (all && all.r) || {};
+  const co = row.company_id
+    ? (await c.query(`select name from companies where id=$1`, [row.company_id])).rows[0] : null;
+  const job = toJob(row);
+  return {
+    job: {
+      ...job,
+      walkinAddress: job.walkinAddress || raw.walkin_address || null,
+      walkinMapLink: job.walkinMapLink || raw.walkin_map_link || null,
+      walkinDocumentsToCarry: job.walkinDocumentsToCarry || raw.walkin_documents || null,
+      walkinInstructions: job.walkinInstructions || raw.walkin_instructions || null,
+      stipend: job.stipend != null ? job.stipend : raw.stipend,
+    },
+    company: (co && co.name) || '',
+  };
+}
+
 const shareLink = (req, path) => toPublicUrl(`${shareBase(req)}${path}`, process.env.PUBLIC_SHARE_URL);
 
 const parse = (schema, body) => {
@@ -218,17 +245,21 @@ export default function portalUpgradeRoutes() {
       const made = (await c.query(`select job_share_create($1,$2,$3) as code`,
         [req.params.id, body.channel || 'other', code])).rows[0].code;
       if (!made) return null;
-      const job = (await c.query(`select * from jobs_open where id=$1`, [req.params.id])).rows[0];
-      return { code: made, job };
+      const sj = await shareableJob(c, req.params.id);
+      return sj ? { code: made, ...sj } : null;
     });
     if (!out || !out.job) throw new ApiError(404, CODES.JOB_UNAVAILABLE, 'This job is not open, so it cannot be shared.');
-    const job = toJob(out.job);
+    const job = out.job;
+    /* ?ref= is an anonymous share code - nothing about who shared it. */
     const url = shareLink(req, `/job/${encodeURIComponent(job.id)}?ref=${encodeURIComponent(out.code)}`);
-    const text = shareText(job, url);
+    const text = shareText(job, url, { company: out.company });
     res.status(201).json({
       /* publicLink false: the link only opens on this computer (no
-         PUBLIC_SHARE_URL yet) - the sheet can say so. */
-      code: out.code, url, text, publicLink: !isLocalUrl(url),
+         PUBLIC_SHARE_URL yet) - the sheet can say so. `body` is the
+         message without its link, for the phone's own share sheet, which
+         adds the URL itself. */
+      code: out.code, url, text, body: shareLines(job, { company: out.company }).join('\n'),
+      publicLink: !isLocalUrl(url),
       links: {
         whatsapp: `https://wa.me/?text=${encodeURIComponent(text)}`,
         email: `mailto:?subject=${encodeURIComponent(`Job: ${job.title}`)}&body=${encodeURIComponent(text)}`,
@@ -453,8 +484,8 @@ export function mountPublicJobPage(app, staticDir) {
     try {
       const id = String(req.params.id || '').slice(0, 64);
       const ref = /^[A-Za-z0-9_-]{6,32}$/.test(String(req.query.ref || '')) ? String(req.query.ref) : null;
-      const row = await withUser(null, async (c) =>
-        (await c.query(`select * from jobs_open where id=$1`, [id])).rows[0]);
+      const sj = await withUser(null, (c) => shareableJob(c, id));
+      const row = sj && sj.job;
 
       if (ref && !BOT.test(String(req.headers['user-agent'] || ''))) {
         await withUser(null, (c) => c.query(`select job_share_click($1)`, [ref])).catch(() => {});
@@ -466,7 +497,7 @@ export function mountPublicJobPage(app, staticDir) {
       const url = shareLink(req, `/job/${encodeURIComponent(id)}`);
       const target = `/${ref ? `?ref=${encodeURIComponent(ref)}` : ''}#/job/${encodeURIComponent(id)}`;
       const head = (row
-        ? ogTags(toJob(row), { url, image: shareLink(req, '/icons/icon-512.png') })
+        ? ogTags(row, { url, image: shareLink(req, '/icons/icon-512.png'), company: sj.company })
         : `<meta property="og:title" content="TeamLink - jobs"><meta property="og:url" content="${escHtml(url)}">`)
         + `\n<script>try{history.replaceState(null,'',${JSON.stringify(target)});}catch(e){location.replace(${JSON.stringify(target)});}</script>`;
 

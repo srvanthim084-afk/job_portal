@@ -25361,7 +25361,8 @@ table.data td .tl-af b{white-space:normal}
   function fmtDate(iso){ try{ return new Date(iso).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}); }catch(e){ return iso; } }
   function fmtDT(iso){ try{ var d=new Date(iso); return d.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'})+' · '+d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}); }catch(e){ return iso; } }
   function addDays(iso,n){ var d=new Date(iso); d.setDate(d.getDate()+n); return d.toISOString(); }
-  function dueLabel(iso){ var d=new Date(iso); d.setHours(23,59,59,999); var diff=Math.ceil((d-new Date())/86400000); if(diff<0) return {t:'Overdue',cls:'bad'}; if(diff===0) return {t:'Due today',cls:'warn'}; if(diff===1) return {t:'Due tomorrow',cls:'warn'}; return {t:'Due in '+diff+' days',cls:'brand'}; }
+  /* Calendar days in India time between now and the deadline (07 Oct seen on 05 Oct = "Due in 2 days"); past the deadline = Overdue. Same rule as the Home Action Required section. */
+  function dueLabel(iso){ var due=Date.parse(iso), now=Date.now(), DAY=86400000, OFF=330*60000; if(!(due>0)) return {t:'',cls:''}; if(due<now) return {t:'Overdue',cls:'bad'}; var diff=Math.floor((due+OFF)/DAY)-Math.floor((now+OFF)/DAY); if(diff<=0) return {t:'Due today',cls:'warn'}; if(diff===1) return {t:'Due tomorrow',cls:'warn'}; return {t:'Due in '+diff+' days',cls:'brand'}; }
   function esc2(s){ return (window.esc?esc(s):String(s==null?'':s)); }
   function cand(id){ return (typeof DATA!=='undefined'&&DATA.candidateById)?DATA.candidateById(id):null; }
   function job(id){ return (typeof DATA!=='undefined'&&DATA.jobById)?DATA.jobById(id):null; }
@@ -29607,6 +29608,8 @@ table.data td .tl-af b{white-space:normal}
 <script src="teamlink-shared-candidates.js"></script>
 <!-- Candidate availability: Actively looking / Open to offers / Not looking, re-confirmed. -->
 <script src="teamlink-availability.js"></script>
+<!-- Candidate Home: Action Required from server data, directly under Search Jobs. -->
+<script src="teamlink-action-required.js"></script>
 <!-- Preferred language (English / Telugu / Hindi): profile card and registration (0102). -->
 <script src="teamlink-candidate-language.js"></script>
 </body></html>
