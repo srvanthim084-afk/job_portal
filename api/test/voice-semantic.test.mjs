@@ -369,6 +369,16 @@ test('units: language, concepts, relaxation order, saved-voice matching', () => 
   assert.equal(voiceMatches({ title: 'x', skills: [], desc: 'no' }, { concepts: ['react'] }), false);
 });
 
+test('loanwords with the "yoo" glide: న్యూరాలజిస్ట్ = neurologist, కంప్యూటర్ = computer (from the board); ordinary words stay out', async () => {
+  const { boardWordIndex } = await import('../src/search/voice-semantic.js');
+  const board = boardWordIndex([{ title: 'Neurologist', skills: ['Neurology'] }, { title: 'Computer Operator', skills: ['MS Office'] }]);
+  assert.deepEqual(extractConcepts(['న్యూరాలజిస్ట్'], { boardWords: board }).keywords, ['neurologist']);
+  assert.deepEqual(extractConcepts(['कंप्यूटर'], { boardWords: board }).keywords, ['computer']);
+  assert.deepEqual(extractConcepts(['కంప్యూటర్'], { boardWords: board }).keywords, ['computer']);
+  const news = extractConcepts(['న్యూస్'], { boardWords: board });
+  assert.equal(news.keywords.length + news.ids.length, 0, '"news" is not a job word on this board');
+});
+
 test('shutdown', async () => {
   await new Promise((r) => server.close(r));
   const { closePool } = await import('../src/db.js');

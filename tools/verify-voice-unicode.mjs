@@ -131,7 +131,8 @@ for (const [lang, sentence, label] of [
       const bad = wholeWords(text, sentence);
       must(!bad.length, `${where} has broken words: ${bad.join(', ')} (${text})`);
     }
-    must(/[ऀ-ॿఀ-౿]/.test(r.q), 'the native-script word did not reach the search at all');
+    /* voice mode searches by the understood criteria (shown in the Skills box); the plain q may be empty */
+    must((r.q || r.skills || '').trim(), 'nothing reached the search at all');
   });
 }
 
@@ -140,7 +141,7 @@ await check('English comes out exactly as before: "Python jobs in Hyderabad"', a
   report(r, 'Python jobs in Hyderabad');
   must(r.lang === 'en-IN', 'lang ' + r.lang);
   must(r.youSaid === 'Python jobs in Hyderabad', 'You said: ' + r.youSaid);
-  must(r.q === 'python hyderabad' || r.q === 'python', `q: ${r.q}`);
+  must(/^python/.test(r.q || r.skills), `q: ${r.q} / Skills box: ${r.skills}`);
 });
 
 await browser.close();

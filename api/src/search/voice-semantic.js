@@ -62,8 +62,14 @@ const hasPhrase = (hay, p) => hay.includes(` ${p} `);
 
 /* "technology" and టెక్నాలజీ: a soft g is a j to the ear, and the ch of
    "tech" / "technology" / "chrome" is a k. */
+/* The "yoo" glide: Telugu and Hindi write the English "neu" / "pu" / "cu"
+   sound as consonant + y + u (న్యూరాలజిస్ట్ "nyuuraalajist" = neurologist,
+   కంప్యూటర్ "kampyuutar" = computer), and English writes "eu" for it. The
+   y is the glide, not a consonant, so it is dropped on both sides - job
+   words only; places keep placeKey as it is. */
 const soundKey = (latin) => placeKey(String(latin || '').toLowerCase()
-  .replace(/ch(?=[nrlst])/g, 'k').replace(/ch$/, 'k').replace(/g(?=[eiy])/g, 'j'));
+  .replace(/ch(?=[nrlst])/g, 'k').replace(/ch$/, 'k').replace(/g(?=[eiy])/g, 'j')
+  .replace(/eu/g, 'u').replace(/([^aeiouy])y(?=u)/g, '$1'));
 
 let VOCAB = null;
 function vocab() {

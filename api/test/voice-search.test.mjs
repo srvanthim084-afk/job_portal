@@ -225,22 +225,28 @@ test('rate limited per address (20 a minute in production)', async () => {
   assert.ok(limited > 0, 'the limit was reached');
 });
 
-test('Telugu and Hindi words reach the filters whole (vowel signs, virama, ZWNJ kept)', async () => {
-  /* Reported: "No jobs for న య ర ల ..." - the cleaner kept letters and
-     digits but turned every combining mark into a space. */
+test('Telugu and Hindi text is never broken: the original is kept exactly, the search gets whole concepts', async () => {
+  /* Reported: "No jobs for న య ర ల ..." - a cleaner kept letters and
+     digits but turned every combining mark into a space. The search now
+     gets English concepts (meaning-based matching), the sentence itself is
+     kept exactly as said, and no broken fragment reaches any value. */
   const { parseVoice } = await import('../src/search/voice-parse.js');
-  for (const [text, lang, word] of [
-    ['నాకు హైదరాబాద్‌లో Python jobs కావాలి', 'te-IN', 'హైదరాబాద్‌లో'],
-    ['తెలుగు సాఫ్ట్‌వేర్ డెవలపర్', 'te-IN', 'సాఫ్ట్‌వేర్'],
-    ['मुझे हैदराबाद में Python jobs चाहिए', 'hi-IN', 'हैदराबाद'],
+  const lone = /(^|[\s·])[\u0C15-\u0C39\u0915-\u0939]($|[\s·])/;
+  for (const [text, lang] of [
+    ['నాకు హైదరాబాద్‌లో Python jobs కావాలి', 'te-IN'],
+    ['తెలుగు సాఫ్ట్‌వేర్ డెవలపర్', 'te-IN'],
+    ['मुझे हैदराबाद में Python jobs चाहिए', 'hi-IN'],
   ]) {
     const r = await parseVoice(text, lang, {});
-    assert.ok(r.filters.q.split(' ').includes(word), `${word} is not whole in q: ${r.filters.q}`);
-    assert.ok(r.chips.some((c) => c.label.split(' ').includes(word)), `${word} is not whole in the chips`);
-    assert.equal(/(^| )[\u0C15-\u0C39\u0915-\u0939]( |$)/.test(r.filters.q), false, 'a lone consonant: the marks were stripped');
+    assert.equal(r.search.originalQuery, text.normalize('NFC'), 'the original sentence is kept exactly');
+    for (const v of [r.filters.q, ...r.chips.map((c) => c.label), r.search.normalizedQuery || '']) {
+      assert.equal(lone.test(v), false, `a broken fragment reached the search: ${v}`);
+    }
   }
+  const sw = await parseVoice('తెలుగు సాఫ్ట్‌వేర్ డెవలపర్', 'te-IN', {});
+  assert.match(sw.filters.q, /software/, 'Telugu-script loanwords are understood, not dropped');
   const en = await parseVoice('Python jobs in Hyderabad', 'en-IN', {});
-  assert.equal(en.filters.q, 'python hyderabad', 'English is cleaned exactly as before');
+  assert.match(en.filters.q, /^python/, 'English keeps its words');
 });
 
 test('shutdown', async () => {
