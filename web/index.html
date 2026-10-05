@@ -8531,6 +8531,17 @@ mark.fcr-hl{background:#fff3a3;color:inherit;border-radius:3px;padding:0 1px}
 .fcr-jd-body input[disabled],.fcr-jd-body select[disabled]{background:#f2f4f7;color:#7b8a9c}
 .fcr-jd-body .fcr-jd-bad{border-color:#e5484d !important}
 .fcr-jd-actions{display:flex;gap:10px;padding:14px 26px 22px}
+/* Job details: full window, fixed header with an always-visible ✕, only the content scrolls */
+.fcr-modal-overlay.tl-jd-full{padding:0;align-items:stretch;justify-content:stretch}
+.tl-jd-full .fcr-modal,.tl-jd-full .fcr-modal:has(.fcr-jd-head){max-width:none;width:100%;height:100vh;height:100dvh;max-height:none;border-radius:0;display:flex;flex-direction:column;overflow:hidden}
+.tl-jd-full .fcr-jd-head{flex-shrink:0;border-radius:0;padding-right:72px;z-index:2;border-bottom:1px solid #e3e8ef}
+.tl-jd-full .fcr-jd-head h3{overflow-wrap:anywhere}
+.tl-jd-full .fcr-jd-x{top:50%;transform:translateY(-50%);right:14px;width:44px;height:44px;border-radius:50%;font-size:19px;display:flex;align-items:center;justify-content:center;background:#fff;box-shadow:0 1px 4px rgba(16,32,56,.16)}
+.tl-jd-full .fcr-jd-x:hover{background:#eef2f7}
+.tl-jd-full .fcr-jd-x:focus-visible{outline:3px solid #93c5fd;outline-offset:2px}
+.tl-jd-full .fcr-jd-body{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+.tl-jd-full .fcr-jd-actions{flex-shrink:0;flex-wrap:wrap;border-top:1px solid #e3e8ef;background:var(--card,#fff);padding:12px 26px}
+@media (max-width:600px){.tl-jd-full .fcr-jd-head{padding:16px 64px 14px 16px}.tl-jd-full .fcr-jd-x{right:10px}.tl-jd-full .fcr-jd-body{padding:16px 16px 8px}.tl-jd-full .fcr-jd-actions{padding:10px 16px}}
 .fcr-jd-prev .fcr-jd-row{margin:12px 0;align-items:start}
 .fcr-jd-prev .v{font-size:13.5px;color:#33465c}
 @media (max-width:640px){.fcr-jd-row{grid-template-columns:1fr;gap:6px}}
@@ -20307,7 +20318,37 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
       '<div class="fcr-jd-actions">'+act+
         '<button class="btn btn-ghost" onclick="fcrCloseModal();navigate(\'/job/'+j.id+'\')">Open full job page</button>'+
         '<button class="btn btn-ghost" onclick="fcrCloseModal()">Close</button></div>');
+    /* Full-window job details: the header (title, company, ✕) and the action
+       bar stay put, only the description scrolls, and the page behind it is
+       held still until the modal closes. */
+    var host=document.getElementById('fcrModalHost');
+    if(host){
+      host.classList.add('tl-jd-full');
+      var box=host.querySelector('.fcr-modal');
+      if(box){ box.setAttribute('role','dialog'); box.setAttribute('aria-modal','true'); }
+      var x=host.querySelector('.fcr-jd-x');
+      if(x){ x.setAttribute('aria-label','Close job details'); x.setAttribute('type','button'); try{ x.focus(); }catch(e){} }
+      var de=document.documentElement;
+      host.__tlPrevOverflow=[document.body.style.overflow,de.style.overflow];
+      document.body.style.overflow='hidden'; de.style.overflow='hidden';
+      host.addEventListener('keydown',function(ev){ if(ev.key==='Escape'){ ev.stopPropagation(); fcrCloseModal(); } });
+    }
   };
+  (function(){
+    /* Whatever closes the modal (✕, Close, Apply Now, the backdrop, another
+       modal opening) gives the page its scrolling back. */
+    var prevClose=window.fcrCloseModal;
+    if(typeof prevClose!=='function'||prevClose.__tlJd) return;
+    var next=function(){
+      var h=document.getElementById('fcrModalHost');
+      var prev=h&&h.__tlPrevOverflow;
+      var r=prevClose.apply(this,arguments);
+      if(prev){ document.body.style.overflow=prev[0]||''; document.documentElement.style.overflow=prev[1]||''; }
+      return r;
+    };
+    next.__tlJd=true;
+    window.fcrCloseModal=next;
+  })();
 
   /* put a description button next to every "View job / View application" the
      candidate portal renders, without touching how those cards are built */
