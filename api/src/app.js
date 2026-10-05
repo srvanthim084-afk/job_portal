@@ -36,6 +36,7 @@ import intakeRoutes from './routes/intake.js';
 import { notificationRoutes } from './routes/notifications.js';
 import staffRoutes from './routes/staff.js';
 import externalJobRoutes from './routes/external-jobs.js';
+import externalComplianceRoutes from './routes/external-compliance.js';
 import savedSearchRoutes from './routes/saved-searches.js';
 import pushRoutes from './routes/push.js';
 import applyFormRoutes from './routes/apply-form.js';
@@ -400,6 +401,8 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
    */
   if (config.externalJobs.enabled) {
     app.use('/api', externalJobRoutes());
+    /* 0108: licences, health, quarantine, audit, bulk actions, analytics, saved. */
+    app.use('/api', externalComplianceRoutes());
   }
 
   // Reminders for interviews running out of time, and the recruiter

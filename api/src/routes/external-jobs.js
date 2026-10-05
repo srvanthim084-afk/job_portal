@@ -23,7 +23,7 @@
  */
 import { Router } from 'express';
 import { z } from 'zod';
-import { wrap, badRequest, forbidden, notFound } from '../errors.js';
+import { wrap, badRequest, forbidden, notFound, conflict } from '../errors.js';
 import { requireAuth } from '../auth.js';
 import { config } from '../config.js';
 import { withUser } from '../db.js';
@@ -33,6 +33,14 @@ import { toSource, toExternalJob, toMatch, toExternalApplication } from '../exte
 import { normaliseExternalJob } from '../external/normalise.js';
 import { syncSource, matchCandidate, applyExternally, refreshApplicationStatus }
   from '../external/service.js';
+/* 0108 */
+import * as cx from '../external/compliance-store.js';
+import { cached, bump } from '../external/cache.js';
+import { sourcePolicy, hostAllowed, PROVIDER_IDS } from '../external/source-config.js';
+import { redirectRefused } from '../external/health.js';
+import { checkLink } from '../external/link.js';
+import { withUrlKey } from '../external/service.js';
+import { toLicence, licenceRequirement, toPortalJob, toPortalJobV2 } from '../external/shapes.js';
 
 const STAFF = ['recruiter', 'bde', 'admin'];
 
@@ -93,47 +101,67 @@ export default function externalJobRoutes() {
    * which is a different record with a different meaning.
    * ================================================================ */
   const PORTAL = { userId: '', role: 'anon', profileId: null };
-  const STATUS = { open: 'ACTIVE', closed: 'CLOSED', expired: 'EXPIRED', removed: 'UNAVAILABLE' };
-  const portalJob = (r) => ({
-    id: r.id,
-    jobType: 'EXTERNAL',
-    title: r.title,
-    company: r.company || '',
-    location: r.location || '',
-    experience: r.experience || '',
-    salary: r.salary || '',
-    salaryMin: r.salary_min == null ? null : Number(r.salary_min),
-    salaryMax: r.salary_max == null ? null : Number(r.salary_max),
-    skills: r.skills || [],
-    description: r.description || '',
-    employmentType: r.employment_type || '',
-    education: r.education || '',
-    postedAt: r.posted_at ? new Date(r.posted_at).toISOString() : null,
-    lastSyncedAt: r.synced_at ? new Date(r.synced_at).toISOString() : null,
-    status: STATUS[r.status] || 'UNAVAILABLE',
-    source: r.source_key,
-    sourceName: r.source_name,
-    publisher: r.original_publisher || null,
-  });
+  /* The portal shapes live in external/shapes.js (toPortalJob, unchanged
+     since 0088, and toPortalJobV2, which adds 0108's keys beside it). */
+  const portalJob = toPortalJob;
+  const portalJobV2 = (row) => toPortalJobV2(row, config.externalJobs.activeDays);
+  const event = (id, name, reason) => cx.recordEvent(PORTAL, id, name, reason)
+    .catch((e) => console.error('[external] event not recorded:', e.message));
 
+  /*
+   * GET /api/portal/external-jobs
+   *
+   * Search, filters and pagination, all in the database (0108's
+   * external_portal_search) - never a call to a provider. With no filter
+   * and no sort the order is exactly what it always was (newest first);
+   * `sort=relevance` (the default when there is a query) ranks by the
+   * deterministic score documented in 0108.
+   *
+   *   q             comma-separated terms: title, company, location,
+   *                 skills, description
+   *   source        a source id          provider   naukri, greenhouse, …
+   *   location      a place (remote postings match every place)
+   *   employmentType, experience (years), salaryMin (₹/yr), skills (a,b),
+   *   postedWithinDays, sort (relevance|posted), limit (≤500), offset
+   */
+  const num = (v) => (v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
   r.get('/portal/external-jobs', wrap(async (req, res) => {
     const q = String(req.query.q || '').slice(0, 120);
-    const source = String(req.query.source || '').slice(0, 60);
-    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 500);
-    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
-    const rows = await withUser(PORTAL, async (c) => (await c.query(
-      `select * from external_portal_jobs($1,$2,$3,$4)`, [q, source, limit, offset])).rows);
+    const f = {
+      q,
+      source: String(req.query.source || '').slice(0, 60),
+      provider: String(req.query.provider || '').slice(0, 20).toLowerCase(),
+      location: String(req.query.location || '').slice(0, 80),
+      employmentType: String(req.query.employmentType || '').slice(0, 40),
+      experience: num(req.query.experience),
+      salaryMin: num(req.query.salaryMin),
+      skills: String(req.query.skills || '').split(',').map((s) => s.trim()).filter(Boolean).slice(0, 10),
+      postedDays: num(req.query.postedWithinDays) == null ? null : Math.max(1, Math.min(365, num(req.query.postedWithinDays))),
+      maxAgeDays: config.externalJobs.maxAgeDays,
+      sort: req.query.sort === 'posted' ? '' : (req.query.sort === 'relevance' || q.trim() ? 'relevance' : ''),
+      limit: Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 500),
+      offset: Math.max(parseInt(req.query.offset, 10) || 0, 0),
+    };
+    const version = await cx.portalVersion(PORTAL);
+    const { value: rows, hit } = await cached(`list:${JSON.stringify(f)}`, version, () => cx.portalSearch(PORTAL, f));
+    res.set('X-Cache', hit ? 'hit' : 'miss');
     res.json({
-      jobs: rows.map(portalJob),
+      jobs: rows.map(portalJobV2),
       total: rows.length ? Number(rows[0].total) : 0,
+      limit: f.limit,
+      offset: f.offset,
+      sort: f.sort || 'posted',
     });
   }));
 
   r.get('/portal/external-jobs/:id', wrap(async (req, res) => {
-    const row = await withUser(PORTAL, async (c) => (await c.query(
-      `select * from external_portal_job($1)`, [String(req.params.id).slice(0, 80)])).rows[0]);
+    const id = String(req.params.id).slice(0, 80);
+    const version = await cx.portalVersion(PORTAL);
+    const { value: row } = await cached(`job:${id}`, version, () => cx.portalJob(PORTAL, id));
     if (!row) throw notFound('This job is no longer available.');
-    res.json({ job: portalJob(row) });
+    /* external_job_view: a count per job per day, nothing about who. */
+    await event(id, 'external_job_view');
+    res.json({ job: portalJobV2(row) });
   }));
 
   /** A small page for when there is nowhere to send the candidate. */
@@ -151,23 +179,70 @@ h1{font-size:19px;margin:0 0 8px}p{margin:0 0 14px;color:#42505f}a{color:#1d6ff2
    * The destination comes from the database by job id - never from the
    * request - and is validated before it goes in a Location header.
    */
+  /*
+   * The one decision about whether a stored URL may be followed, shared by
+   * the public redirect and the signed-in tracked flow: the general rules
+   * (redirect.js, unchanged) and then the source's allowed domains
+   * (source-config.js; null for Greenhouse and other employer-site boards,
+   * so their behaviour is unchanged).
+   */
+  const destination = (t) => checkLink(t.application_url, { provider: t.provider, connector: t.connector,
+    sourceId: t.source_key, allowedDomains: t.allowed_domains });
+
+  /*
+   * POST /api/portal/external-jobs/:id/click
+   *
+   * Apply Now on an external job opens the stored original URL straight
+   * from the page (no TeamLink URL in between). This only COUNTS it - an
+   * "Apply Clicked" per job per day, nobody identified - for a visitor who
+   * is not signed in. A signed-in candidate's click goes to POST
+   * /external/apply, which records it against them as "Apply Clicked".
+   * Neither ever creates an application.
+   */
+  r.post('/portal/external-jobs/:id/click', wrap(async (req, res) => {
+    const id = String(req.params.id).slice(0, 80);
+    const t = await cx.applyTarget(PORTAL, id);
+    await event(id, 'external_apply_click');
+    if (!t || t.status !== 'open') {
+      await event(id, 'external_redirect_failure', t ? 'closed' : 'not_found');
+      return res.json({ recorded: true, status: 'Apply Clicked', applyLink: 'job_unavailable' });
+    }
+    const d = destination(t);
+    await event(id, d.ok ? 'external_redirect_success' : 'external_redirect_failure', d.ok ? '' : d.code);
+    res.json({ recorded: true, status: 'Apply Clicked', applyLink: d.ok ? 'available' : 'link_unavailable' });
+  }));
+
   r.get('/portal/external-jobs/:id/apply', wrap(async (req, res) => {
     const id = String(req.params.id).slice(0, 80);
-    const t = await withUser(PORTAL, async (c) => (await c.query(
-      `select * from external_portal_apply_target($1)`, [id])).rows[0]);
-    if (!t) return sorry(res, 404, 'This job is no longer available', 'We could not find that job.');
+    /* The destination is the stored URL, ALWAYS. A ?url= (or anything
+       else) in the request is never read. */
+    await event(id, 'external_apply_click');
+    const t = await cx.applyTarget(PORTAL, id);
+    if (!t) {
+      await event(id, 'external_redirect_failure', 'not_found');
+      return sorry(res, 404, 'This job is no longer available', 'We could not find that job.');
+    }
+    if (t.source_active === false) {
+      await event(id, 'external_redirect_failure', 'source_unavailable');
+      return sorry(res, 410, 'Source unavailable',
+        `${t.source_name || 'The website this job came from'} is not available through TeamLink at the moment, so there is nowhere to apply. This job is no longer available here.`);
+    }
     if (t.status !== 'open') {
+      await event(id, 'external_redirect_failure', 'closed');
       return sorry(res, 410, 'This job is no longer available',
         `The original posting on ${t.source_name || 'its website'} has closed, so there is nowhere to apply.`);
     }
-    const ok = validateExternalUrl(t.application_url, t.connector || t.source_key);
-    if (!ok.ok) {
-      console.warn(`[external] redirect refused for ${id} (${t.source_key}): ${ok.reason}`);
-      return sorry(res, 422, 'We could not open this job',
+    const d = destination(t);
+    if (!d.ok) {
+      console.warn(`[external] redirect refused for ${id} (${t.source_key}): ${d.reason}`);
+      await event(id, 'external_redirect_failure', d.code);
+      await redirectRefused(PORTAL, t, d.reason);
+      return sorry(res, 422, 'Redirect unavailable',
         'The link we have for it does not look safe to follow, so we have not sent you there. The job has been reported.');
     }
+    await event(id, 'external_redirect_success');
     res.set('Referrer-Policy', 'no-referrer');
-    return res.redirect(302, ok.url);
+    return res.redirect(302, d.url);
   }));
 
   /* The Job Sources screen: what each sync did. */
@@ -213,7 +288,29 @@ h1{font-size:19px;margin:0 0 8px}p{margin:0 0 14px;color:#42505f}a{color:#1d6ff2
   r.get('/external/sources', requireAuth(), wrap(async (req, res) => {
     requireStaff(req);
     const rows = await store.listSources(req.session);
-    res.json({ sources: rows.map(toSource) });
+    /* 0108: each source with its licence, whether it may be switched on,
+       and the configuration it is judged by (no secret in any of it). */
+    const licences = new Map((await cx.listLicences(req.session)).map((l) => [l.source_id, l]));
+    const out = [];
+    for (const row of rows) {
+      const gap = await cx.licenceGap(req.session, row.id);
+      const p = sourcePolicy(row);
+      out.push({
+        ...toSource(row),
+        licence: toLicence(licences.get(row.id)),
+        licenceGap: gap,
+        licenceRequired: licenceRequirement(p, row.job_collection_method),
+        policy: {
+          provider: p.provider, label: p.label, kind: p.kind, mechanism: p.mechanism, termsUrl: p.termsUrl,
+          preserveBehaviour: p.preserve, allowedDomains: p.allowedDomains, allowedDomainsSource: p.allowedDomainsSource,
+          syncIntervalHours: p.syncIntervalHours, rateLimitPerMinute: p.rateLimitPerMinute,
+          closeGraceDays: p.closeGraceDays, monthlyQuota: p.monthlyQuota,
+          credentialsReference: p.credentialsReference, credentialsConfigured: p.credentialsConfigured,
+          enabledFeatures: p.enabledFeatures,
+        },
+      });
+    }
+    res.json({ sources: out });
   }));
 
   const sourceSchema = z.object({
@@ -237,7 +334,18 @@ h1{font-size:19px;margin:0 0 8px}p{margin:0 0 14px;color:#42505f}a{color:#1d6ff2
     credentialEnv: z.string().trim().regex(/^[A-Z][A-Z0-9_]{2,60}$/,
       'Give the NAME of the environment variable holding the key, not the key itself.')
       .optional(),
+    /* 0108: which board this source IS (naukri, greenhouse, …, other).
+       Inferred from the connector, feed URL or name when not given. */
+    provider: z.string().trim().toLowerCase().refine((v) => PROVIDER_IDS.includes(v),
+      'Unknown provider.').optional(),
   });
+
+  /* The database's activation guard (0108) speaks in one exception. */
+  const licenceError = (err) => {
+    const m = /licence_required:\s*(.*)$/s.exec(String(err && err.message || ''));
+    if (!m) return null;
+    return conflict('LICENCE_REQUIRED', m[1]);
+  };
 
   /**
    * GET /api/external/connectors
@@ -383,8 +491,24 @@ h1{font-size:19px;margin:0 0 8px}p{margin:0 0 14px;color:#42505f}a{color:#1d6ff2
         'Automatic applications need an application method of "api" or "email". '
         + 'A redirect is completed by the candidate, so it cannot be automated.');
     }
-    const saved = await store.saveSource(req.session, input);
-    res.json({ source: toSource(saved) });
+    let saved;
+    try {
+      saved = await store.saveSource(req.session, input);
+      /* The provider is set apart from 0063's signature; the guard reads
+         it on the same row, so an explicit provider is written first when
+         the source is being created inactive or already exists. */
+      if (input.provider && saved && saved.provider !== input.provider) {
+        saved = await cx.saveSourceConfig(req.session, saved.id, {
+          provider: input.provider, allowedDomains: saved.allowed_domains,
+          syncIntervalHours: saved.sync_interval_hours, rateLimitPerMinute: saved.rate_limit_per_minute,
+          closeGraceDays: saved.close_grace_days, monthlyQuota: saved.monthly_quota,
+        });
+      }
+    } catch (err) {
+      throw licenceError(err) || err;
+    }
+    bump();
+    res.json({ source: toSource(saved), licenceGap: await cx.licenceGap(req.session, saved.id) });
   }));
 
   /**
@@ -457,7 +581,8 @@ h1{font-size:19px;margin:0 0 8px}p{margin:0 0 14px;color:#42505f}a{color:#1d6ff2
     const saved = [];
     const rejected = [];
     for (const raw of list) {
-      const job = normaliseExternalJob(raw || {}, source);
+      /* No id: keyed by canonical URL, then company + title + location. */
+      const job = normaliseExternalJob(withUrlKey(raw || {}), source);
       if (!job) {
         rejected.push({ raw: String(raw?.title || raw?.id || '(unnamed)').slice(0, 80),
           reason: 'a posting needs both an id and a title' });
@@ -720,19 +845,31 @@ h1{font-size:19px;margin:0 0 8px}p{margin:0 0 14px;color:#42505f}a{color:#1d6ff2
 
     /* The stored link is checked BEFORE the click is recorded: a job
        whose link is unsafe is reported, and the candidate is not sent. */
-    const target = await withUser(req.session, async (c) => (await c.query(
-      `select * from external_portal_apply_target($1)`, [externalJobId])).rows[0]);
+    /* external_apply_click - the same counter the public redirect keeps.
+       Nothing about the candidate goes into it. */
+    await event(externalJobId, 'external_apply_click');
+    const target = await cx.applyTarget(req.session, externalJobId);
     if (target && target.status === 'open' && target.application_url) {
-      const ok = validateExternalUrl(target.application_url, target.connector || target.source_key);
-      if (!ok.ok) {
-        console.warn(`[external] apply refused for ${externalJobId} (${target.source_key}): ${ok.reason}`);
+      const d = destination(target);
+      if (!d.ok) {
+        console.warn(`[external] apply refused for ${externalJobId} (${target.source_key}): ${d.reason}`);
+        await event(externalJobId, 'external_redirect_failure', d.code);
+        await redirectRefused(PORTAL, target, d.reason);
         return res.status(422).json({ ok: false, status: 'invalid_url',
-          error: { code: 'INVALID_URL', message: 'This job’s link does not look safe to follow, so we have not opened it.' } });
+          error: { code: 'INVALID_URL', message: 'Redirect unavailable: this job’s link does not look safe to follow, so we have not opened it.' } });
       }
     }
 
     const out = await applyExternally(req.session, { candidateId, externalJobId, auto });
-    if (out.status === 'not_found') throw notFound(out.error || 'Not found.');
+    if (out.status === 'not_found') {
+      await event(externalJobId, 'external_redirect_failure', 'not_found');
+      throw notFound(out.error || 'Not found.');
+    }
+    /* Handed a validated destination = redirect success; refused = failure
+       with the reason; "you already told us" sends nobody anywhere. */
+    const refusedAs = out.ok === false || ['sample_posting', 'unsupported'].includes(out.status) ? out.status : null;
+    if (refusedAs) await event(externalJobId, 'external_redirect_failure', refusedAs);
+    else if (out.redirectUrl && out.status !== 'already_applied') await event(externalJobId, 'external_redirect_success');
 
     /*
      * ANOTHER VISIT, NOT ANOTHER APPLICATION.

@@ -12,6 +12,13 @@ import { collectJobs, submitApplication, checkApplicationStatus } from './provid
 import { matchExternalJob } from './matching.js';
 import * as store from './store.js';
 import { withUser } from '../db.js';
+/* 0108 */
+import * as cx from './compliance-store.js';
+import { sourcePolicy, PRESERVED } from './source-config.js';
+import { validateJob, fingerprintOf, reasonCodes } from './quality.js';
+import { validateExternalUrl } from './redirect.js';
+import { afterSync, safe } from './health.js';
+import { createHash } from 'node:crypto';
 
 /**
  * What this desk's candidates are actually looking for.
@@ -69,11 +76,35 @@ async function searchTermsFromCandidates(session) {
  * is a real and common state in feed data, and hiding it would make a
  * broken feed look like an empty one.
  */
-export async function syncSource(session, sourceId) {
+export async function syncSource(session, sourceId, opts = {}) {
   const startedAt = new Date();
   const source = await store.getSource(session, sourceId);
   if (!source) return { ok: false, status: 'not_found', error: 'no such source' };
 
+  /*
+   * TWO PIPELINES, ONE RULE (0108).
+   *
+   * A source whose provider is marked `preserve` (Greenhouse - the owner's
+   * standing "do not change Greenhouse") runs EXACTLY the code below that
+   * existed before 0108; the new checks only observe it (health, the
+   * quarantine list with action 'kept', URL-change validity), and every
+   * observation is caught so it can never alter or stop that sync.
+   * api/test/external-greenhouse-snapshot.test.mjs proves the output is
+   * byte-for-byte what it was.
+   *
+   * Every other source goes through the checked pipeline: licence gate,
+   * one sync per source at a time, a concurrency limit, backoff for the
+   * scheduler, quota and rate limit per call, a time budget, validation
+   * with quarantine, URL-change control, and empty-sync protection.
+   */
+  const policy = sourcePolicy(source);
+  if (!policy.preserve) return syncChecked(session, source, policy, startedAt, opts);
+  return syncPreserved(session, source, policy, startedAt);
+}
+
+/** The pre-0108 sync, unchanged, plus observation that cannot interfere. */
+async function syncPreserved(session, source, policy, startedAt) {
+  const sourceId = source.id;
   /*
    * WHAT TO SEARCH FOR COMES FROM THE CANDIDATES, not from a list
    * somebody typed here.
@@ -120,9 +151,17 @@ export async function syncSource(session, sourceId) {
     });
     /* A failed fetch changes nothing in the table: the jobs already
        synced stay, and only the run says it failed. */
-    await store.recordSyncRun(session, {
+    const failedRun = await store.recordSyncRun(session, {
       sourceId, startedAt, status: collected.status, error: collected.error || null,
     });
+    /* 0108, observe only. */
+    if (collected.status !== 'manual') {
+      await safe('health (preserved)', () => afterSync(session, source, 'failure', {
+        durationMs: Date.now() - startedAt.getTime(), error: collected.error }));
+    }
+    await safe('run extend (preserved)', () => cx.extendRun(session, runIdOf(failedRun), {
+      provider: policy.provider, durationMs: Date.now() - startedAt.getTime(),
+      errorSummary: collected.error || collected.status }));
     return {
       ok: collected.status === 'manual',
       status: collected.status,
@@ -131,12 +170,17 @@ export async function syncSource(session, sourceId) {
     };
   }
 
+  /* 0108, observe only: what each posting looked like before this run. */
+  const known = (await safe('known jobs (preserved)', () => cx.knownJobs(session, sourceId))) || new Map();
+  const observed = new Map();
+
   let saved = 0;
   let skipped = 0;
   let created = 0;
   const problems = [];
   for (const raw of collected.jobs) {
     const job = normaliseExternalJob(raw, source);
+    observeQuality(observed, job, raw, policy, known);
     if (!job) { skipped++; continue; }
     try {
       const row = await store.saveJob(session, job);
@@ -155,11 +199,23 @@ export async function syncSource(session, sourceId) {
     error: problems.length ? problems.join('; ') : null,
     jobCount: saved,
   });
-  await store.recordSyncRun(session, {
+  const run = await store.recordSyncRun(session, {
     sourceId, startedAt, status: problems.length ? 'partial' : 'ok',
     fetched: collected.jobs.length, created, updated: saved - created,
     duplicates: linked, skipped, error: problems.length ? problems.join('; ') : null,
   });
+
+  /* 0108, observe only - after the sync has done everything it did before. */
+  const obs = await safe('quality (preserved)', () => recordObserved(session, sourceId, observed));
+  await safe('run extend (preserved)', () => cx.extendRun(session, runIdOf(run), {
+    provider: policy.provider, failed: problems.length, quarantined: 0,
+    urlChanges: obs ? obs.urlChanges : 0, durationMs: Date.now() - startedAt.getTime(),
+    errorSummary: problems.length ? problems.join('; ') : (obs && obs.kept ? `${obs.kept} posting(s) failed validation (kept unchanged)` : null) }));
+  await safe('health (preserved)', () => afterSync(session, source, 'success', {
+    durationMs: Date.now() - startedAt.getTime(),
+    saved: new Set(collected.jobs.map((j) => String(j.externalJobId || ''))).size,
+    previousOpen: [...known.values()].filter((k) => k.status === 'open').length,
+    fetched: collected.jobs.length, linked, quarantined: 0 }));
 
   return {
     ok: true,
@@ -170,6 +226,292 @@ export async function syncSource(session, sourceId) {
     error: problems.length ? problems.join('; ') : null,
   };
 }
+
+/* ------------------------------------------------------------------ *
+ * 0108 helpers
+ * ------------------------------------------------------------------ */
+
+const runIdOf = (res) => {
+  const v = res && res.rows && res.rows[0] && res.rows[0].external_sync_run_record;
+  return v == null ? null : Number(v);
+};
+
+/** Observe-only validation for a preserved source: nothing is refused. */
+function observeQuality(observed, job, raw, policy, known) {
+  try {
+    const fp = fingerprintOf(raw, job);
+    if (observed.has(fp)) return;
+    const verdict = validateJob(job, raw, policy);
+    const prev = job ? known.get(job.externalJobId) : null;
+    observed.set(fp, {
+      fp, job, raw, verdict,
+      urlChange: prev && job && prev.url !== job.applicationUrl ? { jobId: prev.id, oldUrl: prev.url, newUrl: job.applicationUrl } : null,
+    });
+  } catch (err) {
+    console.error('[external] observe failed:', err.message);
+  }
+}
+
+async function recordObserved(session, sourceId, observed) {
+  let kept = 0;
+  let urlChanges = 0;
+  const fine = [];
+  for (const o of observed.values()) {
+    if (!o.verdict.ok) {
+      kept += 1;
+      await cx.quarantine(session, sourceId, {
+        fingerprint: o.fp, externalJobId: o.job?.externalJobId || null, title: o.job?.title || o.raw?.title,
+        company: o.job?.company || o.raw?.company, url: o.job?.applicationUrl || o.raw?.applyUrl || null,
+        reasons: reasonCodes(o.verdict), action: 'kept', raw: o.raw,
+      });
+    } else fine.push(o.fp);
+    if (o.urlChange && o.job) {
+      urlChanges += 1;
+      const v = validateExternalUrl(o.urlChange.newUrl, null);
+      await cx.noteUrlChange(session, { ...o.urlChange, valid: v.ok, reason: v.ok ? null : v.reason, applied: true });
+    }
+  }
+  await cx.resolveQuarantine(session, sourceId, fine);
+  return { kept, urlChanges };
+}
+
+/* In-process: one sync per source at a time, and a ceiling overall. */
+const RUNNING = new Set();
+const sleep = (ms) => new Promise((r) => { const t = setTimeout(r, ms); if (t.unref) t.unref(); });
+
+/**
+ * The checked pipeline: every source except the preserved ones.
+ *
+ * @param opts.scheduled  true from the sweep - honours backoff; a person
+ *                        pressing "Sync now" does not wait for it
+ */
+async function syncChecked(session, source, policy, startedAt, opts = {}) {
+  const sourceId = source.id;
+  const cfg = config.externalJobs;
+  const method = String(source.job_collection_method || 'manual');
+  const ms = () => Date.now() - startedAt.getTime();
+
+  /* Nothing to fetch for a manual source - not a failure, not a licence question. */
+  if (method === 'manual') {
+    await store.recordSyncResult(session, sourceId, { status: 'manual', error: null, jobCount: 0 });
+    await store.recordSyncRun(session, { sourceId, startedAt, status: 'manual' });
+    return { ok: true, status: 'manual', error: null, saved: 0, skipped: 0, linked: 0 };
+  }
+
+  /* Licence: a source without a complete, current licence record is never
+     collected from, whether it is switched on or not. */
+  const gap = await cx.licenceGap(session, sourceId);
+  if (gap) {
+    const run = await store.recordSyncRun(session, { sourceId, startedAt, status: 'licence_required', error: gap });
+    await safe('run extend', () => cx.extendRun(session, runIdOf(run), {
+      provider: policy.provider, durationMs: ms(), errorSummary: `Sync refused: ${gap}` }));
+    return { ok: false, status: 'licence_required', error: gap, saved: 0, skipped: 0, linked: 0 };
+  }
+
+  if (opts.scheduled && source.next_sync_after && new Date(source.next_sync_after) > new Date()) {
+    return { ok: false, status: 'backoff', error: `retrying after ${new Date(source.next_sync_after).toISOString()}`,
+      saved: 0, skipped: 0, linked: 0 };
+  }
+  if (RUNNING.has(sourceId)) {
+    return { ok: false, status: 'already_running', error: 'this source is already syncing', saved: 0, skipped: 0, linked: 0 };
+  }
+  if (RUNNING.size >= Math.max(1, cfg.maxConcurrentSyncs)) {
+    return { ok: false, status: 'busy', error: 'too many sources are syncing right now - try again shortly',
+      saved: 0, skipped: 0, linked: 0 };
+  }
+  RUNNING.add(sourceId);
+  try {
+    return await runChecked(session, source, policy, startedAt);
+  } finally {
+    RUNNING.delete(sourceId);
+  }
+}
+
+async function runChecked(session, source, policy, startedAt) {
+  const sourceId = source.id;
+  const cfg = config.externalJobs;
+  const ms = () => Date.now() - startedAt.getTime();
+  const deadline = startedAt.getTime() + Math.max(5000, cfg.syncTimeoutMs);
+  const gapMs = policy.rateLimitPerMinute ? Math.ceil(60000 / policy.rateLimitPerMinute) : 0;
+
+  const terms = String(source.job_collection_method) === 'connector'
+    ? await searchTermsFromCandidates(session)
+    : [null];
+  const boards = await store.listCareerBoards(session).catch(() => []);
+
+  /* One call per term, each one paid for, spaced by the rate limit, and
+     stopped by the time budget. A failure only counts when every call
+     failed. */
+  const all = [];
+  const errors = [];
+  let anyOk = false;
+  let calls = 0;
+  let stopped = null;
+  const statuses = new Set();
+  for (const term of terms) {
+    if (Date.now() > deadline) { stopped = `stopped after ${Math.round(cfg.syncTimeoutMs / 1000)}s`; break; }
+    const left = await safe('quota', () => cx.spendQuota(session, sourceId, 1));
+    if (left != null && left < 0) { stopped = 'the monthly call quota is used up'; break; }
+    if (calls > 0 && gapMs) await sleep(Math.min(gapMs, Math.max(0, deadline - Date.now())));
+    calls += 1;
+    const out = await collectJobs(source, { query: term || undefined, boards });
+    statuses.add(out.status);
+    if (out.status === 'ok') { anyOk = true; all.push(...(out.jobs || [])); }
+    else if (terms.length <= 1) errors.push(out.error || out.status);
+    else errors.push(`${term || 'all'}: ${out.error || out.status}`);
+    if (all.length >= 1000) break;
+  }
+  if (stopped) errors.push(stopped);
+
+  const errorText = errors.length ? errors.join(' | ').slice(0, 300) : null;
+  if (!anyOk) {
+    /* The provider's own word when every call said the same thing
+       ("not_configured" is a set-up problem, not an outage). */
+    const status = stopped && !calls ? 'quota_exhausted'
+      : (statuses.size === 1 ? [...statuses][0] : 'failed');
+    const error = errorText || 'the source could not be read';
+    await store.recordSyncResult(session, sourceId, { status, error, jobCount: 0 });
+    const run = await store.recordSyncRun(session, { sourceId, startedAt, status, error });
+    const h = ['not_configured', 'unsupported'].includes(status)
+      ? { health: null, errorKind: 'configuration' }
+      : await afterSync(session, source, 'failure', { durationMs: ms(), error });
+    await safe('run extend', () => cx.extendRun(session, runIdOf(run), {
+      provider: policy.provider, durationMs: ms(), errorSummary: `Sync failed (${h.errorKind || 'failed'}): ${error}` }));
+    return { ok: false, status, error, saved: 0, skipped: 0, linked: 0, health: shapeHealth(h.health) };
+  }
+
+  const known = await cx.knownJobs(session, sourceId);
+  const previousOpen = [...known.values()].filter((k) => k.status === 'open').length;
+
+  /* EMPTY IS NOT "NOTHING LEFT". A source that answers with no postings
+     while we hold some is far more likely broken than empty; nothing is
+     closed because of it, and it counts against its health. */
+  if (!all.length && previousOpen > 0) {
+    const error = `the source returned no jobs; the ${previousOpen} already held are kept`;
+    await store.recordSyncResult(session, sourceId, { status: 'empty', error, jobCount: 0 });
+    const run = await store.recordSyncRun(session, { sourceId, startedAt, status: 'empty', fetched: 0, error });
+    const h = await afterSync(session, source, 'empty', { durationMs: ms(), previousOpen, error });
+    await safe('run extend', () => cx.extendRun(session, runIdOf(run), {
+      provider: policy.provider, durationMs: ms(), errorSummary: error }));
+    return { ok: false, status: 'empty', error, saved: 0, skipped: 0, linked: 0, health: shapeHealth(h.health) };
+  }
+
+  let saved = 0;
+  let created = 0;
+  let failed = 0;
+  let quarantined = 0;
+  let urlChanges = 0;
+  let urlFailures = 0;
+  const problems = [];
+  const accepted = [];
+  const seen = new Set();
+  for (const rawIn of all) {
+    /* No id from the source: the posting is keyed by a hash of its
+       normalised URL, so the next sync finds the same row. */
+    const raw = withUrlKey(rawIn);
+    const job = normaliseExternalJob(raw, source);
+    const fp = fingerprintOf(raw, job);
+    if (seen.has(fp)) continue;            // the same posting from another search term
+    seen.add(fp);
+
+    const verdict = validateJob(job, raw, policy);
+    const prev = job ? known.get(job.externalJobId) : null;
+    if (!verdict.ok) {
+      quarantined += 1;
+      const codes = reasonCodes(verdict);
+      if (codes.some((c) => /url|domain|https/.test(c))) urlFailures += 1;
+      await safe('quarantine', () => cx.quarantine(session, sourceId, {
+        fingerprint: fp, externalJobId: job?.externalJobId || null, title: job?.title || raw?.title,
+        company: job?.company || raw?.company, url: job?.applicationUrl || raw?.applyUrl || null,
+        reasons: codes, action: 'quarantined', raw }));
+      /* A changed link that fails validation is NOT applied: the posting
+         keeps the link it had, and the refusal is on record. */
+      if (prev && job && prev.url !== job.applicationUrl) {
+        urlChanges += 1;
+        const bad = verdict.issues.find((i) => /url|domain|https/.test(i.code));
+        await safe('url change', () => cx.noteUrlChange(session, { jobId: prev.id, oldUrl: prev.url,
+          newUrl: job.applicationUrl || raw?.applyUrl || null, valid: false,
+          reason: bad ? bad.message : 'the posting failed validation', applied: false }));
+      }
+      continue;
+    }
+    try {
+      const row = await store.saveJob(session, job);
+      if (row && row.created) created++;
+      saved++;
+      accepted.push(fp);
+      if (prev && prev.url !== job.applicationUrl) {
+        urlChanges += 1;
+        await safe('url change', () => cx.noteUrlChange(session, { jobId: prev.id, oldUrl: prev.url,
+          newUrl: job.applicationUrl, valid: true, reason: null, applied: true }));
+      }
+    } catch (err) {
+      failed++;
+      if (problems.length < 5) problems.push(String(err.message || err).slice(0, 160));
+    }
+  }
+
+  const linked = await store.relinkDuplicates(session);
+  await safe('quarantine resolve', () => cx.resolveQuarantine(session, sourceId, accepted));
+
+  const status = problems.length || stopped ? 'partial' : 'ok';
+  const error = [problems.join('; '), errorText].filter(Boolean).join(' | ') || null;
+  await store.recordSyncResult(session, sourceId, { status, error, jobCount: saved });
+  const run = await store.recordSyncRun(session, {
+    sourceId, startedAt, status, fetched: all.length, created, updated: saved - created,
+    duplicates: linked, skipped: quarantined, error,
+  });
+  const h = await afterSync(session, source, 'success', {
+    durationMs: ms(), saved, created, quarantined, linked, previousOpen, fetched: seen.size, urlFailures,
+  });
+  await safe('run extend', () => cx.extendRun(session, runIdOf(run), {
+    provider: policy.provider, failed, quarantined, urlChanges, durationMs: ms(),
+    errorSummary: [quarantined ? `${quarantined} posting(s) quarantined` : '', failed ? `${failed} failed to save` : '', error || '']
+      .filter(Boolean).join('; ') || null }));
+
+  return {
+    ok: true, status, saved, skipped: quarantined, linked, error,
+    fetched: all.length, created, updated: saved - created, failed, quarantined, urlChanges,
+    health: shapeHealth(h.health),
+  };
+}
+
+/** The URL as the same posting will always present it. */
+export function normaliseUrl(url) {
+  try {
+    const u = new URL(String(url).trim());
+    u.hash = '';
+    u.hostname = u.hostname.toLowerCase().replace(/^www\./, '');
+    for (const k of [...u.searchParams.keys()]) {
+      if (/^(utm_|gclid$|fbclid$|ref$|source$)/i.test(k)) u.searchParams.delete(k);
+    }
+    u.searchParams.sort();
+    return `${u.protocol}//${u.host}${u.pathname.replace(/\/+$/, '')}${u.search}`;
+  } catch { return null; }
+}
+/**
+ * The dedupe key when a source sends no id of its own: source + source job
+ * id first (the unique key on external_jobs), then the canonical URL, then
+ * company + title + location. The same posting therefore lands on the same
+ * row on every sync, and a repeat sync updates it.
+ */
+export function withUrlKey(raw) {
+  const id = String(raw?.externalJobId ?? raw?.external_job_id ?? raw?.id ?? raw?.jobId ?? '').trim();
+  if (id) return raw;
+  const sha = (v) => createHash('sha1').update(v).digest('hex').slice(0, 32);
+  const url = normaliseUrl(raw?.applicationUrl ?? raw?.application_url ?? raw?.url ?? raw?.applyUrl ?? '');
+  if (url) return { ...raw, externalJobId: `url:${sha(url)}` };
+  const fold = (v) => String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const ctl = [raw?.company ?? raw?.companyName, raw?.title ?? raw?.jobTitle, raw?.location].map(fold);
+  if (ctl[0] && ctl[1]) return { ...raw, externalJobId: `ctl:${sha(ctl.join('|'))}` };
+  return raw;
+}
+
+const shapeHealth = (h) => (h ? {
+  status: h.health_status, consecutiveFailures: h.consecutive_failures,
+  nextSyncAfter: h.next_sync_after ? new Date(h.next_sync_after).toISOString() : null,
+  openJobs: h.open_job_count,
+} : null);
 
 /* ------------------------------------------------------------------ *
  * 2 · match
@@ -441,14 +783,39 @@ export function startExternalSyncSweep() {
     if (stopped || running) return;
     running = true;
     try {
+      /* 0108: a source whose licence has expired, been revoked or had its
+         consent withdrawn is switched off first, with the reason on record
+         and the administrators told. */
+      const disabled = (await safe('licence enforcement', () => cx.enforceLicences(ENGINE))) || [];
+      for (const d of disabled) {
+        console.log(`[external] ${d.source_id} switched off: ${d.reason}`);
+        await safe('licence alert', () => cx.alertAdmins(ENGINE, {
+          key: `${d.source_id}|licence|${new Date().toISOString().slice(0, 10)}`,
+          type: 'EXTERNAL_SOURCE_LICENCE', sourceId: d.source_id,
+          title: 'A job source was switched off', message: `Its licence is no longer valid: ${d.reason}`,
+        }));
+      }
+
       const sources = await store.listSources(ENGINE);
       const live = sources.filter((s) => s.active === true);
       if (!live.length) return;
 
       for (const s of live) {
         if (stopped) break;
+        /* 0108: a checked source syncs on its own interval and waits out its
+           backoff. A preserved one (Greenhouse) keeps the old cadence. */
+        const policy = sourcePolicy(s);
+        if (!policy.preserve) {
+          if (s.next_sync_after && new Date(s.next_sync_after) > new Date()) {
+            console.log(`[external] ${s.name}: backing off until ${new Date(s.next_sync_after).toISOString()}`);
+            continue;
+          }
+          const dueAt = s.last_attempt_at
+            ? new Date(s.last_attempt_at).getTime() + policy.syncIntervalHours * 3600000 - 10 * 60000 : 0;
+          if (dueAt > Date.now()) continue;
+        }
         try {
-          const out = await syncSource(ENGINE, s.id);
+          const out = await syncSource(ENGINE, s.id, { scheduled: true });
           console.log(`[external] ${s.name}: ${out.status}`
             + (out.saved ? `, ${out.saved} saved` : '')
             + (out.skipped ? `, ${out.skipped} skipped` : '')
@@ -490,15 +857,33 @@ export function startExternalSyncSweep() {
   return () => { stopped = true; clearInterval(timer); };
 }
 
-/** Mark postings nobody has seen for `activeDays` as closed. */
+/**
+ * Mark postings nobody has seen for the grace period as closed.
+ *
+ * CLOSED, NEVER DELETED, and (0108) never because the SOURCE was down. A
+ * posting is closed only when its source has had a successful sync since
+ * the posting was last seen - so a feed that fails, or answers empty, for
+ * a month keeps every job it had, and only the run and the health say it
+ * is broken. The grace period is per source (close_grace_days), defaulting
+ * to EXTERNAL_JOBS_CLOSE_GRACE_DAYS, which defaults to the old 14 days.
+ *
+ * Preserved providers (Greenhouse) keep the pre-0108 rule exactly:
+ * unseen for the period, closed.
+ */
 export async function closeStalePostings(session) {
-  const days = Math.max(1, Number(config.externalJobs.activeDays) || 14);
+  const days = Math.max(1, Number(config.externalJobs.closeGraceDays)
+    || Number(config.externalJobs.activeDays) || 14);
   return withUser(session, async (c) => {
     const { rowCount } = await c.query(
-      `update external_jobs
+      `update external_jobs j
           set status = 'closed'
-        where status = 'open'
-          and synced_at < now() - ($1 || ' days')::interval`, [String(days)]);
+         from job_sources s
+        where s.id = j.source_id
+          and j.status = 'open'
+          and j.synced_at < now() - (coalesce(s.close_grace_days, $1::int) || ' days')::interval
+          and (s.provider = any($2::text[])
+               or (s.last_success_started_at is not null and j.synced_at < s.last_success_started_at))`,
+      [days, PRESERVED]);
     return rowCount;
   });
 }

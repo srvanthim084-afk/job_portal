@@ -54,9 +54,28 @@ test('boot', async () => {
     ['gh_feed', 'Greenhouse', 'greenhouse', 'GH-1', 'Senior Java Engineer', 'https://boards.greenhouse.io/stripe/jobs/1'],
   ];
   for (const [id, name, connector, ext, title, url] of sources) {
+    /* 0108: Naukri, Indeed, Shine and LinkedIn have no public API, so they
+       can only be switched on with a complete licence record (this suite
+       stands in for an authorized partner feed). Greenhouse needs none. */
+    const partner = connector !== 'greenhouse';
     const s = await admin.post('/api/external/sources', { id, name, sourceType: 'partner_api',
-      collectionMethod: 'manual', connector, applicationMethod: 'redirect', active: true });
+      collectionMethod: 'manual', connector, applicationMethod: 'redirect', active: !partner });
     assert.equal(s.status, 200, JSON.stringify(s.body));
+    if (partner) {
+      const refused = await admin.post('/api/external/sources', { id, name, sourceType: 'partner_api',
+        collectionMethod: 'manual', connector, applicationMethod: 'redirect', active: true });
+      assert.equal(refused.status, 409, `${name} cannot be switched on without a licence`);
+      assert.equal(refused.body.error.code, 'LICENCE_REQUIRED');
+      const lic = await admin.put(`/api/external/sources/${id}/licence`, { collectionMethod: 'partner_feed',
+        licenceStatus: 'active', consentStatus: 'granted', termsUrl: `https://partner.example.org/${connector}/terms`,
+        dataUsageAllowed: true, applicationRedirectAllowed: true, effectiveFrom: '2026-01-01',
+        effectiveUntil: '2099-12-31', owner: 'TeamLink compliance', notes: 'test licence' });
+      assert.equal(lic.status, 200, JSON.stringify(lic.body));
+      assert.equal(lic.body.licenceGap, null);
+      const on = await admin.post('/api/external/sources', { id, name, sourceType: 'partner_api',
+        collectionMethod: 'manual', connector, applicationMethod: 'redirect', active: true });
+      assert.equal(on.status, 200, JSON.stringify(on.body));
+    }
     const j = await admin.post('/api/external/jobs', { sourceId: id, jobs: [{ id: ext, title, company: `${name} Employer`,
       location: 'Hyderabad', skills: /Java/.test(title) ? ['Java'] : ['Excel'], url, postedAt: new Date().toISOString() }] });
     assert.equal(j.body.saved, 1);
@@ -148,8 +167,14 @@ test('a signed-in candidate: the click is tracked as a click, not an application
 });
 
 test('a source that fails to sync keeps its jobs, and the run is recorded', async () => {
-  const s = await admin.post('/api/external/sources', { id: 'nk_conn', name: 'Naukri partner', sourceType: 'partner_api',
+  /* 0108: the Naukri connector is not an authorized mechanism, so it can
+     never be switched on - not even with a licence. */
+  const on = await admin.post('/api/external/sources', { id: 'nk_conn', name: 'Naukri partner', sourceType: 'partner_api',
     collectionMethod: 'connector', connector: 'naukri', applicationMethod: 'redirect', active: true });
+  assert.equal(on.status, 409);
+  assert.match(on.body.error.message, /no authorized API/);
+  const s = await admin.post('/api/external/sources', { id: 'nk_conn', name: 'Naukri partner', sourceType: 'partner_api',
+    collectionMethod: 'connector', connector: 'naukri', applicationMethod: 'redirect', active: false });
   assert.equal(s.status, 200);
   await admin.post('/api/external/jobs', { sourceId: 'nk_conn', jobs: [{ id: 'NKP-1', title: 'Kept Job', url: 'https://www.naukri.com/kept' }] });
   const before = await count(`select count(*) n from external_jobs where source_id = 'nk_conn' and status = 'open'`);

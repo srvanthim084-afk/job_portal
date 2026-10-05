@@ -13,6 +13,8 @@
  * secrets a deployment holds.
  */
 
+import { checkLink } from './link.js';
+
 const iso = (v) => (v ? new Date(v).toISOString() : null);
 const num = (v) => (v == null || v === '' ? null : Number(v));
 
@@ -40,7 +42,62 @@ export function toSource(r) {
     lastSyncStatus: r.last_sync_status || null,
     lastSyncError: r.last_sync_error || null,
     lastSyncJobCount: r.last_sync_job_count == null ? null : Number(r.last_sync_job_count),
+    /* 0108 - identity, per-source configuration and health. */
+    provider: r.provider || null,
+    disabledReason: r.disabled_reason || null,
+    disabledAt: iso(r.disabled_at),
+    allowedDomains: r.allowed_domains || null,
+    syncIntervalHours: num(r.sync_interval_hours),
+    rateLimitPerMinute: num(r.rate_limit_per_minute),
+    closeGraceDays: num(r.close_grace_days),
+    monthlyQuota: num(r.monthly_quota),
+    monthlyUsed: num(r.monthly_used),
+    health: {
+      status: r.health_status || 'unknown',
+      lastSuccessfulSync: iso(r.last_success_at),
+      lastAttempt: iso(r.last_attempt_at),
+      successCount: Number(r.success_count || 0),
+      failureCount: Number(r.failure_count || 0),
+      consecutiveFailures: Number(r.consecutive_failures || 0),
+      averageSyncDurationMs: num(r.avg_sync_ms),
+      jobCount: num(r.open_job_count),
+      nextSyncAfter: iso(r.next_sync_after),
+    },
   };
+}
+
+/** A source's licence record (0108). Null when none is recorded. */
+export function toLicence(l) {
+  if (!l) return null;
+  const day = (v) => (v ? new Date(v).toISOString().slice(0, 10) : null);
+  return {
+    sourceId: l.source_id,
+    collectionMethod: l.collection_method,
+    licenceStatus: l.licence_status,
+    consentStatus: l.consent_status,
+    termsUrl: l.terms_url || null,
+    dataUsageAllowed: l.data_usage_allowed === true,
+    applicationRedirectAllowed: l.application_redirect_allowed === true,
+    effectiveFrom: day(l.effective_from),
+    effectiveUntil: day(l.effective_until),
+    owner: l.owner || null,
+    notes: l.notes || null,
+    updatedAt: iso(l.updated_at),
+  };
+}
+
+/** Whether this kind of source needs a licence record to be switched on -
+    the same rule as 0108's external_licence_gap_for, said for the screen. */
+export function licenceRequirement(policy, method) {
+  const m = String(method || 'manual');
+  if (policy.kind === 'partner_feed') {
+    return m === 'connector'
+      ? 'not possible: no authorized API - needs a licensed partner/employer feed'
+      : 'required: a complete licence record';
+  }
+  if (policy.kind === 'keyed_api') return 'required: a complete licence record (the API terms)';
+  if (policy.kind === 'other' && m !== 'manual') return 'required: a complete licence record';
+  return 'not required (documented public API or hand entry)';
 }
 
 export function toExternalJob(r) {
@@ -176,3 +233,89 @@ export function toExternalApplication(r) {
     createdAt: iso(r.created_at),
   };
 }
+
+/* ------------------------------------------------------------------ *
+ * the job portal's view of an external job (0088, moved here in 0108)
+ * ------------------------------------------------------------------ */
+const STATUS = { open: 'ACTIVE', closed: 'CLOSED', expired: 'EXPIRED', removed: 'UNAVAILABLE', archived: 'ARCHIVED' };
+
+/** Exactly the shape GET /api/portal/external-jobs returned since 0088. */
+export const toPortalJob = (r) => ({
+  id: r.id,
+  jobType: 'EXTERNAL',
+  title: r.title,
+  company: r.company || '',
+  location: r.location || '',
+  experience: r.experience || '',
+  salary: r.salary || '',
+  salaryMin: r.salary_min == null ? null : Number(r.salary_min),
+  salaryMax: r.salary_max == null ? null : Number(r.salary_max),
+  skills: r.skills || [],
+  description: r.description || '',
+  employmentType: r.employment_type || '',
+  education: r.education || '',
+  postedAt: r.posted_at ? new Date(r.posted_at).toISOString() : null,
+  lastSyncedAt: r.synced_at ? new Date(r.synced_at).toISOString() : null,
+  status: STATUS[r.status] || 'UNAVAILABLE',
+  source: r.source_key,
+  sourceName: r.source_name,
+  publisher: r.original_publisher || null,
+});
+
+/*
+ * 0108 adds keys beside those and changes none of them:
+ *   origin       'EXTERNAL' - which Apply flow the job takes. TeamLink's own
+ *                jobs carry their own `jobType` ('regular' | 'walk-in'), so
+ *                the TeamLink/External split is called `origin`; the old
+ *                `jobType: 'EXTERNAL'` stays for the clients that read it.
+ *   provider     the board: NAUKRI, INDEED, SHINE, LINKEDIN, GREENHOUSE,
+ *                LEVER, REMOTIVE, ADZUNA, JOOBLE, JSEARCH, SERPAPI, OTHER
+ *   lastSeenAt / freshness   when a sync last saw it and how old it is
+ */
+export function freshnessOf(r, activeDays = 14) {
+  const days = (v) => (v ? Math.max(0, Math.floor((Date.now() - new Date(v).getTime()) / 86400000)) : null);
+  const seen = days(r.last_seen_at || r.synced_at);
+  return {
+    postedDaysAgo: days(r.posted_at),
+    checkedDaysAgo: seen,
+    /* Not seen by a sync for longer than a posting counts as live. */
+    stale: seen != null && seen > Math.max(1, Number(activeDays) || 14),
+  };
+}
+
+/* The owner's source types. Every other provider is OTHER_EXTERNAL and
+   says which in jobSourceName. TeamLink's own jobs are TEAMLINK (shapes.js). */
+const SOURCE_TYPE = { naukri: 'NAUKRI', shine: 'SHINE', indeed: 'INDEED', linkedin: 'LINKEDIN' };
+const EXTERNAL_STATUS = { open: 'Active', closed: 'Expired', expired: 'Expired', removed: 'Unavailable', archived: 'Unavailable' };
+
+export const toPortalJobV2 = (r, activeDays = 14) => {
+  /* Apply Now opens this URL directly, so it is handed out ONLY when it
+     passes the one link rule (link.js); otherwise null, and the card says
+     "Application link unavailable". */
+  const link = r.application_url
+    ? checkLink(r.application_url, { provider: r.provider, connector: r.connector, sourceId: r.source_key,
+        allowedDomains: r.allowed_domains })
+    : { ok: false };
+  const active = r.status === 'open';
+  return {
+    ...toPortalJob(r),
+    origin: 'EXTERNAL',
+    provider: String(r.provider || 'other').toUpperCase(),
+    jobSourceType: SOURCE_TYPE[r.provider] || 'OTHER_EXTERNAL',
+    jobSourceName: r.source_name || null,
+    externalJobId: r.source_job_id || null,
+    originalJobUrl: active && link.ok ? link.url : null,
+    canonicalJobUrl: active && link.ok ? (r.canonical_url || null) : null,
+    applyLink: !active ? 'job_unavailable' : (link.ok ? 'available' : 'link_unavailable'),
+    sourcePostedDate: iso(r.posted_at),
+    externalStatus: EXTERNAL_STATUS[r.status] || 'Unavailable',
+    collectedAt: iso(r.created_at),
+    lastExternalSyncAt: iso(r.synced_at),
+    lastExternalUpdateAt: iso(r.updated_at),
+    expMin: num(r.exp_min),
+    expMax: num(r.exp_max),
+    lastSeenAt: iso(r.last_seen_at),
+    freshness: freshnessOf(r, activeDays),
+    ...(r.score != null ? { rank: Number(r.score) } : {}),
+  };
+};
