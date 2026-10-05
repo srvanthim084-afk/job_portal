@@ -33,6 +33,7 @@ import { withUser } from '../db.js';
 import { config } from '../config.js';
 import { providers } from '../notify/providers.js';
 import { emailLayout } from '../notify/layout.js';
+import { claimNewJobNotice, releaseNewJobNotice } from '../notify/new-job-notice.js';
 import {
   explainMatch, loadAiSettings, aboveThreshold, notifyThreshold, daysLeft, istDay,
 } from './core.js';
@@ -251,7 +252,19 @@ export async function alertJob(jobId, event, { now = Date.now(), deps = defaultD
     if (data.applied.has(cand.id)) { out.skippedApplied += 1; continue; }
     out.eligible += 1;
     if (out.eligible > MAX_PER_RUN) break;
+    /* Urgent hiring announces a job, so it is one of the "new job for you"
+       messages (0110): a candidate already told about this job by the
+       profile match, a saved search or a saved-job alert is not told
+       again. The last-date alerts are reminders and are not affected. */
+    const announces = event === 'urgent_hiring';
+    if (announces && !(await claimNewJobNotice(cand.id, data.job.id, 'urgent_hiring'))) {
+      out.skippedTold = (out.skippedTold || 0) + 1;
+      continue;
+    }
     const r = await deliverAlert({ event, job: data.job, cand, score, now, deps });
+    if (announces && !['sent', 'already'].includes(r.in_app) && !['sent', 'already'].includes(r.email)) {
+      await releaseNewJobNotice(cand.id, data.job.id, 'urgent_hiring');
+    }
     out.results.push({ candidateId: cand.id, score, ...r });
     if (r.in_app === 'sent' || r.email === 'sent') out.delivered += 1;
   }

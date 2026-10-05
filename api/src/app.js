@@ -67,6 +67,9 @@ import sharedCandidateRoutes, { engagementRefusalAudit } from './routes/shared-c
 import availabilityRoutes from './routes/availability.js';
 import { startAvailabilitySweep } from './notify/availability-checks.js';
 import { startOutboundHoldSweep } from './notify/apply-hold.js';
+/* 0110: "New job like one you saved". */
+import savedJobAlertRoutes from './routes/saved-job-alerts.js';
+import { startSavedJobAlerts } from './notify/saved-job-alerts.js';
 
 /*
  * The background work belongs to the APPLICATION, not to one entry point.
@@ -133,6 +136,9 @@ function startBackgroundWork(logger) {
     /* One-click apply (0104): candidate messages held through the Undo
        window that a restart left unsent. */
     backgroundStops.push(startOutboundHoldSweep());
+    /* Saved-job alerts (0110): jobs the publish hook missed, and the
+       evening digest of the ones over the daily cap. Idempotent. */
+    backgroundStops.push(startSavedJobAlerts());
   } catch (err) {
     console.error('[background] could not start:', err.message);
   }
@@ -342,6 +348,7 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
      route of the same shape registered first would swallow them. */
   app.use('/api', exportRoutes());
   app.use('/api', savedSearchRoutes());
+  app.use('/api', savedJobAlertRoutes());
   app.use('/api', pushRoutes());
   app.use('/api', walkinDriveRoutes());
   app.use('/api', careerAssistantRoutes());

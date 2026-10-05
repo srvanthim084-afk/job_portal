@@ -27,6 +27,7 @@ import { providers } from './providers.js';
 import { buildEventMessages } from './templates.js';
 import { matchJob, DEFAULT_THRESHOLD } from '../ai/match.js';
 import { toCandidate, toJob } from '../shapes.js';
+import { claimNewJobNotice, releaseNewJobNotice, anySent } from './new-job-notice.js';
 
 const CHANNELS = ['email', 'sms', 'whatsapp'];
 
@@ -130,8 +131,13 @@ export async function runJobAlerts(jobId, opts = {}) {
     if (data.appliedAlready.has(cand.id)) { out.skipped++; continue; }
     if (data.notifiedAlready.has(cand.id)) { out.skipped++; continue; }
     if (sent >= MAX_ALERTS) { out.skipped++; continue; }
+    /* One "new job for you" message per candidate per job, across every
+       alert (0110): somebody already told by a saved search, an urgent-
+       hiring alert or a saved-job alert is not told again here. */
+    if (!(await claimNewJobNotice(cand.id, jobId, 'profile_match'))) { out.skipped++; continue; }
 
     const delivered = await sendAlert({ matchId, job, cand, match: m });
+    if (!anySent(delivered)) await releaseNewJobNotice(cand.id, jobId, 'profile_match');
     out.notified += Object.values(delivered).some((s) => s === 'sent') ? 1 : 0;
     out.matches[out.matches.length - 1].delivery = delivered;
     sent++;
@@ -234,6 +240,16 @@ export function runJobAlertsInBackground(jobId, opts) {
           console.log(`[saved-search] ${jobId}: ${r.recorded} search(es) matched, ${r.sent} instant alert(s) delivered`);
         }
       })
-      .catch((err) => console.error(`[saved-search] ${jobId} failed:`, err.message));
+      .catch((err) => console.error(`[saved-search] ${jobId} failed:`, err.message))
+      /* Saved jobs last (0110): "new job like one you saved", for
+         whoever the two alerts above did not already tell. */
+      .then(() => import('./saved-job-alerts.js'))
+      .then((m) => m.runSavedJobInstant(jobId))
+      .then((r) => {
+        if (r && (r.instant || r.digest)) {
+          console.log(`[saved-job] ${jobId}: ${r.instant} told now, ${r.digest} queued for the digest`);
+        }
+      })
+      .catch((err) => console.error(`[saved-job] ${jobId} failed:`, err.message));
   }, 10).unref?.();
 }
