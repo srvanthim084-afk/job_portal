@@ -1,0 +1,67 @@
+{
+  "_comment": "A local test fixture in the shape of Greenhouse's documented public Job Board API (GET /v1/boards/{token}/jobs?content=true). Served only by the local mock HTTP server in external-greenhouse-snapshot.test.mjs; never shown to anybody and never stored outside a throwaway test database.",
+  "round1": {
+    "acme": {
+      "jobs": [
+        { "id": 4001, "title": "Senior Backend Engineer", "location": { "name": "Hyderabad, India" },
+          "content": "&lt;p&gt;Build payment services in Java and Kotlin.&lt;/p&gt;", "updated_at": "2026-09-28T10:00:00-04:00",
+          "absolute_url": "https://boards.greenhouse.io/acme/jobs/4001", "internal_job_id": 9001, "departments": [], "offices": [] },
+        { "id": 4002, "title": "Data Analyst", "location": { "name": "Bengaluru, Karnataka" },
+          "content": "&lt;p&gt;SQL, Python and dashboards for the finance team.&lt;/p&gt;", "updated_at": "2026-09-27T08:30:00Z",
+          "absolute_url": "https://job-boards.greenhouse.io/acme/jobs/4002?gh_jid=4002" },
+        { "id": 4003, "title": "Account Executive", "location": { "name": "San Francisco, CA" },
+          "content": "&lt;p&gt;Close enterprise deals.&lt;/p&gt;", "updated_at": "2026-09-26T08:30:00Z",
+          "absolute_url": "https://boards.greenhouse.io/acme/jobs/4003" },
+        { "id": 4004, "title": "Product Designer", "location": { "name": "Remote - India" },
+          "content": "&lt;p&gt;Design the merchant dashboard.&lt;/p&gt;", "updated_at": "2026-09-25T08:30:00Z",
+          "absolute_url": "https://boards.greenhouse.io/acme/jobs/4004" },
+        { "id": 4005, "title": "QA Engineer", "location": { "name": "Pune, India" },
+          "content": "&lt;p&gt;Automation with Playwright.&lt;/p&gt;", "updated_at": "2026-09-24T08:30:00Z" },
+        { "id": 4006, "title": "Support Specialist", "location": { "name": "Mumbai" },
+          "content": "&lt;p&gt;Help merchants.&lt;/p&gt;", "updated_at": "2026-09-24T08:30:00Z",
+          "absolute_url": "javascript:alert(1)" },
+        { "id": 4007, "title": "Platform Engineer", "location": { "name": "Chennai, Tamil Nadu, India" },
+          "content": "&lt;p&gt;Kubernetes and Terraform.&lt;/p&gt;", "updated_at": "2026-09-23T08:30:00Z",
+          "absolute_url": "https://careers.acme-corp.com/jobs/4007" },
+        { "id": 4008, "title": "Site Reliability Engineer", "location": { "name": "Hyderabad" },
+          "content": "", "updated_at": "2026-09-22T08:30:00Z",
+          "absolute_url": "https://boards.greenhouse.io/acme/jobs/4008" },
+        { "id": 4009, "title": "Security Engineer", "location": { "name": "Hyderabad, Telangana" },
+          "content": "&lt;p&gt;AppSec.&lt;/p&gt;", "updated_at": "2026-09-21T08:30:00Z",
+          "absolute_url": "http://10.0.0.5/jobs/4009" }
+      ],
+      "meta": { "total": 9 }
+    },
+    "globex": {
+      "jobs": [
+        { "id": 77, "title": "Staff Nurse", "location": { "name": "Nellore, Andhra Pradesh" },
+          "content": "&lt;p&gt;ICU ward, rotating shifts.&lt;/p&gt;", "updated_at": "not a date",
+          "absolute_url": "https://boards.greenhouse.io/globex/jobs/77" }
+      ],
+      "meta": { "total": 1 }
+    }
+  },
+  "round2": {
+    "acme": {
+      "jobs": [
+        { "id": 4001, "title": "Senior Backend Engineer (Payments)", "location": { "name": "Hyderabad, India" },
+          "content": "&lt;p&gt;Build payment services in Java and Kotlin. Hybrid.&lt;/p&gt;", "updated_at": "2026-10-01T10:00:00-04:00",
+          "absolute_url": "https://boards.greenhouse.io/acme/jobs/4001-payments" },
+        { "id": 4004, "title": "Product Designer", "location": { "name": "Remote - India" },
+          "content": "&lt;p&gt;Design the merchant dashboard.&lt;/p&gt;", "updated_at": "2026-09-25T08:30:00Z",
+          "absolute_url": "https://boards.greenhouse.io/acme/jobs/4004" },
+        { "id": 4007, "title": "Platform Engineer", "location": { "name": "Chennai, Tamil Nadu, India" },
+          "content": "&lt;p&gt;Kubernetes and Terraform.&lt;/p&gt;", "updated_at": "2026-09-23T08:30:00Z",
+          "absolute_url": "https://careers.acme-corp.com/jobs/4007" },
+        { "id": 4008, "title": "Site Reliability Engineer", "location": { "name": "Hyderabad" },
+          "content": "", "updated_at": "2026-09-22T08:30:00Z",
+          "absolute_url": "https://boards.greenhouse.io/acme/jobs/4008" },
+        { "id": 4009, "title": "Security Engineer", "location": { "name": "Hyderabad, Telangana" },
+          "content": "&lt;p&gt;AppSec.&lt;/p&gt;", "updated_at": "2026-09-21T08:30:00Z",
+          "absolute_url": "http://10.0.0.5/jobs/4009" }
+      ],
+      "meta": { "total": 5 }
+    },
+    "globex": { "jobs": [], "meta": { "total": 0 } }
+  }
+}
