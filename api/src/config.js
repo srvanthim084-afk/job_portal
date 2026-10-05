@@ -223,6 +223,34 @@ export const config = {
     countryFilter: (process.env.EXTERNAL_JOBS_COUNTRY ?? 'India').trim() !== ''
       ? (process.env.EXTERNAL_JOBS_COUNTRY ?? 'India').trim()
       : null,
+
+    /* ---- 0108: compliance, health and freshness ------------------- *
+     * Every default below reproduces the behaviour before 0108, so an
+     * existing deployment changes nothing until somebody sets one.     */
+    /* Days a posting may go unseen by a SUCCESSFUL sync before it is
+       closed (never deleted). Per source: job_sources.close_grace_days. */
+    closeGraceDays: int(process.env.EXTERNAL_JOBS_CLOSE_GRACE_DAYS,
+      int(process.env.EXTERNAL_JOBS_ACTIVE_DAYS, 14)),
+    /* Postings first published longer ago than this are left out of the
+       portal listing. Empty = no limit (the default). */
+    maxAgeDays: process.env.EXTERNAL_JOBS_MAX_AGE_DAYS
+      ? int(process.env.EXTERNAL_JOBS_MAX_AGE_DAYS, null) : null,
+    /* Consecutive failed syncs after which a source is "unhealthy" and
+       administrators are alerted. */
+    unhealthyAfter: int(process.env.EXTERNAL_SOURCE_UNHEALTHY_AFTER, 3),
+    /* Exponential backoff for a failing source: base * 2^(n-1) hours,
+       capped. The base defaults to the sweep interval, so one failure
+       changes nothing and repeated failures slow the retries down. */
+    backoffBaseHours: int(process.env.EXTERNAL_SYNC_BACKOFF_BASE_HOURS,
+      int(process.env.EXTERNAL_SYNC_EVERY_HOURS, 6)),
+    backoffMaxHours: int(process.env.EXTERNAL_SYNC_BACKOFF_MAX_HOURS, 48),
+    /* One sync of one source may not run longer than this. */
+    syncTimeoutMs: int(process.env.EXTERNAL_SYNC_TIMEOUT_MS, 5 * 60 * 1000),
+    /* How many sources may sync at the same time across manual and
+       scheduled runs. */
+    maxConcurrentSyncs: int(process.env.EXTERNAL_SYNC_MAX_CONCURRENT, 2),
+    /* The portal listing / details cache. 0 switches it off. */
+    portalCacheSeconds: int(process.env.EXTERNAL_PORTAL_CACHE_SECONDS, 60),
   },
 };
 
