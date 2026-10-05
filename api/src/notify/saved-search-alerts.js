@@ -33,6 +33,17 @@ import { buildSavedSearchMessages } from './templates.js';
 import { sendPush } from './webpush.js';
 import { toCandidate, toJob } from '../shapes.js';
 import { jobMatchesFilters, locationTierFunction } from '../search/saved-match.js';
+import { claimNewJobNotice, releaseNewJobNotice, noticesFor } from './new-job-notice.js';
+
+/*
+ * One "new job for you" message per candidate per job, across every alert
+ * (0110, new-job-notice.js). A job is CLAIMED for a candidate before it
+ * is sent; one already claimed - by the profile match, urgent hiring, a
+ * saved-job alert or another of their own searches - is left out. A
+ * message that reached nobody gives its claims back.
+ */
+const claim = (candidateId, jobId) => claimNewJobNotice(candidateId, jobId, 'saved_search');
+const release = (candidateId, jobId) => releaseNewJobNotice(candidateId, jobId, 'saved_search');
 
 /** The engine: no person behind it. 0086's functions admit only this. */
 const ENGINE = { userId: '', role: 'admin', profileId: null };
@@ -135,6 +146,9 @@ async function candidateFacts(c, ids) {
   add((await c.query(`select candidate_id, job_id from hidden_jobs where candidate_id = any($1)`, [ids])).rows);
   add((await c.query(
     `select candidate_id, job_id from job_matches where notified and candidate_id = any($1)`, [ids])).rows);
+  /* ...or from any other "new job for you" alert (0110). */
+  try { add(await noticesFor(c, ids)); }
+  catch (err) { console.error('[saved-search] the shared notice ledger could not be read:', err.message); }
   /* Their phone-notification devices (0089). */
   out.forEach((f) => { f.cand.__push = []; });
   try {
@@ -306,10 +320,11 @@ export async function runSavedSearchInstant(jobId, opts = {}) {
   for (const s of data.instant) {
     const f = data.facts.get(s.candidate_id);
     if (!f) continue;
-    if (!f.skip.has(data.job.id)) {
+    if (!f.skip.has(data.job.id) && await claim(s.candidate_id, data.job.id)) {
       const r = await deliver({ search: s, cand: f.cand, kind: 'instant', jobs: [data.job], total: 1,
         label: s.label, templateId: data.tpl.saved_search_alert, now });
       if (Object.values(r).includes('sent')) sent += 1;
+      else await release(s.candidate_id, data.job.id);
     }
     // Announced or deliberately not: either way it is done for this search.
     await withUser(ENGINE, (c) => c.query(`select saved_search_mark_alerted($1,$2)`, [s.id, [data.job.id]]));
@@ -369,10 +384,12 @@ export async function runSavedSearchSweep(opts = {}) {
     if (s.alert_frequency === 'instant') {
       for (const id of live) {
         if (!f) break;
+        if (!(await claim(s.candidate_id, id))) continue;
         const r = await deliver({ search: s, cand: f.cand, kind: 'instant', jobs: [plan.byId.get(id)],
           total: 1, label: s.label, templateId: plan.tpl.saved_search_alert, now });
         out.messages += 1;
         if (Object.values(r).includes('sent')) out.sent += 1;
+        else await release(s.candidate_id, id);
       }
       if (s.pending.length) {
         await withUser(ENGINE, (c) => c.query(`select saved_search_mark_alerted($1,$2)`, [s.id, s.pending]));
@@ -392,7 +409,24 @@ export async function runSavedSearchSweep(opts = {}) {
   for (const g of digests.values()) {
     const f = plan.facts.get(g.candidateId);
     const withJobs = g.searches.filter((x) => x.live.length).sort((a, b) => b.live.length - a.live.length);
+    /* Claimed one by one: a job somebody was told about meanwhile (or by
+       another of their searches) leaves the digest. */
+    const claimed = new Set();
     if (f && withJobs.length) {
+      for (const id of new Set(withJobs.flatMap((x) => x.live))) {
+        if (await claim(g.candidateId, id)) claimed.add(id);
+      }
+      for (const x of withJobs) {
+        const gone = x.live.filter((id) => !claimed.has(id));
+        if (gone.length) {
+          await withUser(ENGINE, (c) => c.query(`select saved_search_mark_alerted($1,$2)`, [x.s.id, gone]));
+        }
+        x.live = x.live.filter((id) => claimed.has(id));
+      }
+    }
+    const withClaimed = withJobs.filter((x) => x.live.length);
+    if (f && withClaimed.length) {
+      const withJobs = withClaimed;
       const ids = [...new Set(withJobs.flatMap((x) => x.live))];
       const jobs = ids.map((id) => plan.byId.get(id))
         .sort((a, b) => Date.parse(b.publishedAt || 0) - Date.parse(a.publishedAt || 0));
@@ -403,6 +437,7 @@ export async function runSavedSearchSweep(opts = {}) {
         total: jobs.length, label, templateId: plan.tpl.saved_search_digest, now });
       out.messages += 1;
       if (Object.values(r).includes('sent')) out.sent += 1;
+      else for (const id of ids) await release(g.candidateId, id);
       for (const x of withJobs) {
         await withUser(ENGINE, (c) => c.query(`select saved_search_mark_alerted($1,$2)`, [x.s.id, x.live]));
       }

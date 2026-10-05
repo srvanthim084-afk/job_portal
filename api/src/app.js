@@ -70,6 +70,9 @@ import { startOutboundHoldSweep } from './notify/apply-hold.js';
 /* 0107: the walk-in ATS (stages, check-in, notes, ratings, resumes, No Show, reminders). */
 import walkinAtsRoutes, { walkinAtsKick } from './routes/walkin-ats.js';
 import { startWalkinAtsSweep } from './notify/walkin-ats.js';
+/* 0110: "New job like one you saved". */
+import savedJobAlertRoutes from './routes/saved-job-alerts.js';
+import { startSavedJobAlerts } from './notify/saved-job-alerts.js';
 
 /*
  * The background work belongs to the APPLICATION, not to one entry point.
@@ -139,6 +142,9 @@ function startBackgroundWork(logger) {
     /* Walk-in ATS (0107): No Show after end + grace, day-before / morning
        reminders, settled reschedules, recruiter alerts. Every minute, idempotent. */
     backgroundStops.push(startWalkinAtsSweep());
+    /* Saved-job alerts (0110): jobs the publish hook missed, and the
+       evening digest of the ones over the daily cap. Idempotent. */
+    backgroundStops.push(startSavedJobAlerts());
   } catch (err) {
     console.error('[background] could not start:', err.message);
   }
@@ -353,6 +359,7 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
      route of the same shape registered first would swallow them. */
   app.use('/api', exportRoutes());
   app.use('/api', savedSearchRoutes());
+  app.use('/api', savedJobAlertRoutes());
   app.use('/api', pushRoutes());
   app.use('/api', careerAssistantRoutes());
   /* Before candidateRoutes: /candidates/search-appearances is a literal
