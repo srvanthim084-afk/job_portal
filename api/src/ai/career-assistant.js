@@ -31,6 +31,7 @@ import { withUser } from '../db.js';
 import { toJob } from '../shapes.js';
 import { CAREER_ASSISTANT_PROMPT } from './career-assistant-prompt.js';
 import { TOOL_DEFS, runTool, reads, matchSummary } from './career-assistant-tools.js';
+import { REPLY_LANGS, T, detectLanguage, intentOf, fieldNames } from './career-assistant-i18n.js';
 
 export const MODEL = process.env.AI_ASSISTANT_MODEL || 'claude-opus-5-5';
 const TIMEOUT_MS = Number(process.env.AI_ASSISTANT_TIMEOUT_MS || 30_000);
@@ -183,6 +184,11 @@ function classify(err) {
  *   career path -> interview prep -> salary -> skill gap -> help
  * plus one the prototype did not have and the system prompt insists on:
  * a fee for a job is fraud.
+ *
+ * In the candidate's language (career-assistant-i18n.js): Telugu or
+ * Hindi script, romanized Telugu or Hindi, or English - detected from
+ * the message, the stored preferred language when the message does not
+ * say. Only the words around the data change.
  * ------------------------------------------------------------------ */
 
 const link = (j) => `[${j.title}](#/job/${j.job_id || j.id})`;
@@ -196,100 +202,87 @@ async function topMatches(c, cand, n = 3) {
     .sort((a, b) => b.m.score - a.m.score).slice(0, n);
 }
 
-export async function rulesReply(session, textRaw, { interviewId } = {}) {
+/**
+ * @param opts.interviewId  the interview the prep kit opened the chat on (already checked as the candidate's)
+ * @param opts.lang         force the reply language ('en' | 'te' | 'hi' | 'te-Latn' | 'hi-Latn');
+ *                          otherwise it is detected from the message, falling back to the
+ *                          candidate's preferred language (0102)
+ * @returns { reply, usedTools, language }
+ */
+export async function rulesReply(session, textRaw, { interviewId, lang } = {}) {
   const t = String(textRaw || '').toLowerCase();
   return withUser(session, async (c) => {
     const cand = await reads.me(c);
     const first = String(cand.name || '').split(' ')[0];
+    const language = REPLY_LANGS.includes(lang) ? lang : detectLanguage(textRaw, cand.preferredLanguage);
+    const L = T[language];
     const used = [];
-    const say = (reply) => ({ reply, usedTools: used });
+    const say = (reply) => ({ reply, usedTools: used, language });
+    const intent = intentOf(t);
 
-    if (/\b(fee|fees|deposit|registration (charge|amount)|pay (money|to get)|money for (a|the) job)\b/.test(t)) {
-      return say('TeamLink does not charge candidates for jobs. If anyone asks you to pay a fee for a job or an interview, '
-        + 'please do not pay - it is a common job fraud.');
-    }
+    if (intent === 'fee') return say(L.fee());
 
-    if (/improve|profile|resume/.test(t)) {
+    if (intent === 'profile') {
       used.push('get_my_profile');
       const p = await reads.getMyProfile(c);
-      if (!p.missing_fields.length) {
-        return say(`Your profile has all the main details${p.resume_on_file ? ' and a resume on file' : ''}. `
-          + 'Keep your skills current and add recent projects - see [Profile](#/candidate/profile).');
-      }
-      return say(`To strengthen your profile, add: **${p.missing_fields.slice(0, 4).join(', ')}**.`
-        + (p.resume_on_file ? '' : ' Uploading a resume fills most of it in for you - see [Resume](#/candidate/resume).')
-        + ' Update it on [Profile](#/candidate/profile).');
+      if (!p.missing_fields.length) return say(L.profileComplete(p.resume_on_file));
+      return say(L.profileMissing(fieldNames(language, p.missing_fields.slice(0, 4)), p.resume_on_file));
     }
 
-    if (/job|match|recommend/.test(t)) {
+    if (intent === 'jobs') {
       used.push('search_open_jobs', 'match_me_to_job');
       const top = await topMatches(c, cand);
-      if (!top.length) return say('I don\'t see an open job to recommend right now - check [Search Jobs](#/candidate/search) again soon.');
-      return say('Your best matches right now:\n'
-        + top.map((x) => `- ${link(x.row)} - ${x.row.location || 'location not stated'}, **${x.m.score}% match**`).join('\n')
-        + '\nOpen a job to see why it fits and to apply.');
+      if (!top.length) return say(L.noJobs());
+      return say([L.jobsHead(), ...top.map((x) => L.jobLine(link(x.row), x.row.location, x.m.score)), L.jobsTail()].join('\n'));
     }
 
-    if (/should i apply|ready|apply/.test(t)) {
+    if (intent === 'apply') {
       used.push('match_me_to_job');
       const [best] = await topMatches(c, cand, 1);
-      if (!best) return say('I don\'t see an open job to evaluate right now.');
+      if (!best) return say(L.noJobToEvaluate());
       const s = best.m.score;
-      const verdict = s >= 70 ? 'Yes - you are a strong fit, apply.'
-        : s >= 50 ? 'Worth applying - you meet much of what it asks for.'
-          : 'Build a few skills first - you meet only part of what it asks for.';
-      return say(`For ${link(best.row)} (**${s}% match**): ${verdict}`
-        + (best.m.missing_skills.length ? ` Skills it asks for that you don't list: ${best.m.missing_skills.slice(0, 4).join(', ')}.` : ''));
+      return say(L.applyLine(link(best.row), s, L.verdict(s))
+        + (best.m.missing_skills.length ? L.applyMissing(best.m.missing_skills.slice(0, 4)) : ''));
     }
 
-    if (/career|path|future|next role/.test(t)) {
+    if (intent === 'career') {
       used.push('get_my_profile', 'search_open_jobs');
       const top = await topMatches(c, cand, 8);
       const gaps = {};
       top.forEach((x) => x.m.missing_skills.forEach((s) => { gaps[s] = (gaps[s] || 0) + 1; }));
       const list = Object.entries(gaps).sort((a, b) => b[1] - a[1]).slice(0, 3).map((x) => x[0]);
       const role = cand.preferredRole || cand.title;
-      return say(`${role ? `You are heading towards **${role}** roles. ` : 'Add your preferred role to your profile so I can suggest a path. '}`
-        + (list.length ? `The skills the jobs closest to you ask for most are: ${list.join(', ')}. Learning these is the most direct next step.` : '')
-        + ' See the AI Career Hub for a fuller plan.');
+      return say((role ? L.careerRole(role) : L.careerNoRole()) + (list.length ? L.careerGaps(list) : '') + L.careerTail());
     }
 
-    if (/interview|prep/.test(t)) {
+    if (intent === 'interview') {
       used.push('get_my_interviews');
       const ivs = await reads.getMyInterviews(c);
       const pick = (interviewId && ivs.upcoming.find((i) => i.interview_id === interviewId)) || ivs.upcoming[0];
-      if (!pick) return say('You don\'t have an upcoming interview yet. Once one is booked, I can help you prepare - see [Interviews](#/candidate/interviews).');
-      return say(`Your next interview: **${pick.type}** for ${pick.job_title || 'your application'}`
-        + `${pick.date ? ` on ${pick.date}` : ''}${pick.time ? ` at ${pick.time}` : ''}.\n`
-        + '- Practise a two-minute introduction about your experience and skills.\n'
-        + '- Prepare one real example of a problem you solved.\n'
-        + '- Read the job description again and match your skills to it.');
+      if (!pick) return say(L.noInterview());
+      return say(L.interview({ type: pick.type, title: pick.job_title, date: pick.date, time: pick.time }));
     }
 
-    if (/salary|pay|ctc/.test(t)) {
+    if (intent === 'salary') {
       used.push('get_my_profile', 'match_me_to_job');
-      if (cand.expectedCtc == null) return say('Add your expected salary to [Profile](#/candidate/profile) and I can compare it with open jobs.');
+      if (cand.expectedCtc == null) return say(L.salaryNoExpected());
       const [best] = await topMatches(c, cand, 1);
-      if (!best) return say('I don\'t see an open job to compare your expected salary with right now.');
+      if (!best) return say(L.salaryNoJob());
       const lo = best.job.salaryMin; const hi = best.job.salaryMax;
-      if (lo == null && hi == null) return say(`${link(best.row)} does not state a pay range, so I can't compare it with your expected ₹${cand.expectedCtc} LPA.`);
+      if (lo == null && hi == null) return say(L.salaryNoRange(link(best.row), cand.expectedCtc));
       const fits = hi == null ? cand.expectedCtc >= (lo || 0) : cand.expectedCtc <= hi;
-      return say(`Your expected salary is ₹${cand.expectedCtc} LPA. ${link(best.row)} pays ${best.job.pay || `₹${lo ?? '?'}-${hi ?? '?'} LPA`} - `
-        + (fits ? 'your expectation is within its range.' : 'your expectation is above its range.'));
+      return say(L.salaryCompare(cand.expectedCtc, link(best.row), best.job.pay || `₹${lo ?? '?'}-${hi ?? '?'} LPA`, fits));
     }
 
-    if (/skill|gap|learn/.test(t)) {
+    if (intent === 'skills') {
       used.push('match_me_to_job');
       const top = await topMatches(c, cand, 8);
       const gaps = {};
       top.forEach((x) => x.m.missing_skills.forEach((s) => { gaps[s] = (gaps[s] || 0) + 1; }));
       const list = Object.entries(gaps).sort((a, b) => b[1] - a[1]).slice(0, 4);
-      return say(list.length
-        ? `Across the jobs closest to your profile, the skills you don't list yet are: ${list.map(([s, n]) => `**${s}** (${n} job${n === 1 ? '' : 's'})`).join(', ')}.`
-        : 'You already list the skills the jobs closest to your profile ask for.');
+      return say(list.length ? L.skillsGaps(list.map(([s, n]) => L.skillItem(s, n))) : L.skillsNone());
     }
 
-    return say(`Hi${first ? ` ${first}` : ''}! I can help with: improving your profile, finding matching jobs, whether you should apply somewhere, `
-      + 'your career path, interview prep, salary fit, or skill gaps. Try asking about one of those!');
+    return say(L.help(first));
   });
 }

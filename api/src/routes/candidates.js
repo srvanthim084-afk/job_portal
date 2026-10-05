@@ -1631,6 +1631,8 @@ export default function candidateRoutes() {
       willingToRelocate: z.boolean().nullable().optional(),
       relocationLocation: z.string().max(160).optional(),
       additionalInfo: z.string().max(2000).optional(),
+      /* 0102: English, Telugu or Hindi - what TeamLink talks to them in. */
+      preferredLanguage: z.enum(['en', 'te', 'hi']).optional(),
     });
     const out = schema.safeParse(req.body || {});
     if (!out.success) {
@@ -1659,6 +1661,7 @@ export default function candidateRoutes() {
       availableFrom: 'available_from', preferredJoiningDate: 'preferred_joining_date',
       immediateJoiner: 'immediate_joiner', willingToRelocate: 'willing_to_relocate',
       relocationLocation: 'relocation_location', additionalInfo: 'additional_info',
+      preferredLanguage: 'preferred_language',
     };
     /* jsonb columns take JSON text; a blank date is no date. */
     const JSONB = { projects: 1, internships: 1, achievements: 1, otherLinks: 1 };

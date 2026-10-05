@@ -6,6 +6,8 @@
  *   GET    /api/career-assistant/conversations     the candidate's conversations, newest first
  *   GET    /api/career-assistant/conversations/:id the messages of one
  *   DELETE /api/career-assistant/conversations/:id "Clear chat"
+ *   GET    /api/career-assistant/suggestion        the home page's "AI career suggestions" card:
+ *            -> { reply, engine, language, usedTools, cached }
  *
  * Candidate only. Session auth, CSRF and the API-wide rate limiter apply
  * like everywhere else; on top of that a candidate may send 30 messages
@@ -22,8 +24,12 @@ import { requireAuth, requireRole } from '../auth.js';
 import {
   aiConfigured, askModel, rulesReply, AssistantUnavailable, HISTORY_TURNS,
 } from '../ai/career-assistant.js';
+import { SUGGESTION_QUESTION } from '../ai/career-assistant-i18n.js';
 
 export const HOURLY_LIMIT = Number(process.env.CAREER_ASSISTANT_HOURLY_LIMIT || 30);
+
+const SUGGESTION_TTL_MS = Number(process.env.CAREER_ASSISTANT_SUGGESTION_TTL_MS || 6 * 3600_000);
+const suggestionCache = new Map();   // `${userId}|${lang}` -> { body, until }
 
 const newId = () => `ca_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
@@ -134,9 +140,70 @@ export default function careerAssistantRoutes() {
       reply: answer.reply,
       usedTools: answer.usedTools || [],
       engine,
+      ...(answer.language ? { language: answer.language } : {}),
       message: shapeMessage(saved.m),
       remainingThisHour: Math.max(0, HOURLY_LIMIT - pre.used.n - 1),
     });
+  }));
+
+  /*
+   * The home page's small "AI career suggestions" card. It used to be
+   * the browser's cpAnswer() keyword matching; it is now the same engine
+   * as the chat, asked one fixed question ("What skills should I
+   * learn?") in the candidate's preferred language.
+   *
+   * NOT A CHAT MESSAGE: nothing is added to the conversation, so opening
+   * Home does not fill the chat with a question the candidate never typed.
+   *
+   *   rules  answered fresh from the database every time (cheap; real data).
+   *   ai     one model call per candidate and language per
+   *          CAREER_ASSISTANT_SUGGESTION_TTL_MS (6 h), kept in memory; each
+   *          call counts in career_assistant_usage like a chat message and
+   *          the hourly limit applies. When the model cannot be reached the
+   *          card is told so (503) - no substitute answer.
+   */
+  r.get('/career-assistant/suggestion', ...candidate, wrap(async (req, res) => {
+    const pref = await withUser(req.session, async (c) => {
+      const row = (await c.query(`select preferred_language from candidates where id = app_candidate_id()`)).rows[0];
+      return (row && row.preferred_language) || 'en';
+    });
+    const lang = ['en', 'te', 'hi'].includes(pref) ? pref : 'en';
+    const question = SUGGESTION_QUESTION[lang];
+
+    if (!aiConfigured()) {
+      const out = await rulesReply(req.session, question, { lang });
+      res.json({ reply: out.reply, engine: 'rules', language: out.language, usedTools: out.usedTools, cached: false });
+      return;
+    }
+
+    const key = `${req.session.userId}|${lang}`;
+    const hit = suggestionCache.get(key);
+    if (hit && hit.until > Date.now()) {
+      res.json({ ...hit.body, cached: true });
+      return;
+    }
+    const used = await withUser(req.session, async (c) => (await c.query(
+      `select count(*)::int n from career_assistant_usage
+        where candidate_id = app_candidate_id() and created_at > now() - interval '1 hour'`)).rows[0].n);
+    if (used >= HOURLY_LIMIT) {
+      throw new ApiError(429, 'ASSISTANT_RATE_LIMITED', 'Suggestions are paused for a while - you have used the assistant a lot in the last hour.');
+    }
+    let answer;
+    try {
+      answer = await askModel(req.session, { history: [], text: question, context: null });
+    } catch (err) {
+      if (err instanceof AssistantUnavailable) {
+        console.error('[career-assistant] suggestion: model unavailable:', err.reason);
+        throw new ApiError(503, 'ASSISTANT_UNAVAILABLE', 'Assistant is unavailable right now, please try again.');
+      }
+      throw err;
+    }
+    await withUser(req.session, (c) => c.query(
+      `insert into career_assistant_usage (candidate_id, engine) values (app_candidate_id(), 'ai')`));
+    const body = { reply: answer.reply, engine: 'ai', language: lang, usedTools: answer.usedTools || [] };
+    if (suggestionCache.size > 5000) suggestionCache.clear();
+    if (!answer.refused) suggestionCache.set(key, { body, until: Date.now() + SUGGESTION_TTL_MS });
+    res.json({ ...body, cached: false });
   }));
 
   r.get('/career-assistant/conversations', ...candidate, wrap(async (req, res) => {

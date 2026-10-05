@@ -82,6 +82,8 @@ const registerSchema = z.object({
   /* 0092: are you looking? Asked on the form; Actively looking when the
      form (or an older client) does not say. */
   availability: z.enum(['actively_looking', 'open_to_offers', 'not_looking']).optional(),
+  /* 0102: the language TeamLink talks to them in. English when not said. */
+  preferredLanguage: z.enum(['en', 'te', 'hi']).optional(),
 });
 
 const parse = (schema, body) => {
@@ -214,7 +216,7 @@ export default function authRoutes() {
   r.post('/auth/register', loginOriginLimiter, loginLimiter, wrap(async (req, res) => {
     const { name, email, password, phone,
             preferredLocation, expectedCtc, noticePeriod,
-            preferredWorkModes, availability } = parse(registerSchema, req.body);
+            preferredWorkModes, availability, preferredLanguage } = parse(registerSchema, req.body);
 
     // Human-readable ids, matching the prototype's 'cand1' style, so
     // anything that renders an id keeps looking the same.
@@ -241,6 +243,12 @@ export default function authRoutes() {
     const { token, expires, session } = await login({
       email, password, userAgent: req.get('user-agent'), ip: req.ip,
     });
+    /* 0102: written as the new candidate themselves - the same
+       candidates_self_write rule the profile PUT goes through. */
+    if (preferredLanguage && preferredLanguage !== 'en') {
+      await withUser(session, (c) => c.query(
+        `update candidates set preferred_language = $1 where id = app_candidate_id()`, [preferredLanguage]));
+    }
     setSessionCookie(res, token, expires);
     issueCsrfToken(res);
 

@@ -12,6 +12,8 @@
  *   9  TLCareerAssistant.openWith({ interviewId }) opens the page and asks about the interview
  *  10  Clear chat empties it, and a refresh shows it empty
  *  11  phone width: no sideways scroll
+ *  12  Home's "AI career suggestions" card comes from the server (same engine), not cpAnswer()
+ *  13  Basic mode answers romanized Telugu in romanized Telugu (0102)
  *
  * Creates an account and a job, so it refuses :4323. Run against an isolated instance:
  *   TL_URL=http://127.0.0.1:4425/ node tools/verify-career-assistant.mjs
@@ -244,6 +246,42 @@ await check('11. phone width: no sideways scroll', async () => {
   must(wide <= 1, `${wide}px wider than the screen`);
   await shot(mp, '11-assistant-mobile');
   await mc.close();
+});
+
+await check('12. Home: the "AI career suggestions" card is answered by the server, not by cpAnswer()', async () => {
+  const calls = [];
+  const onReq = (r) => { if (r.url().includes('/api/career-assistant/suggestion')) calls.push(r.url()); };
+  const msgsBefore = await page.evaluate(() => TL.api.get('/career-assistant/conversations')
+    .then((c) => (c.conversations || []).reduce((n, x) => n + x.messages, 0)));
+  page.on('request', onReq);
+  await page.evaluate(() => { location.hash = '#/candidate/home'; });
+  await page.waitForTimeout(500); await wizardAway(page);
+  await page.waitForFunction(() => {
+    const el = document.getElementById('tlcaSuggest');
+    return el && /skills|profile/i.test(el.innerText) && !/Looking at your profile/.test(el.innerText);
+  }, null, { timeout: 20000 });
+  page.off('request', onReq);
+  must(calls.length >= 1, 'the card did not ask the server');
+  const txt = await page.$eval('#tlcaSuggest', (el) => el.innerText);
+  must(/Basic mode/.test(txt), 'no Basic mode label: ' + txt);
+  must(await page.evaluate(() => window.cpAnswer('what skills should I learn', {})) === '', 'cpAnswer still answers');
+  const conv = await page.evaluate(() => TL.api.get('/career-assistant/conversations'));
+  const total = (conv.conversations || []).reduce((n, c) => n + c.messages, 0);
+  must(total === msgsBefore, `the suggestion wrote into the chat (${msgsBefore} messages before, ${total} after)`);
+  await page.$eval('#tlcaSuggest', (el) => el.scrollIntoView({ block: 'center' }));
+  await shot(page, '12-home-suggestion');
+});
+
+await check('13. Basic mode: romanized Telugu in, romanized Telugu out', async () => {
+  await page.evaluate(() => { location.hash = '#/candidate/assistant'; });
+  await page.waitForTimeout(1200); await wizardAway(page);
+  await page.fill('#assistantInput', 'naaku job kavali');
+  await page.press('#assistantInput', 'Enter');
+  await settle(page);
+  const b = await bubbles(page);
+  const last = b[b.length - 1];
+  must(/saripoye jobs/.test(last.text) && !/[\u0C00-\u0C7F]/.test(last.text), 'reply: ' + last.text);
+  must(/href="#\/job\//.test(last.html), 'no real job link');
 });
 
 await check('no script errors', async () => { must(!errors.length, errors.slice(0, 3).join(' | ')); });

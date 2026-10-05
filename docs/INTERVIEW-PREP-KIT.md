@@ -10,7 +10,7 @@ Candidates must never learn the client's name from us (0051). The kit enforces t
 - The rules engine has no company input.
 - The AI engine is sent the job title, skills, experience range, interview type and the description, with the company name, emails, phone numbers and links removed. It is never sent the client, the candidate's contact details or any id. Its answer is rejected if it names the company or uses the word "client". It is also rejected if it gives a salary figure or promises an outcome. A rejected answer falls back to the rules.
 - Recruiter edits pass the same check.
-- Messages (`api/src/notify/templates-interview.js`) and the `.ics` carry the role and round, never the company.
+- Messages (`api/src/notify/templates-interview.js`) and the `.ics` carry the role and round, never the company. The round is said **"Company Round"** wherever the recruiter picked "Client Round" (kit page, messages, `.ics`, every language) - 0051: candidates never see the word.
 - The candidate's Interviews page now has **📘 Prep Kit** where it had "Prepare with AI". The old `interviewPrepFor()` put the company into a question ("Why … at <company>?"). It is replaced on the candidate side by the kit's questions, or by a company-free generic set.
 
 **The one exception is the venue address or meeting link.** The recruiter types it and it stays hidden (the view returns null) until they tick **Release venue / meeting link to candidate**. The form warns "The address may reveal the company. Release only when confirmed with the client."
@@ -57,7 +57,13 @@ Candidates must never learn the client's name from us (0051). The kit enforces t
 
 Opening the kit sets `viewed_at` once.
 
-**Language.** Candidates have no stored *preferred language*, only `candidates.languages`, the languages they speak. The kit is therefore shown in **English only**, and no Telugu or Hindi translations were added. When a preference is introduced, `candidateView()` is where to switch the tips and bring-list.
+**Language (0102).** The candidate's *preferred language* (`candidates.preferred_language`: English, Telugu or Hindi, chosen on the Profile page or at registration - see `docs/CANDIDATE-LANGUAGE.md`; not `candidates.languages`, the languages they speak) decides the language of the kit page:
+
+- **Translated:** the tips, the bring-list, the page's fixed headings and buttons (`labels`), the mode, the round, the status pill and the date line. The strings live in `api/src/interview/prep-kit-i18n.js`, written as Telugu and Hindi (not transliterated English); `candidateView(row, ticks, { lang })` applies them.
+- **Stays English:** the questions and their "why they ask" hints (technical terms, and the interview itself is usually in English - the page says so in the candidate's language), the role title, the recruiter's instructions.
+- **Only the standard text is translated.** A tip or checklist item is translated when its English text is exactly one of the rules engine's template strings (matched on the text, not the key, because a recruiter may keep a key and change its wording). A recruiter's own wording and the AI engine's extra tips are shown as written. The checklist keys never change, so ticks carry across a language switch.
+- The recruiter's **preview** shows exactly what the candidate sees, in the candidate's language, with a note saying which language; the editor on the left stays the English source.
+- **Not translated:** the `.ics` and the messages (scheduled, Send now, reminders, rescheduled, cancelled) stay English. They still never name the company and never say "Client".
 
 ## Messages
 
@@ -118,7 +124,8 @@ POST /api/interviews                                     + the same fields, send
   - cancellation stops the reminders
   - the AI engine: request shape, a good answer used, a leaking answer rejected, timeout falls back to the rules
   - the rules engine by experience level and round
-- `tools/verify-interview-prep.mjs` is the browser check. The recruiter schedules, the candidate opens the kit and ticks 2 items, the recruiter sees "Viewed ✓ · Checklist 2 of 6", the recruiter releases the venue, and the candidate sees the address and the Maps link. It also checks the `.ics` and the old `interviewPrepFor`:
+- `api/test/candidate-language.test.mjs` (DB 5461, API 9981, mock 9861) covers the kit in Telugu and Hindi: every rules tip and bring-list item has a translation in its own script; headings, mode, round, status and date are translated and the questions are not; a recruiter's own text stays as written; ticks still work; the recruiter preview matches; "Client Round" is "Company Round"; the `.ics` and the messages stay English and never name the company.
+- `tools/verify-interview-prep.mjs` is the browser check. The recruiter schedules, the candidate opens the kit and ticks 2 items, the recruiter sees "Viewed ✓ · Checklist 2 of 6", the recruiter releases the venue, and the candidate sees the address and the Maps link. It also checks the `.ics` and the old `interviewPrepFor`, and (check 7) that after the candidate picks Telugu on their profile the kit's headings, tips and checklist are in Telugu, the count reads "6లో 2 సిద్ధం" and the questions are unchanged:
 
   ```
   TL_URL=http://localhost:4424/ node tools/verify-interview-prep.mjs

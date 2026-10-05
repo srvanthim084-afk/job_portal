@@ -82,56 +82,89 @@
    * the kit, as the candidate sees it (also the recruiter's preview)
    * ------------------------------------------------------------------ */
 
-  function fmtDuration(m) { m = Number(m || 60); return m >= 60 && m % 60 === 0 ? (m / 60) + ' hour' + (m === 60 ? '' : 's') : m + ' min'; }
+  /* The page's fixed words come from the server (labels, in the
+     candidate's preferred language - api/src/interview/prep-kit-i18n.js);
+     these English ones are only the fallback for an older server. */
+  var EN = {
+    back: '← Interviews', date: 'Date', duration: 'Duration', round: 'Round', toBeConfirmed: 'To be confirmed',
+    addToCalendar: '📅 Add to calendar', practice: '💬 Practice with AI Assistant', where: 'Where', venue: 'Venue',
+    openInMaps: '📍 Open in Google Maps', venuePending: 'The venue address will be shared here once it is confirmed.',
+    phoneCall: 'The interviewer will call you on your registered phone number.',
+    aiInterview: 'This is a TeamLink AI interview, taken in your browser.', meetingLink: 'Meeting link',
+    join: '🎥 Join interview', linkOpen: 'The link is open.', joinOpens: 'Join opens 15 minutes before the start.',
+    linkPending: 'The meeting link will be shared here once it is confirmed.', contact: 'Contact',
+    fromRecruiter: 'From your recruiter', questions: 'Likely questions',
+    questionsHint: 'Tap a question to see why interviewers ask it.', tips: 'Tips', bring: 'What to bring',
+    ready: '{done} of {total} ready', hour: '{n} hour', hours: '{n} hours', minutes: '{n} min',
+    preparing: 'Your recruiter is preparing your prep kit. It will appear here, and we will send you the link.',
+  };
+  function L(k) {
+    var x = (k && k.labels) || {};
+    return function (key, vars) {
+      var s = x[key] != null ? String(x[key]) : EN[key];
+      if (vars) Object.keys(vars).forEach(function (v) { s = s.split('{' + v + '}').join(vars[v]); });
+      return s;
+    };
+  }
+  window.TLPrepKitLabels = L;
+
+  function fmtDuration(m, t) {
+    t = t || L(null); m = Number(m || 60);
+    if (m >= 60 && m % 60 === 0) return t(m === 60 ? 'hour' : 'hours', { n: m / 60 });
+    return t('minutes', { n: m });
+  }
 
   function kitHtml(k, opts) {
     opts = opts || {};
+    var t = L(k);
+    var lang = k.language && k.language !== 'en' ? k.language : '';
     var now = Date.now();
     var open = k.joinOpensAt && Date.parse(k.joinOpensAt) <= now;
     var where = '';
     if (k.locationType === 'in_person') {
       where = k.venue
-        ? '<div><b>Venue</b><div style="margin-top:4px">' + h(k.venue) + '</div>'
-          + (k.mapsUrl ? '<div class="btns"><a class="b" href="' + h(k.mapsUrl) + '" target="_blank" rel="noopener noreferrer">📍 Open in Google Maps</a></div>' : '') + '</div>'
-        : '<div class="note">The venue address will be shared here once it is confirmed.</div>';
+        ? '<div><b>' + h(t('venue')) + '</b><div style="margin-top:4px">' + h(k.venue) + '</div>'
+          + (k.mapsUrl ? '<div class="btns"><a class="b" href="' + h(k.mapsUrl) + '" target="_blank" rel="noopener noreferrer">' + h(t('openInMaps')) + '</a></div>' : '') + '</div>'
+        : '<div class="note">' + h(t('venuePending')) + '</div>';
     } else if (k.locationType === 'phone') {
-      where = '<div>The interviewer will call you on your registered phone number.</div>';
+      where = '<div>' + h(t('phoneCall')) + '</div>';
     } else if (k.locationType === 'teamlink_ai') {
-      where = '<div>This is a TeamLink AI interview, taken in your browser.</div>';
+      where = '<div>' + h(t('aiInterview')) + '</div>';
     } else {
       where = k.meetingLink
-        ? '<div><b>Meeting link</b><div class="btns"><a class="b pri" data-join="1" href="' + (open ? h(k.meetingLink) : '#') + '"'
+        ? '<div><b>' + h(t('meetingLink')) + '</b><div class="btns"><a class="b pri" data-join="1" href="' + (open ? h(k.meetingLink) : '#') + '"'
           + (open ? ' target="_blank" rel="noopener noreferrer"' : ' aria-disabled="true" style="opacity:.5;pointer-events:none"')
-          + '>🎥 Join interview</a></div><div class="soft" style="margin-top:6px">'
-          + (open ? 'The link is open.' : 'Join opens 15 minutes before the start.') + '</div></div>'
-        : '<div class="note">The meeting link will be shared here once it is confirmed.</div>';
+          + '>' + h(t('join')) + '</a></div><div class="soft" style="margin-top:6px">'
+          + h(open ? t('linkOpen') : t('joinOpens')) + '</div></div>'
+        : '<div class="note">' + h(t('linkPending')) + '</div>';
     }
-    var contact = k.contact ? '<div style="margin-top:10px"><b>Contact</b>: ' + h([k.contact.name, k.contact.phone].filter(Boolean).join(' · ')) + '</div>' : '';
+    var contact = k.contact ? '<div style="margin-top:10px"><b>' + h(t('contact')) + '</b>: ' + h([k.contact.name, k.contact.phone].filter(Boolean).join(' · ')) + '</div>' : '';
     var bring = (k.bringList || []).map(function (b) {
       return '<label class="chk' + (b.done ? ' done' : '') + '"><input type="checkbox" data-tick="' + h(b.key) + '"' + (b.done ? ' checked' : '')
         + (opts.preview ? ' disabled' : '') + '><span>' + h(b.text) + '</span></label>';
     }).join('');
-    return '<div class="tlpk">'
-      + (opts.preview ? '' : '<div style="margin-bottom:10px"><a class="soft" href="#/candidate/interviews" style="font-weight:700">← Interviews</a></div>')
+    var ready = h(t('ready', { done: Number((k.checklist || {}).done || 0), total: Number((k.checklist || {}).total || 0) }));
+    return '<div class="tlpk"' + (lang ? ' lang="' + h(lang) + '"' : '') + '>'
+      + (opts.preview ? '' : '<div style="margin-bottom:10px"><a class="soft" href="#/candidate/interviews" style="font-weight:700">' + h(t('back')) + '</a></div>')
       + '<div class="card"><span class="pill">' + h(k.status || 'Scheduled') + '</span>'
-      + '<h1 style="margin-top:8px">' + h(k.role) + '</h1><div class="soft" style="margin-top:3px">' + h(k.round) + (k.mode ? ' · ' + h(k.mode) : '') + '</div>'
-      + '<div class="facts"><div class="fact"><span>Date</span><b>' + h(k.when || k.date || 'To be confirmed') + '</b></div>'
-      + '<div class="fact"><span>Duration</span><b>' + h(fmtDuration(k.durationMinutes)) + '</b></div>'
-      + '<div class="fact"><span>Round</span><b>' + h(k.round) + '</b></div></div>'
+      + '<h1 style="margin-top:8px" lang="en">' + h(k.role) + '</h1><div class="soft" style="margin-top:3px">' + h(k.round) + (k.mode ? ' · ' + h(k.mode) : '') + '</div>'
+      + '<div class="facts"><div class="fact"><span>' + h(t('date')) + '</span><b>' + h(k.when || k.date || t('toBeConfirmed')) + '</b></div>'
+      + '<div class="fact"><span>' + h(t('duration')) + '</span><b>' + h(fmtDuration(k.durationMinutes, t)) + '</b></div>'
+      + '<div class="fact"><span>' + h(t('round')) + '</span><b>' + h(k.round) + '</b></div></div>'
       + '<div class="btns">'
-      + (opts.preview ? '<span class="b">📅 Add to calendar</span><span class="b">💬 Practice with AI Assistant</span>'
-        : '<a class="b" href="/api/candidate/interviews/' + encodeURIComponent(k.interviewId) + '/prep-kit.ics" download="teamlink-interview.ics">📅 Add to calendar</a>'
-          + '<button class="b" type="button" data-practice="' + h(k.interviewId) + '">💬 Practice with AI Assistant</button>')
+      + (opts.preview ? '<span class="b">' + h(t('addToCalendar')) + '</span><span class="b">' + h(t('practice')) + '</span>'
+        : '<a class="b" href="/api/candidate/interviews/' + encodeURIComponent(k.interviewId) + '/prep-kit.ics" download="teamlink-interview.ics">' + h(t('addToCalendar')) + '</a>'
+          + '<button class="b" type="button" data-practice="' + h(k.interviewId) + '">' + h(t('practice')) + '</button>')
       + '</div></div>'
-      + '<div class="card"><h2>Where</h2>' + where + contact + '</div>'
-      + (k.instructions ? '<div class="card"><h2>From your recruiter</h2><div style="white-space:pre-wrap;font-size:13.5px">' + h(k.instructions) + '</div></div>' : '')
-      + '<div class="card"><h2>Likely questions</h2><div class="soft" style="margin-bottom:6px">Tap a question to see why interviewers ask it.</div>'
-      + (k.questions || []).map(function (q) {
+      + '<div class="card"><h2>' + h(t('where')) + '</h2>' + where + contact + '</div>'
+      + (k.instructions ? '<div class="card"><h2>' + h(t('fromRecruiter')) + '</h2><div style="white-space:pre-wrap;font-size:13.5px">' + h(k.instructions) + '</div></div>' : '')
+      + '<div class="card"><h2>' + h(t('questions')) + '</h2><div class="soft" style="margin-bottom:6px">' + h(t('questionsHint')) + '</div>'
+      + '<div lang="en">' + (k.questions || []).map(function (q) {
         return '<details><summary>' + h(q.q) + (q.topic ? '<span class="topic">' + h(q.topic) + '</span>' : '') + '</summary>'
           + (q.why ? '<div class="why">' + h(q.why) + '</div>' : '') + '</details>';
-      }).join('') + '</div>'
-      + '<div class="card"><h2>Tips</h2><ul class="tips">' + (k.tips || []).map(function (t) { return '<li>' + h(t) + '</li>'; }).join('') + '</ul></div>'
-      + '<div class="card"><h2>What to bring <span class="soft" id="tlpkCount">' + h((k.checklist || {}).done || 0) + ' of ' + h((k.checklist || {}).total || 0) + ' ready</span></h2>' + bring + '</div>'
+      }).join('') + '</div></div>'
+      + '<div class="card"><h2>' + h(t('tips')) + '</h2><ul class="tips">' + (k.tips || []).map(function (x) { return '<li>' + h(x) + '</li>'; }).join('') + '</ul></div>'
+      + '<div class="card"><h2>' + h(t('bring')) + ' <span class="soft" id="tlpkCount">' + ready + '</span></h2>' + bring + '</div>'
       + '<div style="height:18px"></div>'
       + '</div>';
   }
@@ -154,7 +187,16 @@
       if (section === 'interview-prep' && role() === 'candidate') {
         css();
         var shell = prev.call(this, 'interviews');
-        var root = '<div id="tlpkRoot"><div class="tlpk"><div class="card">Loading your prep kit…</div></div></div>';
+        /* A repaint of the page (any render()) shows the kit already loaded
+           for this interview while it is fetched again, instead of
+           flashing "Loading" and losing the ticks on screen. */
+        var cid = kitIdFromHash();
+        var cached = cid && kits[cid] && kits[cid].kitReady ? kits[cid] : null;
+        var me0 = null;
+        try { me0 = DATA.candidateById(STATE.session.id); } catch (e) { /* no profile yet */ }
+        var loading = { te: 'మీ ప్రిపరేషన్ కిట్ లోడ్ అవుతోంది…', hi: 'आपकी तैयारी किट लोड हो रही है…' }[(me0 || {}).preferredLanguage] || 'Loading your prep kit…';
+        var root = '<div id="tlpkRoot">' + (cached ? kitHtml(cached)
+          : '<div class="tlpk"><div class="card">' + h(loading) + '</div></div>') + '</div>';
         var at = typeof shell === 'string' ? shell.indexOf('<div class="cp-wrap">') : -1;
         var end = at >= 0 ? shell.indexOf('<button class="cp-fab"', at) : -1;
         if (at >= 0 && end > at) {
@@ -183,9 +225,10 @@
       var el = document.getElementById('tlpkRoot');
       if (!el) return;
       if (!k.kitReady) {
-        el.innerHTML = '<div class="tlpk"><div style="margin-bottom:10px"><a class="soft" href="#/candidate/interviews" style="font-weight:700">← Interviews</a></div>'
+        var t = L(k);
+        el.innerHTML = '<div class="tlpk"><div style="margin-bottom:10px"><a class="soft" href="#/candidate/interviews" style="font-weight:700">' + h(t('back')) + '</a></div>'
           + '<div class="card"><h1>' + h(k.role) + '</h1><div class="soft">' + h(k.round) + ' · ' + h(k.when) + '</div>'
-          + '<p>Your recruiter is preparing your prep kit. It will appear here, and we will send you the link.</p></div></div>';
+          + '<p>' + h(t('preparing')) + '</p></div></div>';
         el.setAttribute('data-done', '1');
         return;
       }
@@ -226,7 +269,7 @@
     api().put('/candidate/interviews/' + encodeURIComponent(id) + '/prep-kit/checklist', { itemKey: key, done: t.checked }).then(function (r) {
       kits[id] = r.kit;
       var c = document.getElementById('tlpkCount');
-      if (c) c.textContent = r.kit.checklist.done + ' of ' + r.kit.checklist.total + ' ready';
+      if (c) c.textContent = L(r.kit)('ready', { done: r.kit.checklist.done, total: r.kit.checklist.total });
     }, function (err) { t.checked = !t.checked; say((err && err.message) || 'Could not save', '⚠️'); });
   });
 
@@ -505,7 +548,10 @@
         + '<button class="btn btn-ghost btn-sm" type="button" data-act="save">Save edits</button>'
         + '<button class="btn btn-primary btn-sm" type="button" data-act="send">✉ ' + (k.sentAt ? 'Send again' : 'Send now') + '</button></div>' : '')
       + '</div></div>'
-      + '<div><div class="card"><b>What the candidate sees</b><div class="soft" style="font-size:11.5px;color:#6b7a90">Exactly this - no company name. Venue and link appear only after release.</div>'
+      + '<div><div class="card"><b>What the candidate sees</b><div class="soft" style="font-size:11.5px;color:#6b7a90">Exactly this - no company name. Venue and link appear only after release.'
+      + (d.preview && d.preview.language && d.preview.language !== 'en'
+        ? ' Shown in ' + ({ te: 'Telugu', hi: 'Hindi' }[d.preview.language] || d.preview.language) + ', the candidate\'s preferred language: tips, checklist and headings are translated where they are the standard text; questions stay English.'
+        : '') + '</div>'
       + '<div style="margin-top:10px;background:#f4f6f9;border-radius:10px;padding:10px">' + kitHtml(d.preview || {}, { preview: true }) + '</div></div>'
       + '<div class="card" style="margin-top:12px"><b>Messages</b>' + ((d.messages || []).length ? '<div style="font-size:12px;margin-top:6px">'
         + d.messages.slice(0, 12).map(function (m) { return '<div>' + h(m.kind) + ' · ' + h(m.channel) + ': <b>' + h(m.status) + '</b>' + (m.error ? ' <span style="color:#8a94a6">(' + h(m.error) + ')</span>' : '') + '</div>'; }).join('') + '</div>'
