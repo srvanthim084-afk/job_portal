@@ -1017,9 +1017,8 @@
     var next = function (section) {
       var html = prev.apply(this, arguments);
       if (typeof html !== 'string') return html;
-      var link = '<a class="' + (section === 'walkins' ? 'on' : '') + '" onclick="location.hash=\'#/candidate/walkins\'">Walk-in Drives</a>';
-      html = html.replace(/(<nav class="cp-nav">[\s\S]*?)(<\/nav>)/, function (_m, a, b) { return a + link + b; });
-      html = html.replace('<div class="cp-mscroll">', '<div class="cp-mscroll"><button onclick="location.hash=\'#/candidate/walkins\';cpOpen(\'\')">🚶 Walk-in Drives</button>');
+      /* No "Walk-in Drives" tab in the candidate header (the owner asked,
+         2026-10-05). */
       return html;
     };
     next.__tlwk = true;
