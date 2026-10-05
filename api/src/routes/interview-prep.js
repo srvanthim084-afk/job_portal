@@ -43,7 +43,10 @@ async function myKit(session, id) {
     if (!row) return null;
     const ticks = row.kit_id ? (await c.query(
       `select item_key, done from interview_prep_checklist where kit_id=$1`, [row.kit_id])).rows : [];
-    return { row, ticks };
+    // 0102: tips, bring-list and headings in the candidate's own language.
+    const lang = (await c.query(
+      `select preferred_language from candidates where id = app_candidate_id()`)).rows[0]?.preferred_language || 'en';
+    return { row, ticks, lang };
   });
 }
 
@@ -77,7 +80,7 @@ export default function interviewPrepRoutes() {
   r.get('/candidate/interviews/:id/prep-kit', ...cand, wrap(async (req, res) => {
     const k = await myKit(req.session, String(req.params.id).slice(0, 80));
     if (!k) throw notFound('That interview could not be found.');
-    res.json({ kit: candidateView(k.row, k.ticks) });
+    res.json({ kit: candidateView(k.row, k.ticks, { lang: k.lang }) });
   }));
 
   r.post('/candidate/interviews/:id/prep-kit/viewed', ...cand, wrap(async (req, res) => {
@@ -96,7 +99,7 @@ export default function interviewPrepRoutes() {
        on conflict (kit_id, item_key) do update set done=excluded.done, done_at=excluded.done_at`,
       [k.row.kit_id, b.itemKey, b.done]));
     const again = await myKit(req.session, String(req.params.id).slice(0, 80));
-    res.json({ kit: candidateView(again.row, again.ticks) });
+    res.json({ kit: candidateView(again.row, again.ticks, { lang: again.lang }) });
   }));
 
   r.get('/candidate/interviews/:id/prep-kit.ics', ...cand, wrap(async (req, res) => {

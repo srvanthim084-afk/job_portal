@@ -21,6 +21,10 @@
  *
  * window.TLCareerAssistant.openWith({ interviewId }) opens the assistant
  * on one interview (the interview prep kit's "Practice with AI Assistant").
+ *
+ * The Home page's "AI career suggestions" card is answered by the server
+ * too (GET /api/career-assistant/suggestion), in the candidate's preferred
+ * language; the browser's cpAnswer() is retired.
  */
 (function () {
   'use strict';
@@ -259,12 +263,89 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * Home: the small "AI career suggestions" card
+   *
+   * It used to print cpAnswer('what skills should I learn') - keyword
+   * rules over the browser's copy of the data. It now asks the server
+   * (GET /api/career-assistant/suggestion): the same engine as the chat,
+   * in the candidate's preferred language. Loading, then the answer, or
+   * "unavailable" - never an answer made up here. cpAnswer() itself is
+   * retired: nothing on the page answers questions in the browser any more.
+   * ------------------------------------------------------------------ */
+
+  var SUG_MARK = '⁣tlca-suggestion⁣';
+  var SUG = { key: null, state: 'idle', reply: '', engine: null, err: '', at: 0 };
+  var SUG_EMPTY = {
+    en: 'Suggestions are unavailable right now, please try again.',
+    te: 'సూచనలు ప్రస్తుతం అందుబాటులో లేవు, దయచేసి మళ్ళీ ప్రయత్నించండి.',
+    hi: 'सुझाव अभी उपलब्ध नहीं हैं, कृपया फिर से कोशिश करें।',
+  };
+  var SUG_LOADING = { en: 'Looking at your profile and open jobs…', te: 'మీ ప్రొఫైల్, ఓపెన్ ఉద్యోగాలను చూస్తున్నాం…', hi: 'आपकी प्रोफ़ाइल और खुली नौकरियाँ देख रहे हैं…' };
+  var prefLang = function () { var c = me(); var v = c && c.preferredLanguage; return v === 'te' || v === 'hi' ? v : 'en'; };
+  var sugKey = function () { var c = me(); return c ? c.id + '|' + prefLang() : null; };
+
+  function sugInner() {
+    var l = prefLang();
+    if (SUG.key !== sugKey() || SUG.state === 'loading' || SUG.state === 'idle') {
+      return '<span style="color:#8a94a6">' + h(SUG_LOADING[l]) + '</span>';
+    }
+    if (SUG.state === 'error') return '<span style="color:#9b1c1c">' + h(SUG.err || SUG_EMPTY[l]) + '</span>';
+    return md(SUG.reply) + (SUG.engine === 'rules'
+      ? '<div style="margin-top:6px"><span class="tlca-basic" title="No AI key is configured on the server; these answers come from TeamLink\'s rules and your real data.">Basic mode</span></div>' : '');
+  }
+  function sugHtml() {
+    return '<div id="tlcaSuggest" style="font-size:12.5px;color:#33404f;line-height:1.6" lang="' + prefLang() + '">' + sugInner() + '</div>';
+  }
+  function paintSuggestion() {
+    var el = document.getElementById('tlcaSuggest');
+    if (el) { el.setAttribute('lang', prefLang()); el.innerHTML = sugInner(); }
+  }
+  function loadSuggestion() {
+    var key = sugKey();
+    if (!key || !api()) return;
+    // once per candidate and language, again after 10 minutes (the profile may have changed)
+    if (SUG.key === key && (SUG.state === 'loading' || (SUG.state !== 'idle' && Date.now() - SUG.at < 600000))) return;
+    SUG.key = key; SUG.state = 'loading'; SUG.err = ''; SUG.at = Date.now();
+    api().get('/career-assistant/suggestion').then(function (r) {
+      if (SUG.key !== key) return;
+      if (r && r.reply) { SUG.state = 'ok'; SUG.reply = r.reply; SUG.engine = r.engine; }
+      else { SUG.state = 'error'; }
+    }, function (err) {
+      if (SUG.key !== key) return;
+      SUG.state = 'error';
+      SUG.err = err && err.code === 'ASSISTANT_RATE_LIMITED' ? String(err.message || '') : '';
+    }).then(paintSuggestion);
+  }
+
+  function installHomeCard() {
+    window.cpAnswer = function () { return ''; };
+    var prev = window.cpHome;
+    if (typeof prev !== 'function' || prev.__tlcaSug) return;
+    var next = function () {
+      var keep = window.cpAnswer;
+      window.cpAnswer = function () { return SUG_MARK; };
+      var html;
+      try { html = prev.apply(this, arguments); } finally { window.cpAnswer = keep; }
+      if (typeof html !== 'string' || html.indexOf(SUG_MARK) < 0) return html;
+      var at = html.indexOf(SUG_MARK);
+      var open = html.lastIndexOf('<div', at);
+      var close = html.indexOf('</div>', at);
+      if (open < 0 || close < 0) return html.split(SUG_MARK).join('');
+      setTimeout(loadSuggestion, 0);
+      return html.slice(0, open) + sugHtml() + html.slice(close + 6);
+    };
+    next.__tlcaSug = true;
+    window.cpHome = next;
+  }
+
+  /* ------------------------------------------------------------------ *
    * the overrides
    * ------------------------------------------------------------------ */
 
   function install() {
     if (window.__tlcaInstalled) return;
     window.__tlcaInstalled = true;
+    installHomeCard();
 
     window.pageCareerAssistant = function () {
       if (!isCand()) return '';
@@ -369,7 +450,11 @@
     openWith: function (opts) {
       opts = opts || {};
       if (!isCand()) return Promise.resolve(null);
-      var text = opts.text || 'Help me prepare for my upcoming interview.';
+      // In the candidate's preferred language, so Basic mode answers in it too.
+      var text = opts.text || ({
+        te: 'నా రాబోయే ఇంటర్వ్యూకి సిద్ధం కావడానికి సహాయం చేయండి.',
+        hi: 'मेरे आने वाले इंटरव्यू की तैयारी में मदद करें।',
+      }[(me() || {}).preferredLanguage] || 'Help me prepare for my upcoming interview.');
       if (!/^#\/candidate\/assistant/.test(location.hash)) location.hash = '#/candidate/assistant';
       return load().then(function () { return send(text, { interviewId: opts.interviewId }); });
     },

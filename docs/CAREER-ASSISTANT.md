@@ -21,6 +21,7 @@ lived in page state.
 | System prompt (spec Part B, verbatim, byte-stable) | `api/src/ai/career-assistant-prompt.js` |
 | Page, floating chat, safe markdown, `TLCareerAssistant` | `web/teamlink-career-assistant.js` |
 | API tests (mock Anthropic server) | `api/test/career-assistant.test.mjs` |
+| Basic mode in Telugu / Hindi / romanized: detection and every sentence | `api/src/ai/career-assistant-i18n.js` |
 | Browser check | `tools/verify-career-assistant.mjs` |
 
 ## API (candidate only; session, CSRF and the API rate limiter apply)
@@ -31,6 +32,9 @@ lived in page state.
 | GET | `/api/career-assistant/conversations` | The candidate's conversations, newest first, and the current `engine`. |
 | GET | `/api/career-assistant/conversations/:id` | Its messages (last 200). |
 | DELETE | `/api/career-assistant/conversations/:id` | Clear chat. |
+| GET | `/api/career-assistant/suggestion` | The Home page's "AI career suggestions" card: `{ reply, engine, language, usedTools, cached }`. See below. |
+
+A Basic-mode reply also carries `language` (`en`, `te`, `hi`, `te-Latn`, `hi-Latn`).
 
 Errors:
 
@@ -109,8 +113,67 @@ apply, career path, interview prep, salary, skill gap, then help — answered
 from the same reads the tools use (real profile gaps, the matching engine's
 scores against real open jobs, the candidate's real interviews). It adds one
 intent the system prompt insists on: a question about paying a fee gets the
-"TeamLink does not charge candidates" warning. It answers in English only.
+"TeamLink does not charge candidates" warning.
 `engine: "rules"` is returned and stored, and the page shows **Basic mode**.
+
+### Basic mode in Telugu and Hindi (0102)
+
+The rules engine answers in the language **and script** the candidate wrote
+in - the rule the system prompt gives the model:
+
+| the message | the answer |
+|---|---|
+| Telugu script ("నాకు ఉద్యోగం కావాలి") | Telugu script |
+| Devanagari ("मुझे नौकरी चाहिए") | Hindi, Devanagari |
+| romanized Telugu ("naaku job kavali") | romanized Telugu |
+| romanized Hindi ("mujhe naukri chahiye") | romanized Hindi |
+| English ("What jobs match me?") | English |
+| nothing to tell ("jobs", a job title, an emoji) | the candidate's preferred language (0102); English when never chosen |
+
+`detectLanguage()` (career-assistant-i18n.js) counts script characters first,
+then distinctive romanized words (`naaku`, `kavali`, `ela`, `cheyali` ...
+against `mujhe`, `chahiye`, `kaise`, `naukri` ...), then plain English words.
+Words shared with English ("main", "to", "me", "hi") are deliberately not
+counted as Hindi. The intents are matched in English, romanized and both
+scripts (`ఉద్యోగ`, `नौकरी`, `jeetham`, `फीस` ...), in the same order as before.
+
+Only the words around the data are translated: job titles, skills, match
+scores, pay and dates come from the same reads as the English answer, so a
+Telugu answer is exactly as real as an English one. Missing profile fields
+are named in Telugu / Hindi; romanized answers keep the English field
+names, as people write them. The interview round is never "Client".
+Hindi sentences use the masculine first person ("मैं मदद कर सकता हूँ"), the
+usual default for an assistant.
+
+With an AI key nothing changes here: the frozen system prompt already tells
+the model to answer in the candidate's language and script.
+
+### The Home page card
+
+The small **AI career suggestions** card on the candidate Home page used to
+print `cpAnswer('what skills should I learn')` - keyword rules over the
+browser's copy of the data. It now calls `GET /api/career-assistant/suggestion`,
+which asks the **same engine as the chat** one fixed question, "What skills
+should I learn?", in the candidate's preferred language:
+
+- **rules** (no key): answered fresh each time from the database; nothing is
+  counted against the hourly limit (no model, no cost).
+- **ai**: one model call per candidate and language every
+  `CAREER_ASSISTANT_SUGGESTION_TTL_MS` (6 hours), kept in memory; each call
+  is counted in `career_assistant_usage` like a chat message, and the hourly
+  limit applies (429).
+- **Not a chat message:** nothing is written into the conversation, so
+  opening Home does not put a question the candidate never typed into their
+  chat.
+- The card shows "Looking at your profile and open jobs…", then the answer
+  (rendered by the same safe markdown as the chat, with the **Basic mode**
+  label under the rules), or "Suggestions are unavailable right now" when the
+  server fails - never an answer made up in the browser. `cpAnswer()` itself
+  now returns nothing: no part of the page answers questions in the browser.
+
+`TLCareerAssistant.openWith({ interviewId })` (the prep kit's "Practice with
+AI Assistant") now sends its opening line in the candidate's preferred
+language, so Basic mode answers that in Telugu or Hindi too.
 
 ## Storage (migration 0100)
 
@@ -164,6 +227,7 @@ candidate's own**; anyone else's id is ignored. The interview prep kit's
 | `AI_ASSISTANT_MAX_RETRIES` | 1 | |
 | `AI_API_BASE_URL` | unset | tests only |
 | `CAREER_ASSISTANT_HOURLY_LIMIT` | 30 | |
+| `CAREER_ASSISTANT_SUGGESTION_TTL_MS` | 21600000 | how long the Home card keeps an AI suggestion |
 
 ## Limits and notes
 
@@ -175,6 +239,25 @@ candidate's own**; anyone else's id is ignored. The interview prep kit's
 - **Before launch:** run 30–50 real candidate questions (English, Telugu,
   Hindi, romanized) with a real key and read the answers. The automated tests
   use a mock model and prove the plumbing, not the answer quality.
-- The Home page's small "AI career suggestions" card still uses the browser's
-  `cpAnswer()` for its one line of skill advice; it is not a chat and sends
-  nothing.
+- The Home page's "AI career suggestions" card is answered by the server
+  (see above).
+- Basic mode's Telugu and Hindi were written by hand for these templates;
+  have a native speaker read `career-assistant-i18n.js` and
+  `prep-kit-i18n.js` before launch, as with any copy.
+
+## Tests
+
+- `api/test/career-assistant.test.mjs` (DB 5470, API 9990, mock 9978): the
+  English rules engine, privacy, the AI tool loop, refusal, errors, the limit.
+- `api/test/candidate-language.test.mjs` (DB 5461, API 9981, mock 9861):
+  Basic mode in Telugu, Hindi and romanized Telugu / Hindi from real data
+  (draft jobs never offered), the preferred-language fallback, the fee
+  warning in both scripts; the suggestion endpoint (401 / 403, rules answer
+  in the preferred language with nothing written to the chat or the usage
+  table; with AI the question goes in Hindi, a second call is cached, an
+  upstream 500 is a 503).
+- `tools/verify-career-assistant.mjs` adds check 12 (the Home card is
+  answered by the server, Basic mode label, nothing written into the chat,
+  `cpAnswer()` retired) and check 13 (romanized Telugu in, romanized Telugu
+  out). `tools/verify-candidate-language.mjs` covers the card in Telugu and
+  its failure state.

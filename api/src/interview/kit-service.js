@@ -13,6 +13,9 @@ import { toCandidate } from '../shapes.js';
 import { sendToCandidate } from '../notify/direct-send.js';
 import { buildInterviewMessages } from '../notify/templates-interview.js';
 import { buildKit, rulesKit, aiAvailable, locationTypeFor, roundFor, validateKitContent } from './prep-kit.js';
+import {
+  langOf, labelsFor, tipIn, bringIn, roundLabel, MODE_LABELS, STATUS_LABELS, DATE_LOCALE,
+} from './prep-kit-i18n.js';
 
 export const ENGINE = { userId: '', role: 'admin', profileId: null };
 const IST_MS = 330 * 60 * 1000;
@@ -44,11 +47,17 @@ export function startsAt(date, time) {
   return new Date(Date.UTC(Number(d[1]), Number(d[2]) - 1, Number(d[3]), t[0], t[1]) - IST_MS);
 }
 
-export function whenLabel(date, time) {
+export function whenLabel(date, time, lang = 'en') {
   const s = startsAt(date, time);
-  if (!s) return 'a time the team will confirm';
-  const day = new Date(s.getTime()).toLocaleDateString('en-GB',
-    { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
+  if (!s) return lang === 'en' ? 'a time the team will confirm' : labelsFor(lang).toBeConfirmed;
+  let day;
+  try {
+    day = new Date(s.getTime()).toLocaleDateString(DATE_LOCALE[langOf(lang)] || 'en-GB',
+      { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
+  } catch {
+    day = new Date(s.getTime()).toLocaleDateString('en-GB',
+      { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
+  }
   return time ? `${day}, ${time}` : day;
 }
 
@@ -216,22 +225,31 @@ export async function editKit(session, interviewId, { questions, tips, bringList
  * The candidate's page, built from candidate_interview_prep_v (or the
  * same columns for the recruiter's preview). No company, by construction:
  * the row has no company column to put anywhere.
+ *
+ * `lang` is the candidate's preferred language (0102). In te / hi the
+ * tips, the bring-list (where they are the rules engine's own template
+ * text), the mode, the round, the status and the page's headings
+ * (`labels`) are in that language; the questions stay English
+ * (spec §4). The .ics is always built from the English view.
  */
-export function candidateView(row, ticks = []) {
+export function candidateView(row, ticks = [], { lang = 'en' } = {}) {
+  const l = langOf(lang);
   const done = new Map(ticks.map((t) => [t.item_key, !!t.done]));
   const s = row.starts_at ? new Date(row.starts_at) : startsAt(row.scheduled_date, row.scheduled_time);
   const lt = row.location_type || locationTypeFor({ mode: row.mode, type: row.type });
-  const bring = (row.bring_list || []).map((b) => ({ key: b.key, text: b.text, done: done.get(b.key) === true }));
+  const bring = (row.bring_list || []).map((b) => ({ key: b.key, text: bringIn(b.text, l), done: done.get(b.key) === true }));
   return {
     interviewId: row.interview_id,
     role: row.job_title,
-    round: row.type || 'Interview',
-    mode: MODE_LABEL[lt] || row.mode || null,
+    // "Client Round" is "Company Round" to a candidate (0051), in every language.
+    round: roundLabel(row.type || 'Interview', l),
+    mode: (MODE_LABELS[l] || MODE_LABEL)[lt] || row.mode || null,
     locationType: lt,
-    status: row.status,
+    status: (STATUS_LABELS[l] && STATUS_LABELS[l][row.status]) || row.status,
+    statusCode: row.status,
     date: row.scheduled_date ? String(row.scheduled_date).slice(0, 10) : null,
     time: row.scheduled_time || null,
-    when: whenLabel(row.scheduled_date, row.scheduled_time),
+    when: whenLabel(row.scheduled_date, row.scheduled_time, l),
     startsAt: s ? s.toISOString() : null,
     durationMinutes: Number(row.duration_minutes || 60),
     joinOpensAt: s ? new Date(s.getTime() - 15 * 60000).toISOString() : null,
@@ -243,14 +261,13 @@ export function candidateView(row, ticks = []) {
     contact: row.details_released && (row.contact_person || row.contact_phone)
       ? { name: row.contact_person || null, phone: row.contact_phone || null } : null,
     instructions: row.candidate_instructions || null,
-    questions: row.questions || [],
-    tips: row.tips || [],
+    questions: row.questions || [],               // English, always (spec §4)
+    tips: (row.tips || []).map((t) => tipIn(t, l)),
     bringList: bring,
     checklist: { done: bring.filter((b) => b.done).length, total: bring.length },
     viewedAt: row.viewed_at || null,
-    // English only: candidates have no stored preferred language (only
-    // `languages`, the ones they speak), so there is nothing to switch on.
-    language: 'en',
+    language: l,
+    labels: labelsFor(l),
     kitReady: !!row.kit_id,
   };
 }
@@ -266,6 +283,9 @@ export async function readKitStaff(session, interviewId) {
       if (!ok) return null;
     }
     const job = (await c.query(`select title from jobs where id=$1`, [iv.job_id])).rows[0] || {};
+    // The preview is exactly what the candidate sees - in their language.
+    const lang = langOf((await c.query(`select preferred_language from candidates where id=$1`,
+      [iv.candidate_id])).rows[0]?.preferred_language);
     const ticks = kit ? (await c.query(`select item_key, done from interview_prep_checklist where kit_id=$1`, [kit.id])).rows : [];
     const msgs = (await c.query(
       `select kind, channel, status, error, created_at from interview_prep_messages
@@ -280,7 +300,7 @@ export async function readKitStaff(session, interviewId) {
       kit_id: kit && kit.sent_at ? kit.id : null, questions: kit ? kit.questions : [], tips: kit ? kit.tips : [],
       bring_list: kit ? kit.bring_list : [], viewed_at: kit ? kit.viewed_at : null,
     };
-    const preview = candidateView(row, ticks);
+    const preview = candidateView(row, ticks, { lang });
     return {
       interview: {
         id: iv.id, status: iv.status, type: iv.type, mode: iv.mode, date: preview.date, time: iv.scheduled_time,
@@ -373,7 +393,7 @@ export async function sendInterviewMessage(interviewId, kind, opts = {}) {
     jobTitle: job.title || 'your application',
     when: whenLabel(date, time),
     time,
-    round: iv.type || 'Interview',
+    round: roundLabel(iv.type || 'Interview', 'en'),   // never "Client Round" (0051)
     modeLabel: MODE_LABEL[lt] || iv.mode,
     kitUrl: kitUrl(iv.id),
     interviewsUrl: interviewsUrl(),

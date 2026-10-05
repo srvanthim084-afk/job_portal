@@ -196,6 +196,10 @@ export function toCandidate(r, opts = {}) {
     summary: nz(r.summary),
     certifications: arr(r.certifications),
     languages: arr(r.languages),
+    /* 0018 / 0102: the language to use with them (en | te | hi) - not
+       `languages`, the ones they speak. NULL = never chosen: English in
+       the portal, the admin's default language on an AI call (agent.js). */
+    preferredLanguage: ['en', 'te', 'hi'].includes(r.preferred_language) ? r.preferred_language : null,
     projects: r.projects || [],
     /* 0087: what a resume has and the profile had nowhere to keep. */
     internships: Array.isArray(r.internships) ? r.internships : [],

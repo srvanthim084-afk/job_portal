@@ -11,6 +11,9 @@
  *   5  candidate sees the address and a Google Maps link
  *   6  the .ics has the role and no company; the old interviewPrepFor()
  *      no longer puts the company into a question
+ *   7  the candidate chooses Telugu on their profile (0102): the kit's
+ *      headings, tips and checklist are in Telugu, the questions stay
+ *      English, the ticks are kept, and still no company name
  *
  * Creates accounts, so it refuses :4323:
  *   TL_URL=http://localhost:4424/ node tools/verify-interview-prep.mjs
@@ -213,6 +216,36 @@ await check('6. the .ics and the assistant prep carry no company name', async ()
     return JSON.stringify(window.interviewPrepFor(iv));
   }, ivId);
   must(!/velmora|quartzworks/i.test(prep), 'interviewPrepFor still names the company');
+});
+
+await check('7. preferred language Telugu: headings, tips and checklist in Telugu; questions English; no company', async () => {
+  const before = await cp.$$eval('#tlpkRoot details summary', (x) => x.map((s) => s.firstChild.textContent));
+  await cp.evaluate(() => { location.hash = '#/candidate/profile'; });
+  await cp.waitForTimeout(1200); await wizardAway(cp);
+  await cp.waitForSelector('#tllangCard', { timeout: 15000 });
+  await cp.click('#tllangCard [data-lang="te"]');
+  await cp.waitForFunction(() => {
+    const on = document.querySelector('#tllangCard .tllang-opt.on');
+    return on && on.getAttribute('data-lang') === 'te' && !document.querySelector('#tllangCard [disabled]');
+  }, null, { timeout: 10000 });
+  await cp.evaluate((id) => { location.hash = '#/candidate/interview-prep/' + encodeURIComponent(id); }, ivId);
+  await cp.waitForFunction(() => {
+    const el = document.querySelector('#tlpkRoot .tlpk');
+    return el && el.getAttribute('lang') === 'te' && el.querySelector('details');
+  }, null, { timeout: 15000 });
+  const t = await cp.textContent('#tlpkRoot');
+  must(t.includes('అడిగే అవకాశం ఉన్న ప్రశ్నలు') && t.includes('సూచనలు') && t.includes('సిద్ధంగా ఉంచుకోవాల్సినవి'), 'headings not in Telugu');
+  must(/ఇంటర్వ్యూ జరిగే చోటుకి 15 నిమిషాలు ముందుగానే చేరుకోండి/.test(t), 'tips not in Telugu');
+  must(/మీ రెజ్యూమ్ రెండు ప్రింట్ కాపీలు/.test(t), 'checklist not in Telugu');
+  must(/6లో 2 సిద్ధం/.test(await cp.textContent('#tlpkCount')), 'count: ' + await cp.textContent('#tlpkCount'));
+  const after = await cp.$$eval('#tlpkRoot details summary', (x) => x.map((s) => s.firstChild.textContent));
+  must(JSON.stringify(after) === JSON.stringify(before), 'the questions changed');
+  must(!/[\u0C00-\u0C7F]/.test(after.join(' ')), 'a question was translated');
+  must(!/velmora|quartzworks/i.test(t) && !/\bclient\b/i.test(t), 'company or "client" on the Telugu kit');
+  await cp.evaluate(() => window.scrollTo(0, 0));
+  await shot(cp, '7-kit-telugu');
+  await cp.evaluate(() => { const el = document.getElementById('tlpkCount'); if (el) el.scrollIntoView({ block: 'start' }); });
+  await shot(cp, '7b-kit-telugu-checklist');
 });
 
 await cc.close(); await rc.close();
