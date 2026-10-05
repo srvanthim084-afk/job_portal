@@ -14,6 +14,8 @@ import { wrap, badRequest, notFound, forbidden, ApiError, CODES } from '../error
 import { requireAuth, requireRole } from '../auth.js';
 import { toJob, toJobMatch } from '../shapes.js';
 import { runJobAlertsInBackground } from '../notify/job-alerts.js';
+import { normaliseWalkinBody, checkWalkin } from '../portal/walkin-jobs.js';
+import { kickWalkinNotices } from '../notify/walkin-jobs.js';
 
 const strArr = z.array(z.string().trim().max(200)).max(60).optional();
 
@@ -63,6 +65,14 @@ const jobSchema = z.object({
   walkinVenue:   z.string().trim().max(400).optional().or(z.literal('')),
   walkinContact: z.string().trim().max(120).optional().or(z.literal('')),
   walkinPhone:   z.string().trim().max(32).optional().or(z.literal('')),
+  /* 0106. The rest of a walk-in: where exactly, a map, what to bring,
+     anything else to know, and how many seats. */
+  walkinAddress:      z.string().trim().max(600).optional().or(z.literal('')),
+  walkinMapLink:      z.string().trim().max(600).optional().or(z.literal('')),
+  walkinDocuments:    z.string().trim().max(2000).optional().or(z.literal('')),
+  walkinInstructions: z.string().trim().max(2000).optional().or(z.literal('')),
+  walkinCapacity:     z.union([z.coerce.number().int().min(1).max(100000), z.literal(''), z.null()]).optional()
+    .transform((v) => (v === '' ? null : v)),
 
   internshipDuration: z.string().trim().max(40).optional().or(z.literal('')),
   internshipType:     z.enum(['Paid', 'Unpaid']).optional().or(z.literal('')),
@@ -115,6 +125,9 @@ const COLS = {
   walkinDate: 'walkin_date', walkinFrom: 'walkin_from', walkinTo: 'walkin_to',
   walkinVenue: 'walkin_venue', walkinContact: 'walkin_contact',
   walkinPhone: 'walkin_phone',
+  walkinAddress: 'walkin_address', walkinMapLink: 'walkin_map_link',
+  walkinDocuments: 'walkin_documents', walkinInstructions: 'walkin_instructions',
+  walkinCapacity: 'walkin_capacity',
   internshipDuration: 'internship_duration', internshipType: 'internship_type',
   stipend: 'stipend',
 };
@@ -184,7 +197,9 @@ export default function jobRoutes() {
   }));
 
   r.post('/jobs', requireAuth(), requireRole('recruiter', 'admin'), wrap(async (req, res) => {
-    const body = parse(jobSchema, req.body);
+    const body = parse(jobSchema, normaliseWalkinBody(req.body));
+    // 0106: a walk-in is checked here, whichever screen sent it.
+    checkWalkin(body, null);
     const id = (req.body && req.body.id) || newJobId();
 
     /*
@@ -324,10 +339,20 @@ export default function jobRoutes() {
 
   /** Edit. Updates in place — never inserts, never changes the id. */
   r.put('/jobs/:id', requireAuth(), requireRole('recruiter', 'admin'), wrap(async (req, res) => {
-    const body = parse(jobSchema, req.body);
+    const body = parse(jobSchema, normaliseWalkinBody(req.body));
     const id = req.params.id;
 
     const job = await withUser(req.session, async (c) => {
+      // 0106: what the walk-in was before this edit, so only a CHANGE is
+      // held to today's rules (a date may not move into the past; a full
+      // address is needed once the details are edited).
+      const before = (await c.query(
+        `select posting_kind, status, walkin_date, walkin_from, walkin_to, walkin_venue,
+                walkin_address, walkin_map_link, walkin_documents, walkin_instructions,
+                walkin_contact, walkin_phone, walkin_capacity,
+                walkin_registered_count(id) as registered
+           from jobs where id=$1`, [id])).rows[0];
+      if (before) checkWalkin(body, before);
       const sets = [], vals = [];
       for (const [k, col] of Object.entries(COLS)) {
         if (body[k] !== undefined) { vals.push(body[k]); sets.push(`${col}=$${vals.length}`); }
@@ -346,6 +371,8 @@ export default function jobRoutes() {
       return rows[0];
     });
 
+    // A walk-in closed before its date tells its applicants (0106).
+    kickWalkinNotices();
     res.json({ job: toJob(job) });
   }));
 
@@ -375,6 +402,7 @@ export default function jobRoutes() {
     // second publish re-runs the matching but will not message anybody
     // who was already told about this job.
     if (publish) runJobAlertsInBackground(req.params.id);
+    else kickWalkinNotices();
 
     res.json({ job: toJob(job), alerting: publish });
   }));

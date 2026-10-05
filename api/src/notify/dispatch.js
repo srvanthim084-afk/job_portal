@@ -15,6 +15,7 @@ import { config } from '../config.js';
 import { withUser } from '../db.js';
 import { providers } from './providers.js';
 import { buildMessages } from './templates.js';
+import { walkinOf } from '../portal/walkin-jobs.js';
 
 const INVITE_HOURS = 48;   // "expiry (2 days from application)"
 
@@ -37,7 +38,10 @@ export async function dispatchInterviewNotifications(session, {
       `select cand.name, cand.email, cand.phone,
               cand.email_verified, cand.mobile_verified, cand.whatsapp_opt_in,
               j.title as job_title, co.name as company_name,
-              a.source
+              a.source, a.reference,
+              j.posting_kind, j.walkin_date, j.walkin_from, j.walkin_to, j.walkin_venue,
+              j.walkin_address, j.walkin_map_link, j.walkin_documents, j.walkin_instructions,
+              j.walkin_contact, j.walkin_phone
          from applications a
          join candidates cand on cand.id = a.candidate_id
          join jobs j          on j.id    = a.job_id
@@ -67,6 +71,8 @@ export async function dispatchInterviewNotifications(session, {
     interviewUrl,
     expiry,
     appliedAt,
+    walkin: walkinOf(meta),
+    reference: meta.reference || null,
   });
 
   // ---- 2. decide which channels apply ---------------------------------

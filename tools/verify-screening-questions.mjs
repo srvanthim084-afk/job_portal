@@ -21,6 +21,7 @@
  * (nothing else may be listening on the sink port).
  */
 import { chromium } from 'playwright';
+import { completeApplyForm, closeApplyForm } from './lib/apply-form.mjs';
 import { SMTPServer } from 'smtp-server';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -151,38 +152,34 @@ async function candidateApplies(name, relocate, mobile) {
     if (!b) return false; b.click(); return true;
   });
   must(clicked, 'no Apply button');
-  /* What stands before the questions for a brand-new candidate: one-click
-     apply's "Fill N things to apply" (no resume yet) or, for a complete but
-     thin profile, the resume-score hint. Past each the way a candidate in a
-     hurry would go. */
-  for (let i = 0; i < 4; i++) {
-    const at = await p.waitForSelector('#tlsqApply .tlsq-q, #tlpuWithout, #tlrsApplyAnyway', { timeout: 15000 });
-    const id = await at.evaluate((e) => e.id);
-    if (id !== 'tlpuWithout' && id !== 'tlrsApplyAnyway') break;
-    await at.click(); await p.waitForTimeout(800);
-  }
-  await p.waitForSelector('#tlsqApply .tlsq-q', { timeout: 15000 });
-  const prog = await p.textContent('#tlsqApply .tlsq-progtext');
+  /* Since 0106 the questions are a section of the one application form
+     (teamlink-walkin-jobs.js, "A few quick questions"), with the same
+     answer form and checks. */
+  await p.waitForSelector('#tlafQs .tlsq-q', { timeout: 15000 });
+  const prog = await p.textContent('#tlafQs .tlsq-progtext');
   must(/of 6 answered/.test(prog), 'no progress line: ' + prog);
   must(/[1-9] of 6/.test(prog), 'nothing was pre-filled: ' + prog);
   const fill = async (re, fn) => {
     const qid = await p.evaluate((src) => {
       const r2 = new RegExp(src, 'i');
-      const el = Array.from(document.querySelectorAll('#tlsqApply [data-q]')).find((d) => r2.test(d.querySelector('label.t').textContent));
+      const el = Array.from(document.querySelectorAll('#tlafQs [data-q]')).find((d) => r2.test(d.querySelector('label.t').textContent));
       return el ? el.getAttribute('data-q') : null;
     }, re.source);
     must(qid, 'question not found: ' + re);
-    await fn(`#tlsqApply [data-q="${qid}"]`);
+    await fn(`#tlafQs [data-q="${qid}"]`);
   };
   await fill(/current CTC/, (s) => p.fill(`${s} input`, '3'));
   await fill(/located/, (s) => pickPlace(p, s, 'Hyderab', 'Hyderabad', `2-places${mobile ? '-mobile' : ''}`));
   await fill(/willing to work/, (s) => p.click(`${s} [data-set="${relocate}"]`));
   await fill(/another consultancy/, (s) => p.click(`${s} [data-set="no"]`));
   await p.waitForTimeout(200);
-  must(/6 of 6 answered/.test(await p.textContent('#tlsqApply .tlsq-progtext')), 'not all answered');
+  must(/6 of 6 answered/.test(await p.textContent('#tlafQs .tlsq-progtext')), 'not all answered');
   await shot(p, `2-apply-${relocate}${mobile ? '-mobile' : ''}`);
-  await p.click('#tlsqSubmit');
-  await p.waitForTimeout(3500);
+  /* the rest of the form: whatever the new profile does not have yet */
+  const done = await completeApplyForm(p);
+  must(done.state === 'done', 'form: ' + JSON.stringify(done));
+  await closeApplyForm(p);
+  await p.waitForTimeout(1500);
   await wizardAway(p);
   const apps = await p.evaluate((id) => TL.api.get('/applications').then((o) => o.applications.filter((a) => a.jobId === id)), job.id);
   must(apps.length === 1, 'not applied');

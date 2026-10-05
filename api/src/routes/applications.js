@@ -128,9 +128,22 @@ export default function applicationRoutes() {
       }
 
       const dupe = await c.query(
-        `select id from applications where candidate_id=$1 and job_id=$2`, [candidateId, body.jobId]);
+        `select id, reference from applications where candidate_id=$1 and job_id=$2`, [candidateId, body.jobId]);
       if (dupe.rowCount) {
-        throw new ApiError(409, CODES.DUPLICATE_APPLICATION, 'You have already applied to this role.');
+        // 0106: the existing Application ID, so the candidate can quote it.
+        throw new ApiError(409, CODES.DUPLICATE_APPLICATION, 'You have already applied for this position.',
+          { applicationId: dupe.rows[0].reference || dupe.rows[0].id, jobId: body.jobId });
+      }
+
+      // 0106: a walk-in that has ended, or whose seats are taken, is decided
+      // here - at save time, under a lock on the job row - so two people
+      // pressing Submit for the last seat cannot both get it.
+      const walkin = (await c.query(`select walkin_apply_check($1) as v`, [body.jobId])).rows[0].v;
+      if (walkin === 'closed') {
+        throw new ApiError(409, CODES.JOB_UNAVAILABLE, 'This walk-in is closed - its date and time have passed.', { reason: 'walkin_closed' });
+      }
+      if (walkin === 'full') {
+        throw new ApiError(409, 'WALKIN_FULL', 'Registrations full - every seat for this walk-in is taken.', { reason: 'walkin_full' });
       }
 
       const id = newId('app');
