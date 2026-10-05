@@ -83,7 +83,7 @@ async function job(client, over = {}, extra = {}) {
 const walkinJob = (client, { date, from = '10:00', to = '16:00', title = 'Walk-in: Support Executive', venue = 'Hotel Grand', companyId } = {}, extra = {}) =>
   job(client, {
     title, postingKind: 'walkin', type: 'Walk-in', walkinDate: date, walkinFrom: from, walkinTo: to,
-    walkinVenue: venue, walkinContact: 'Ravi', walkinPhone: '9000011111', ...(companyId ? { companyId } : {}),
+    walkinVenue: venue, walkinAddress: '12 Trunk Road, Ameerpet', walkinContact: 'Ravi', walkinPhone: '9000011111', ...(companyId ? { companyId } : {}),
   }, { walkin_address: '12 Trunk Road, Ameerpet', walkin_map_link: 'https://maps.google.com/?q=Hotel+Grand', ...extra });
 
 async function apply(cand, jobId) {
@@ -602,8 +602,10 @@ test('23.20 #16 / #19 reschedule: history keeps old/new, one combined message pe
 
   // past dates are not a reschedule
   const past = await put({ walkinDate: istDay(-1) });
-  assert.equal(past.status, 400);
-  assert.equal(past.body.error.code, 'WALKIN_DATE_IN_PAST');
+  assert.equal(past.status, 400, 'refused by the form rules (0106) and, underneath, by the database (0107)');
+  assert.match(past.body.error.message, /past/);
+  // the database guard on its own, whatever route edits the job
+  await assert.rejects(() => raw(`with s as (select set_config('app.role', 'recruiter', true) x) update jobs set walkin_date = $2 from s where id = $1`, [RS, istDay(-1)]), /cannot be moved into the past/);
   // #19: hours after the ORIGINAL end time (day 2, 16:00) the drive is now on day 4 - nobody is a No Show
   await ats.runNoShows({ now: at(istDay(2), 19) });
   const rsApps = (await raw(`select stage from applications where job_id=$1`, [RS])).rows;
@@ -736,10 +738,11 @@ test('23.20 #24 a job with 160 applicants: paginated, searched, fast', async () 
 });
 
 test('the existing interview scheduling does not break on a walk-in application', async () => {
-  const st = (await raw(`select stage from applications where id=$1`, [aW4.id])).rows[0].stage;
+  const stageOf = async () => (await RA.get(`/api/ats/applications/${aW4.id}`)).body.application.stage;
+  const st = await stageOf();
   const r = await RA.post('/api/interviews', { candidateId: C4.id, jobId: LATER, date: istDay(3), time: '11:00', mode: 'In Person' });
   assert.ok(r.status < 300, JSON.stringify(r.body));
-  assert.equal((await raw(`select stage from applications where id=$1`, [aW4.id])).rows[0].stage, st,
+  assert.equal(await stageOf(), st,
     'a regular-pipeline move nobody asked for does not apply to a walk-in');
 });
 

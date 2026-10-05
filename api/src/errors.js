@@ -96,7 +96,7 @@ export function fromPgError(err) {
 
   if (c === '23505') {
     if (constraint.includes('applications_candidate_id_job_id'))
-      return conflict(CODES.DUPLICATE_APPLICATION, 'You have already applied to this role.');
+      return conflict(CODES.DUPLICATE_APPLICATION, 'You have already applied for this position.');
     if (constraint.includes('applications_one_primary'))
       return conflict(CODES.DUPLICATE_APPLICATION, 'This candidate already has a primary application.');
     if (constraint.includes('users_email') || constraint.includes('email_lower'))

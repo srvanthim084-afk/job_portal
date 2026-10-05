@@ -11,6 +11,7 @@ no second ATS, no walk-in database and no new navigation item.
 | Routes (applicants, details, stages, check-in, notes, ratings, resume, export, history, settings, candidate status) | `api/src/routes/walkin-ats.js` |
 | The clock: No Show, reminders, reschedules, recruiter alerts, decision messages | `api/src/notify/walkin-ats.js` |
 | Screens (inside Manage Jobs → View Applicants, admin All jobs, candidate My Applications) | `web/teamlink-walkin-ats.js` |
+| Load order | `teamlink-walkin-ats.js` just before `teamlink-walkin-jobs.js` (W1's must stay last) |
 | Small anchored edits | `api/src/app.js` (mount + sweep), `api/src/errors.js` (TLW codes), `api/src/routes/applications.js` (PUT status: version, reason, no auto-message for walk-ins), `api/src/routes/bootstrap.js` (walk-in-only stages kept out of `DATA.stages`), `api/src/shapes.js` (application fields; candidate-level stage equivalents), `api/src/routes/uploads.js` (resume download log), `web/index.html` (one script line) |
 | API tests | `api/test/walkin-ats.test.mjs` |
 | Browser check | `tools/verify-walkin-ats.mjs` |
@@ -28,8 +29,9 @@ no second ATS, no walk-in database and no new navigation item.
   and *Missed*; while the drive is upcoming it shows the Application ID, date, time, venue,
   address, contact, documents, map link and a **QR code of the Application ID**. The QR code is
   drawn by `qrcode-generator@1.4.4` loaded lazily from `cdn.jsdelivr.net` (the one CDN the CSP
-  already allows); if it cannot load, only the ID text is shown. `TLWalkinAts.qrDataUrl(ref)` is
-  exposed for the confirmation screen (W1) to reuse.
+  already allows); if it cannot load, only the ID text is shown. The same QR code is added under the
+  Application ID on W1's walk-in success screen (`#tlafRef`, by an observer - W1's file is untouched);
+  `TLWalkinAts.qrDataUrl(ref)` is exposed for any other screen.
 
 ## 23.21 Deliverables
 
@@ -174,11 +176,7 @@ past is refused (`WALKIN_DATE_IN_PAST`) — close the job instead. A failed send
   older screen that calls `stageBadge(app.stage)` for a walk-in application (e.g. Admin → All
   applications) still prints "Not applied yet". Next step: make `stageBadge` take the application
   (or a `kind`) and distinguish the two.
-* **Old Walk-in Drives data**: W1 migrates registrations into applications in 0106, which runs
-  before the walk-in stages exist; any migrated application at Applied becomes Registered here.
-  An ATTENDED / NO_SHOW status from `walkin_registrations` is not carried over (the mapping between
-  W1's rows and the old registrations is W1's); next step: after both merge, one UPDATE joining
-  `walkin_registrations` to the migrated applications.
+* **Old Walk-in Drives data** is moved by W1 at boot (0106 `walkin_drives_migrate()`), after 0107 exists: REGISTERED / ATTENDED / NO_SHOW land on the walk-in stages directly; `aa_walkin_ats_insert` keeps a walk-in stage given on insert and turns anything else into Registered.
 * **Application form fields** (current salary, qualification, specialization…) are read from the
   candidate record and `candidate_education`. If W1 stores per-application snapshots elsewhere,
   `APPLICANT_BODY` in `routes/walkin-ats.js` should prefer them.

@@ -28,6 +28,8 @@
  * "Location:" and nothing else reads as broken software.
  */
 
+import { walkinFacts } from '../portal/walkin-jobs.js';
+
 const SIGN_OFF = 'Regards,\nTeamLink Consultants\nRecruitment Team';
 const HELP = 'If you have any questions, please contact our recruitment team.';
 
@@ -273,11 +275,24 @@ export const MESSAGES = {
   },
 
   APPLICATION_SUBMITTED: {
-    subject: (c) => `Application Submitted – ${c.jobTitle}`,
-    body: (c) => `Your application for the ${c.jobTitle} position has been successfully `
-      + 'submitted using your registered TeamLink resume.',
-    facts: (c) => [...jobFacts(c), ['Applied On', c.applicationDate]],
-    instruction: () => 'You can track your application status from your candidate portal.',
+    subject: (c) => (c.walkin ? `Walk-in Registration Confirmed – ${c.jobTitle}` : `Application Submitted – ${c.jobTitle}`),
+    body: (c) => (c.walkin
+      ? `Your application for the ${c.jobTitle} walk-in interview has been received. `
+        + 'Please come to the venue on the date and time below.'
+      : `Your application for the ${c.jobTitle} position has been successfully `
+        + 'submitted using your registered TeamLink resume.'),
+    /* 0106: the Application ID always, and a walk-in's date, time, venue,
+       address, map, documents and contact - from the job's own record.
+       A walk-in names the role and the place, not the company. */
+    facts: (c) => [
+      ...(c.walkin ? jobFacts({ ...c, company: '' }) : jobFacts(c)),
+      ['Application ID', c.reference],
+      ['Applied On', c.applicationDate],
+      ...walkinFacts(c.walkin),
+    ],
+    instruction: (c) => (c.walkin
+      ? 'Carry this Application ID with you. You can track your application from your candidate portal.'
+      : 'You can track your application status from your candidate portal.'),
     cta: (c) => ({ label: 'Track Application', url: c.portalUrl }),
   },
 };

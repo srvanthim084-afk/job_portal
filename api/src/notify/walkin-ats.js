@@ -34,7 +34,7 @@ import { channelSettings } from './channel-settings.js';
 import { emailLayout } from './layout.js';
 import { inQuietHours } from './saved-search-alerts.js';
 import { toCandidate } from '../shapes.js';
-import { istDate, istHour, addDays, time12, dateLabel, driveInstant } from './walkin.js';
+import { istDate, istHour, addDays, time12, dateLabel, walkinInstant } from '../portal/walkin-jobs.js';
 
 export const ENGINE = { userId: '', role: 'admin', profileId: null };
 const EXTERNAL = ['email', 'sms', 'whatsapp'];
@@ -407,7 +407,7 @@ export async function runReminders({ now = Date.now() } = {}) {
      and a.stage = 'registered' and j.walkin_date in ($1, $2)`, [today, tomorrow]));
   for (const ctx of due) {
     const d = ctx.details;
-    if (now >= driveInstant(d.date, d.to || '23:59')) continue;
+    if (now >= walkinInstant(d.date, d.to || '23:59')) continue;
     if (now - new Date(ctx.app.applied_at).getTime() < RECENT_MS) continue;
     const key = `${d.date}@${d.from || ''}`;
     let kind = null;

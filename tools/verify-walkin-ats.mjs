@@ -114,7 +114,7 @@ const mkJob = async (body) => {
   return r.v.job;
 };
 const WJ = await mkJob({ title: `Walk-in Support Executive ${stamp}`, postingKind: 'walkin', type: 'Walk-in',
-  walkinDate: today, walkinFrom: from, walkinTo: to, walkinVenue: 'Hotel Grand, Hall A', walkinContact: 'Ravi', walkinPhone: '9000011111' });
+  walkinDate: today, walkinFrom: from, walkinTo: to, walkinVenue: 'Hotel Grand, Hall A', walkinAddress: '12 Trunk Road, Ameerpet, Hyderabad', walkinContact: 'Ravi', walkinPhone: '9000011111' });
 const RJ = await mkJob({ title: `Regular Accounts Assistant ${stamp}`, type: 'Full-time' });
 
 const cands = [];

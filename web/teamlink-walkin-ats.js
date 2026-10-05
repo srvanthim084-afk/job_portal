@@ -899,6 +899,25 @@
     return out;
   };
 
+  /* The walk-in success screen (teamlink-walkin-jobs.js, W1) gets a QR code of
+     the Application ID under the ID, for a quick check-in at the venue. */
+  try {
+    new MutationObserver(function () {
+      var ref = document.getElementById('tlafRef');
+      var done = document.getElementById('tlafDone');
+      if (!ref || !done || ref.getAttribute('data-tlwa') || !/Walk-in Interview/.test(done.textContent)) return;
+      ref.setAttribute('data-tlwa', '1');
+      var code = ref.textContent.trim();
+      qrDataUrl(code).then(function (u) {
+        var d = document.createElement('div');
+        d.className = 'tlwa-qr';
+        d.style.cssText = 'margin:8px auto 0;text-align:center';
+        d.innerHTML = '<img alt="QR code of your Application ID" src="' + u + '"><div class="tlwa-small">Show this at the venue for a quick check-in.</div>';
+        ref.parentNode.insertBefore(d, ref.nextSibling);
+      }, function () { /* the ID text is enough */ });
+    }).observe(document.body, { childList: true, subtree: true });
+  } catch (e) { /* no observer, no QR */ }
+
   var css = document.createElement('style');
   css.textContent = [
     '.tlwa-head{display:flex;gap:12px;align-items:flex-start;margin-bottom:12px}.tlwa-head h2{margin:0;font-size:18px}',

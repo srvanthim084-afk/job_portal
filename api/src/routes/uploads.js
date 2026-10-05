@@ -171,6 +171,13 @@ export default function uploadRoutes() {
       }
       if (!candidateId) throw badRequest('No candidate specified.');
 
+      /* 0106: the application form takes a resume as PDF, DOC or DOCX
+         only. storeResume() below still checks the bytes match the name,
+         so a renamed executable is refused either way. */
+      if (req.body?.purpose === 'apply' && !/\.(pdf|docx?)$/i.test(String(req.file.originalname || ''))) {
+        throw new ApiError(415, CODES.UNSUPPORTED_FILE, 'Please upload your resume as a PDF, DOC or DOCX file.');
+      }
+
       // validates magic bytes, size and extension consistency
       const stored = await storeResume({
         candidateId,
