@@ -32,29 +32,33 @@ await page.waitForFunction(() => window.TL && window.TL.ready === true, { timeou
 await page.evaluate(() => { location.hash = '#/register/candidate'; });
 await page.waitForTimeout(1200);
 
-/* ---- the sections, in the order they are on the page -------------- */
-const sections = await page.evaluate(() =>
-  [...document.querySelectorAll('#registerForm .panel-head h2')].map((h) => ({
+/* ---- the steps, and the resume at the very top of the first ------- *
+ * 0109 (intentional change): the form is the owner's seven steps -
+ * Basic, Education, Experience, Preferences, Resume, Account, Review -
+ * and stays resume-first: the upload is the first thing in step 1,
+ * above the fields it fills. Step 5 is where the resume is checked,
+ * replaced, removed or downloaded.
+ */
+const steps = await page.evaluate(() =>
+  [...document.querySelectorAll('#registerForm .tlr-step .tlr-step-head h2')].map((h) => ({
     num: (h.querySelector('.reg-section-num') || {}).textContent || '',
     title: h.textContent.replace(/^\d+/, '').trim(),
-    top: h.getBoundingClientRect().top + window.scrollY,
   })));
-
-check(sections.length === 5, `the five sections are all there (${sections.length})`);
-check(sections[0] && /Resume/i.test(sections[0].title),
-  `Resume is the FIRST section (${sections.map((s) => s.title).join(' > ')})`);
-check(sections[0] && sections[0].num === '1', `and it is numbered 1 (${sections[0] && sections[0].num})`);
-check(JSON.stringify(sections.map((s) => s.num)) === JSON.stringify(['1', '2', '3', '4', '5']),
-  `the numbering runs 1-5 with no repeat or gap (${sections.map((s) => s.num).join(',')})`);
-
-/* The order on screen, not only in the markup. */
-const resumeTop = sections[0] ? sections[0].top : 0;
-const personal = sections.find((s) => /Personal/i.test(s.title));
-const professional = sections.find((s) => /Professional/i.test(s.title));
-check(personal && resumeTop < personal.top,
-  'the upload is physically above Personal Information on the page');
-check(professional && resumeTop < professional.top,
-  'and above Professional Information');
+check(steps.length === 7, `the seven steps are all there (${steps.length})`);
+check(JSON.stringify(steps.map((s) => s.num)) === JSON.stringify(['1', '2', '3', '4', '5', '6', '7']),
+  `the numbering runs 1-7 with no repeat or gap (${steps.map((s) => s.num).join(',')})`);
+const order = await page.evaluate(() => {
+  const s1 = document.getElementById('tlrStep1');
+  const panels = [...s1.querySelectorAll(':scope > .panel')];
+  const top = (el) => el.getBoundingClientRect().top + window.scrollY;
+  const personal = panels.find((p) => /Personal/i.test(p.textContent));
+  return { first: panels[0] && panels[0].classList.contains('ai-panel'),
+    above: panels[0] && personal && top(panels[0]) < top(personal),
+    nameBelow: top(panels[0]) < top(document.getElementById('regName')) };
+});
+check(order.first, 'the resume upload is the FIRST panel of step 1');
+check(order.above, 'the upload is physically above Personal Information on the page');
+check(order.nameBelow, 'and above the fields it fills');
 
 /* ---- the promise it makes now matches where it is ----------------- */
 const copy = await page.evaluate(() => {

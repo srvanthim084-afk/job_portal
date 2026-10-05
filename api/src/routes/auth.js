@@ -17,6 +17,12 @@ import {
   setSessionCookie, clearSessionCookie, issueCsrfToken, requireAuth,
 } from '../auth.js';
 import { toCandidate, toPerson } from '../shapes.js';
+/* 0109: the multi-step registration - consent, the Candidate ID, one
+   account per mobile, sign-up and sign-in abuse limits, the welcome. */
+import {
+  registrationSettings, windowCounter, originOf, validIndianMobile,
+} from '../registration/settings.js';
+import { queueWelcome } from '../notify/registration-messages.js';
 
 /*
  * AN ADDRESS OR A MOBILE NUMBER.
@@ -50,7 +56,21 @@ const registerSchema = z.object({
     .max(200)
     .refine((p) => /[A-Za-z]/.test(p) && /\d/.test(p),
       'Password must contain at least one letter and one number.'),
-  phone: z.string().trim().max(32).optional().or(z.literal('')),
+  phone: z.string().trim().max(32).optional().or(z.literal(''))
+    /* 0109: a number, when one is given, is a real Indian mobile - the
+       duplicate check compares the last ten digits, and "12345" has none
+       to compare. */
+    .refine((v) => !v || validIndianMobile(v), 'Please enter a valid 10-digit mobile number.'),
+  /* 0109: checked when the form sends it (the form always does). */
+  confirmPassword: z.string().max(200).optional(),
+  /* 0109: what the candidate ticked. Stored with the configured version. */
+  consent: z.object({
+    terms: z.boolean().optional(),
+    communication: z.boolean().optional(),
+    resumeProcessing: z.boolean().optional(),
+  }).optional(),
+  /* A field no person can see or fill. Anything in it is a script. */
+  website: z.string().max(200).optional(),
 
   /*
    * THE FOUR PREFERENCES THE FORM MARKS WITH AN ASTERISK.
@@ -177,14 +197,41 @@ export default function authRoutes() {
       'Too many sign-in attempts from this connection. Please wait a few minutes.')),
   });
 
+  /*
+   * 0109: ONE ACCOUNT, FROM ANYWHERE. The limiters above count per origin;
+   * a list of proxies each guessing a few times at one account got past
+   * both. Wrong passwords for one account are counted across origins too,
+   * and past LOGIN_ACCOUNT_LOCK_MAX the account waits out the window. A
+   * correct password clears the count. (Sized well above what one person
+   * mistyping does, so a stranger cannot cheaply lock somebody out.)
+   */
+  let accountFails = null;
+  const lockKey = (v) => String(v || '').trim().toLowerCase();
+
   r.post('/auth/login', loginOriginLimiter, loginLimiter, wrap(async (req, res) => {
     const { email, password, role } = parse(loginSchema, req.body);
 
-    const { token, expires, session } = await login({
-      email, password,
-      userAgent: req.get('user-agent'),
-      ip: req.ip,
-    });
+    const lock = registrationSettings();
+    if (!accountFails) accountFails = windowCounter(lock.loginLockMinutes * 60 * 1000);
+    if (lock.loginLockMax > 0 && accountFails.count(lockKey(email)) >= lock.loginLockMax) {
+      throw new ApiError(429, CODES.RATE_LIMITED,
+        'This account is temporarily locked after too many incorrect passwords. '
+        + `Please wait ${lock.loginLockMinutes} minutes, or reset your password.`);
+    }
+
+    let signedIn;
+    try {
+      signedIn = await login({
+        email, password,
+        userAgent: req.get('user-agent'),
+        ip: req.ip,
+      });
+    } catch (err) {
+      if (err && err.code === CODES.INVALID_CREDENTIALS) accountFails.hit(lockKey(email));
+      throw err;
+    }
+    accountFails.clear(lockKey(email));
+    const { token, expires, session } = signedIn;
 
     // The prototype has a separate login screen per role. If someone signs
     // in from the recruiter screen with candidate credentials, say so
@@ -213,16 +260,80 @@ export default function authRoutes() {
     });
   }));
 
+  /*
+   * 0109: SIGN-UP ABUSE. Attempts per origin per hour, and REFUSED
+   * attempts per origin per hour - a script walking a list of addresses
+   * to learn which are registered is refused every time, and after
+   * REGISTER_FAILURE_MAX of those it is made to wait. Both limits come
+   * from the environment (registration/settings.js).
+   */
+  const regAttempts = windowCounter(60 * 60 * 1000);
+  const regFailures = windowCounter(60 * 60 * 1000);
+
   r.post('/auth/register', loginOriginLimiter, loginLimiter, wrap(async (req, res) => {
+    const reg = registrationSettings();
+    const origin = originOf(req);
+    if (regFailures.count(origin) >= reg.registerFailureMax) {
+      throw new ApiError(429, CODES.RATE_LIMITED,
+        'Too many unsuccessful sign-up attempts from this connection. Please wait an hour and try again.');
+    }
+    if (regAttempts.hit(origin) > reg.registerMax) {
+      throw new ApiError(429, CODES.RATE_LIMITED,
+        'Too many sign-ups from this connection. Please try again later.');
+    }
+    try {
+      return await registerOne(req, res, reg);
+    } catch (err) {
+      if (err && (err.status === 400 || err.status === 409)) regFailures.hit(origin);
+      throw err;
+    }
+  }));
+
+  async function registerOne(req, res, reg) {
     const { name, email, password, phone,
             preferredLocation, expectedCtc, noticePeriod,
-            preferredWorkModes, availability, preferredLanguage } = parse(registerSchema, req.body);
+            preferredWorkModes, availability, preferredLanguage,
+            confirmPassword, consent, website } = parse(registerSchema, req.body);
+
+    if (website) throw badRequest('Please check the highlighted fields and try again.');
+
+    /* 0109: the checks the form makes, made again here. */
+    const problems = {};
+    if (confirmPassword !== undefined && confirmPassword !== password) {
+      problems.confirmPassword = 'Passwords do not match.';
+    }
+    const declined = (k) => !!consent && consent[k] === false;
+    const missing = (k) => reg.consentRequired && !(consent && consent[k] === true);
+    if (declined('terms') || missing('terms')) {
+      problems['consent.terms'] = 'Please accept the Terms & Conditions and Privacy Policy.';
+    }
+    if (declined('communication') || missing('communication')) {
+      problems['consent.communication'] = 'Please agree to receive recruitment communication from TeamLink.';
+    }
+    if (Object.keys(problems).length) {
+      throw badRequest('Please check the highlighted fields and try again.', problems);
+    }
 
     // Human-readable ids, matching the prototype's 'cand1' style, so
     // anything that renders an id keeps looking the same.
     const candidateId = 'cand_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
-    await registerCandidate({ email, password, name, phone, candidateId });
+    try {
+      await registerCandidate({ email, password, name, phone, candidateId });
+    } catch (err) {
+      /* The owner's words, against the field they belong to. */
+      if (/email_taken/.test((err && err.message) || '')) {
+        throw new ApiError(409, CODES.EMAIL_TAKEN,
+          'An account with this email already exists. Please Login.',
+          { email: 'An account with this email already exists. Please Login.' });
+      }
+      if (/phone_taken/.test((err && err.message) || '')) {
+        throw new ApiError(409, 'PHONE_TAKEN',
+          'An account with this mobile number already exists.',
+          { phone: 'An account with this mobile number already exists.' });
+      }
+      throw err;
+    }
 
     /*
      * The preferences, onto the record that now exists.
@@ -249,14 +360,32 @@ export default function authRoutes() {
       await withUser(session, (c) => c.query(
         `update candidates set preferred_language = $1 where id = app_candidate_id()`, [preferredLanguage]));
     }
+    /* 0109: what they agreed to, with the wording's version, on the
+       record that now exists. Only what was ticked is written. */
+    if (consent && (consent.terms || consent.communication || consent.resumeProcessing)) {
+      await withUser(null, (c) => c.query(
+        `select auth_register_consents($1,$2,$3,$4,$5,$6)`,
+        [candidateId, reg.consentVersion, reg.privacyPolicyUrl || null,
+         !!consent.terms, !!consent.communication, !!consent.resumeProcessing]));
+    }
+    /* The Candidate ID the trigger gave them, read as themselves. */
+    const candidateCode = await withUser(session, async (c) => {
+      const { rows } = await c.query(`select candidate_code from candidates where id = $1`, [candidateId]);
+      return rows[0] ? rows[0].candidate_code : null;
+    });
+
     setSessionCookie(res, token, expires);
     issueCsrfToken(res);
+
+    /* Not awaited: a slow mail server must not hold up the new account. */
+    queueWelcome(candidateId);
 
     res.status(201).json({
       session: { role: session.role, id: session.profileId, email: session.email },
       candidateId,
+      candidateCode,
     });
-  }));
+  }
 
   r.post('/auth/logout', wrap(async (req, res) => {
     await logout(req.sessionToken);

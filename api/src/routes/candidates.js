@@ -1633,6 +1633,23 @@ export default function candidateRoutes() {
       additionalInfo: z.string().max(2000).optional(),
       /* 0102: English, Telugu or Hindi - what TeamLink talks to them in. */
       preferredLanguage: z.enum(['en', 'te', 'hi']).optional(),
+      /* 0109: the multi-step registration's fields (0057 columns where one
+         existed, 0109 columns where none did). */
+      firstName: z.string().trim().max(80).optional(),
+      middleName: z.string().trim().max(80).optional(),
+      lastName: z.string().trim().max(80).optional(),
+      dateOfBirth: z.string().max(10).optional(),
+      whatsappNumber: z.string().trim().max(32).optional(),
+      altEmail: z.string().trim().max(254).optional()
+        .refine((v) => !v || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v), 'Please enter a valid email address.'),
+      city: z.string().trim().max(120).optional(),
+      state: z.string().trim().max(120).optional(),
+      country: z.string().trim().max(80).optional(),
+      relevantExpYears: z.number().min(0).max(60).optional(),
+      preferredEmploymentTypes: z.array(z.string().max(40)).max(10).optional(),
+      emailOptIn: z.boolean().optional(),
+      smsOptIn: z.boolean().optional(),
+      preferredContactMethod: z.string().max(80).optional(),
     });
     const out = schema.safeParse(req.body || {});
     if (!out.success) {
@@ -1662,10 +1679,16 @@ export default function candidateRoutes() {
       immediateJoiner: 'immediate_joiner', willingToRelocate: 'willing_to_relocate',
       relocationLocation: 'relocation_location', additionalInfo: 'additional_info',
       preferredLanguage: 'preferred_language',
+      /* 0109 */
+      firstName: 'first_name', middleName: 'middle_name', lastName: 'last_name',
+      dateOfBirth: 'date_of_birth', whatsappNumber: 'whatsapp_number', altEmail: 'alt_email',
+      city: 'city', state: 'state', country: 'country', relevantExpYears: 'relevant_exp_years',
+      preferredEmploymentTypes: 'preferred_employment_types', emailOptIn: 'email_opt_in',
+      smsOptIn: 'sms_opt_in', preferredContactMethod: 'preferred_contact_method',
     };
     /* jsonb columns take JSON text; a blank date is no date. */
     const JSONB = { projects: 1, internships: 1, achievements: 1, otherLinks: 1 };
-    const DATES = { availableFrom: 1, preferredJoiningDate: 1 };
+    const DATES = { availableFrom: 1, preferredJoiningDate: 1, dateOfBirth: 1 };
 
     /*
      * The row lists first (0080), through the definer function - both

@@ -67,6 +67,9 @@ import sharedCandidateRoutes, { engagementRefusalAudit } from './routes/shared-c
 import availabilityRoutes from './routes/availability.js';
 import { startAvailabilitySweep } from './notify/availability-checks.js';
 import { startOutboundHoldSweep } from './notify/apply-hold.js';
+/* 0109: multi-step registration, documents, privacy; welcome + reminder. */
+import registrationRoutes from './routes/registration.js';
+import { startRegistrationSweep } from './notify/registration-messages.js';
 /* 0107: the walk-in ATS (stages, check-in, notes, ratings, resumes, No Show, reminders). */
 import walkinAtsRoutes, { walkinAtsKick } from './routes/walkin-ats.js';
 import { startWalkinAtsSweep } from './notify/walkin-ats.js';
@@ -139,6 +142,9 @@ function startBackgroundWork(logger) {
     /* One-click apply (0104): candidate messages held through the Undo
        window that a restart left unsent. */
     backgroundStops.push(startOutboundHoldSweep());
+    /* 0109: the one profile reminder after registering, and retries of a
+       welcome email that failed. Idempotent per candidate and message. */
+    backgroundStops.push(startRegistrationSweep());
     /* Walk-in ATS (0107): No Show after end + grace, day-before / morning
        reminders, settled reschedules, recruiter alerts. Every minute, idempotent. */
     backgroundStops.push(startWalkinAtsSweep());
@@ -369,6 +375,7 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', voiceSearchRoutes());
   app.use('/api', sharedCandidateRoutes());
   app.use('/api', availabilityRoutes());
+  app.use('/api', registrationRoutes());
   app.use('/api', walkinAtsRoutes());
   app.use('/api', candidateRoutes());
   app.use('/api', applicationRoutes());

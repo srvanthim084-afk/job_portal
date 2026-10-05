@@ -210,6 +210,8 @@ export function toCandidate(r, opts = {}) {
   const staff = !!opts && typeof opts === 'object' && opts.staff === true;
   return {
     id: r.id,
+    /* 0109: the human Candidate ID (TL-CAN-000123). `id` stays the key. */
+    candidateCode: nz(r.candidate_code),
     name: r.name,
     email: r.email,
     // Whether this person can sign in. Not the account, not the address
@@ -317,6 +319,14 @@ export function toCandidate(r, opts = {}) {
      * typed can be read back rather than only stored.
      */
     dateOfBirth: nz(r.date_of_birth),
+    /* 0109: what the multi-step registration asks that had no column. */
+    firstName: nz(r.first_name),
+    middleName: nz(r.middle_name),
+    lastName: nz(r.last_name),
+    whatsappNumber: nz(r.whatsapp_number),
+    city: nz(r.city),
+    country: nz(r.country),
+    preferredEmploymentTypes: arr(r.preferred_employment_types),
     altPhone: nz(r.alt_phone),
     altEmail: nz(r.alt_email),
     state: nz(r.state),

@@ -141,39 +141,67 @@ await check('2. a refresh keeps the same job', async () => {
   must(b.includes(J1.title), `after refresh: ${b}`);
 });
 
+/*
+ * 0109: THE FORM IS IN SEVEN STEPS NOW (teamlink-registration.js), with the
+ * owner's required fields - branch, total experience, preferred role, a
+ * resume, confirm password and two consents - so this fills each step
+ * where it lives (TLRegistration.reveal) instead of one long page. The
+ * account, the job banner and the continue-after-register are unchanged.
+ */
+const RESUME = process.env.TL_TEST_RESUME || 'var/test-resumes/Resume - Sravanthi.pdf';
+const reveal = (id) => p.evaluate((i) => window.TLRegistration.reveal(i), id);
+const put = async (id, v) => { await reveal(id); await p.fill('#' + id, v); };
 async function fillForm(email) {
-  await p.fill('#regName', 'Apply Flow ' + stamp);
-  await p.fill('#regMobile', phone());
-  await p.fill('#regLocation', 'Hyderabad');
-  await p.fill('#regEmail', email);
-  await p.fill('#regPassword', 'Apply' + stamp + '7');
+  await put('regName', 'Apply Flow ' + stamp);
+  await put('regMobile', phone());
+  await put('regLocation', 'Hyderabad');
+  await put('regEmail', email);
+  await reveal('regQualification');
+  await p.selectOption('#regQualification', 'B.Tech');
+  await put('regSpecialization', 'Commerce');
+  await reveal('regExpBand');
+  await p.selectOption('#regExpBand', 'fresher');
+  await put('regSkills', 'Excel, Communication');
+  await put('regPrefRole', 'Store Associate');
+  await put('regPrefLocation', 'Hyderabad');
+  await put('regExpSalary', '4');
+  await p.selectOption('#regNotice', 'Immediate');
+  await p.evaluate(() => { const m = document.querySelector('#regWorkModeGroup input[type="checkbox"]'); if (m && !m.checked) m.click(); });
+  await reveal('regPassword');
+  if (!(await p.evaluate(() => !!(window.TL && TL.pendingResume)))) {
+    await p.evaluate(() => window.triggerRegisterResumeUpload());
+    await p.setInputFiles('#regResumeFileInput', RESUME);
+    await p.waitForFunction(() => /analyzed|could|couldn/i.test((document.getElementById('regResumeStatus') || {}).textContent || ''), null, { timeout: 30000 });
+  }
+  await put('regPassword', 'Apply' + stamp + '7');
+  await put('regConfirmPassword', 'Apply' + stamp + '7');
   await p.evaluate(() => {
-    const q = document.getElementById('regQualification');
-    const opt = Array.from(q.options).find((o) => o.value); q.value = opt.value; q.dispatchEvent(new Event('change', { bubbles: true }));
-    const n = document.getElementById('regNotice');
-    const o2 = Array.from(n.options).find((o) => o.value); n.value = o2.value; n.dispatchEvent(new Event('change', { bubbles: true }));
-    const m = document.querySelector('#regWorkModeGroup input[type="checkbox"]'); if (m && !m.checked) m.click();
-    ['regConsentTerms', 'regConsentResume'].forEach((id) => { const c = document.getElementById(id); if (!c.checked) c.click(); });
+    window.TLRegistration.go(7);
+    ['regConsentComms', 'regConsentTerms', 'regConsentResume'].forEach((id) => { const c = document.getElementById(id); if (!c.checked) c.click(); });
+    validateRegisterForm();
   });
-  await p.fill('#regSkills', 'Excel, Communication');
-  await p.fill('#regPrefLocation', 'Hyderabad');
-  await p.fill('#regExpSalary', '4');
-  await p.evaluate(() => { ['regPrefLocation', 'regExpSalary', 'regNotice'].forEach((id) => window.regTouch && regTouch(id)); validateRegisterForm(); });
 }
 
 await check('3. a refused registration keeps the job (email already registered)', async () => {
   await fillForm(existing.email);
-  must(await p.evaluate(() => !document.getElementById('regSubmitBtn').disabled), 'the form did not validate');
-  await p.click('#regSubmitBtn');
-  await p.waitForTimeout(1800);
+  /* The form now says so itself, under the email, before anything is
+     sent; and if it is sent anyway the server refuses it the same way. */
+  await p.waitForTimeout(1200);
+  const inline = await p.evaluate(() => (document.getElementById('regEmailErr') || {}).textContent || '');
+  const blocked = await p.evaluate(() => document.getElementById('regSubmitBtn').disabled);
+  if (!blocked) { await p.click('#regSubmitBtn'); await p.waitForTimeout(1800); }
+  must(/already exists/i.test(await p.evaluate(() => (document.getElementById('regEmailErr') || {}).textContent || '')),
+    'no "already exists" message (inline: ' + inline + ')');
   must(/^#\/register\/candidate/.test(await p.evaluate(() => location.hash)), 'left the form');
   must((await bannerText(p)).includes(J1.title), 'the job was lost');
   must(await p.evaluate(() => !STATE.session), 'should still be signed out');
 });
 
 await check('4. registration succeeds and the application continues for that job', async () => {
-  await p.fill('#regEmail', `apply.new.${stamp}@tl-verify.test`);
-  await p.evaluate(() => validateRegisterForm());
+  await put('regEmail', `apply.new.${stamp}@tl-verify.test`);
+  await p.evaluate(() => { window.TLRegistration.go(7); validateRegisterForm(); });
+  must(await p.evaluate(() => !document.getElementById('regSubmitBtn').disabled),
+    'the form did not validate: ' + await p.evaluate(() => JSON.stringify(window.TLRegistration.problems())));
   await p.click('#regSubmitBtn');
   await p.waitForFunction(() => STATE.session && STATE.session.role === 'candidate', null, { timeout: 20000 });
   await p.waitForTimeout(3500);
