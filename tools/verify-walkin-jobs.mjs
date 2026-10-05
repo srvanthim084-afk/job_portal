@@ -202,11 +202,26 @@ const A = await newCandidate('Asha');
 const ap = A.page;
 await signIn(ap, A.email, A.password, 'candidate', '#/job/' + J.wk.id);
 
-await check('12b. candidate header: Jobs, Internships, Companies, Career Resources - no Walk-in Drives', async () => {
+await check('12b. candidate header: Jobs, Internships, Walk-in Jobs, Companies, Career Resources - no Walk-in Drives page', async () => {
   await go(ap, '#/candidate/search');
   const nav = await ap.evaluate(() => Array.from(document.querySelectorAll('header a, header button, nav a')).map((a) => a.textContent.trim()).join(' | '));
   must(/Jobs/.test(nav) && /Internships/.test(nav) && /Companies/.test(nav) && /Career Resources/.test(nav), 'nav: ' + nav);
   must(!/Walk-in Drives|Walk-ins/.test(nav), 'still in the nav: ' + nav);
+  /* the owner's "Walk-in Jobs" beside Internships: the Jobs list with the Walk-in filter, not a separate page */
+  const order = await ap.evaluate(() => Array.from(document.querySelectorAll('nav.cp-nav a')).map((a) => a.textContent.trim()));
+  const iI = order.indexOf('Internships');
+  must(iI >= 0 && order[iI + 1] === 'Walk-in Jobs', 'Walk-in Jobs is not right after Internships: ' + order.join(' | '));
+  await ap.click('nav.cp-nav a:has-text("Walk-in Jobs")');
+  await ap.waitForTimeout(1500);
+  must(/^#\/candidate\/search\?(.*&)?qf=[^&]*walkin/.test(await ap.evaluate(() => location.hash)), 'not the walk-in filtered Jobs list: ' + await ap.evaluate(() => location.hash));
+  const cards = await ap.evaluate(() => Array.from(document.querySelectorAll('#app .rj-card')).map((c) => c.innerText));
+  must(cards.length && cards.some((t) => t.includes(`Walkin Engineer ${stamp}`)), 'the walk-in job is not listed');
+  must(!cards.some((t) => t.includes(`Store Associate ${stamp}`)), 'a regular job is in the walk-in list');
+  must(await ap.$eval('nav.cp-nav a:has-text("Walk-in Jobs")', (a) => a.classList.contains('on')), 'Walk-in Jobs is not marked as the current tab');
+  await ap.evaluate(() => window.tlNavJobs());
+  await ap.waitForTimeout(1500);
+  const all = await ap.evaluate(() => Array.from(document.querySelectorAll('#app .rj-card')).map((c) => c.innerText));
+  must(all.some((t) => t.includes(`Store Associate ${stamp}`)), 'Jobs did not switch the walk-in filter off');
   const drawer = await ap.evaluate(() => document.body.innerHTML.includes('#/candidate/walkins'));
   must(!drawer, 'a #/candidate/walkins link is still on the page');
   await shot(ap, '04-candidate-search');
