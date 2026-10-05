@@ -77,6 +77,23 @@ const wizardAway = (page) => page.evaluate(() => {
 });
 const shot = (page, name) => page.screenshot({ path: join(SHOTS, `${name}.png`), fullPage: false });
 
+/* The current-location answer offers places from the places search as you
+   type (GET /api/places/search, or the link-token route on the
+   no-password page). Pick one the way a person would: type, choose. */
+async function pickPlace(page, sel, typed, want, shotName) {
+  const input = `${sel} input[data-place]`;
+  await page.fill(input, typed);
+  await page.waitForSelector(`${sel} .tlsq-sug:not([hidden]) .tlsq-sugi`, { timeout: 15000 });
+  if (shotName) await shot(page, shotName);
+  const items = await page.$$eval(`${sel} .tlsq-sugi`, (xs) => xs.map((x) => x.textContent));
+  const i = Math.max(0, items.findIndex((t) => t.startsWith(want)));
+  await page.click(`${sel} [data-place-pick="${i}"]`);
+  const v = await page.inputValue(input);
+  must(v.startsWith(want), `picked "${v}", wanted ${want} (offered: ${items.slice(0, 4).join(' | ')})`);
+  must(await page.$eval(`${sel} .tlsq-sug`, (b) => b.hidden), 'the suggestion list stayed open');
+  return v;
+}
+
 /* ---- the recruiter and a job ---- */
 const RECRUITER = process.env.TL_RECRUITER_EMAIL || 'recruiter@teamlink.com';
 const RECRUITER_PW = process.env.TL_RECRUITER_PASSWORD || process.env.DEV_PASSWORD || 'TeamLink@2026';
@@ -158,7 +175,7 @@ async function candidateApplies(name, relocate, mobile) {
     await fn(`#tlsqApply [data-q="${qid}"]`);
   };
   await fill(/current CTC/, (s) => p.fill(`${s} input`, '3'));
-  await fill(/located/, (s) => p.fill(`${s} input`, 'Secunderabad'));
+  await fill(/located/, (s) => pickPlace(p, s, 'Hyderab', 'Hyderabad', `2-places${mobile ? '-mobile' : ''}`));
   await fill(/willing to work/, (s) => p.click(`${s} [data-set="${relocate}"]`));
   await fill(/another consultancy/, (s) => p.click(`${s} [data-set="no"]`));
   await p.waitForTimeout(200);
@@ -212,7 +229,12 @@ await check('5. the answers panel: scores, who answered, and the failed must-hav
   must(/Must-have not met/.test(t), 'the flag is missing');
   must(/Answered by the candidate/.test(t), 'who answered is missing');
   await shot(rp, '5-answers-panel');
-  await rp.click('#tlsqDetail [data-close]');
+  /* "Answered on call": the location answer offers places too (not saved). */
+  await rp.click('#tlsqDetail [data-act="call"]');
+  await rp.waitForSelector('#tlsqCallForm input[data-place]', { timeout: 10000 });
+  const callQ = await rp.$eval('#tlsqCallForm input[data-place]', (i) => i.closest('[data-q]').getAttribute('data-q'));
+  await pickPlace(rp, `#tlsqCallForm [data-q="${callQ}"]`, 'Vijayaw', 'Vijayawada', '5b-call-places');
+  await rp.click('#tlsqDetail .tlsq-ft [data-close]');
 });
 
 await check('6. an application without answers: the no-password link works once', async () => {
@@ -252,6 +274,7 @@ await check('6. an application without answers: the no-password link works once'
     const sel = `#tlsqLinkForm [data-q="${x.id}"]`;
     if (x.yn) await q.click(`${sel} [data-set="yes"]`);
     else if (x.chips) await q.click(`${sel} [data-set="Immediate"]`);
+    else if (await q.$(`${sel} input[data-place]`)) await pickPlace(q, sel, 'Nellor', 'Nellore', '6a-link-places');
     else {
       const cur = await q.inputValue(`${sel} input`);
       if (!cur) await q.fill(`${sel} input`, /CTC/i.test(x.text) ? '3' : 'Hyderabad');
@@ -311,7 +334,30 @@ await check('7. AI Job Creation: questions chosen before publishing are saved wi
   must(saved.length === 6 && !saved.some((q) => q.stdKey === 'other_consultancy'), 'the saved set is not the one chosen');
 });
 
-await A.ctx.close(); await B.ctx.close(); await rc.close();
+await check('8. admin: "AI calls ask the pending screening questions" is on AI Settings, off by default, and saves', async () => {
+  const ac = await browser.newContext({ viewport: { width: 1400, height: 950 } });
+  const ap = await open(ac, '#/');
+  await ap.evaluate(async (pw) => TL.api.post('/auth/login', { email: 'admin@teamlink.com', password: pw, role: 'admin' }), RECRUITER_PW);
+  await ap.reload(); await ap.waitForFunction(() => window.TL && TL.ready === true);
+  await wizardAway(ap);
+  await ap.evaluate(() => { location.hash = '#/admin/ai-settings'; });
+  await ap.waitForSelector('#tlsqAiCalls', { timeout: 15000 });
+  const before = (await ap.evaluate(() => TL.api.get('/screening/settings'))).askOnAiCalls;
+  must((await ap.isChecked('#tlsqAiCalls')) === before, 'the box does not show the stored value');
+  await ap.$eval('#tlsqAiCalls', (b) => b.scrollIntoView({ block: 'center' }));
+  await shot(ap, '8-admin-ai-calls');
+  await ap.click('#tlsqAiCalls');
+  await ap.click('#tlsqAdminSave');
+  await ap.waitForTimeout(800);
+  const after = (await ap.evaluate(() => TL.api.get('/screening/settings'))).askOnAiCalls;
+  must(after === !before, 'not saved');
+  await ap.evaluate((v) => TL.api.put('/screening/settings', { askOnAiCalls: v }), before);   // put it back
+  await ac.close();
+});
+
+if (A) await A.ctx.close();
+if (B) await B.ctx.close();
+await rc.close();
 await browser.close();
 await new Promise((r) => sink.close(r));
 console.log(`\nscreenshots: ${SHOTS}`);

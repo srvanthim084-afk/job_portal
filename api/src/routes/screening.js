@@ -15,6 +15,11 @@
  *   POST /api/screening/send                        bulk "Send screening questions"
  *   POST /api/screening/link/view                   the no-password page: what to ask
  *   POST /api/screening/link/submit                 the no-password page: the answers
+ *   POST /api/screening/link/places                 the no-password page: place suggestions
+ *                                                   for the current-location answer (the
+ *                                                   same index as GET /api/places/search,
+ *                                                   which needs a session; this needs a
+ *                                                   live link token instead)
  *
  * The link token travels in the request BODY, never in a path or query
  * string, so it does not end up in an access log.
@@ -25,6 +30,7 @@ import { withUser } from '../db.js';
 import { wrap, badRequest, notFound, forbidden, ApiError } from '../errors.js';
 import { requireAuth, requireRole } from '../auth.js';
 import { toCandidate } from '../shapes.js';
+import { treeSearch } from '../place-tree.js';
 import {
   validateQuestionSet, fromRow, publicQuestion, prefillFor, suggestQuestions, mentionsCompany,
   STD_KEYS, TYPES, MAX_QUESTIONS,
@@ -185,7 +191,7 @@ export default function screeningRoutes() {
 
   r.get('/screening/settings', requireAuth(), requireRole('recruiter', 'admin', 'bde'), wrap(async (_req, res) => {
     const s = await loadScreeningSettings();
-    res.json({ standard: s.standard, answerWeight: s.answerWeight, stdKeys: STD_KEYS, types: TYPES });
+    res.json({ standard: s.standard, answerWeight: s.answerWeight, askOnAiCalls: s.askOnAiCalls, stdKeys: STD_KEYS, types: TYPES });
   }));
 
   r.put('/screening/settings', requireAuth(), requireRole('admin'), wrap(async (req, res) => {
@@ -200,6 +206,7 @@ export default function screeningRoutes() {
         shareWithClient: z.boolean().optional(),
       })).max(6).optional(),
       answerWeight: z.number().int().min(0).max(60).optional(),
+      askOnAiCalls: z.boolean().optional(),
     }), req.body);
 
     if (body.standard) {
@@ -210,11 +217,16 @@ export default function screeningRoutes() {
       catch (err) { throw badRequest(err.message, err.details); }
     }
     await withUser(req.session, async (c) => {
-      if (body.standard) {
+      // Merged into the stored value, so saving the questions keeps the
+      // AI-call switch and the other way round.
+      const patchValue = {};
+      if (body.standard) patchValue.standard = body.standard;
+      if (body.askOnAiCalls !== undefined) patchValue.askOnAiCalls = body.askOnAiCalls;
+      if (Object.keys(patchValue).length) {
         await c.query(
           `insert into app_settings (key, value) values ('screening', $1::jsonb)
-           on conflict (key) do update set value = excluded.value, updated_at = now()`,
-          [JSON.stringify({ standard: body.standard })]);
+           on conflict (key) do update set value = app_settings.value || excluded.value, updated_at = now()`,
+          [JSON.stringify(patchValue)]);
       }
       if (body.answerWeight !== undefined) {
         await c.query(
@@ -224,7 +236,7 @@ export default function screeningRoutes() {
       }
     });
     const s = await loadScreeningSettings();
-    res.json({ standard: s.standard, answerWeight: s.answerWeight });
+    res.json({ standard: s.standard, answerWeight: s.answerWeight, askOnAiCalls: s.askOnAiCalls });
   }));
 
   /* ---------------- what a recruiter sees ---------------- */
@@ -380,6 +392,22 @@ export default function screeningRoutes() {
       questions: out.qs.map(publicQuestion),
       prefill: out.prefill,
     });
+  }));
+
+  r.post('/screening/link/places', wrap(async (req, res) => {
+    const b = req.body || {};
+    const link = await resolveLink(String(b.token || '').slice(0, 400));
+    if (link.error) throw linkError(link.error);
+    const q = String(b.q || '').trim().slice(0, 80);
+    const limit = Math.min(Math.max(parseInt(b.limit, 10) || 8, 1), 20);
+    if (q.length < 2) return res.json({ results: [] });
+    try {
+      res.json({ results: await treeSearch(q, { limit }) });
+    } catch (err) {
+      // No place index on this server: free text still works.
+      console.error('[screening] place suggestions unavailable:', err.message);
+      res.json({ results: [], unavailable: true });
+    }
   }));
 
   r.post('/screening/link/submit', wrap(async (req, res) => {

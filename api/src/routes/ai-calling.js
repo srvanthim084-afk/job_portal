@@ -21,7 +21,7 @@ import { wrap, badRequest, notFound, forbidden, ApiError } from '../errors.js';
 import { requireAuth, requireRole } from '../auth.js';
 import { telephony, telephonyStatus, speechToText } from '../telephony/index.js';
 import {
-  queueCall, startCall, handleTurn, handleStatus, finishCall, failCall, loadSettings,
+  queueCall, startCall, handleTurn, handleStatus, finishCall, failCall, loadSettings, screeningForCall,
 } from '../ai/call/runtime.js';
 import { plan } from '../ai/call/agent.js';
 import { toCandidate, toJob } from '../shapes.js';
@@ -288,11 +288,16 @@ export default function aiCallingRoutes() {
       });
       if (!ctx) throw notFound('That candidate could not be found.');
 
+      // The application's pending screening questions, when the admin lets
+      // AI calls ask them - so the recruiter sees them before dialling.
+      const screening = ctx.app ? await screeningForCall(ctx.app).catch(() => null) : null;
+
       res.json({
         plan: plan({
           candidate: toCandidate(ctx.cand),
           job: ctx.job ? toJob(ctx.job) : null,
           application: ctx.app ? { stage: ctx.app.stage } : null,
+          opts: { screening },
         }),
       });
     }));

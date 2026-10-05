@@ -30,6 +30,7 @@ import {
   detectIntent, objectionReason, parseMoney, parseNotice, parseYesNo,
 } from './intent.js';
 import { LINES, say } from './script.js';
+import { normaliseAnswer, noticeDays } from '../../screening/questions.js';
 
 export const STATES = [
   'call_init', 'identity_confirmation', 'language_detection', 'consent_to_speak',
@@ -119,6 +120,14 @@ export function plan({ candidate, job, application, opts = {} }) {
   const gaps = (j.skills || []).filter((s) => !blob.includes(String(s).toLowerCase()));
   for (const g of gaps.slice(0, 2)) needed.push(`hands-on experience with ${g}`);
 
+  // The application's pending screening questions (0097), when the admin
+  // lets AI calls ask them. Who is called and when does not change: this
+  // only adds to what a call that is already happening asks.
+  const sq = Array.isArray(opts.screening && opts.screening.questions)
+    ? opts.screening.questions.filter((q) => q && q.id && q.text && q.type)
+    : [];
+  for (const q of sq) needed.push(`screening question: ${q.text}`);
+
   needed.push('interest in this opportunity');
 
   const stage = application?.stage;
@@ -139,6 +148,10 @@ export function plan({ candidate, job, application, opts = {} }) {
     askWorkMode: have(j.mode) && !remote && /hybrid|onsite|work from office/i.test(j.mode),
     askSalary: !have(c.expectedCtc) || stale(profileAge, 45),
     askNotice: !have(c.noticePeriod) || stale(profileAge, 45),
+    screening: sq.length ? sq.map((q) => ({
+      id: q.id, text: q.text, type: q.type, options: q.options || {}, stdKey: q.stdKey || null,
+    })) : undefined,
+    screeningPrefill: sq.length ? (opts.screening.prefill || {}) : undefined,
   };
 }
 
@@ -160,7 +173,9 @@ export function startConversation({ candidate, job, application, settings, plan:
     asked: {},
     data: {
       screening: {}, candidateQuestions: [], candidateConcerns: [],
+      screeningAnswers: {},
     },
+    sq: { done: {}, current: null, mode: null, tries: 0, introduced: false, pending: null },
     interest: null,
     outcome: null,
     ended: false,
@@ -474,6 +489,7 @@ function advance(conv, text, intent, settings) {
     case 'location_check': {
       const yes = parseYesNo(text);
       conv.data.locationAccepted = yes !== false;
+      conv.data.locationYesNo = yes;            // null when it was not a clear answer
       if (yes === false) conv.data.candidateConcerns.push(`location: ${text}`);
       return askNext(conv, settings);
     }
@@ -490,6 +506,9 @@ function advance(conv, text, intent, settings) {
       if (skill) conv.data.screening[skill] = text;
       return askNext(conv, settings);
     }
+
+    case 'screening_question':
+      return screeningReply(conv, text, settings);
 
     case 'interview_interest': {
       const yes = parseYesNo(text);
@@ -572,6 +591,10 @@ function askNext(conv, settings, prefixLine) {
     return { say: prefix + conv.pendingAsk, end: false };
   }
 
+  // 5b. the job's pending screening questions, when the admin allows it
+  const sq = askScreening(conv, prefix);
+  if (sq) return sq;
+
   // 6. shall we take this forward?
   if (!conv.asked.interview) {
     conv.asked.interview = true;
@@ -589,6 +612,309 @@ function closeCall(conv) {
   const interested = conv.interest === 'interested';
   return end(conv, interested ? 'interested' : 'call_completed',
     interested ? speak(conv, LINES.closingInterested) : speak(conv, LINES.closingGeneric));
+}
+
+/* ------------------------------------------------------------------ *
+ * the job's own screening questions (0097)
+ *
+ * Asked after everything the call already asks, one at a time, and only
+ * those still unanswered on the application. A question the call has
+ * already settled (notice period, expected CTC, relocation) is filled from
+ * what the candidate said rather than asked twice; one with a saved answer
+ * or a profile value is confirmed in one line rather than asked cold.
+ * Every answer goes through normaliseAnswer() - the validation the apply
+ * form, the link page and "answered on call" use - and an answer that does
+ * not pass is asked once more, then left for the no-password link.
+ * ------------------------------------------------------------------ */
+
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+const WORD_NUM = {
+  zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  eleven: 11, twelve: 12, fifteen: 15, twenty: 20, thirty: 30, forty: 40, fifty: 50,
+};
+const pad2 = (n) => String(n).padStart(2, '0');
+
+/** "15 March", "March 15th 2027", "15/03/2027", "2027-03-15", "in 20 days" -> YYYY-MM-DD. */
+export function parseSpokenDate(text, now = new Date()) {
+  const t = String(text || '').toLowerCase();
+  const mk = (y, mo, d) => {
+    if (!(mo >= 1 && mo <= 12 && d >= 1 && d <= 31)) return null;
+    const s = `${y}-${pad2(mo)}-${pad2(d)}`;
+    const back = new Date(`${s}T00:00:00Z`);
+    return Number.isFinite(back.getTime()) && back.toISOString().slice(0, 10) === s ? s : null;
+  };
+  let m = /\b(\d{4})-(\d{1,2})-(\d{1,2})\b/.exec(t);
+  if (m) return mk(Number(m[1]), Number(m[2]), Number(m[3]));
+  m = /\b(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})\b/.exec(t);
+  if (m) return mk(m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]), Number(m[2]), Number(m[1]));
+  m = /\bin\s+(\d{1,3})\s*(day|days|week|weeks)\b/.exec(t);
+  if (m) {
+    const days = Number(m[1]) * (/week/.test(m[2]) ? 7 : 1);
+    return new Date(now.getTime() + days * 86400000).toISOString().slice(0, 10);
+  }
+  let day = null; let mon = null; let year = null;
+  m = /\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?([a-z]{3,9})\b(?:,?\s*(\d{4}))?/.exec(t);
+  if (m && MONTHS.includes(m[2].slice(0, 3))) {
+    day = Number(m[1]); mon = MONTHS.indexOf(m[2].slice(0, 3)) + 1; year = m[3];
+  }
+  if (day === null) {
+    m = /\b([a-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:,?\s*(\d{4}))?/.exec(t);
+    if (m && MONTHS.includes(m[1].slice(0, 3))) {
+      day = Number(m[2]); mon = MONTHS.indexOf(m[1].slice(0, 3)) + 1; year = m[3];
+    }
+  }
+  if (day === null) return null;
+  const y = year ? Number(year) : now.getUTCFullYear();
+  let out = mk(y, mon, day);
+  // No year said, and that day has passed this year: they mean next year.
+  if (out && !year && out < now.toISOString().slice(0, 10)) out = mk(y + 1, mon, day);
+  return out;
+}
+
+function numberIn(text) {
+  const t = String(text || '').toLowerCase().replace(/,/g, '');
+  const m = /(-?\d+(?:\.\d+)?)/.exec(t);
+  if (m) return Number(m[1]);
+  for (const [w, n] of Object.entries(WORD_NUM)) if (new RegExp(`\\b${w}\\b`).test(t)) return n;
+  return null;
+}
+
+/** A notice period the call heard -> one of the question's choices. */
+function noticeChoice(choices, notice) {
+  if (!notice) return null;
+  if (/serving/i.test(notice.label || '')) return choices.find((c) => /serving/i.test(c)) || null;
+  if (notice.days === null || notice.days === undefined) return null;
+  return choices.find((c) => !/serving/i.test(c) && noticeDays(c) === notice.days) || null;
+}
+
+const isMoney = (q) => q.type === 'number'
+  && (/lpa|lakh|ctc|inr|rs/i.test(String((q.options || {}).unit || '')) || /ctc/.test(q.stdKey || ''));
+
+/** What the candidate just said, as a raw answer to `q` - or null. */
+export function parseScreeningAnswer(q, text) {
+  const t = String(text || '').trim();
+  if (!t) return null;
+  const o = q.options || {};
+  switch (q.type) {
+    case 'yes_no': {
+      const yn = parseYesNo(t);
+      return yn === null ? null : { value: yn ? 'yes' : 'no' };
+    }
+    case 'number': {
+      if (isMoney(q)) {
+        const r = parseMoney(t);
+        return r ? { value: Math.round(r / 1000) / 100 } : null;
+      }
+      const n = numberIn(t);
+      return n === null ? null : { value: n };
+    }
+    case 'single_choice': {
+      const choices = o.choices || [];
+      if (q.stdKey === 'notice_period' || choices.some((c) => /immediate|\bdays?\b/i.test(c))) {
+        // A date ("15 March") is a last working day, not "15 days".
+        const serving = choices.find((c) => /serving/i.test(c));
+        const f = o.followUp;
+        const date = serving && f && f.type === 'date'
+          && String(f.when).toLowerCase() === serving.toLowerCase() ? parseSpokenDate(t) : null;
+        if (date) return { value: serving, detail: date };
+        const hit = noticeChoice(choices, parseNotice(t));
+        if (hit) return { value: hit };
+      }
+      const low = t.toLowerCase();
+      const hit = choices.filter((c) => low.includes(c.toLowerCase())).sort((a, b) => b.length - a.length)[0];
+      return hit ? { value: hit } : null;
+    }
+    case 'multi_choice': {
+      const low = t.toLowerCase();
+      const hits = (o.choices || []).filter((c) => low.includes(c.toLowerCase()));
+      return hits.length ? { value: hits } : null;
+    }
+    case 'short_text':
+      return { value: t.slice(0, 200) };
+    case 'date': {
+      const d = parseSpokenDate(t);
+      return d ? { value: d } : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/** Already settled earlier on this call? Then it is not asked again. */
+function fromThisCall(q, conv) {
+  const d = conv.data || {};
+  if (q.stdKey === 'notice_period' && d.noticePeriod) {
+    const hit = noticeChoice((q.options || {}).choices || [], parseNotice(d.noticePeriod) || null);
+    return hit && !/serving/i.test(hit) ? { value: hit } : null;
+  }
+  if (q.stdKey === 'expected_ctc' && d.expectedCtc) return { value: Math.round(d.expectedCtc / 1000) / 100 };
+  if (q.stdKey === 'relocate' && typeof d.locationYesNo === 'boolean') {
+    return { value: d.locationYesNo ? 'yes' : 'no' };
+  }
+  return null;
+}
+
+/** normaliseAnswer(), or null when the answer would be refused. */
+function valid(q, raw) {
+  if (!raw) return null;
+  try { return normaliseAnswer(q, raw); } catch { return null; }
+}
+
+/** Does this value open the question's follow-up (e.g. "Serving notice" -> last working day)? */
+function followUpFor(q, value) {
+  const f = (q.options || {}).followUp;
+  if (!f || value === undefined || value === null) return null;
+  return String(value).toLowerCase() === String(f.when || '').toLowerCase() ? f : null;
+}
+
+function spokenAnswer(q, a) {
+  if (!a) return '';
+  const v = a.value;
+  let s = Array.isArray(v) ? v.join(', ') : String(v);
+  if (q.type === 'number' && (q.options || {}).unit) s += ` ${q.options.unit}`;
+  if (a.detail) s += `, ${a.detail}`;
+  return s;
+}
+
+function speakQuestion(conv, q, { intro = false, confirm = null } = {}) {
+  const o = q.options || {};
+  conv.vars.question = q.text;
+  const lines = [];
+  if (intro) lines.push(LINES.screeningIntro);
+  if (confirm) {
+    conv.vars.answer = spokenAnswer(q, confirm);
+    lines.push(LINES.screeningConfirm);
+  } else {
+    lines.push(LINES.screeningAsk);
+    if ((q.type === 'single_choice' || q.type === 'multi_choice') && (o.choices || []).length) {
+      const c = o.choices;
+      conv.vars.choices = c.length > 1 ? `${c.slice(0, -1).join(', ')} or ${c[c.length - 1]}` : c[0];
+      lines.push(LINES.screeningChoices);
+    }
+    if (q.type === 'number' && o.unit) { conv.vars.unit = o.unit; lines.push(LINES.screeningUnit); }
+  }
+  return speak(conv, ...lines);
+}
+
+function sqState(conv) {
+  if (!conv.sq) conv.sq = { done: {}, current: null, mode: null, tries: 0, introduced: false, pending: null };
+  if (!conv.data.screeningAnswers) conv.data.screeningAnswers = {};
+  return conv.sq;
+}
+
+function recordScreening(conv, q, answer) {
+  const st = sqState(conv);
+  conv.data.screeningAnswers[q.id] = answer;
+  st.done[q.id] = 'answered';
+  st.current = null; st.mode = null; st.pending = null; st.tries = 0;
+}
+
+/** The next screening question to ask, or null when there is none left. */
+function askScreening(conv, prefix = '') {
+  const p = conv.plan || {};
+  const list = p.screening || [];
+  if (!list.length) return null;
+  const st = sqState(conv);
+  for (const q of list) {
+    if (st.done[q.id]) continue;
+    const settled = valid(q, fromThisCall(q, conv));
+    if (settled) { recordScreening(conv, q, settled); continue; }
+
+    const confirm = valid(q, (p.screeningPrefill || {})[q.id]);
+    st.current = q.id;
+    st.mode = confirm ? 'confirm' : 'ask';
+    st.tries = 0;
+    st.pending = null;
+    conv.state = 'screening_question';
+    const intro = !st.introduced;
+    st.introduced = true;
+    conv.pendingAsk = speakQuestion(conv, q, { confirm });
+    return { say: prefix + speakQuestion(conv, q, { intro, confirm }), end: false };
+  }
+  return null;
+}
+
+/** Leave this one for the no-password link, and move on. */
+function giveUp(conv, settings) {
+  const st = sqState(conv);
+  if (st.current) st.done[st.current] = 'skipped';
+  st.current = null; st.mode = null; st.pending = null; st.tries = 0;
+  return askNext(conv, settings);
+}
+
+function retry(conv, settings, q) {
+  const st = sqState(conv);
+  st.tries += 1;
+  if (st.tries >= 2) return giveUp(conv, settings);
+  if (st.mode === 'detail') {
+    conv.pendingAsk = speak(conv, LINES.screeningDetail);
+    return { say: speak(conv, LINES.didNotUnderstand, LINES.screeningDetail), end: false };
+  }
+  st.mode = 'ask';
+  conv.pendingAsk = speakQuestion(conv, q);
+  return { say: `${speak(conv, LINES.didNotUnderstand)} ${conv.pendingAsk}`, end: false };
+}
+
+/** A raw answer to `q`: take it, or ask its follow-up first. */
+function takeAnswer(conv, settings, q, raw) {
+  const st = sqState(conv);
+  const f = followUpFor(q, raw.value);
+  if (f && raw.detail === undefined) {
+    st.mode = 'detail';
+    st.pending = raw;
+    st.tries = 0;
+    const label = String(f.label || 'Details').replace(/\?$/, '');
+    conv.vars.label = label.charAt(0).toLowerCase() + label.slice(1);
+    conv.pendingAsk = speak(conv, LINES.screeningDetail);
+    return { say: conv.pendingAsk, end: false };
+  }
+  const ok = valid(q, raw);
+  if (!ok) return retry(conv, settings, q);
+  recordScreening(conv, q, ok);
+  return askNext(conv, settings);
+}
+
+function screeningReply(conv, text, settings) {
+  const st = sqState(conv);
+  const q = ((conv.plan || {}).screening || []).find((x) => x.id === st.current);
+  if (!q) return askNext(conv, settings);
+
+  if (st.mode === 'confirm') {
+    const pre = valid(q, ((conv.plan || {}).screeningPrefill || {})[q.id]);
+    const yn = parseYesNo(text);
+    if (yn === true && pre) { recordScreening(conv, q, pre); return askNext(conv, settings); }
+    // "No, I'm in Pune now" - a value given straight away is taken. Free
+    // text is only taken when it was not a plain yes or no.
+    if (q.type !== 'yes_no' && !(q.type === 'short_text' && yn !== null)) {
+      const raw = parseScreeningAnswer(q, text);
+      if (raw) return takeAnswer(conv, settings, q, raw);
+    }
+    st.mode = 'ask';
+    conv.pendingAsk = speakQuestion(conv, q);
+    return { say: conv.pendingAsk, end: false };
+  }
+
+  if (st.mode === 'detail') {
+    const f = followUpFor(q, st.pending && st.pending.value) || {};
+    const raw = { ...(st.pending || {}) };
+    if (f.type === 'date') {
+      const d = parseSpokenDate(text);
+      if (!d) return retry(conv, settings, q);
+      raw.detail = d;
+    } else {
+      const t = String(text || '').trim();
+      // "No" / "rather not say" leaves the optional detail empty.
+      raw.detail = parseYesNo(t) === false && t.split(/\s+/).length <= 3 ? '' : t.slice(0, 120);
+    }
+    const ok = valid(q, raw);
+    if (!ok) return retry(conv, settings, q);
+    recordScreening(conv, q, ok);
+    return askNext(conv, settings);
+  }
+
+  const raw = parseScreeningAnswer(q, text);
+  if (!raw) return retry(conv, settings, q);
+  return takeAnswer(conv, settings, q, raw);
 }
 
 /* ------------------------------------------------------------------ *
@@ -710,6 +1036,12 @@ export function callResult(conv, { durationSeconds } = {}) {
     recruiterCallbackRequired: !!d.recruiterCallbackRequired,
     doNotContact: !!d.doNotContact,
     durationSeconds: durationSeconds ?? null,
+    ...(conv.plan && conv.plan.screening ? {
+      screeningQuestions: conv.plan.screening.length,
+      screeningAnswers: conv.plan.screening
+        .filter((q) => d.screeningAnswers && d.screeningAnswers[q.id])
+        .map((q) => ({ questionId: q.id, question: q.text, answer: d.screeningAnswers[q.id] })),
+    } : {}),
   };
 }
 
@@ -749,6 +1081,11 @@ export function summarise(conv, { candidate, job }) {
       : 'Asked to be called back.');
   }
   if (d.recruiterCallbackRequired) out.push('Asked to speak to a recruiter.');
+  if (conv.plan && conv.plan.screening && conv.plan.screening.length) {
+    const n = Object.keys(d.screeningAnswers || {}).length;
+    const m = conv.plan.screening.length;
+    out.push(`Answered ${n} of ${m} screening question${m === 1 ? '' : 's'} on the call.`);
+  }
   if ((d.candidateQuestions || []).length) {
     out.push(`Asked: ${d.candidateQuestions.map((q) => `"${String(q).slice(0, 90)}"`).join('; ')}.`);
   }

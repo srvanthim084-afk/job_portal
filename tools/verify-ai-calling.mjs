@@ -489,7 +489,11 @@ await check('a recruiter can see which telephony provider is active', async () =
 await check('a candidate with a phone number and a requirement exists', async () => {
   const reg = await candidate.api('post', '/auth/register', {
     name: 'Rahul Callme', email: `call.${stamp}@example.test`, password: 'CallMe@2026',
+    /* What registration requires now (as the other verifiers send). */
+    phone: '9' + String(Math.floor(1e8 + Math.random() * 9e8)), preferredLocation: 'Hyderabad',
+    expectedCtc: 9, noticePeriod: '30 days', preferredWorkModes: ['Hybrid'],
   });
+  must(reg && reg.candidateId, 'registration failed: ' + JSON.stringify(reg).slice(0, 200));
   candidateId = reg.candidateId;
   await candidate.api('put', `/candidates/${candidateId}`, {
     phone: '+91 90000 33333', title: 'React Developer', location: 'Hyderabad',
@@ -593,6 +597,8 @@ await check('a candidate who asked not to be contacted is never dialled', async 
   const c2 = await open();
   const reg = await c2.api('post', '/auth/register', {
     name: 'Stop Calling', email: `stop.${stamp}@example.test`, password: 'StopIt@2026',
+    phone: '9' + String(Math.floor(1e8 + Math.random() * 9e8)), preferredLocation: 'Hyderabad',
+    expectedCtc: 9, noticePeriod: '30 days', preferredWorkModes: ['Hybrid'],
   });
   await c2.api('put', `/candidates/${reg.candidateId}`, { phone: '+91 90000 44444' });
 

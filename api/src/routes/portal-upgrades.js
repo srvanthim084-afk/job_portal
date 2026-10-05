@@ -284,7 +284,9 @@ export default function portalUpgradeRoutes() {
    *
    * The application itself is made by the ordinary POST /applications -
    * the request is handed on to it, so screening, notifications and the
-   * AI interview follow exactly as for any other apply.
+   * AI interview follow exactly as for any other apply - except that the
+   * candidate's email/SMS/WhatsApp/IVR messages wait until the 10-second
+   * Undo window has passed (notify/apply-hold.js, 0104).
    */
   r.post('/applications/one-click', requireAuth(), requireRole('candidate'), wrap(async (req, res, next) => {
     const body = parse(z.object({
@@ -331,6 +333,10 @@ export default function portalUpgradeRoutes() {
     };
 
     req.body = { ...req.body, jobId: body.jobId, source: body.source || 'teamlink', oneClick: true };
+    /* Read by POST /applications: hold the candidate's messages until the
+       Undo window has passed (0104). On the request, not the body, so an
+       ordinary apply cannot ask for it. */
+    req.oneClickApply = true;
     req.url = '/applications';
     next();
   }));

@@ -195,6 +195,39 @@ export const LINES = {
     'Mere paas aap {company} mein {title} hain - kya yeh abhi bhi sahi hai?',
     'Naa daggara meeru {company} lo {title} ani undi - ippatiki adhe na?'),
 
+  /* ---- the job's own screening questions (0097), asked only when the
+   *      admin has switched it on. {question} is the recruiter's text,
+   *      which stays in English like every other technical word. ------- */
+  screeningIntro: L(
+    'I also have a few quick questions from the recruiter for this role.',
+    'Recruiter ki taraf se is role ke liye kuch chhote sawaal bhi hain.',
+    'Recruiter nunchi ee role kosam konni chinna questions kooda unnayi.'),
+
+  screeningAsk: L(
+    '{question}',
+    '{question}',
+    '{question}'),
+
+  screeningConfirm: L(
+    '{question} I have {answer} on record - is that still right?',
+    '{question} Mere paas {answer} likha hai - kya yeh abhi bhi sahi hai?',
+    '{question} Naa daggara {answer} ani undi - ippatiki adhe na?'),
+
+  screeningChoices: L(
+    'You can say {choices}.',
+    'Aap bol sakte hain: {choices}.',
+    'Meeru cheppochu: {choices}.'),
+
+  screeningUnit: L(
+    'Please tell me in {unit}.',
+    '{unit} mein bataiye.',
+    '{unit} lo cheppandi.'),
+
+  screeningDetail: L(
+    'And {label}?',
+    'Aur {label}?',
+    'Mari {label}?'),
+
   askInterviewInterest: L(
     'Would you like us to take this forward and arrange an interview?',
     'Kya hum ise aage badhaakar interview arrange karein?',

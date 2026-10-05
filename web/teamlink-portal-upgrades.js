@@ -763,8 +763,30 @@
     };
   }
 
+  /* Applications this tab has undone. A refresh that was already in
+     flight when Undo was pressed answers with the older snapshot - more
+     likely now that applying returns before any message is sent (the
+     messages wait for the Undo window, 0104) - so whatever arrives later
+     is cleaned of them before it is drawn. The server is the truth: the
+     row is gone there, and the ids are never reused. */
+  var withdrawn = Object.create(null);
+  function purgeWithdrawn() {
+    if (!Object.keys(withdrawn).length || typeof DATA === 'undefined') return;
+    var list = DATA.applications || [];
+    for (var i = list.length - 1; i >= 0; i--) if (list[i] && withdrawn[list[i].id]) list.splice(i, 1);
+    if (TL.notifications) TL.notifications = TL.notifications.filter(function (n) { return !withdrawn[n.applicationId]; });
+  }
+  (function wrapRender() {
+    var prev = window.render;
+    if (typeof prev !== 'function' || prev.__tlpuUndo) return;
+    var next = function () { try { purgeWithdrawn(); } catch (e) {} return prev.apply(this, arguments); };
+    next.__tlpuUndo = true;
+    window.render = next;
+  })();
+
   function undo(app) {
     return api().del('/applications/' + encodeURIComponent(app.id)).then(function () {
+      withdrawn[app.id] = true;
       var list = DATA.applications || [];
       for (var i = list.length - 1; i >= 0; i--) {
         if (list[i].id === app.id || (list[i].candidateId === app.candidateId && list[i].jobId === app.jobId)) list.splice(i, 1);

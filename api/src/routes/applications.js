@@ -16,8 +16,9 @@ import { withUser } from '../db.js';
 import { wrap, badRequest, notFound, forbidden, ApiError, CODES } from '../errors.js';
 import { requireAuth, requireRole } from '../auth.js';
 import { toApplication, toNotification, toJob, toCandidate } from '../shapes.js';
-import { dispatchInterviewNotifications } from '../notify/dispatch.js';
 import { dispatchEvent } from '../notify/events.js';
+import { sendApplyMessages } from '../notify/apply-messages.js';
+import { holdSeconds, scheduleHold } from '../notify/apply-hold.js';
 import { matchCandidate } from '../ai/match.js';
 import { screenApplication } from '../ai/screening.js';
 import { applyScreeningAnswers, storeApplyScreening } from '../screening/apply.js';
@@ -171,6 +172,16 @@ export default function applicationRoutes() {
         await storeApplyScreening(c, id, screeningAnswers, req.session, candidateId, body.saveScreeningDefaults);
       }
 
+      // One-click apply can be undone for 10 s: its candidate messages are
+      // held (0104) until that has passed, written in this same transaction
+      // so a restart cannot lose them. Set by the one-click route, never by
+      // the request body.
+      let heldUntil = null;
+      if (req.oneClickApply === true && req.session.role === 'candidate') {
+        heldUntil = (await c.query(`select application_outbound_hold($1,$2) as due`,
+          [id, holdSeconds()])).rows[0].due;
+      }
+
       // Same transaction — see the header note.
       const company = await c.query(`select name from companies where id=$1`, [j.company_id]);
       const coName = company.rows[0]?.name || 'the company';
@@ -195,46 +206,29 @@ export default function applicationRoutes() {
         application: toApplication(ins.rows[0]),
         notification,
         applicants: Number(counts.rows[0]?.applicants || 0),
+        heldUntil,
       };
     });
+    const heldUntil = out.heldUntil;
+    delete out.heldUntil;
 
-    // ---- multi-channel interview notification -------------------------
+    // ---- the candidate's messages -----------------------------------
     //
-    // Fired here because "application confirmed" is the trigger. It runs
-    // AFTER the application transaction has committed, deliberately: an
-    // SMS gateway being down must never roll back a candidate's
-    // application. Every channel is attempted independently inside.
-    let notify = null;
-    try {
-      notify = await dispatchInterviewNotifications(req.session, {
+    // The interview invitation / confirmation and the AI interview
+    // invitation (notify/apply-messages.js). Sent now, after the commit,
+    // unless this is a one-click application inside its Undo window: then
+    // they go when the hold falls due, and only if it was not undone.
+    let messages = null;
+    if (heldUntil) {
+      scheduleHold(out.application.id, heldUntil);
+      const held = { held: true, sendsAt: new Date(heldUntil).toISOString(), reason: 'undo_window' };
+      messages = { notify: held, aiInterview: held };
+    } else {
+      messages = await sendApplyMessages(req.session, {
         applicationId: out.application.id,
         candidateId: out.application.candidateId,
         jobId: out.application.jobId,
       });
-
-      /*
-       * Confirm the application itself, when nothing else already has.
-       *
-       * The interview invitation above doubles as a confirmation - it
-       * names the role and says what happens next - so sending
-       * "Application Received" beside it is two emails saying the same
-       * thing a second apart. It goes out only when the invitation did
-       * not, which is the case for a requirement with no AI interview.
-       */
-      const sent = Object.values((notify && notify.delivery_status) || {})
-        .some((st) => st === 'sent' || st === 'delivered');
-      if (!sent) {
-        await dispatchEvent(req.session, 'APPLICATION_SUBMITTED', {
-          applicationId: out.application.id,
-          candidateId: out.application.candidateId,
-          jobId: out.application.jobId,
-        }).catch(() => null);
-      }
-    } catch (err) {
-      // The application stands regardless. The failure is logged, and the
-      // delivery rows (or their absence) are visible on the record.
-      console.error('[notify] interview notification dispatch failed:', err.message);
-      notify = { error: 'dispatch_failed' };
     }
 
     // ---- AI screening, for everybody, straight away -----------------
@@ -265,32 +259,7 @@ export default function applicationRoutes() {
       console.error('[alerts] could not mark the match applied:', err.message);
     }
 
-    // ---- the AI interview and its two-day window ----------------------
-    //
-    // The clock starts here, not when the candidate happens to open the
-    // interview screen, so this message is the one that states the
-    // deadline. It is marked sent so the sweep never repeats it.
-    let aiInvite = null;
-    try {
-      const due = await withUser(req.session, async (c) => {
-        const row = (await c.query(
-          `select ai_interview_due_at from applications where id=$1`, [out.application.id])).rows[0];
-        return row ? row.ai_interview_due_at : null;
-      });
-      aiInvite = await dispatchEvent(req.session, 'AI_INTERVIEW_INVITED', {
-        applicationId: out.application.id,
-        candidateId: out.application.candidateId,
-        jobId: out.application.jobId,
-        dueAt: due,
-      });
-      await withUser(req.session, (c) =>
-        c.query(`select ai_interview_reminder_sent($1,'invited')`, [out.application.id]));
-    } catch (err) {
-      console.error('[notify] the AI interview invitation failed:', err.message);
-      aiInvite = { error: 'dispatch_failed' };
-    }
-
-    res.status(201).json({ ...out, notify, aiInterview: aiInvite, screening });
+    res.status(201).json({ ...out, notify: messages.notify, aiInterview: messages.aiInterview, screening });
   }));
 
   /**
