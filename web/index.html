@@ -25094,6 +25094,11 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
    instead of below every other panel.
    ===================================================================== */
 .tljd-backbar{margin:0 0 14px}
+/* The later header theme fixes the bar at 64px, which beats the narrow
+   screen's height:auto - so on a phone its wrapped second row hung over
+   the top of the page and covered "← Back to Jobs". On the job page the
+   header grows to fit. */
+@media (max-width:860px){ body:has(.tljd) .site-header-inner{height:auto} }
 @media (max-width:920px){
   .tljd .two-col{display:flex;flex-direction:column;gap:0}
   .tljd .two-col > div{display:contents}

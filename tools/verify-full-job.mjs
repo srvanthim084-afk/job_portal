@@ -201,6 +201,15 @@ for (const [label, vp, mobile] of [['desktop', { width: 1366, height: 820 }, fal
     must(await p.evaluate(() => scrollY) < 50, 'the page did not open at the top');
     await p.waitForFunction(() => /Your match ·/.test((document.querySelector('.tlpu-jp') || {}).textContent || ''), null, { timeout: 10000 });
     await completePage(p, A, 'job page');
+    /* "← Back to Jobs" is on screen and nothing (the header) covers it */
+    const hit = await p.evaluate(() => {
+      const x = Array.from(document.querySelectorAll('#app .tljd-back')).find((e) => e.offsetParent);
+      if (!x) return 'none';
+      const r = x.getBoundingClientRect();
+      const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return at === x || x.contains(at) ? 'ok' : 'covered by ' + (at && at.className);
+    });
+    must(hit === 'ok', '← Back to Jobs: ' + hit);
     await p.screenshot({ path: `${SHOTS}/full-job-${label}-top.png` });
   });
   await check(`${label} 6. no "undefined" anywhere on the page`, async () => { await noUndefined(p, 'job page'); });
