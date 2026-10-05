@@ -69,8 +69,11 @@ function compactVoice(v) {
     concepts: s.concepts, keywords: s.keywords, location: s.location,
     role: s.role, skills: s.skills, technologies: s.technologies, industry: s.industry, qualification: s.qualification,
   };
+  if (s.experience.length) out.experience = s.experience;
+  if (s.jobType.length) out.jobType = s.jobType;
   if (s.years != null) out.years = s.years;
   if (s.fresher) out.fresher = true;
+  if (s.remote) out.remote = true;
   return out;
 }
 

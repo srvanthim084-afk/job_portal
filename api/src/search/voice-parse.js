@@ -233,7 +233,12 @@ export async function intentToResult(intent, ctx = {}) {
     }
   }
   if (!q && leftover.length && !intent.place) q = leftover.filter((w) => !hasIndicScript(w)).join(' ').slice(0, 60).trim();
-  q = q.replace(/[^\p{L}\p{N} +#.&]/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
+  /* Keep letters WITH their combining marks (\p{M}: Telugu / Devanagari
+     vowel signs and virama) and the zero-width (non-)joiners - stripping
+     them turned "హైదరాబాద్‌లో" into loose base letters. q is the English
+     concept name by now, but nothing here may break another script. */
+  q = q.replace(/[^\p{L}\p{M}\p{N}\u200c\u200d +#.&]/gu, ' ').replace(/\s+/g, ' ').trim();
+  q = Array.from(q).slice(0, 80).join('');
 
   /* salary */
   let salaryMin = '';

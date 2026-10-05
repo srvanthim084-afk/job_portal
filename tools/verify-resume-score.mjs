@@ -10,6 +10,8 @@
  *   6  an unreadable file -> "We could not read your resume. Try a PDF or
  *      DOCX", never a 0
  *   7  recruiter: a score badge in Talent Pool, and the 70+ filter
+ *   8  recruiter: Find Candidates - ticking "Resume score 70+" asks the server
+ *      (resumeScoreMin=70) and narrows the results; unticking brings them back
  *
  * Creates accounts, so it refuses :4323. Run against an isolated instance:
  *   TL_URL=http://127.0.0.1:4422/ node tools/verify-resume-score.mjs
@@ -239,6 +241,54 @@ await check('7. recruiter: a score badge in Talent Pool, and the 70+ filter', as
   must(after === (score >= 70 ? 1 : 0), `with 70+: ${after} (score ${score})`);
   await rp.evaluate(() => tlrsSetMin(false));
   await rp.waitForTimeout(1500);
+});
+
+await check('8. recruiter: Find Candidates, the 70+ filter narrows the results on the server', async () => {
+  /* Both of this run's candidates ("Score a ..." and "Score b ..."), found by the stamp in their names. */
+  const sent = [];
+  const onReq = (req) => { const u = req.url(); if (/\/api\/candidates\?/.test(u)) sent.push(u); };
+  rp.on('request', onReq);
+  try {
+    await go(rp, '#/recruiter/find-candidates');
+    await rp.evaluate(() => { if (typeof window.runCandidateSearch === 'function') runCandidateSearch(); });
+    await rp.waitForTimeout(1200);
+    await rp.evaluate((s) => fcrSet('anyKw', s), stamp);
+    await rp.waitForFunction((s) => window.TL && TL.fcr && !TL.fcr.loading && (TL.fcr.rows || []).some((c) => String(c.name).includes(s)),
+      stamp, { timeout: 15000 });
+    await rp.waitForTimeout(800);
+    const before = await rp.evaluate((s) => ({
+      total: TL.fcr.total, ids: TL.fcr.rows.filter((c) => String(c.name).includes(s)).map((c) => c.id),
+      cards: Array.from(document.querySelectorAll('.fcr-card')).filter((x) => x.innerText.includes(s)).length,
+    }), stamp);
+    must(before.ids.length === 2 && before.cards === 2, `before the filter: ${JSON.stringify(before)}`);
+    const scores = await rp.evaluate((ids) => TL.api.get('/resume-scores?ids=' + ids.join(',')).then((o) => o.scores || {}), before.ids);
+    const high = before.ids.filter((id) => scores[id] && scores[id].status === 'scored' && scores[id].total >= 70);
+    await rp.waitForSelector('#tlrsFilter input', { timeout: 10000 });
+    await shot(rp, 'score-find-candidates-before');
+    sent.length = 0;
+    await rp.click('#tlrsFilter input');                      // the real checkbox, as a recruiter ticks it
+    await rp.waitForFunction(() => window.TL && TL.fcr && !TL.fcr.loading, null, { timeout: 15000 });
+    await rp.waitForTimeout(1500);
+    must(sent.some((u) => /[?&]resumeScoreMin=70(&|$)/.test(u)), 'the server was not asked with resumeScoreMin=70: ' + sent.join(' | '));
+    const after = await rp.evaluate((s) => ({
+      ids: (TL.fcr.rows || []).filter((c) => String(c.name).includes(s)).map((c) => c.id),
+      cards: Array.from(document.querySelectorAll('.fcr-card')).filter((x) => x.innerText.includes(s)).length,
+      checked: !!(document.querySelector('#tlrsFilter input') || {}).checked,
+    }), stamp);
+    await shot(rp, 'score-find-candidates-70');
+    must(after.checked, 'the checkbox did not stay ticked after the repaint');
+    must(after.ids.slice().sort().join() === high.slice().sort().join() && after.cards === high.length,
+      `with 70+: ${JSON.stringify(after)}; scores ${JSON.stringify(before.ids.map((id) => scores[id] && scores[id].total))}`);
+    must(after.ids.length < before.ids.length, `the filter did not narrow (${before.ids.length} -> ${after.ids.length})`);
+    /* and off again: both back */
+    sent.length = 0;
+    await rp.click('#tlrsFilter input');
+    await rp.waitForFunction(() => window.TL && TL.fcr && !TL.fcr.loading, null, { timeout: 15000 });
+    await rp.waitForTimeout(1500);
+    must(sent.length && sent.every((u) => !/resumeScoreMin=/.test(u)), 'unticked, the server was still asked for 70+');
+    const back = await rp.evaluate((s) => (TL.fcr.rows || []).filter((c) => String(c.name).includes(s)).length, stamp);
+    must(back === 2, `unticked: ${back}`);
+  } finally { rp.off('request', onReq); }
 });
 
 await browser.close();

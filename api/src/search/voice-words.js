@@ -23,7 +23,7 @@ export const FILLER = [
   'kavali', 'kaavali', 'kavalenu', 'kaavaali', 'kavalandi', 'kaavalandi', 'undi', 'unda', 'unnaya', 'unnayi',
   'lo', 'loni', 'ki', 'ku', 'ni', 'nu', 'ga', 'kosam', 'udyogam', 'udyogalu', 'udyogaalu', 'pani', 'panulu',
   'dhaggara', 'daggara', 'daggarlo', 'dhaggarlo', 'chupinchu', 'chupinchandi', 'cheppandi', 'naaku', 'naku',
-  'emaina', 'edaina', 'oka', 'andi', 'ra', 'kuda', 'kooda',
+  'emaina', 'edaina', 'oka', 'andi', 'ra', 'kuda', 'kooda', 'kavalii', 'kaavalii', 'unna', 'unnanu',
   // Hindi (romanised)
   'chahiye', 'chaahiye', 'chahie', 'mujhe', 'muje', 'mein', 'me', 'ka', 'ke', 'ki', 'ko', 'hai', 'hain',
   'naukri', 'naukari', 'nokri', 'kaam', 'paas', 'aas', 'wala', 'wali', 'vala', 'vali', 'koi', 'dikhao',
@@ -73,6 +73,7 @@ export const PLACE_VARIANTS = {
   Delhi: ['dilli', 'दिल्ली', 'ఢిల్లీ', 'డిల్లీ'],
   'New Delhi': ['nayi dilli', 'nai dilli', 'नई दिल्ली', 'న్యూ ఢిల్లీ'],
   Lucknow: ['lakhnau', 'लखनऊ', 'లక్నో'],
+  Hyderabad: ['hyd', 'hyderbad', 'hydrabad', 'hyderabd', 'haidarabad', 'హైద్రాబాద్', 'हैदराबाद'],
   Noida: ['नोएडा', 'नोयडा', 'నోయిడా'],
   Gurugram: ['gurgaon', 'गुड़गांव', 'गुड़गाँव', 'गुरुग्राम', 'గుర్గావ్'],
   Varanasi: ['banaras', 'benares', 'kashi', 'बनारस', 'काशी'],

@@ -45,7 +45,7 @@ const push = (map, k, v) => { const l = map.get(k); if (l) l.push(v); else map.s
 
 /* "Visākhapatnam" -> "Visakhapatnam": the index's own name, macrons off,
    which is how a job's location is written. */
-const plain = (v) => String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').normalize('NFC');
+const plain = (v) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').normalize('NFC');
 
 /**
  * @param rows   [{ name, type: state|district|mandal|place, population, aliases[] }]
@@ -155,7 +155,13 @@ function lists() {
     }
   }
   notPlaceKeys = new Set(NOT_PLACES.map((w) => String(w).normalize('NFC').toLowerCase()));
+  /* the variants as written too: "Hyd" is too short to have a sound key */
+  variantRaw = new Map();
+  for (const [target, spoken] of Object.entries(PLACE_VARIANTS)) {
+    for (const v of spoken) variantRaw.set(String(v).normalize('NFC').toLowerCase(), target);
+  }
 }
+let variantRaw = null;
 
 const rank = (a, b) => ((a.source === 'board' ? 0 : 1) - (b.source === 'board' ? 0 : 1))
   || ((a.own ? 0 : 1) - (b.own ? 0 : 1))
@@ -177,8 +183,18 @@ export function soundMatch(text, indexes) {
      Indian name is romanised ("nellooru", "haidaraabaad"); an English
      word ("manager", "good") is matched exactly or not at all. */
   const { latin, keys, native } = spokenKeys(text);
-  if (!keys.length) return null;
   const loose = native || /aa|ee|ii|oo|uu/.test(said);
+  /* a variant exactly as written ("Hyd", "Hyderbad") */
+  const exact = variantRaw.get(said);
+  if (exact) {
+    const tk = placeKey(exact);
+    const hits = list.flatMap((ix) => (ix.byKey.get(tk) || []).filter((e) => e.own));
+    if (hits.length) {
+      const e = hits.sort(rank)[0];
+      return { name: e.name, type: e.type, distance: 0, via: 'variant', heard: latin };
+    }
+  }
+  if (!keys.length) return null;
 
   /* A known rename, resolved through the index - never on its own word. */
   for (const { k } of keys) {

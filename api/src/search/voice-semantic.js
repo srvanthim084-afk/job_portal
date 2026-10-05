@@ -36,13 +36,13 @@ const NFC = (v) => String(v || '').normalize('NFC');
  * language
  * ------------------------------------------------------------------ */
 
-const ROMANISED = /\b(kavali|kaavali|kavalandi|lo|unnaya|unnayi|unnanu|undi|ki|ku|kosam|naaku|naku|chahiye|chaahiye|mein|mujhe|naukri|hai|hain|ka|ke|ko)\b/i;
+const ROMANISED = /\b(kavalii|unna|kavali|kaavali|kavalandi|lo|unnaya|unnayi|unnanu|undi|ki|ku|kosam|naaku|naku|chahiye|chaahiye|mein|mujhe|naukri|hai|hain|ka|ke|ko)\b/i;
 
 /** TELUGU / HINDI / ENGLISH / MIXED / OTHER. Romanised Telugu or Hindi mixed with English is MIXED. */
 export function detectLanguage(text) {
   const s = NFC(text);
-  const te = (s.match(/[ఀ-౿]/g) || []).length;
-  const hi = (s.match(/[ऀ-ॿ]/g) || []).length;
+  const te = (s.match(/[\u0c00-\u0c7f]/g) || []).length;
+  const hi = (s.match(/[\u0900-\u097f]/g) || []).length;
   const la = (s.match(/[a-z]/gi) || []).length;
   if (!te && !hi) {
     if (!la) return 'OTHER';
@@ -57,7 +57,7 @@ export function detectLanguage(text) {
  * ------------------------------------------------------------------ */
 
 /** Lower case, words only ("react.js" -> "react js", "C#" -> "c#"). */
-export const normText = (v) => ` ${NFC(v).toLowerCase().replace(/[^a-z0-9+#ऀ-ॿఀ-౿]+/g, ' ').replace(/\s+/g, ' ').trim()} `;
+export const normText = (v) => ` ${NFC(v).toLowerCase().replace(/[^a-z0-9+#\u0900-\u097f\u0c00-\u0c7f\u200c\u200d]+/g, ' ').replace(/\s+/g, ' ').trim()} `;
 const hasPhrase = (hay, p) => hay.includes(` ${p} `);
 
 /* "technology" and టెక్నాలజీ: a soft g is a j to the ear, and the ch of
@@ -108,10 +108,10 @@ const LATIN_SUFFIXES = ['loni', 'lone', 'lo', 'ki', 'ku', 'ni', 'nu', 'to', 'tho
 
 /** The stems a native-script word could be, the word itself first. */
 export function nativeStems(word) {
-  const w = NFC(word).replace(/[‌‍]+$/, '');
+  const w = NFC(word).replace(/[\u200c\u200d]+$/, '');
   const out = [w];
   for (const s of NATIVE_SUFFIXES) {
-    if (w.endsWith(s) && w.length - s.length >= 2) out.push(w.slice(0, -s.length).replace(/[‌‍]+$/, ''));
+    if (w.endsWith(s) && w.length - s.length >= 2) out.push(w.slice(0, -s.length).replace(/[\u200c\u200d]+$/, ''));
   }
   return [...new Set(out)];
 }
@@ -295,6 +295,8 @@ export function buildSearch({ originalQuery, language, ids, keywords, location, 
   if (/\b(immediate|immediately|immediate joining|join immediately|వెంటనే|तुरंत)\b/i.test(NFC(originalQuery))) out.noticePeriod = ['Immediate'];
   out.years = intent.years != null ? Number(intent.years) : null;
   out.fresher = !!intent.fresher;
+  /* "remote" / "work from home": only jobs whose own mode / type / location says so */
+  out.remote = (intent.modes || []).includes('Remote');
 
   const what = queryLabel(out.concepts, out.keywords);
   out.normalizedQuery = [what ? `${what.toLowerCase()} jobs` : (location ? 'jobs' : ''), location ? `in ${location}` : '']
@@ -312,10 +314,17 @@ export function cleanSearch(s) {
   const location = strs(s && s.location, 3, 80).filter((k) => !hasIndicScript(k));
   const lang = ['TELUGU', 'HINDI', 'ENGLISH', 'MIXED', 'OTHER'].includes(s && s.language) ? s.language : 'OTHER';
   const years = s && Number.isFinite(Number(s.years)) && s.years !== null && s.years !== '' ? Math.max(0, Math.min(40, Number(s.years))) : null;
-  return buildSearch({
+  const TYPES = ['Full-time', 'Part-time', 'Contract', 'Internship', 'Walk-in'];
+  const types = strs(s && s.jobType, 6, 20).filter((t) => TYPES.includes(t));
+  const remote = !!(s && (s.remote === true || (Array.isArray(s.jobType) && s.jobType.includes('Remote'))));
+  const out = buildSearch({
     originalQuery: s && s.originalQuery, language: lang, ids, keywords, location: location[0] || '',
-    intent: { years, fresher: !!(s && s.fresher) },
+    intent: { years, fresher: !!(s && s.fresher), types, modes: remote ? ['Remote'] : [] },
   });
+  /* the experience band as the screen named it, if it was one of the screen's own */
+  const bands = strs(s && s.experience, 4, 20).filter((e) => /^(Fresher|\d+[–-]\d+ Years|8\+ Years|\d+ years)$/.test(e));
+  if (bands.length) out.experience = bands;
+  return out;
 }
 
 /* ------------------------------------------------------------------ *
@@ -435,59 +444,86 @@ export function scoreJob(search, job, groups, ctx = {}) {
   };
 }
 
+/*
+ * THE FALLBACK ORDER (the owner's): role+skill+location, skill+location,
+ * role+location, skill/role anywhere, semantic+location, semantic
+ * anywhere, related - and a location on its own ONLY when no role, skill
+ * or other term was said. "Java developer in Hyderabad" with no Java job
+ * there shows the Java Developer jobs elsewhere and says so; it never
+ * shows random Hyderabad jobs.
+ *
+ * role+location is used only when no technology / skill was said: with
+ * one, the technology is what the person asked for ("Java developer" is a
+ * Java job), and a Python Developer in Hyderabad is not a closer answer
+ * than a Java Developer in Bengaluru.
+ */
 const LEVELS = [
   { level: 1, name: 'role+skill+location', test: (s) => s.allGroups && s.locOk, min: 40 },
-  { level: 2, name: 'skill+location', test: (s) => s.allSkills && s.locOk, min: 40 },
-  { level: 3, name: 'role+location', test: (s) => s.allRoles && s.locOk, min: 40 },
-  { level: 4, name: 'skill+role', test: (s) => s.allGroups, min: 40 },
-  { level: 5, name: 'description semantic match', test: (s) => s.anyGroup, min: 20 },
-  { level: 6, name: 'related / recommended', test: (s, x) => s.related || (x.profile >= 60), min: 15 },
+  { level: 2, name: 'skill+location', test: (s) => s.allSkills && s.locOk, min: 40, needs: 'skill+place' },
+  { level: 3, name: 'role+location', test: (s) => s.allRoles && s.locOk, min: 40, needs: 'role-only+place' },
+  { level: 4, name: 'skill/role, other locations', test: (s) => s.allGroups, min: 40, needs: 'place' },
+  { level: 5, name: 'semantic+location', test: (s) => s.anyGroup && s.locOk, min: 20, needs: 'place' },
+  { level: 6, name: 'semantic anywhere', test: (s) => s.anyGroup, min: 20 },
+  { level: 7, name: 'related / recommended', test: (s, x) => s.related || (x.profile >= 60), min: 15 },
 ];
+
+/** Remote means the job's own data says so: its mode, type or location. */
+export const isRemoteJob = (j) => /\b(remote|work from home|wfh|home based)\b/i
+  .test([j.mode, j.employment_type || j.type, j.location].filter(Boolean).join(' '));
+
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
 /**
  * Rank open jobs for a search object.
  * @param jobs   rows from jobs_open (+ company_name) - only what the viewer may see
  * @param ctx    { tier, profile, limit }
- * @returns { level, levelName, total, results:[{ jobId, score, label, parts }], message, related, empty }
+ * @returns { level, levelName, total, results:[{ jobId, score, label, parts }], message, related, empty, passthrough? }
  */
 export function rankJobs(search, jobs, ctx = {}) {
   const groups = groupsOf(search);
-  const where = search.location.length ? ` in ${search.location[0]}` : '';
+  const place = search.location.length ? search.location[0] : '';
+  const where = place ? ` in ${place}` : '';
   const what = search.label || queryLabel(search.concepts, search.keywords);
   const limit = ctx.limit || 200;
-  if (!groups.length && !search.location.length) {
-    return { level: 0, levelName: 'nothing understood', total: 0, results: [], related: false, empty: true,
-      message: 'We could not tell which job you are looking for. Please say the job or skill again, or type it.' };
+  if (!groups.length && !place) {
+    /* Nothing to rank by (only a salary, a mode, a job type ...): the
+       screen's own filters do it; this layer does not run an empty search. */
+    return { level: 0, levelName: 'filters only', total: 0, results: [], related: false, empty: false, passthrough: true, message: null };
   }
-  const scored = (jobs || []).map((j) => {
+  const pool = search.remote ? (jobs || []).filter(isRemoteJob) : (jobs || []);
+  const scored = pool.map((j) => {
     const s = scoreJob(search, j, groups, ctx);
     const profile = ctx.profile ? Number(ctx.profile(j)) || 0 : 0;
     return { j, s, profile };
   });
+  const byScore = (a, b) => b.s.score - a.s.score || b.profile - a.profile;
 
   if (!groups.length) {
     /* a place and nothing else: the jobs there */
-    const here = scored.filter((x) => x.s.locOk).sort((a, b) => b.s.score - a.s.score || b.profile - a.profile);
-    if (here.length) return finish(1, 'location', here, false, null);
+    const here = scored.filter((x) => x.s.locOk).sort(byScore);
+    if (here.length) return finish(1, 'location only', here, false, null);
     return { level: 0, levelName: 'none', total: 0, results: [], related: false, empty: true,
       message: `No matching jobs found${where}.` };
   }
 
+  const hasSkill = groups.some((g) => g.kind !== 'role');
+  const hasRole = groups.some((g) => g.kind === 'role');
   for (const L of LEVELS) {
-    if (L.level === 2 && !groups.some((g) => g.kind !== 'role')) continue;
-    if (L.level === 3 && !groups.some((g) => g.kind === 'role')) continue;
-    if ((L.level === 2 || L.level === 3) && !search.location.length) continue;
+    if (L.needs === 'skill+place' && (!hasSkill || !place)) continue;
+    if (L.needs === 'role-only+place' && (!hasRole || hasSkill || !place)) continue;
+    if (L.needs === 'place' && !place) continue;
     const list = scored.filter((x) => L.test(x.s, x) && x.s.score >= L.min);
     if (!list.length) continue;
-    list.sort((a, b) => b.s.score - a.s.score || b.profile - a.profile);
+    list.sort(byScore);
     const related = L.level >= 5;
     let message = null;
-    if (related) message = `${list.length} related job${list.length === 1 ? '' : 's'} found. Showing the closest matches.`;
-    else if (L.level > 1) message = `No exact ${what} jobs${where}. Showing ${list.length} closest match${list.length === 1 ? '' : 'es'}.`;
+    if (related) message = `${plural(list.length, 'related job', 'related jobs')} found. Showing the closest matches.`;
+    else if (L.level === 4) message = `No ${what} jobs found${where}. Showing ${what} jobs in other locations.`;
+    else if (L.level > 1) message = `No exact ${what} jobs${where}. Showing ${plural(list.length, 'closest match', 'closest matches')}.`;
     return finish(L.level, L.name, list, related, message);
   }
   return { level: 0, levelName: 'none', total: 0, results: [], related: false, empty: true,
-    message: `No matching ${what} jobs found${where}.` };
+    message: what ? `No matching ${what} jobs found${where}.` : `No matching jobs found${where}.` };
 
   function finish(level, levelName, list, related, message) {
     return {
@@ -506,6 +542,7 @@ export function rankJobs(search, jobs, ctx = {}) {
  */
 export function voiceMatches(job, saved) {
   const search = cleanSearch(saved);
+  if (search.remote && !isRemoteJob(job)) return false;
   const groups = groupsOf(search);
   if (!groups.length) return true;
   const t = jobText(job);

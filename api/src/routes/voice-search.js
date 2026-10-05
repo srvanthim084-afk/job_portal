@@ -26,6 +26,20 @@ import { matchCandidate } from '../ai/match.js';
 
 let warming = null;
 
+/*
+ * VOICE_DEBUG=true prints how one request was understood. OFF by default:
+ * production logs never carry what somebody said.
+ */
+function debugLog(text, out, semantic) {
+  if (process.env.VOICE_DEBUG !== 'true') return;
+  const s = out.search || {};
+  const line = (k, v) => console.log(`[VOICE ${k}]`, typeof v === 'string' ? v : JSON.stringify(v));
+  line('RAW', text); line('LANGUAGE', s.language); line('NORMALIZED', s.normalizedQuery); line('ROLE', s.role);
+  line('SKILLS', s.skills); line('TECHNOLOGIES', s.technologies); line('LOCATION', s.location); line('EXPERIENCE', s.experience);
+  line('REMOTE', !!s.remote); line('SEMANTIC TERMS', s.semanticTerms); line('FALLBACK', `${semantic.level} ${semantic.levelName}`);
+  line('RESULT COUNT', semantic.total);
+}
+
 /**
  * The open jobs the VIEWER may see, ranked for a search object.
  * Signed in as a candidate, the candidate's own profile (ai/match.js) is
@@ -52,7 +66,15 @@ async function rankFor(session, search) {
     }
     return memo.get(job.id);
   } : null;
-  return rankJobs(search, data.jobs, { tier: (loc, mode, tags) => tier(loc, mode, tags, 0), profile });
+  /* A job in Hyderabad that may also be done from home is still a Hyderabad
+     job: the place decides, "remote" only when the place does not match. */
+  const where = (loc, mode, tags) => {
+    const t = tier(loc, mode, tags, 0);
+    if (t !== 'remote') return t;
+    const byPlace = tier(loc, '', tags, 0);
+    return byPlace === 'other' ? 'remote' : byPlace;
+  };
+  return rankJobs(search, data.jobs, { tier: where, profile });
 }
 
 /* The place index by sound (place-sound.js), built once the index is in. */
@@ -80,7 +102,14 @@ const limiter = rateLimit({
     'Too many voice searches. Please wait a minute and try again.')),
 });
 
-const fold = (v) => String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+/* Latin diacritics off for comparing place names ("Visākhapatnam"). Text in
+   another script is only NFC-normalised: decomposing Telugu / Devanagari
+   would split its vowel signs, and nothing in it is a Latin diacritic. */
+const fold = (v) => {
+  const s = String(v || '');
+  if (hasIndicScript(s)) return s.normalize('NFC').toLowerCase().trim();
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+};
 
 /* The live board's locations, modes and types, for a minute at a time. */
 let board = null;
@@ -168,6 +197,7 @@ export default function voiceSearchRoutes() {
       resolvePlace: await resolver(), modes: b.modes, types: b.types, boardWords: b.words,
     });
     const semantic = await rankFor(req.session, out.search);
+    debugLog(text, out, semantic);
 
     stats.requests += 1;
     stats[out.engine] += 1;

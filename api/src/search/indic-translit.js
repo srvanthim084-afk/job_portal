@@ -87,7 +87,7 @@ const scriptOf = (cp) => {
 
 /** Does the text contain Telugu or Devanagari letters? */
 export function hasIndicScript(text) {
-  return /[ऀ-ॿఀ-౿]/.test(String(text || ''));
+  return /[\u0900-\u097f\u0c00-\u0c7f]/.test(String(text || ''));
 }
 
 /* m before p/b/m - and before n in Telugu spelling: కరీంనగర్ is Karimnagar. */

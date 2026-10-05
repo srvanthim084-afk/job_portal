@@ -29,7 +29,7 @@ const HAVE_TREE = existsSync(TREE);
 
 let dbh, server, client, config, aiServer;
 const ai = { reply: null };
-const NATIVE = /[ऀ-ॿఀ-౿]/;
+const NATIVE = /[\u0900-\u097f\u0c00-\u0c7f]/;
 
 const say = (text, lang = 'te-IN', c = client) => c.post('/api/search/voice-parse', { text, lang });
 const ids = (r) => r.body.semantic.results.map((x) => x.jobId);
@@ -214,7 +214,8 @@ test('T9 no exact match but related jobs exist -> the related jobs, not "No jobs
   const j = await say('Java developer jobs Nellore lo');
   assert.ok(j.body.semantic.level > 1 && !j.body.semantic.empty);
   assert.ok(ids(j).includes('vs_jv') && ids(j).includes('vs_jvb'));
-  assert.match(j.body.semantic.message, /No exact Java Developer jobs in Nellore\. Showing \d+ closest match/);
+  assert.equal(j.body.semantic.message, 'No Java Developer jobs found in Nellore. Showing Java Developer jobs in other locations.');
+  assert.ok(!ids(j).includes('vs_dr'), 'never a random job in Nellore');
 });
 
 test('T10 nothing relevant anywhere -> "No matching ... jobs found" from the normalized intent', async () => {
@@ -225,6 +226,52 @@ test('T10 nothing relevant anywhere -> "No matching ... jobs found" from the nor
   assert.ok(!NATIVE.test(r.body.semantic.message));
   const p = await say('pilot jobs in Hyderabad');
   assert.equal(p.body.semantic.message, 'No matching Pilot jobs found in Hyderabad.');
+});
+
+/* ------------------------------------------------------------------ *
+ * the master task's additions
+ * ------------------------------------------------------------------ */
+
+test('master: romanised Telugu, "Hyd" / "Hyderbad", software in Telugu, remote from the real mode data', async () => {
+  const cases = [
+    ['Naaku Hyderabad lo Python jobs kavali', { technologies: ['Python'], location: ['Hyderabad'] }, 'vs_py'],
+    ['Naaku Hyderabad lo Java developer jobs kavali', { technologies: ['Java'], role: ['Developer'], location: ['Hyderabad'] }, 'vs_jv'],
+    ['Hyd lo Java developer jobs kavali', { technologies: ['Java'], location: ['Hyderabad'] }, 'vs_jv'],
+    ['Hyderbad lo python jobs', { technologies: ['Python'], location: ['Hyderabad'] }, 'vs_py'],
+    ['నాకు హైదరాబాద్‌లో సాఫ్ట్‌వేర్ ఉద్యోగాలు కావాలి', { industry: ['Software'], location: ['Hyderabad'] }, null],
+    ['హైదరాబాద్‌లో jobs కావాలి', { location: ['Hyderabad'], role: [], technologies: [] }, null],
+    ['Python jobs', { technologies: ['Python'], location: [] }, 'vs_py'],
+  ];
+  for (const [text, want, top] of cases) {
+    // eslint-disable-next-line no-await-in-loop
+    const r = await say(text);
+    for (const [k, v] of Object.entries(want)) assert.deepEqual(r.body.search[k], v, `${text}: ${k}`);
+    if (top) assert.equal(ids(r)[0], top, text);
+    assert.ok(r.body.semantic.total > 0, `${text}: jobs`);
+  }
+  assert.equal((await say('Naaku Hyderabad lo Python jobs kavali')).body.search.language, 'MIXED');
+  /* remote: only jobs whose own mode says so */
+  const rm = await say('నాకు remote frontend jobs కావాలి');
+  assert.equal(rm.body.search.remote, true);
+  assert.deepEqual(ids(rm), ['vs_fe']);
+  /* nothing to rank by (only "remote"): the screen's own filters do it, no empty search */
+  const only = await say('remote jobs kavali');
+  assert.equal(only.body.semantic.passthrough, true);
+  assert.deepEqual(only.body.filters.mode, ['Remote']);
+});
+
+test('master: the cleanup keeps Telugu / Devanagari intact (vowel signs, virama, ZWNJ)', async () => {
+  const { intentToResult } = await import('../src/search/voice-parse.js');
+  for (const w of ['హైదరాబాద్‌లో', 'నాకు', 'सॉफ्टवेयर', 'విశాఖపట్నం']) {
+    // eslint-disable-next-line no-await-in-loop
+    const out = await intentToResult({ query: w, titles: [] }, {});
+    assert.equal(out.filters.q, w.normalize('NFC'), w);
+  }
+  /* and the whole route never hands back broken Telugu: chips and the search object are English, the original is exact */
+  const text = 'నాకు హైదరాబాద్‌లో Python jobs కావాలి';
+  const r = await say(text);
+  assert.equal(r.body.search.originalQuery, text.normalize('NFC'));
+  assert.ok(r.body.understood.every((u) => !NATIVE.test(u)));
 });
 
 /* ------------------------------------------------------------------ *
@@ -308,7 +355,7 @@ test('units: language, concepts, relaxation order, saved-voice matching', () => 
   assert.equal(detectLanguage('Java jobs kavali'), 'MIXED');
   assert.equal(detectLanguage('నాకు Python jobs'), 'MIXED');
   assert.equal(detectLanguage('12345'), 'OTHER');
-  const e = extractConcepts(['కన్సల్టెంట్', 'టెక్నాలజీకి', 'సంబంధించిన', 'ఉన్నాను', 'జావా', 'డెవలపర్', 'సాఫ్ట్‌వేర్']);
+  const e = extractConcepts(['కన్సల్టెంట్', 'టెక్నాలజీకి', 'సంబంధించిన', 'ఉన్నాను', 'జావా', 'డెవలపర్', 'సాఫ్ట్\u200cవేర్']);
   assert.deepEqual(e.ids.sort(), ['consultant', 'developer', 'java', 'software', 'technology']);
   assert.deepEqual(e.rest, []);
   const s = cleanSearch({ concepts: ['react'], location: ['Pune'] });

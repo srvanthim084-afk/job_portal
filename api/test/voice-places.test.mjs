@@ -193,7 +193,7 @@ test(`${PHRASES.length} native-script phrases resolve to the place in the index`
   const wrong = [];
   for (const [text, place, job] of PHRASES) {
     // eslint-disable-next-line no-await-in-loop
-    const r = await parse(text, /[ऀ-ॿ]/.test(text) ? 'hi-IN' : 'te-IN');
+    const r = await parse(text, /[\u0900-\u097f]/.test(text) ? 'hi-IN' : 'te-IN');
     assert.equal(r.status, 200, text);
     assert.equal(r.body.engine, 'rules', text);
     if (r.body.filters.loc !== place || r.body.filters.q !== job) wrong.push(`${text} -> ${r.body.filters.q} / ${r.body.filters.loc}`);
@@ -212,7 +212,7 @@ test('ordinary words never become places', { skip: !HAVE_TREE && 'place index no
   const leaked = [];
   for (const text of NOT) {
     // eslint-disable-next-line no-await-in-loop
-    const r = await parse(text, /[ऀ-ॿ]/.test(text) ? 'hi-IN' : 'te-IN');
+    const r = await parse(text, /[\u0900-\u097f]/.test(text) ? 'hi-IN' : 'te-IN');
     if (r.body.filters.loc) leaked.push(`${text} -> ${r.body.filters.loc}`);
   }
   assert.deepEqual(leaked, []);

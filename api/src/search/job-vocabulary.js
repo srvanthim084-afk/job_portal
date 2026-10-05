@@ -144,7 +144,7 @@ function buildRoleConcepts() {
   const out = [];
   for (const [title, words] of Object.entries(JOB_WORDS)) {
     if (have.has(title)) continue;
-    const latin = words.filter((w) => !/[ऀ-ॿఀ-౿]/.test(w)).map((w) => w.toLowerCase());
+    const latin = words.filter((w) => !/[\u0900-\u097f\u0c00-\u0c7f]/.test(w)).map((w) => w.toLowerCase());
     const extra = ROLE_EXTRA[title] || {};
     const label = title.replace(/\b\w/g, (m) => m.toUpperCase());
     out.push(C(title, 'role', label, [...new Set([title, ...latin])], extra.expand || [], extra.related || []));
@@ -152,8 +152,39 @@ function buildRoleConcepts() {
   return out;
 }
 
+TECH_AND_OFFICE.push(C('data', 'skill', 'Data', ['data', 'data analytics', 'data engineering', 'big data'],
+  ['data analyst', 'data engineer', 'data scientist', 'sql', 'etl', 'analytics', 'power bi', 'tableau'], ['data science'],
+  { native: ['డేటా', 'डेटा', 'डाटा'] }));
+
 export const CONCEPTS = [...TECH_AND_OFFICE, ...buildRoleConcepts()];
 export const CONCEPT_BY_ID = new Map(CONCEPTS.map((c) => [c.id, c]));
+
+/*
+ * Telugu / Devanagari spellings of the owner's list, written out even where
+ * the sound match would find them, so they never depend on it - including
+ * the two-word forms ("ఫ్రంట్ ఎండ్") and the forms without the zero-width
+ * non-joiner (సాఫ్ట్వేర్) that some keyboards and recognisers produce.
+ */
+const NATIVE_EXTRA = {
+  consultant: ['కన్సల్టెంట్', 'కన్సల్టెంట్స్', 'కన్సల్టింగ్', 'कंसल्टेंट'],
+  technology: ['టెక్నాలజీ', 'టెక్', 'టెక్నాలజీస్', 'टेक्नोलॉजी'],
+  frontend: ['ఫ్రంటెండ్', 'ఫ్రంట్ ఎండ్', 'ఫ్రంట్‌ఎండ్', 'फ्रंटएंड', 'फ्रंट एंड'],
+  backend: ['బ్యాకెండ్', 'బ్యాక్ ఎండ్', 'బ్యాక్‌ఎండ్', 'बैकएंड', 'बैक एंड'],
+  cloud: ['క్లౌడ్', 'क्लाउड'],
+  software: ['సాఫ్ట్‌వేర్', 'సాఫ్ట్వేర్', 'సాఫ్ట్ వేర్', 'सॉफ्टवेयर', 'सॉफ्टवेर'],
+  tester: ['టెస్టింగ్', 'టెస్టర్', 'टेस्टिंग'],
+  developer: ['డెవలపర్', 'డెవలపర్స్', 'डेवलपर'],
+  engineer: ['ఇంజనీర్', 'ఇంజినీర్', 'ఇంజనీర్స్', 'इंजीनियर'],
+  ai: ['ఆర్టిఫిషియల్ ఇంటెలిజెన్స్', 'आर्टिफिशियल इंटेलिजेंस'],
+  ml: ['మెషిన్ లెర్నింగ్', 'మెషీన్ లెర్నింగ్'],
+  python: ['పైథాన్', 'पायथन'],
+  java: ['జావా', 'जावा'],
+  react: ['రియాక్ట్', 'रिएक्ट'],
+};
+for (const [id, words] of Object.entries(NATIVE_EXTRA)) {
+  const c = CONCEPT_BY_ID.get(id);
+  if (c) words.forEach((w) => { if (!c.native.includes(w)) c.native.push(w); });
+}
 
 /**
  * Words that carry no search meaning in a NATIVE-script sentence, beyond

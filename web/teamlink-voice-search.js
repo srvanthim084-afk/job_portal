@@ -278,6 +278,7 @@
       f.mode = f.mode.filter(function (x) { return x !== m; });
       var pm = { Onsite: 'Work From Office', Remote: 'Remote', Hybrid: 'Hybrid' }[m];
       p.modes = p.modes.filter(function (x) { return x !== pm; });
+      if (s && m === 'Remote' && s.remote) { s.remote = false; r.__dirty = true; }
     } else if (id.indexOf('type:') === 0) {
       var t = id.slice(5);
       f.jobType = f.jobType.filter(function (x) { return x !== t; });
@@ -311,12 +312,20 @@
     if (!s || !r.filters.loc) return !!r.filters.loc;
     return s.level >= 1 && s.level <= 3 || !(r.search && ((r.search.concepts || []).length || (r.search.keywords || []).length));
   }
+  /* The voice search stays in charge only while the screen still shows
+     what it set: typing another search, or picking another place, hands
+     the list back to the ordinary filters (no stale voice criteria). */
+  var tagSig = function (tags) { return (tags || []).slice().sort().join('|').toLowerCase(); };
   function voiceOn(surface, f) {
     var a = V.applied;
     if (!a || !a.semantic || a.surface !== surface) return false;
-    if (surface === 'public') { f = f || (window.STATE && STATE.search) || {}; return f.__voice === a.token && String(f.q || '') === a.q; }
+    if (surface === 'public') {
+      f = f || (window.STATE && STATE.search) || {};
+      var pt = typeof window.tlLocState === 'function' ? tlLocState('pubJobs').tags : [];
+      return f.__voice === a.token && String(f.q || '') === a.q && tagSig(pt) === a.tags;
+    }
     var rj = (window.STATE && STATE.rj) || {};
-    return rj.__voice === a.token && !rj.q;
+    return rj.__voice === a.token && !rj.q && tagSig(rj.f && rj.f.locTags) === a.tags;
   }
 
   function applyPublic(r) {
@@ -330,6 +339,7 @@
       education: f.education || '', posted: f.posted || '', sort: sort,
     });
     if (V.applied && V.applied.semantic) { STATE.search.__voice = V.applied.token; V.applied.q = STATE.search.q; }
+    if (V.applied) V.applied.tags = tagSig(place ? [place] : []);
     setTags(['pubJobs'], place ? [place] : []);
     if (typeof window.tlLocState === 'function') { var st = tlLocState('pubJobs'); st.__seeded = true; }
     var onSearch = /^#\/(jobs)?(\?|$)/.test(location.hash || '#/') || (location.hash || '') === '';
@@ -353,16 +363,31 @@
       company: '', match: '', locTags: tags, locKm: '',
     };
     if (voice) STATE.rj.__voice = V.applied.token; else delete STATE.rj.__voice;
+    if (V.applied) V.applied.tags = tagSig(tags);
     setTags(['rjSide', 'rjTop', 'candHome'], tags);
     if (location.hash !== '#/candidate/search') location.hash = '#/candidate/search';
     else if (typeof window.render === 'function') render();
   }
 
+  /* VOICE_DEBUG: off unless the page sets window.VOICE_DEBUG = true. Never on its own in production. */
+  function debug(r) {
+    if (window.VOICE_DEBUG !== true || !window.console) return;
+    var s = r.search || {}, m = r.semantic || {};
+    var line = function (k, v) { console.log('[VOICE ' + k + ']', v); };
+    line('RAW', V.text); line('LANGUAGE', s.language); line('NORMALIZED', s.normalizedQuery);
+    line('ROLE', s.role); line('SKILLS', s.skills); line('TECHNOLOGIES', s.technologies); line('LOCATION', s.location);
+    line('EXPERIENCE', s.experience); line('REMOTE', !!s.remote); line('SEMANTIC TERMS', s.semanticTerms);
+    line('FALLBACK', m.levelName || ''); line('RESULT COUNT', m.total);
+  }
+
   function applyNow(r) {
     token += 1;
+    debug(r);
+    /* "passthrough": nothing to rank by (only a salary, a mode ...) - the screen's own filters do it */
+    var sem = r.semantic && !r.semantic.passthrough ? r.semantic : null;
     V.applied = {
       result: JSON.parse(JSON.stringify(r)), surface: V.surface === 'candidate' && isCand() ? 'candidate' : 'public',
-      token: token, semantic: r.semantic || null, rank: rankOf(r), q: '', banner: false,
+      token: token, semantic: sem, rank: rankOf(r), q: '', banner: false,
     };
     if (V.applied.surface === 'candidate') applyCandidate(r); else applyPublic(r);
   }
@@ -385,15 +410,22 @@
     /* the words in the box are the ENGLISH search we understood, never
        the other-script sentence (which would match nothing) */
     var r = V.result;
-    var text = r && r.filters && r.filters.q ? r.filters.q : (/[ऀ-ॿఀ-౿]/.test(V.text) ? '' : V.text);
+    var text = r && r.filters && r.filters.q ? r.filters.q : (/[\u0900-\u097f\u0c00-\u0c7f]/.test(V.text) ? '' : V.text);
+    var place = r && r.filters && r.filters.loc ? r.filters.loc : '';
     V.open = false; V.phase = 'idle'; abort(); paint();
+    /* Edit ends the voice search: the inputs now hold the normalized
+       criteria, and whatever is typed there wins on the next search */
+    V.applied = null;
     if (V.surface === 'candidate' && isCand()) {
-      STATE.rj = STATE.rj || {}; STATE.rj.q = text;
+      STATE.rj = STATE.rj || {}; STATE.rj.q = text; delete STATE.rj.__voice;
+      STATE.rj.f = STATE.rj.f || {}; STATE.rj.f.locTags = place ? [place] : [];
+      setTags(['rjSide', 'rjTop', 'candHome'], place ? [place] : []);
       if (location.hash !== '#/candidate/search') location.hash = '#/candidate/search';
       if (typeof window.render === 'function') render();
       setTimeout(function () { var el = document.getElementById('rjQ'); if (el) { el.value = text; el.focus(); } }, 120);
     } else {
-      STATE.search = STATE.search || {}; STATE.search.q = text;
+      STATE.search = STATE.search || {}; STATE.search.q = text; STATE.search.loc = place; delete STATE.search.__voice;
+      setTags(['pubJobs'], place ? [place] : []);
       if (typeof window.render === 'function') render();
       setTimeout(function () {
         var el = document.querySelector('.search-card.smart-search input[name="q"]');
@@ -575,5 +607,11 @@
     criteria: criteria,
     replay: replay,
     active: function (s) { return voiceOn(s || 'public'); },
+    /* read-only: the last applied voice search (what was said, the normalized search, the ranking) */
+    last: function () {
+      if (!V.applied) return null;
+      return JSON.parse(JSON.stringify({ said: V.text, search: V.applied.result.search || null, semantic: V.applied.semantic,
+        filters: V.applied.result.filters, surface: V.applied.surface }));
+    },
   };
 })();
