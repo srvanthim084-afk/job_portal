@@ -229,7 +229,12 @@ export async function intentToResult(intent, ctx = {}) {
     }
   }
   if (!q && leftover.length && !intent.place) q = leftover.join(' ').slice(0, 60).trim();
-  q = q.replace(/[^\p{L}\p{N} +#.&]/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
+  /* \p{M} and ZWNJ/ZWJ are part of the word, not punctuation: Telugu and
+     Devanagari vowel signs, matras and virama are combining marks. Without
+     them "నాకు హైదరాబాద్‌లో" came back as "న క హ ...", and that broken text
+     reached the Skills box, the chips, "No jobs for ..." and "Remove ...".
+     English carries no combining marks, so it is cleaned exactly as before. */
+  q = q.replace(/[^\p{L}\p{M}\p{N}‌‍ +#.&]/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
 
   /* salary */
   let salaryMin = '';
