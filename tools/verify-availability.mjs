@@ -72,6 +72,8 @@ const cand = await open(cc, '#/register/candidate');
 console.log(`\navailability status  (${BASE})`);
 
 await check('1. the registration form asks whether they are looking', async () => {
+  /* 0109: the form is in steps now; availability sits on step 4 (Preferences). */
+  await cand.evaluate(() => window.TLRegistration && window.TLRegistration.reveal('regNotice'));
   await cand.waitForSelector('#regAvailability', { timeout: 8000 });
   const opts = await cand.$$eval('#regAvailability option', (o) => o.map((x) => x.value));
   must(opts.join() === 'actively_looking,open_to_offers,not_looking', opts.join());

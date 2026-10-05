@@ -470,6 +470,8 @@
   var LOCAL_ONLY = {
     tl_ext_src_filter: 1, tl_ext_match_threshold: 1,
     teamlink_apps_cofilter_v1: 1, teamlink_apps_allco_v1: 1,
+    /* 0109: the registration draft - this device only, never sent to /api/prefs. */
+    tl_reg_draft_v1: 1,
   };
 
   // Entity keys whose writes are forwarded to a real endpoint.

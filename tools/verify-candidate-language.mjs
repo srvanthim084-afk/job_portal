@@ -90,6 +90,9 @@ const cand = { email: `language.${stamp}@tl-verify.test`, password: `Lang${stamp
 let candId;
 
 await check('1. the registration form offers the three languages and the choice reaches the server', async () => {
+  /* 0109: the form is in steps now; the language sits on step 4 (Preferences). */
+  await page.waitForFunction(() => window.TLRegistration, null, { timeout: 15000 });
+  await page.evaluate(() => window.TLRegistration.reveal('regNotice'));
   await page.waitForSelector('#regPrefLang', { timeout: 15000 });
   const opts = await page.$$eval('#regPrefLang option', (o) => o.map((x) => x.value + '=' + x.textContent));
   must(opts.length === 3 && /te=తెలుగు/.test(opts.join('|')) && /hi=हिन्दी/.test(opts.join('|')), 'options: ' + opts.join('|'));
