@@ -5,9 +5,10 @@
  *   2  candidate Search Jobs: tap "Fresher" -> the results change, ?qf= in the URL
  *   3  the card carries the server's match line ("82% match · ✓ … · ✗ …")
  *   4  Share -> WhatsApp opens wa.me with the job and no client name
- *   5  one tap applies -> "Applied ✓" toast -> Undo withdraws it -> apply again
+ *   5  Apply -> the application form (0106) with only what is missing; submit
+ *      applies; the one-click API stays idempotent
  *   6  urgent + "3 days left" badges on the card
- *   7  an incomplete profile gets "Fill 2 things to apply", and saving applies
+ *   7  an incomplete profile: the form asks for what is missing, and submitting applies
  *   8  the urgent alert is in the candidate's bell, with its match
  *   9  the job page: full breakdown; the recruiter sees "Shared N times · M applies"
  *  10  a job past its last date: "Applications closed", and the server refuses
@@ -19,6 +20,7 @@
  */
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
+import { completeApplyForm, closeApplyForm } from './lib/apply-form.mjs';
 
 const BASE = (process.env.TL_URL || 'http://127.0.0.1:4423/').replace(/\/?$/, '/');
 const SHOTS = process.env.SHOTS || '';
@@ -153,7 +155,8 @@ await check('1. signed out: chips above the jobs, and "Log in to see your match"
   const p = await open(ctx, '#/');
   await p.waitForTimeout(1200);
   const chips = await p.$$eval('.tlpu-chips .tlpu-chip', (b) => b.map((x) => x.textContent.trim()));
-  must(chips.length === 8 && chips[0] === 'Fresher' && chips.includes('Urgent hiring'), 'chips: ' + chips.join(','));
+  /* 0106 added Walk-in today, Walk-in this week and Internship. */
+  must(chips.length === 11 && chips[0] === 'Fresher' && chips.includes('Urgent hiring') && chips.includes('Internship'), 'chips: ' + chips.join(','));
   const login = await p.$$eval('.tlpu-why a', (a) => a.map((x) => x.textContent));
   must(login.some((t) => /Log in to see your match/.test(t)), 'no login hint on the cards');
   await shot(p, '01-signed-out-home');
@@ -241,44 +244,30 @@ await check('4. Share -> WhatsApp opens wa.me with the job and no client name', 
 
 const apps = (id) => cp.evaluate((j) => TL.api.get('/applications').then((r) => r.applications.filter((a) => a.jobId === j).length), id);
 
-await check('5. one tap applies, "Applied ✓" with Undo, Undo withdraws, apply again', async () => {
+await check('5. Apply opens the application form with only what is missing; submit applies; one-click stays idempotent', async () => {
   await cp.click(`${cardFor(senior.id)} .rj-btn.pri`, { trial: true, timeout: 4000 }).catch(async (e) => {
     await shot(cp, '05-blocked');
     throw new Error('the Apply button cannot be tapped: ' + String(e.message).split(String.fromCharCode(10)).slice(0, 6).join(' | '));
   });
   await cp.click(`${cardFor(senior.id)} .rj-btn.pri`);
-  await passHint(cp);
-  await cp.waitForSelector('.tlpu-toast', { timeout: 8000 });
-  const t = await cp.$eval('.tlpu-toast', (e) => e.textContent);
-  must(/Applied ✓/.test(t) && /Undo/.test(t), 'toast: ' + t);
+  await cp.waitForSelector('#tlafForm', { timeout: 8000 });
+  must(await cp.$('#tlafSummary'), 'a complete profile is not summarised');
+  await shot(cp, '05-apply-form');
+  const r = await completeApplyForm(cp);
+  must(r.state === 'done', 'form: ' + JSON.stringify(r));
   must(await apps(senior.id) === 1, 'not applied');
-  must(/#\/candidate\/search/.test(await cp.evaluate(() => location.hash)), 'one tap left the page');
-  await shot(cp, '05-applied-toast');
-  await cp.click('.tlpu-toast .toast-action');
-  await cp.waitForTimeout(1500);
-  must(await apps(senior.id) === 0, 'Undo did not withdraw it');
-  await shot(cp, '05b-after-undo');
-  const btn = await cp.$eval(`${cardFor(senior.id)} .rj-foot`, (e) => e.innerText).catch((e) => 'no card: ' + e.message);
-  must(await cp.$(`${cardFor(senior.id)} .rj-btn.pri`), 'after Undo the card shows: ' + String(btn).split(String.fromCharCode(10)).join(' | ') + ' / hasApplication=' + await cp.evaluate((id) => DATA.hasApplication(STATE.session.id, id), senior.id));
-  await cp.click(`${cardFor(senior.id)} .rj-btn.pri`);
-  await cp.waitForSelector('.tlpu-toast', { timeout: 8000 });
-  await cp.waitForTimeout(800);
-  must(await apps(senior.id) === 1, 'applying again failed');
-  const same = await cp.evaluate((id) => TL.api.post('/applications/one-click', { jobId: id }).then((r) => r.existing === true), senior.id);
+  must(/#\/candidate\/search/.test(await cp.evaluate(() => location.hash)), 'applying left the page');
+  await closeApplyForm(cp);
+  const same = await cp.evaluate((id) => TL.api.post('/applications/one-click', { jobId: id }).then((x) => x.existing === true), senior.id);
   must(same, 'a second one-click apply was not idempotent');
   must(await apps(senior.id) === 1, 'duplicate application');
 });
 
-await check('5b. the home page Easy Apply keeps its review step, and Submit applies', async () => {
-  const seen = await cp.evaluate((id) => {
-    window.cpEasyApply(id);
-    const t = document.body.innerText;
-    return { review: t.includes('Resume on file'), submit: [...document.querySelectorAll('button')].some((b) => /submit application/i.test(b.textContent)) };
-  }, fresher.id);
-  must(seen.review && seen.submit, 'no review step: ' + JSON.stringify(seen));
-  await cp.evaluate(() => [...document.querySelectorAll('button')].find((b) => /submit application/i.test(b.textContent)).click());
-  await passHint(cp);
-  await cp.waitForTimeout(2500);
+await check('5b. the home page Easy Apply opens the same form, and Submit applies', async () => {
+  await cp.evaluate((id) => { window.cpEasyApply(id); }, fresher.id);
+  const r = await completeApplyForm(cp);
+  must(r.state === 'done', 'form: ' + JSON.stringify(r));
+  await closeApplyForm(cp);
   must(await apps(fresher.id) === 1, 'Submit did not apply');
 });
 
@@ -316,7 +305,7 @@ await check('10. past its last date: "Applications closed" on the page, and the 
 await cctx.close();
 
 /* ---------------- 7. the incomplete profile ---------------- */
-await check('7. an incomplete profile gets "Fill 2 things to apply", and saving applies', async () => {
+await check('7. an incomplete profile: the form asks for what is missing, and submitting applies', async () => {
   const ctx = await browser.newContext(PHONE);
   const p = await open(ctx, '#/');
   await asCand(p, partial.email, partial.pw);
@@ -327,16 +316,14 @@ await check('7. an incomplete profile gets "Fill 2 things to apply", and saving 
     if (!b) return false; b.click(); return true;
   });
   must(clicked, 'no Apply button');
-  await p.waitForSelector('.tlpu-sheet h3', { timeout: 6000 });
-  const h = await p.$eval('.tlpu-sheet h3', (e) => e.textContent);
-  must(h === 'Fill 2 things to apply', 'sheet: ' + h);
-  await shot(p, '07-missing-fields-sheet');
-  await p.fill('#tlpuF_skills', 'Java, Spring');
-  await p.setInputFiles('#tlpuF_resume', { name: 'resume.txt', mimeType: 'text/plain', buffer: Buffer.from('Java developer, Spring, two years of REST services.') });
-  await p.click('#tlpuSaveApply');
-  await p.waitForSelector('.tlpu-toast', { timeout: 15000 });
-  const n = await p.evaluate((id) => TL.api.get('/applications').then((r) => r.applications.filter((a) => a.jobId === id).length), fresher.id);
-  must(n === 1, 'not applied after filling the sheet');
+  await p.waitForSelector('#tlafForm', { timeout: 6000 });
+  const asked = await p.evaluate(() => Array.from(document.querySelectorAll('#tlafForm [data-row]')).filter((r) => r.offsetParent && /^tlaf(Resume|Exp|Qual|Loc|Notice|Name|Mobile|Email)$/.test(r.getAttribute('data-row'))).map((r) => r.getAttribute('data-row')));
+  must(asked.includes('tlafResume'), 'the missing resume is not asked for: ' + asked.join(','));
+  await shot(p, '07-missing-fields-form');
+  const r = await completeApplyForm(p);
+  must(r.state === 'done', 'form: ' + JSON.stringify(r));
+  const n = await p.evaluate((id) => TL.api.get('/applications').then((x) => x.applications.filter((a) => a.jobId === id).length), fresher.id);
+  must(n === 1, 'not applied after the form');
   await ctx.close();
 });
 
@@ -389,7 +376,7 @@ await check('11. the admin can reorder and hide chips', async () => {
   }, PW);
   await go(p, '#/admin/quick-filters');
   await p.waitForSelector('.tlpu-qf-admin .rowx', { timeout: 8000 });
-  must((await p.$$('.tlpu-qf-admin .rowx')).length === 8, 'not eight rows');
+  must((await p.$$('.tlpu-qf-admin .rowx')).length === 11, 'not eleven rows (0106 added three chips)');
   await shot(p, '11b-admin-chips');
   await ctx.close();
 });

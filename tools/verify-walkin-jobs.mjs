@@ -26,7 +26,8 @@
  *  12  no "Walk-in Drives" / "Walk-ins" in the public header, the candidate
  *      header, the recruiter or the admin sidebar
  *  22  recruiter: Job Type on the job form reveals the walk-in fields and
- *      checks them; Clone makes a draft copy with a new Job ID
+ *      checks them; Clone makes a draft copy with a new Job ID; Post A
+ *      Walk-in Job takes a calendar date, real times and the new fields
  *  23  phone width: the form has no sideways scroll
  *
  * Creates accounts and jobs, so it refuses :4323. Run against an isolated
@@ -440,6 +441,33 @@ await check('12c / 22. recruiter: no Walk-in Drives; Job Type reveals and checks
   const saved = await rp.evaluate((id) => TL.api.get('/jobs/' + id).then((r) => [r.job.walkinVenue, r.job.walkinDate, r.job.jobType], (e) => e.message), clone.id);
   must(Array.isArray(saved) && saved[0] === 'Second Venue' && saved[1] === istDay(9) && saved[2] === 'walk-in', 'clone save: ' + JSON.stringify(saved));
   await shot(rp, '15-recruiter-clone');
+});
+
+await check('22b. recruiter: Post A Walk-in Job has a calendar date, real times and the new fields, and saves them', async () => {
+  await rp.evaluate(() => tnavWalkinModal());
+  await rp.waitForSelector('#tlwkTAddress', { timeout: 5000 });
+  const types = await rp.evaluate(() => [document.getElementById('twDate').type, document.getElementById('twFrom').type, document.getElementById('twTo').type]);
+  must(types.join(',') === 'date,time,time', 'inputs: ' + types.join(','));
+  const title = `Posted Walkin ${stamp}`;
+  await rp.evaluate(({ t, d }) => {
+    const set = (id, v) => { const el = document.getElementById(id); el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); };
+    set('twTitle', t); set('twLoc', 'Hyderabad'); set('twDate', d); set('twFrom', '09:30'); set('twTo', '13:00');
+    set('twVenue', 'Hall B'); set('twExp', 'Fresher'); set('twQual', 'Any graduate'); set('twPay', '₹2–3 LPA');
+    set('twSkills', 'Communication'); set('twContact', 'Meena'); set('twPhone', '9876512345');
+    document.getElementById('twGender').value = 'Female';
+    set('tlwkTAddress', '4 Lake Road, Hyderabad 500001'); set('tlwkTDocs', 'Resume' + String.fromCharCode(10) + 'Photo ID'); set('tlwkTCap', '30');
+    const ai = document.getElementById('twAi'); if (ai) ai.checked = false;
+  }, { t: title, d: istDay(6) });
+  await shot(rp, '16-post-walkin-form');
+  await rp.evaluate(() => tnavWalkinSubmit());
+  let job = null;
+  for (let i = 0; i < 20 && !job; i++) {
+    await rp.waitForTimeout(1000);
+    job = await rp.evaluate((t) => TL.api.get('/jobs?view=all&mine=all&limit=200').then((r) => r.jobs.find((j) => j.title === t) || null), title);
+  }
+  must(job, 'the walk-in did not reach the server');
+  must(job.jobType === 'walk-in' && job.walkinDate === istDay(6) && job.walkinStartTime === '09:30' && job.walkinAddress === '4 Lake Road, Hyderabad 500001'
+    && job.walkinSlotCapacity === 30 && /Photo ID/.test(job.walkinDocumentsToCarry || ''), 'saved: ' + JSON.stringify(job).slice(0, 400));
 });
 
 await check('12d. admin sidebar: no Walk-in Drives', async () => {
