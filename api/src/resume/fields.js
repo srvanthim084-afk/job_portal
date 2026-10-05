@@ -111,7 +111,16 @@ export function splitSections(text) {
        * punctuation. Those close the current section into a bucket
        * nothing reads, which is the right place for text we cannot name.
        */
-      const shouted = bare === bare.toUpperCase() && /[A-Z]{3}/.test(bare)
+      /*
+       * ...but a BULLETED line is an item, never a heading, and one short
+       * acronym on its own line ("AWS", "SQL", "HTML") is a skill in a
+       * one-per-line list. "Key Skills / • Java / • React / • AWS" read
+       * "• AWS" as an unknown heading and closed the skills section on it,
+       * so the last skill of every bulleted DOCX list was dropped.
+       */
+      const bulleted = /^[•●▪◦▸►*–—-]\s*/.test(bare);
+      const acronym = /^[A-Z0-9+#./]{2,4}$/.test(bare);
+      const shouted = !bulleted && !acronym && bare === bare.toUpperCase() && /[A-Z]{3}/.test(bare)
         && bare.split(' ').length <= 5 && !/[.,;:]$/.test(bare);
       if (shouted) {
         current = '_unknown';
