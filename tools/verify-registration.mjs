@@ -394,6 +394,9 @@ await check('the profile was created with every step\'s answers; documents saved
   for (const [k, v] of Object.entries(want)) must(me[k] === v, `${k}: ${JSON.stringify(me[k])}`);
   must(me.skills.includes('Spring Boot'), 'skills ' + me.skills);
   must(me.preferredEmploymentTypes.includes('Full Time'), 'employment types');
+  /* Only the work-mode group: Employment Type and Communication are also
+     checkbox rows, and once were stored as work modes ("Full Time", "email"). */
+  must(JSON.stringify(me.preferredWorkModes) === JSON.stringify(['Hybrid']), 'work modes ' + JSON.stringify(me.preferredWorkModes));
   must(me.whatsappOptIn === true && me.smsOptIn === false, 'channels');
   must(me.willingToRelocate === true, 'relocate');
   must(Number(me.expectedCtc) === 9.5, 'expected ' + me.expectedCtc);
