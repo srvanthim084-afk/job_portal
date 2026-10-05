@@ -225,6 +225,23 @@ test('Greenhouse behaviour matches the snapshot taken before 0108', () => {
   }
 });
 
+/* After 0108: the new checks OBSERVE Greenhouse - they record, they do
+   not refuse. (Not part of the before-snapshot: these tables did not exist.) */
+test('0108 observes Greenhouse without changing it', async () => {
+  const q = (await raw(`select fingerprint, reasons, action from external_job_quarantine
+                         where source_id = 'gh_src' order by fingerprint`)).rows;
+  assert.deepEqual(q.map((x) => [x.fingerprint, x.action]), [['acme:4008', 'kept'], ['acme:4009', 'kept']]);
+  assert.deepEqual(q[0].reasons, ['missing_description']);
+  assert.deepEqual(q[1].reasons, ['invalid_url', 'description_unusable']);
+  const u = (await raw(`select c.old_url, c.new_url, c.applied, c.new_url_valid from external_job_url_changes c
+                         join external_jobs j on j.id = c.external_job_id where j.external_job_id = 'acme:4001'`)).rows;
+  assert.deepEqual(u, [{ old_url: 'https://boards.greenhouse.io/acme/jobs/4001',
+    new_url: 'https://boards.greenhouse.io/acme/jobs/4001-payments', applied: true, new_url_valid: true }]);
+  const h = (await raw(`select health_status, success_count, consecutive_failures, provider from job_sources where id = 'gh_src'`)).rows[0];
+  assert.deepEqual(h, { health_status: 'healthy', success_count: 3, consecutive_failures: 0, provider: 'greenhouse' });
+  assert.ok(Number((await raw(`select count(*) n from external_audit_log where action = 'job.create'`)).rows[0].n) === 7);
+});
+
 test('teardown', async () => {
   await new Promise((r) => server.close(r));
   const { closePool } = await import('../src/db.js');

@@ -55,6 +55,9 @@ alter table job_sources
   /* Health. */
   add column if not exists last_attempt_at timestamptz,
   add column if not exists last_success_at timestamptz,
+  /* When the last successful sync STARTED: a posting it saw has
+     synced_at after this, one it did not see has synced_at before it. */
+  add column if not exists last_success_started_at timestamptz,
   add column if not exists success_count int not null default 0,
   add column if not exists failure_count int not null default 0,
   add column if not exists consecutive_failures int not null default 0,
@@ -101,6 +104,10 @@ update job_sources
    set last_attempt_at = coalesce(last_attempt_at, last_sync_at),
        last_success_at = coalesce(last_success_at,
          case when last_sync_status in ('ok', 'partial') then last_sync_at end),
+       /* A sync never runs for half an hour (EXTERNAL_SYNC_TIMEOUT_MS), so
+          every posting the last good sync saw is newer than this. */
+       last_success_started_at = coalesce(last_success_started_at,
+         case when last_sync_status in ('ok', 'partial') then last_sync_at - interval '30 minutes' end),
        health_status = case when last_sync_status in ('ok', 'partial') then 'healthy'
                             when last_sync_status is null or last_sync_status = 'manual' then 'unknown'
                             else 'degraded' end
@@ -692,7 +699,7 @@ $$;
  */
 create or replace function external_source_health_record(
   p_source_id text, p_outcome text, p_duration_ms int, p_threshold int,
-  p_backoff_base_hours numeric, p_backoff_max_hours numeric
+  p_backoff_base_hours numeric, p_backoff_max_hours numeric, p_started timestamptz default null
 ) returns table (consecutive_failures int, health_status text, crossed boolean, recovered boolean,
                  next_sync_after timestamptz, open_job_count int)
 language plpgsql security definer set search_path = public as $$
@@ -708,6 +715,7 @@ begin
   update job_sources j set
       last_attempt_at = now(),
       last_success_at = case when ok then now() else j.last_success_at end,
+      last_success_started_at = case when ok then coalesce(p_started, now()) else j.last_success_started_at end,
       success_count = j.success_count + case when ok then 1 else 0 end,
       failure_count = j.failure_count + case when ok then 0 else 1 end,
       consecutive_failures = n,
@@ -994,7 +1002,7 @@ begin
       external_quarantine_put(text, text, text, text, text, text, text[], text, jsonb),
       external_quarantine_resolve(text, text[]),
       external_sync_run_extend(bigint, text, int, int, int, int, text),
-      external_source_health_record(text, text, int, int, numeric, numeric),
+      external_source_health_record(text, text, int, int, numeric, numeric, timestamptz),
       external_admin_alert(text, text, text, text, text, jsonb),
       external_job_event_add(text, text, text),
       external_saved_set(text, boolean),

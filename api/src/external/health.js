@@ -50,6 +50,7 @@ export async function afterSync(session, source, outcome, stats = {}) {
   const h = await safe('health record', () => cx.recordHealth(session, source.id, {
     outcome, durationMs: stats.durationMs ?? null, threshold: cfg.unhealthyAfter,
     baseHours: cfg.backoffBaseHours, maxHours: cfg.backoffMaxHours,
+    startedAt: stats.durationMs != null ? new Date(Date.now() - stats.durationMs) : null,
   }));
   const alerts = [];
   const alert = async (type, title, message, metadata = {}) => {

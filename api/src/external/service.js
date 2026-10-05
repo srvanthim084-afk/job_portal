@@ -847,7 +847,7 @@ export async function closeStalePostings(session) {
           and j.status = 'open'
           and j.synced_at < now() - (coalesce(s.close_grace_days, $1::int) || ' days')::interval
           and (s.provider = any($2::text[])
-               or (s.last_success_at is not null and j.synced_at < s.last_success_at))`,
+               or (s.last_success_started_at is not null and j.synced_at < s.last_success_started_at))`,
       [days, PRESERVED]);
     return rowCount;
   });

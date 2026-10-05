@@ -98,10 +98,10 @@ export async function spendQuota(session, sourceId, calls = 1) {
     `select job_source_spend($1,$2) as remaining`, [sourceId, calls])).rows[0]?.remaining ?? -1));
 }
 
-export async function recordHealth(session, sourceId, { outcome, durationMs, threshold, baseHours, maxHours }) {
+export async function recordHealth(session, sourceId, { outcome, durationMs, threshold, baseHours, maxHours, startedAt }) {
   return withUser(session, async (c) => (await c.query(
-    `select * from external_source_health_record($1,$2,$3,$4,$5,$6)`,
-    [sourceId, outcome, durationMs ?? null, threshold, baseHours, maxHours])).rows[0] || null);
+    `select * from external_source_health_record($1,$2,$3,$4,$5,$6,$7)`,
+    [sourceId, outcome, durationMs ?? null, threshold, baseHours, maxHours, startedAt || null])).rows[0] || null);
 }
 
 export async function alertAdmins(session, { key, type, sourceId, title, message, metadata = {} }) {
