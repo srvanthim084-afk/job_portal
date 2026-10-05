@@ -198,8 +198,10 @@ async function topMatches(c, cand, n = 3) {
     where j.id not in (select job_id from hidden_jobs where candidate_id = app_candidate_id())
       and j.id not in (select job_id from applications where candidate_id = app_candidate_id())
     order by j.published_at desc nulls last limit 300`)).rows;
+  /* AI Match first; a job with no listed skills has no score and sorts last */
+  const rank = (x) => (x.m.score == null ? -1 : x.m.score);
   return rows.map((r) => ({ row: r, job: toJob(r), m: matchSummary(toJob(r), cand) }))
-    .sort((a, b) => b.m.score - a.m.score).slice(0, n);
+    .sort((a, b) => rank(b) - rank(a)).slice(0, n);
 }
 
 /**
@@ -239,7 +241,7 @@ export async function rulesReply(session, textRaw, { interviewId, lang } = {}) {
     if (intent === 'apply') {
       used.push('match_me_to_job');
       const [best] = await topMatches(c, cand, 1);
-      if (!best) return say(L.noJobToEvaluate());
+      if (!best || best.m.score == null) return say(L.noJobToEvaluate());
       const s = best.m.score;
       return say(L.applyLine(link(best.row), s, L.verdict(s))
         + (best.m.missing_skills.length ? L.applyMissing(best.m.missing_skills.slice(0, 4)) : ''));

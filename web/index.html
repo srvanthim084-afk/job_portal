@@ -1499,7 +1499,7 @@ function easyApplyBadge(job){
 function matchScoreBadge(score){
   if(score==null) return '';
   const tier = score>=80?'hi':score>=60?'mid':'lo';
-  return `<span class="badge badge-ai badge-match badge-match-${tier}" title="AI Match Score">🎯 ${score}% match</span>`;
+  return `<span class="badge badge-ai badge-match badge-match-${tier}" title="AI Match: the job's required skills you have">🎯 ${score}% AI Match</span>`;
 }
 function jobCard(job, opts){
   opts = opts || {};
@@ -14357,6 +14357,35 @@ a.rec-nav-link{text-decoration:none}
 .rj-sk span{border-radius:14px;padding:4px 11px;font-size:11.5px;font-weight:700}
 .rj-sk .have{background:#e8f6ee;color:#0f8a4e}
 .rj-sk .miss{background:#fff4e8;color:#b96a12;border:1px dashed #ffd2a8}
+.rj-sk .sk{background:#f4f7fb;color:#42505f}
+/* the candidate job card (rjCardHtml): light, compact, one percentage */
+.rj-card.tlc{container-type:inline-size;padding:16px 18px;border-color:#e6ebf2;box-shadow:0 1px 6px rgba(16,30,54,.05)}
+.rj-card.tlc .rj-top{flex-wrap:nowrap;gap:12px}
+.rj-card.tlc .rj-logo{width:42px;height:42px;font-size:14px;color:#fff}
+.tlc-head{flex:1;min-width:0}
+.rj-card.tlc .rj-t{font-size:16px;line-height:1.3;overflow-wrap:anywhere}
+.rj-card.tlc .rj-c{font-size:12.5px;margin-top:3px}
+.rj-card.tlc .rj-score{min-width:0;flex:0 0 auto;margin-left:auto;text-align:right;display:flex;flex-direction:column;align-items:flex-end;gap:7px}
+.tlc-pct{display:inline-flex;align-items:baseline;gap:5px;background:#eef4ff;color:#1b4f9e;border-radius:999px;padding:4px 11px;white-space:nowrap}
+.rj-card.tlc .rj-score b{display:inline;font-size:15px;font-weight:800;color:#1b4f9e}
+.rj-card.tlc .rj-score small{font-size:11.5px;font-weight:700;color:#1b4f9e}
+.rj-why{border:1px solid #d5e2f5;background:#fff;color:#1b4f9e;border-radius:8px;padding:5px 10px;font-size:11.5px;font-weight:700;cursor:pointer;white-space:nowrap;transition:background .15s}
+.rj-why:hover,.rj-why[aria-expanded="true"]{background:#f3f7ff}
+.rj-card.tlc .rj-meta{gap:6px 16px;margin-top:11px}
+.rj-card.tlc .rj-meta span{background:none;padding:0;font-size:12.5px;font-weight:600;color:#42505f}
+.tlc-posted{font-size:11.5px;color:#8a94a6;margin-top:6px}
+.tlc-sk{margin-top:10px;align-items:center}
+.rj-sk.tlc-sk .sk{background:#f4f7fb;color:#42505f;border:1px solid #e6ebf2;font-weight:600;padding:3px 10px}
+.tlc-sk .tlc-x{display:none}
+.tlc-sk.all .tlc-x{display:inline-block}
+.tlc-more{border:0;background:none;color:#1d6ff2;font-size:11.5px;font-weight:700;cursor:pointer;padding:3px 4px}
+.rj-card.tlc .rj-foot{margin-top:12px;padding-top:12px;gap:8px}
+.rj-card.tlc .rj-btn{padding:8px 14px}
+@container (max-width:520px){
+  .rj-card.tlc .rj-top{flex-wrap:wrap}
+  .rj-card.tlc .rj-score{flex:1 1 100%;flex-direction:row;align-items:center;justify-content:space-between;text-align:left}
+  .rj-card.tlc .rj-btn{flex:1 1 auto}
+}
 .rj-quote{background:#f7faff;border-left:3px solid var(--cap-blue,#1d6ff2);border-radius:0 9px 9px 0;padding:10px 13px;font-size:12.5px;color:#33404f;line-height:1.6}
 .rj-foot{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-top:14px;border-top:1px solid #f0f3f7;padding-top:12px}
 .rj-foot .grow{flex:1;font-size:11.5px;color:#8a94a6}
@@ -14606,45 +14635,54 @@ a.rec-nav-link{text-decoration:none}
   window.f_rjSkills=v=>{ f().skills=v; clearTimeout(t1); t1=setTimeout(render,450); };
   window.f_rjCompany=v=>{ f().company=v; clearTimeout(t1); t1=setTimeout(render,450); };
 
-  /* ---------------- job card ---------------- */
-  function cardHtml(r,c){
-    const j=r.job, co=r.company;
+  /* ---------------- job card ----------------
+     The one candidate job card (owner's card spec, 2026-10-05): logo, title,
+     company; location / experience / salary / work mode; posted and
+     applicants; the job's skills as pills; ONE percentage - the AI Match,
+     top right - and "Why this match?", which opens the match details beside
+     the card (teamlink-portal-upgrades.js builds that panel from the
+     server's /job-matches/explain). Search Jobs, the "Jobs in <place>"
+     bands (tlJobCard) and the home row (cpJobRow) all draw this. */
+  const SKILL_PILLS=5;
+  function cardHtml(r,c,opt){
+    opt=opt||{};
+    const j=r.job, co=r.company||{};
     const applied=DATA.hasApplication(c.id,j.id);
     const saved=STATE.savedJobs&&STATE.savedJobs.has(j.id);
-    return `<article class="rj-card">
+    const pct=r.matchPercentage;
+    const skills=[...new Set((j.skills||[]).filter(Boolean))];
+    const more=skills.length-SKILL_PILLS;
+    const km=(opt.km!=null&&Number(opt.km)>0)?` · ${Math.round(Number(opt.km))} km`:'';
+    const n=Number(j.applicants)||0;
+    const ini=(typeof initials==='function')?initials(co.name||'TeamLink'):String(co.name||'T').slice(0,2).toUpperCase();
+    const id=esc(j.id);
+    return `<article class="rj-card tlc" data-tljob="${id}"><div class="tlc-grid"><div class="tlc-main">
       <div class="rj-top">
-        <div class="rj-logo">${esc(String(co.name||'T').slice(0,2).toUpperCase())}</div>
-        <div style="flex:1;min-width:200px">
+        <div class="rj-logo" style="background:${esc(co.color1||'#1d6ff2')}">${esc(ini)}</div>
+        <div class="tlc-head">
           <h3 class="rj-t">${esc(j.title)}</h3>
-          <div class="rj-c">${esc(co.name)} · ${esc(j.location||'—')}</div>
-          <div class="rj-meta">
-            <span>💰 ${esc(j.pay||'Not disclosed')}</span><span>💼 ${esc(j.exp||'—')}</span>
-            <span>🏢 ${esc(j.mode||'—')}</span><span>📄 ${esc(j.type||'—')}</span>
-            <span>🧑‍💼 ${Number(j.applicants)||0} applicants</span>
-          </div>
+          <div class="rj-c">${esc(co.name||'')}</div>
         </div>
         <div class="rj-score">
-          <b>${r.matchPercentage}%</b><small>MATCH</small>
-          <div class="rj-track"><div class="rj-fill" style="width:${r.matchPercentage}%"></div></div>
+          ${pct!=null?`<div class="tlc-pct"><b>${pct}%</b><small>🎯 AI Match</small></div>`:''}
+          <button type="button" class="rj-why" aria-expanded="false" onclick="event.stopPropagation();tlMatchModal('${id}',this)">Why this match? ↓</button>
         </div>
       </div>
-      <div class="rj-sec"><h5>Why this job matches you</h5>
-        ${r.recommendationReasons.map(x=>`<div class="rj-reason"><span class="${x.ok?'ok':'warn'}">${x.ok?'✓':'⚠'}</span><span>${esc(x.text)}</span></div>`).join('')}
+      <div class="rj-meta">
+        <span>📍 ${esc(j.location||'—')}${km}</span><span>💼 ${esc(j.exp||'—')}</span>
+        <span>💰 ${esc(j.pay||'Not disclosed')}</span><span>🏢 ${esc(j.mode||'—')}</span>
       </div>
-      <div class="rj-sec"><h5>Skill match</h5>
-        <div class="rj-sk">${r.matchedSkills.map(s=>`<span class="have">✓ ${esc(s)}</span>`).join('')||'<span class="miss">No overlapping skills yet</span>'}</div>
-        ${r.missingSkills.length?`<div style="font-size:11.5px;color:#8a94a6;margin:9px 0 5px">Missing / recommended skills</div>
-          <div class="rj-sk">${r.missingSkills.map(s=>`<span class="miss">○ ${esc(s)}</span>`).join('')}</div>`:''}
-      </div>
-      <div class="rj-sec"><h5>AI recommendation</h5><div class="rj-quote">${esc(r.aiRecommendation)}</div></div>
+      <div class="tlc-posted">${esc(postedText(j))} • ${n} applicant${n===1?'':'s'}</div>
+      ${skills.length?`<div class="rj-sk tlc-sk">${skills.map((s,i)=>`<span class="sk${i>=SKILL_PILLS?' tlc-x':''}">${esc(s)}</span>`).join('')}${more>0?`<button type="button" class="tlc-more" data-more="+${more} more" onclick="event.stopPropagation();var p=this.parentNode;p.classList.toggle('all');this.textContent=p.classList.contains('all')?'Show less':this.getAttribute('data-more')">+${more} more</button>`:''}</div>`:''}
       <div class="rj-foot">
-        <div class="grow"><b style="color:#42505f">${esc(postedText(j))}</b>${postedOn(j)?` · ${esc(postedOn(j))}`:''}</div>
-        <button class="rj-btn" onclick="navigate('/job/${j.id}')">View Job</button>
-        <button class="rj-btn ${applied?'done':'pri'}" ${applied?'disabled':''} onclick="${applied?'':`rjApplyJob('${j.id}')`}">${applied?'✓ Applied':(j.easyApply?'⚡ Easy Apply':'Apply')}</button>
-        <button class="rj-btn" onclick="toggleSaveJob('${j.id}')">${saved?'★ Saved':'☆ Save Job'}</button>
+        <button class="rj-btn ${applied?'done':'pri'}" ${applied?'disabled':''} onclick="${applied?'':`rjApplyJob('${id}')`}">${applied?'✓ Applied':'Apply Now'}</button>
+        <button class="rj-btn" onclick="toggleSaveJob('${id}')">${saved?'★ Saved':'☆ Save'}</button>
+        <button class="rj-btn" onclick="tlJdModal('${id}')">📄 Job Description</button>
+        <button class="rj-btn" onclick="navigate('/job/${id}')">View Job</button>
       </div>
-    </article>`;
+    </div></div></article>`;
   }
+  window.rjCardHtml=cardHtml;
   window.rjApplyJob=function(id){
     if(typeof window.capApply==='function') capApply(id);
     else if(typeof easyApply==='function') easyApply(id);
@@ -14672,7 +14710,7 @@ a.rec-nav-link{text-decoration:none}
       </div>
       <div class="rj-aibox">
         <span class="rj-ai">🤖 AI summary</span>
-        <p>Based on your resume, ${(c.skills||[]).length} listed skills, ${esc(c.exp||'experience')}, preferred location ${esc(c.preferredLocation||c.location||'—')}, expected ₹${esc(String(c.expectedCtc||'—'))} LPA and your previous applications, TeamLink AI ranked every open role for you${top?` — the strongest match right now is <b>${esc(top.job.title)}</b> at ${esc(top.company.name)} (${top.matchPercentage}%)`:''}.</p>
+        <p>TeamLink AI matched the ${(c.skills||[]).length} skill${(c.skills||[]).length===1?'':'s'} on your profile and resume against the skills every open role asks for${top&&top.matchPercentage!=null?` — the strongest AI Match right now is <b>${esc(top.job.title)}</b> at ${esc(top.company.name)} (${top.matchPercentage}%)`:''}.</p>
         <div class="rj-pills">${VIEWS.map(([k,l])=>`<button class="rj-pill ${STATE.rj.view===k?'on':''}" onclick="rjSet('view','${k}')">${l}</button>`).join('')}</div>
       </div>
       <div class="rj-mob">
@@ -14899,30 +14937,8 @@ a.rec-nav-link{text-decoration:none}
   }
   /* ---------- one shared job row used by Home / Search / Recommended ---------- */
   window.cpJobRow=function(r,c){
-    const j=r.job,co=r.company;
-    const applied=DATA.hasApplication(c.id,j.id), saved=STATE.savedJobs&&STATE.savedJobs.has(j.id);
-    return `<div class="cp-card" style="margin-bottom:12px">
-      <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap">
-        <div class="cp-av" style="width:44px;height:44px;border-radius:10px;font-size:14px">${esc(String(co.name||'T').slice(0,2).toUpperCase())}</div>
-        <div style="flex:1;min-width:210px">
-          <div style="font-size:16px;font-weight:800;color:#16202c">${esc(j.title)}</div>
-          <div style="font-size:12.5px;color:#7b8794;margin-top:2px">${esc(co.name)} · ${esc(j.location||'—')}</div>
-          <div style="font-size:12.5px;color:#42505f;margin-top:7px">${esc(j.pay||'Not disclosed')} · ${esc(j.exp||'—')} · ${esc(j.mode||'—')} · ${esc(j.type||'—')}</div>
-          <div style="font-size:11.5px;color:#8a94a6;margin-top:3px">${esc(postedLine(j))} · ${Number(j.applicants)||0} applicants</div>
-          ${(j.skills||[]).length?`<div style="margin-top:9px;font-size:11.5px;color:#8a94a6">Skills: ${(j.skills||[]).map(s=>`<span class="cap-chip" style="margin:2px 5px 2px 0">${esc(s)}</span>`).join('')}</div>`:''}
-          <div style="margin-top:9px"><b style="font-size:11.5px;color:#42505f">Why this job matches you</b>
-            ${r.recommendationReasons.slice(0,4).map(x=>`<div style="font-size:12px;color:#33404f;margin-top:4px">${x.ok?'✓':'⚠'} ${esc(x.text)}</div>`).join('')}</div>
-        </div>
-        <div style="text-align:center;min-width:100px">
-          <div style="font-size:11px;font-weight:800;color:#1b4f9e;background:#e7f0ff;border-radius:12px;padding:4px 10px">🎯 ${r.matchPercentage}% Match</div>
-          <button class="cp-btn" style="margin-top:8px;padding:5px 10px;font-size:11px" onclick="cpWhy('${j.id}')">Why ${r.matchPercentage}%?</button>
-        </div>
-      </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;border-top:1px solid #f0f3f7;padding-top:11px">
-        <button class="cp-btn" onclick="navigate('/job/${j.id}')">View Job</button>
-        <button class="cp-btn ${applied?'done':'pri'}" ${applied?'disabled':''} onclick="${applied?'':`cpEasyApply('${j.id}')`}">${applied?'✓ Applied':'⚡ Easy Apply'}</button>
-        <button class="cp-btn" onclick="toggleSaveJob('${j.id}')">${saved?'★ Saved':'☆ Save'}</button>
-      </div></div>`;
+    /* the one candidate job card (rjCardHtml) */
+    return window.rjCardHtml(r,c);
   };
   /* ---------- AI match breakdown ---------- */
   window.cpWhy=function(jobId){
@@ -15120,7 +15136,7 @@ a.rec-nav-link{text-decoration:none}
             <div style="font-size:12.5px;color:#7b8794">${esc(co.name)} · ${esc(j.location||'')}</div>
             <div style="font-size:12.5px;color:#42505f;margin-top:5px">${esc(j.pay||'Not disclosed')} · ${esc(j.exp||'')}</div>
             <div style="font-size:11.5px;color:#8a94a6;margin-top:3px">${esc((typeof formatRelativeTime==='function'&&j.publishedAt)?'Posted '+formatRelativeTime(j.publishedAt).toLowerCase():'Posted '+(j.postedDaysAgo||0)+' days ago')}</div></div>
-          <div style="font-size:11px;font-weight:800;color:#1b4f9e;background:#e7f0ff;border-radius:12px;padding:4px 10px">🎯 ${r.matchPercentage}% Match</div></div>
+          ${r.matchPercentage!=null?`<div class="tl-aim" style="font-size:11px;font-weight:800;color:#1b4f9e;background:#e7f0ff;border-radius:12px;padding:4px 10px">🎯 ${r.matchPercentage}% AI Match</div>`:''}</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:11px;border-top:1px solid #f0f3f7;padding-top:11px">
             <button class="cp-btn" onclick="navigate('/job/${j.id}')">View Job</button>
             <button class="cp-btn pri" onclick="cpEasyApply('${j.id}')">Apply</button>
@@ -15828,34 +15844,8 @@ a.rec-nav-link{text-decoration:none}
 
   /* ---------- job card with skill gap + tier badge ---------- */
   window.tlJobCard=function(m,c){
-    const j=m.job,co=m.company;
-    const applied=DATA.hasApplication(c.id,j.id), saved=STATE.savedJobs&&STATE.savedJobs.has(j.id);
-    const state=TL_LOC.stateOf(j.location);
-    return `<div class="cp-card" style="margin-bottom:12px">
-      <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap">
-        <div class="cp-av" style="width:44px;height:44px;border-radius:10px;font-size:14px">${esc(String(co.name||'T').slice(0,2).toUpperCase())}</div>
-        <div style="flex:1;min-width:220px">
-          <div style="font-size:16px;font-weight:800;color:#16202c">${esc(j.title)}${/0|fresher/i.test(String(j.exp||''))?' – Fresher':''}</div>
-          <div style="font-size:12.5px;color:#7b8794;margin-top:2px">${esc(co.name)}</div>
-          <div style="font-size:12.5px;color:#42505f;margin-top:7px">📍 ${esc(j.location||'—')}${state?', '+esc(state):''}${m.__km!=null&&m.__km>0?`<span class="jt-km">${m.__km} km</span>`:''}</div>
-          <div style="font-size:12.5px;color:#42505f;margin-top:3px">💼 ${esc(j.exp||'—')} &nbsp; 💰 ${esc(j.pay||'Not disclosed')} &nbsp; 🏢 ${esc(j.type||'—')} &nbsp; 🏠 ${esc(j.mode||'—')}</div>
-          <div style="font-size:11.5px;color:#8a94a6;margin-top:4px">${esc((j.publishedAt&&typeof formatRelativeTime==='function')?'Posted '+formatRelativeTime(j.publishedAt).toLowerCase():'Posted '+(j.postedDaysAgo||0)+' days ago')} · ${Number(j.applicants)||0} applicants</div>
-          ${(j.skills||[]).length?`<div style="margin-top:8px;font-size:11.5px;color:#8a94a6">Skills: ${(j.skills||[]).map(s=>`<span class="cap-chip" style="margin:2px 5px 2px 0">${esc(s)}</span>`).join('')}</div>`:''}
-          <div style="margin-top:9px"><b style="font-size:11.5px;color:#42505f">Why this job matches you</b>
-            ${m.recommendationReasons.slice(0,4).map(x=>`<div style="font-size:12px;color:#33404f;margin-top:3px">${x.ok?'✓':'⚠'} ${esc(x.text)}</div>`).join('')}</div>
-          ${m.missingSkills.length?`<div style="margin-top:9px"><b style="font-size:11.5px;color:#a35a0e">Skill gap</b>
-            <div style="margin-top:5px">${m.missingSkills.map(s=>`<span class="cap-chip" style="background:#fff4e8;color:#a35a0e">○ ${esc(s)}</span>`).join('')}</div></div>`:''}
-        </div>
-        <div style="text-align:center;min-width:104px">
-          <div style="font-size:11.5px;font-weight:800;color:#1b4f9e;background:#e7f0ff;border-radius:12px;padding:4px 10px">🎯 ${m.total||m.matchPercentage}% AI Match</div>
-          <button class="cp-btn" style="margin-top:8px;padding:5px 10px;font-size:11px" onclick="tlMatchModal('${j.id}')">Why this match?</button>
-        </div>
-      </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;border-top:1px solid #f0f3f7;padding-top:11px">
-        <button class="cp-btn ${applied?'done':'pri'}" ${applied?'disabled':''} onclick="${applied?'':`cpEasyApply('${j.id}')`}">${applied?'✓ Applied':'Apply Now'}</button>
-        <button class="cp-btn" onclick="toggleSaveJob('${j.id}')">${saved?'★ Saved':'☆ Save'}</button>
-        <button class="cp-btn" onclick="navigate('/job/${j.id}')">View Job</button>
-      </div></div>`;
+    /* the one candidate job card (rjCardHtml), with the distance when known */
+    return window.rjCardHtml(m,c,{km:m.__km});
   };
 
   /* ---------- tiered results on the search page ---------- */
@@ -15961,7 +15951,7 @@ a.rec-nav-link{text-decoration:none}
           <div style="font-size:12px;color:#7b8794;margin-top:2px">${esc(m.company.name)}</div>
           <div style="font-size:12px;color:#42505f;margin-top:6px">📍 ${esc(m.job.location)}${m.__km!=null&&m.__km>0?` <span class="jt-km">${m.__km} km</span>`:''}</div>
           <div style="font-size:12px;color:#42505f;margin-top:3px">💼 ${esc(m.job.exp||'—')} · 💰 ${esc(m.job.pay||'—')}</div>
-          <div style="margin-top:8px;font-size:11.5px;font-weight:800;color:#1b4f9e;background:#e7f0ff;border-radius:12px;padding:3px 9px;display:inline-block">🎯 ${m.total||m.matchPercentage}% Match</div>
+          ${m.matchPercentage!=null?`<div class="tl-aim" style="margin-top:8px;font-size:11.5px;font-weight:800;color:#1b4f9e;background:#e7f0ff;border-radius:12px;padding:3px 9px;display:inline-block">🎯 ${m.matchPercentage}% AI Match</div>`:''}
           <div style="display:flex;gap:7px;margin-top:10px"><button class="cp-btn pri" style="padding:6px 12px;font-size:11.5px" onclick="cpEasyApply('${m.job.id}')">Apply Now</button>
             <button class="cp-btn" style="padding:6px 12px;font-size:11.5px" onclick="toggleSaveJob('${m.job.id}')">Save</button></div>
         </div></div>`).join('')}

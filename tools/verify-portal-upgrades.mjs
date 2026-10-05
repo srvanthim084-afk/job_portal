@@ -3,7 +3,8 @@
  *
  *   1  signed out: the chip row, "Log in to see your match", the link preview
  *   2  candidate Search Jobs: tap "Fresher" -> the results change, ?qf= in the URL
- *   3  the card carries the server's match line ("82% match · ✓ … · ✗ …")
+ *   3  the card carries the server's AI Match, once, top right, and a gap
+ *      line in words under the buttons ("⚠ SQL") with no percentage
  *   4  Share -> WhatsApp opens wa.me with the job, the company its card shows, and its link
  *   5  Apply -> the application form (0106) with only what is missing; submit
  *      applies; the one-click API stays idempotent
@@ -211,9 +212,11 @@ await check('2. tapping "Fresher" changes the results, and the URL carries it', 
 });
 
 await check('3. the card shows the server match line', async () => {
-  await cp.waitForSelector(`${cardFor(senior.id)} .tlpu-why`, { timeout: 8000 });
-  const line = await cp.$eval(`${cardFor(senior.id)} .tlpu-why`, (e) => e.textContent);
-  must(/✓ Java, Spring, AWS/.test(line) && /✓ 3 yrs/.test(line) && /✗ SQL/.test(line), 'line: ' + line);
+  await cp.waitForSelector(`${cardFor(senior.id)} .tlpu-gap`, { timeout: 8000 });
+  const line = await cp.$eval(`${cardFor(senior.id)} .tlpu-gap`, (e) => e.textContent);
+  must(/⚠ SQL/.test(line) && !/Java|Spring|AWS/.test(line) && !/%/.test(line), 'gap line: ' + line);
+  const pcts = (await cp.$eval(cardFor(senior.id), (e) => e.innerText)).match(/\d+\s*%/g) || [];
+  must(pcts.length === 1, 'percentages on the card: ' + pcts);
   const server = await cp.evaluate((id) => TL.api.get('/job-matches/explain?jobIds=' + id).then((r) => r.matches[0].score), senior.id);
   const shown = await cp.$eval(`${cardFor(senior.id)} .rj-score b`, (e) => e.textContent.trim()).catch(() => '');
   must(shown === server + '%', `card says ${shown}, server says ${server}%`);
@@ -278,7 +281,7 @@ await check('8. the urgent-hiring alert is in the bell with the match', async ()
   await go(cp, '#/candidate/home');
   await cp.waitForTimeout(800);
   const html = await cp.evaluate(() => (typeof candidateBellHtml === 'function' ? candidateBellHtml() : ''));
-  must(/Urgent hiring/.test(html) && /% match/.test(html) && /Apply now/.test(html), 'bell: ' + html.replace(/<[^>]+>/g, ' ').slice(0, 300));
+  must(/Urgent hiring/.test(html) && /% AI Match/.test(html) && /Apply now/.test(html), 'bell: ' + html.replace(/<[^>]+>/g, ' ').slice(0, 300));
   must(!/\bclient\b/i.test(html.replace(/<[^>]+>/g, ' ')), 'the word client in the bell');
 });
 
@@ -286,7 +289,8 @@ await check('9. the job page shows the full breakdown and Improve your match', a
   await go(cp, '#/job/' + fresher.id);
   await cp.waitForSelector('.tlpu-jp .tlpu-kv', { timeout: 8000 });
   const t = await cp.$eval('.tlpu-jp', (e) => e.innerText);
-  must(/Your match · \d+%/.test(t) && /Skills/.test(t) && /Experience/.test(t) && /Location/.test(t) && /Salary/.test(t), 'panel: ' + t);
+  must(/🎯 \d+% AI Match/.test(t) && /Matched Skills/.test(t) && /Missing Skills/.test(t) && /Experience Match/.test(t)
+    && /Location Match/.test(t), 'panel: ' + t);
   must(/\+ SQL/.test(t), 'no Improve your match');
   await shot(cp, '09-job-page-breakdown');
 });

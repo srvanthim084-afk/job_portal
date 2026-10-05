@@ -5,21 +5,23 @@
  * background sweeps and the tests read the same definition:
  *
  *   quick filter chips   what "Fresher" or "Walk-in" MEANS, as SQL
- *   match reasons        the screening score and its evidence
+ *   match reasons        the AI Match score (skills only) and its reasons
  *   one-click apply      which profile fields it needs
  *   last date            "end of that day in India", and days left
  *   sharing              the share code, the share text, the preview
  *
- * THE MATCH IS THE SCREENING MATCH. explainMatch() builds its inputs the
- * way screenApplication() does (toJob + company, toCandidate + resume
- * text) and scores them with scoreApplication() and the admin's AI
- * settings - so the percentage on a card is the one the application gets
- * when it is screened, and the one an alert quotes.
+ * THE MATCH IS THE AI MATCH (owner, 2026-10-05). explainMatch() builds its
+ * inputs the way screening does (toJob + company, toCandidate + resume
+ * text) and scores them with aiMatch() - JD skills matched / JD skills
+ * required, nothing else - so the percentage on a card is the one in
+ * "Why this match?" and the one an alert quotes. Recruiter screening
+ * (scoreApplication) is a separate, recruiter-only number.
  */
 import { randomBytes } from 'node:crypto';
 import { toJob, toCandidate } from '../shapes.js';
-import { matchCandidate, scoreSkills } from '../ai/match.js';
-import { scoreApplication, loadAiSettings } from '../ai/screening.js';
+import { scoreExperience, scoreLocation, scoreEducation } from '../ai/match.js';
+import { aiMatch } from '../ai/ai-match.js';
+import { loadAiSettings } from '../ai/screening.js';
 
 /* ------------------------------------------------------------------ *
  * time in India
@@ -156,32 +158,53 @@ export function screeningInputs(jobRow, candRow) {
   };
 }
 
-/** How the job wrote a skill, for a canonical key the matcher returns. */
-function skillDisplay(jobSkills) {
-  const out = new Map();
-  for (const raw of jobSkills || []) {
-    const k = scoreSkills({ skills: [raw] }, { skills: [raw] }).matched[0];
-    if (k && !out.has(k)) out.set(k, raw);
+/** "Java, Python and SQL". */
+const listWords = (a) => (a.length < 2 ? a.join('') : `${a.slice(0, -1).join(', ')} and ${a[a.length - 1]}`);
+
+function recommendationFor(ai, experience) {
+  const few = (a, n) => listWords(a.slice(0, n));
+  let out;
+  if (!ai.stated) {
+    out = 'This job does not list the skills it needs, so there is no AI Match yet - read the job description to judge the fit.';
+  } else if (!ai.missing.length) {
+    out = `You have all ${ai.required} skill${ai.required === 1 ? '' : 's'} this job lists`
+      + (experience.ok ? ', and your experience fits what it asks for' : '') + ' - a strong job to apply for.';
+  } else if (ai.matched.length * 2 >= ai.required) {
+    out = `You have ${ai.matched.length} of the ${ai.required} skills this job lists. If you also know ${few(ai.missing, 2)}, `
+      + `add ${Math.min(2, ai.missing.length) > 1 ? 'them' : 'it'} to your profile - that raises your AI Match.`;
+  } else if (ai.matched.length) {
+    out = `This job needs skills that are not on your profile yet, such as ${few(ai.missing, 3)}. `
+      + `Your ${few(ai.matched, 2)} ${ai.matched.length === 1 ? 'is' : 'are'} a start - build the rest, or add them if you already have them.`;
+  } else {
+    out = `None of the ${ai.required} skills this job lists (${few(ai.missing, 3)}) are on your profile yet. `
+      + 'Add them if you have them; otherwise this role is a target for later.';
   }
-  return (k) => out.get(k) || k;
+  if (experience.fit === 'unknown') out += ' Add your experience to your profile so recruiters can see it.';
+  else if (experience.fit === 'far' || experience.fit === 'outside') {
+    out += ` The job asks for ${experience.required}; your profile shows ${experience.profile || 'less'}.`;
+  }
+  return out;
 }
 
 /**
- * The score and the reasons behind it, for one candidate and one job.
- * `settings` is loadAiSettings(); pass it in when scoring many.
+ * The candidate's AI Match for one job, and the reasons behind it.
+ *
+ * `score` is aiMatch() - JD skills matched / JD skills required - and
+ * nothing else: it is the number on the card, in "Why this match?", in
+ * the career assistant and in every alert that uses a match threshold.
+ * null when the JD lists no skills (no percentage is shown, not 0%).
+ *
+ * Experience, location, salary, education and work mode are returned as
+ * QUALITATIVE facts and reasons only. They never move the score.
+ *
+ * `_settings` is accepted for older callers and ignored: the AI Match has
+ * no admin weights to read.
  */
-export function explainMatch(jobRow, candRow, settings) {
+export function explainMatch(jobRow, candRow, _settings) {
   const { job, candidate } = screeningInputs(jobRow, candRow);
-  const scored = scoreApplication({ job, candidate, settings });
-  const m = matchCandidate(job, candidate, { threshold: settings.autoShortlistThreshold });
-  const b = m.breakdown;
-  const show = skillDisplay(job.skills);
+  const ai = aiMatch(job, candidate);
 
-  const matched = (b.skills.matched || []).map(show);
-  const implied = (b.skills.implied || []).map(show);
-  const missing = (b.skills.missing || []).map(show);
-
-  const e = b.experience;
+  const e = scoreExperience(job, candidate);
   const yrs = Number.isFinite(e.years) ? e.years : null;
   const experience = {
     fit: e.fit,                                   // inside | near | outside | far | unknown | unstated
@@ -189,12 +212,13 @@ export function explainMatch(jobRow, candRow, settings) {
     years: yrs,
     band: e.band,
     required: job.exp || null,
+    profile: candidate.exp || (yrs != null ? `${yrs} yrs` : null),
   };
 
+  const loc = scoreLocation(job, candidate);
   const location = {
-    ok: !!b.location.matched,
-    reason: b.location.reason,
-    jobLocation: job.location || null,
+    ok: !!loc.matched, reason: loc.reason, jobLocation: job.location || null,
+    preferred: candidate.preferredLocation || candidate.location || null,
   };
 
   const want = Number(candidate.expectedCtc);
@@ -206,30 +230,73 @@ export function explainMatch(jobRow, candRow, settings) {
       : { ...salary, fit: 'above', ok: false };
   }
 
-  /* The one line on a card: "✓ Java, Spring · ✓ 3 yrs · ✗ AWS". */
+  const edu = scoreEducation(job, candidate);
+  const education = { ok: edu.score > 0, reason: edu.reason };
+
+  const modes = (candidate.preferredWorkModes || []).map((m) => String(m).toLowerCase());
+  const jm = String(job.mode || '').toLowerCase();
+  const modeOk = !!jm && modes.some((m) => m && (jm.includes(m) || m.includes(jm)));
+
+  /* "Why this match?" - one row per reason that holds, built from THIS
+     job and THIS profile. Skill gaps are not reasons (the card lists the
+     missing skills separately), and none of these rows feeds the score. */
+  const reasons = [];
+  if (ai.matched.length) {
+    reasons.push({ key: 'skills', text: `${ai.matched.length} of the ${ai.required} skills this job asks for `
+      + `${ai.matched.length === 1 ? 'is' : 'are'} on your ${ai.fromResume.length ? 'profile or resume' : 'profile'}: ${listWords(ai.matched)}` });
+  }
+  if (experience.ok && yrs != null && job.exp) {
+    reasons.push({ key: 'experience', text: `Your ${yrs} yr${yrs === 1 ? '' : 's'} of experience fits the ${job.exp} this job asks for` });
+  }
+  if (loc.matched && loc.reason === 'remote') {
+    reasons.push({ key: 'location', text: `The job is ${job.mode || 'remote'}, so your location does not limit you` });
+  } else if (loc.matched && job.location) {
+    const city = String(loc.city || '').toLowerCase();
+    const pref = !!city && String(candidate.preferredLocation || '').toLowerCase().includes(city);
+    reasons.push({ key: 'location', text: `The job is in ${job.location}, which matches your ${pref ? 'preferred' : 'current'} location` });
+  } else if (loc.reason === 'open to remote') {
+    reasons.push({ key: 'location', text: `The job is ${job.mode}, and you are open to remote work` });
+  }
+  if (salary.ok === true) {
+    reasons.push({ key: 'salary', text: `Offered ${job.pay || `up to ₹${max} LPA`} covers your expected ₹${want} LPA` });
+  }
+  if (edu.reason === 'qualification matches') {
+    reasons.push({ key: 'education', text: `Your education${candidate.education ? ` (${candidate.education})` : ''} matches the requirement (${job.education})` });
+  }
+  if (modeOk) reasons.push({ key: 'mode', text: `${job.mode} matches your preferred work mode` });
+
+  /* The AI Recommendation line: a sentence from THIS job and THIS profile.
+     It explains the AI Match; it never adds a second number. */
+  const recommendation = recommendationFor(ai, experience);
+
+  /* The card's one-line summary, "✓ Java, Spring · ✓ 3 yrs · ✗ AWS" - words,
+     never a percentage (the AI Match at the top is the card's only number). */
   const line = [];
-  if (matched.length) line.push({ ok: true, text: matched.slice(0, 3).join(', ') });
+  if (ai.matched.length) line.push({ ok: true, text: ai.matched.slice(0, 3).join(', ') });
   if (experience.fit !== 'unstated' && yrs != null) {
     line.push({ ok: experience.ok, text: `${yrs} yr${yrs === 1 ? '' : 's'}` });
   } else if (experience.fit === 'unknown') {
     line.push({ ok: false, text: 'experience not on profile' });
   }
-  if (missing.length) line.push({ ok: false, text: missing.slice(0, 2).join(', ') });
+  if (ai.missing.length) line.push({ ok: false, text: ai.missing.slice(0, 2).join(', ') });
 
   return {
     jobId: job.id,
-    score: scored.score,
-    verdict: scored.verdict,
-    matchedSkills: matched,
-    impliedSkills: implied,
-    missingSkills: missing,
-    skillsStated: b.skills.stated !== false,
+    score: ai.score,
+    basis: 'skills',
+    required: ai.required,
+    matchedCount: ai.matchedCount,
+    matchedSkills: ai.matched,
+    missingSkills: ai.missing,
+    resumeSkills: ai.fromResume,
+    skillsStated: ai.stated,
     experience,
     location,
     salary,
-    education: { ok: b.education.score > 0, reason: b.education.reason },
+    education,
+    reasons,
+    recommendation,
     line,
-    breakdown: scored.breakdown,
   };
 }
 

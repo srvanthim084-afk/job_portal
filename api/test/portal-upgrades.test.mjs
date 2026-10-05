@@ -195,24 +195,44 @@ test('chips filter the job board in SQL', async () => {
  * 2. match reasons
  * ------------------------------------------------------------------ */
 
-test('explain gives the same score as screening, with reasons; candidates only, 50 at most', async () => {
+test('explain is the AI Match - JD skills matched / required, nothing else - with reasons; candidates only, 50 at most', async () => {
   const j = await job({ title: 'Java Developer' });
   const c = await candidate('Explain Same', { skills: ['Java', 'Spring', 'SQL'] });
 
   const ex = await c.get(`/api/job-matches/explain?jobIds=${j}`);
   assert.equal(ex.status, 200, JSON.stringify(ex.body));
   const m = ex.body.matches[0];
+  assert.equal(m.score, 75, '3 of the 4 JD skills');
+  assert.equal(m.basis, 'skills');
+  assert.deepEqual([m.matchedCount, m.required], [3, 4]);
   assert.deepEqual(m.matchedSkills, ['Java', 'Spring', 'SQL']);
   assert.deepEqual(m.missingSkills, ['AWS']);
   assert.equal(m.experience.ok, true);
   assert.equal(m.location.ok, true);
   assert.deepEqual(m.line.map((x) => [x.ok, x.text]), [[true, 'Java, Spring, SQL'], [true, '3 yrs'], [false, 'AWS']]);
+  assert.ok(m.reasons.some((x) => x.key === 'skills') && m.reasons.some((x) => x.key === 'location'), JSON.stringify(m.reasons));
+  assert.equal(typeof m.recommendation, 'string');
+  assert.equal(/\d+%/.test(m.recommendation), false, 'the recommendation quotes no second number');
 
+  /* location, experience and salary do not move it */
+  await raw(`update candidates set location='Chennai', preferred_location='Chennai', exp='12 yrs', exp_years=12, expected_ctc=40 where id=$1`, [c.id]);
+  const moved = (await c.get(`/api/job-matches/explain?jobIds=${j}`)).body.matches[0];
+  assert.equal(moved.score, 75, 'location, experience and salary changed; the AI Match did not');
+  assert.equal(moved.location.ok, false);
+  await setProfile(c.id, { skills: ['Java', 'Spring', 'SQL'] });
+
+  /* a JD with no skills has no AI Match - not 0% */
+  const none = await job({ title: 'Staff Nurse', skills: [] });
+  const n = (await c.get(`/api/job-matches/explain?jobIds=${none}`)).body.matches[0];
+  assert.equal(n.score, null);
+  assert.equal(n.skillsStated, false);
+
+  /* recruiter screening keeps its own multi-factor score; it is not the candidate's AI Match */
   const applied = await c.post('/api/applications', { jobId: j });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
-  assert.equal(applied.body.screening.score, m.score, 'the card and screening agree');
+  assert.equal(typeof applied.body.screening.score, 'number');
   const row = (await raw(`select match_score from applications where id=$1`, [applied.body.application.id])).rows[0];
-  assert.equal(Number(row.match_score), m.score);
+  assert.equal(Number(row.match_score), applied.body.screening.score);
 
   assert.equal((await makeClient(base).get(`/api/job-matches/explain?jobIds=${j}`)).status, 401);
   assert.equal((await recruiter.get(`/api/job-matches/explain?jobIds=${j}`)).status, 403);
@@ -473,11 +493,12 @@ test('urgent hiring alert: above 60% only, both channels, applied skipped, never
 
   /* only the four profiles below match anything from here on */
   await raw(`update candidates set skills='{}', technical_skills='{}'`);
-  AJ = await job({ title: 'Alert Java Developer' });
-  at60 = await candidate('Sixty Exactly', { skills: ['Java', 'Spring'] });
-  at80 = await candidate('Eighty Match', { skills: ['Java', 'Spring', 'AWS'] });
-  applied100 = await candidate('Already Applied', { skills: ['Java', 'Spring', 'AWS', 'SQL'] });
-  dnc = await candidate('Do Not Contact', { skills: ['Java', 'Spring', 'AWS'] });
+  /* five JD skills, so the AI Match lands on 60 / 80 / 100 exactly */
+  AJ = await job({ title: 'Alert Java Developer', skills: ['Java', 'Spring', 'AWS', 'SQL', 'Docker'] });
+  at60 = await candidate('Sixty Exactly', { skills: ['Java', 'Spring', 'AWS'] });
+  at80 = await candidate('Eighty Match', { skills: ['Java', 'Spring', 'AWS', 'SQL'] });
+  applied100 = await candidate('Already Applied', { skills: ['Java', 'Spring', 'AWS', 'SQL', 'Docker'] });
+  dnc = await candidate('Do Not Contact', { skills: ['Java', 'Spring', 'AWS', 'SQL'] });
   await raw(`update candidates set do_not_contact = true where id=$1`, [dnc.id]);
 
   const s60 = (await at60.get(`/api/job-matches/explain?jobIds=${AJ}`)).body.matches[0].score;
@@ -541,8 +562,8 @@ test('last-date alerts: two days before and on the day, match recomputed when se
   assert.equal((await log(AJ, at60.id)).length, 0);
 
   /* the profiles change before the last day: the 60 becomes 80 and the 80 becomes 60 */
-  await setProfile(at60.id, { skills: ['Java', 'Spring', 'AWS'] });
-  await setProfile(at80.id, { skills: ['Java', 'Spring'] });
+  await setProfile(at60.id, { skills: ['Java', 'Spring', 'AWS', 'SQL'] });
+  await setProfile(at80.id, { skills: ['Java', 'Spring', 'AWS'] });
   await raw(`update jobs set expires_at=$2 where id=$1`, [AJ, core.endOfIstDay(core.istDay(now))]);
   const c = await alerts.runDeadlineAlerts({ now });
   assert.ok(c.some((r) => r.jobId === AJ && r.event === 'deadline_today'));

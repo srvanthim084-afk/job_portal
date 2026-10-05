@@ -5,10 +5,12 @@
  *                            Find Jobs and the candidate's Search Jobs; one
  *                            tap on/off, kept in step with the sidebar and
  *                            the URL (?qf=), counted by the server's SQL
- *   2  match reasons         "82% match · ✓ Java, Spring · ✓ 3 yrs · ✗ AWS"
- *                            on every card, the full breakdown on the job
- *                            page - the SERVER's number (the one screening
- *                            gives the application), not a browser guess
+ *   2  AI Match              the SERVER's AI Match (JD skills matched /
+ *                            JD skills required, api/src/ai/ai-match.js) as
+ *                            the card's one percentage; "Why this match?"
+ *                            opens the match details beside / under the
+ *                            card; the gap line under the buttons is words
+ *                            only; window.TLAiMatch for other widgets
  *   3  share                 native share sheet on a phone; WhatsApp, Copy
  *                            link, Email, LinkedIn otherwise; never the
  *                            client's name; the recruiter sees
@@ -100,6 +102,33 @@
     + '.tlpu-why b{color:#0f7c9c}'
     + '.tlpu-why .ok{color:#1d7a45;font-weight:600}.tlpu-why .no{color:#b42318;font-weight:600}'
     + '.tlpu-why a{color:#6941c6;font-weight:700;text-decoration:none}'
+    + '.tlpu-gap{display:flex;flex-wrap:wrap;gap:4px 8px;margin-top:10px;font-size:12px;line-height:1.5;color:#8a5a00}'
+    + '.tlpu-gap i{font-style:normal;color:#d5dde8}'
+    + '.rj-card.tlc .tlpu-strip{margin-top:10px}'
+    + '.rj-btn.tlpu-share{min-height:0}'
+    /* the match details: beside the card on a wide card, under it on a narrow one */
+    + '@container (min-width:760px){.rj-card.tlc.tlc-open>.tlc-grid{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:18px;align-items:start}}'
+    + '.tlc-detail{border:1px solid #e3eaf5;background:#fafcff;border-radius:12px;padding:13px 14px;min-width:0}'
+    + '.rj-card.tlc .tlc-detail{margin-top:12px}'
+    + '@container (min-width:760px){.rj-card.tlc .tlc-detail{margin-top:0}}'
+    + '.tlc-anim{animation:tlcIn .22s ease-out}'
+    + '@keyframes tlcIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}'
+    + '@media (prefers-reduced-motion:reduce){.tlc-anim{animation:none}}'
+    + '.tlc-dh{margin:0 0 6px;font-size:14px;font-weight:800;color:#16202c}'
+    + '.tlc-note{margin:0 0 10px;font-size:12.5px;color:#5b6676}.tlc-note b{color:#1b4f9e}'
+    + '.tlc-sec{margin:0 0 10px}'
+    + '.tlc-h{font-size:12.5px;font-weight:800;color:#2b3a4d;margin-bottom:5px}'
+    + '.tlc-t{font-size:12.5px;color:#42505f;line-height:1.5;overflow-wrap:anywhere}'
+    + '.tlc-chips{display:flex;flex-wrap:wrap;gap:5px}'
+    + '.tlc-chip{border-radius:999px;padding:3px 9px;font-size:11.5px;font-weight:700}'
+    + '.tlc-chip.ok{background:#e8f6ee;color:#0f7a45}.tlc-chip.miss{background:#fff4e8;color:#a35a0e}'
+    + '.tlc-reasons{list-style:none;margin:0;padding:0;border-top:1px solid #e9eef6}'
+    + '.tlc-r{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;padding:9px 0;border-bottom:1px solid #eef2f8}'
+    + '.tlc-r:last-child{border-bottom:0}.tlc-rb{min-width:0;flex:1}'
+    + '.tlc-rm{flex:0 0 auto;border:0;background:none;color:#8a94a6;font-size:11px;font-weight:600;cursor:pointer;padding:2px 4px;border-radius:6px;font-family:inherit}'
+    + '.tlc-rm:hover,.tlc-rm:focus-visible{color:#b42318;background:#fdf0f0}'
+    + '.tlc-none{font-size:12.5px;color:#8a94a6;padding:8px 0 2px}'
+    + '.tlc-page{background:none;border:0;padding:0}'
     + '.tlpu-row{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}'
     + '.tlpu-share{border:1px solid #d5dde8;background:#fff;color:#2b3a4d;border-radius:8px;padding:6px 11px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit;min-height:32px}'
     + '.tlpu-ov{position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:9998;display:flex;align-items:flex-end;justify-content:center}'
@@ -395,7 +424,7 @@
   /* ---- Relevance: urgent jobs up, by no more than 10 points ---- */
   function relScore(c, j) {
     var m = MATCH[j.id];
-    var s = m ? m.score : (typeof prevCms === 'function' ? Number(prevCms(c, j)) || 0 : 0);
+    var s = m && !m.gone && m.score != null ? m.score : -1;
     return s + (urgent(j) ? 10 : 0);
   }
   var prevSort = window.sortJobs;
@@ -473,17 +502,19 @@
     var batches = [];
     for (var i = 0; i < want.length; i += 50) batches.push(want.slice(i, i + 50));
     var sig = MATCH_SIG;
-    Promise.all(batches.map(function (b) {
-      b.forEach(function (id) { MATCH_PENDING[id] = 'asked'; });
+    batches.forEach(function (b) { b.forEach(function (id) { MATCH_PENDING[id] = 'asked'; }); });
+    /* One batch at a time: the first fifty (what is on screen) paint at
+       once, and the rest never crowd the API while the page is loading. */
+    var one = function (b) {
       return api().get('/job-matches/explain?jobIds=' + b.map(encodeURIComponent).join(','))
         .then(function (r) {
           if (sig !== MATCH_SIG) return;
           (r.matches || []).forEach(function (m) { MATCH[m.jobId] = m; });
           (r.missing || []).forEach(function (id) { MATCH[id] = { jobId: id, gone: true }; });
-        }, function () { b.forEach(function (id) { delete MATCH_PENDING[id]; }); });
-    })).then(function () {
-      if (typing()) decorate(); else rerender();
-    });
+        }, function () { b.forEach(function (id) { delete MATCH_PENDING[id]; }); })
+        .then(function () { if (sig === MATCH_SIG) { if (typing()) decorate(); else rerender(); } });
+    };
+    batches.reduce(function (p, b) { return p.then(function () { return one(b); }); }, Promise.resolve());
   }
   window.TLPortalUpgrades = window.TLPortalUpgrades || {};
   window.TLPortalUpgrades.match = function (jobId) { return MATCH[jobId] || null; };
@@ -491,28 +522,91 @@
      resume-score hint reads it so a candidate is nudged once, not twice. */
   window.TLPortalUpgrades.missing = function () { var c = me(); return c ? missingFor(c) : []; };
 
+  /*
+   * THE AI MATCH - one number, from the server (owner, 2026-10-05).
+   *
+   * /job-matches/explain returns, per job, the candidate's AI Match:
+   * JD-required skills matched / JD-required skills x 100 (api/src/ai/
+   * ai-match.js), null when the job lists no skills. Every candidate-facing
+   * percentage in the portal reads it from here: the card's "🎯 XX% AI
+   * Match", "Why this match?", the job page, the sort, the "Job Match"
+   * filter, the home rows. The browser's own blended estimates
+   * (computeMatchScore, recRecommendation, tlMatchDetail) are no longer
+   * shown to a candidate for themself - until the server answers there is
+   * no number, never a different one.
+   *
+   * window.TLAiMatch is the same data for other widgets (dashboards):
+   *   TLAiMatch.get(jobId)      the explain record, or null
+   *   TLAiMatch.score(jobId)    the AI Match % (null: none / not loaded)
+   *   TLAiMatch.load([jobIds])  Promise of { jobId: record } from the API
+   */
+  function aiOf(id) { var m = MATCH[id]; return m && !m.gone ? m : null; }
+  function isSelf(c) { var s = me(); return !!(c && s && c.id === s.id); }
+  /* undefined: not the signed-in candidate's own match, not ours to answer */
+  function aiScore(c, j) {
+    if (!j || !isSelf(c) || isExternal(j.id)) return undefined;
+    var m = aiOf(j.id);
+    if (m) return m.score == null ? null : m.score;
+    if (!MATCH[j.id]) wantMatches([j.id]);
+    return null;
+  }
+  function stripPct(t) {
+    return String(t || '').replace(/\.?\s*Estimated \d+% profile-to-job match(;[^.]*)?\./, '.');
+  }
+  window.TLAiMatch = {
+    get: function (jobId) { return aiOf(jobId); },
+    score: function (jobId) { var m = aiOf(jobId); return m ? m.score : null; },
+    load: function (ids) {
+      var list = (ids || []).filter(function (id) { return id && !isExternal(id); });
+      if (!isCandidate() || !ready()) return Promise.resolve({});
+      var batches = [];
+      for (var i = 0; i < list.length; i += 50) batches.push(list.slice(i, i + 50));
+      return Promise.all(batches.map(function (b) {
+        return api().get('/job-matches/explain?jobIds=' + b.map(encodeURIComponent).join(','));
+      })).then(function (rs) {
+        var out = {};
+        rs.forEach(function (r) {
+          (r.matches || []).forEach(function (m) { MATCH[m.jobId] = m; out[m.jobId] = m; });
+        });
+        return out;
+      });
+    },
+  };
+
   var prevCms = window.computeMatchScore;
   if (typeof prevCms === 'function') {
     window.computeMatchScore = function (c, j) {
-      var m = j && MATCH[j.id];
-      var self = me();
-      if (m && !m.gone && c && self && c.id === self.id) return m.score;
-      return prevCms.apply(this, arguments);
+      var s = aiScore(c, j);
+      return s !== undefined ? s : prevCms.apply(this, arguments);
     };
   }
   var prevRec = window.recRecommendation;
   if (typeof prevRec === 'function') {
     window.recRecommendation = function (c, j) {
       var r = prevRec.apply(this, arguments);
-      var m = j && MATCH[j.id];
-      var self = me();
-      if (r && m && !m.gone && c && self && c.id === self.id) {
-        r.matchPercentage = m.score;
+      if (!r || aiScore(c, j) === undefined) return r;
+      var m = aiOf(j.id);
+      r.matchPercentage = m ? m.score : null;
+      if (m) {
         r.matchedSkills = m.matchedSkills.slice();
         r.missingSkills = m.missingSkills.slice();
-        if (typeof r.aiRecommendation === 'string') {
-          r.aiRecommendation = r.aiRecommendation.replace(/Estimated \d+%/, 'Estimated ' + m.score + '%');
-        }
+        r.recommendationReasons = (m.reasons || []).map(function (x) { return { ok: true, text: x.text }; });
+        r.aiRecommendation = m.recommendation || stripPct(r.aiRecommendation);
+      } else {
+        r.aiRecommendation = stripPct(r.aiRecommendation);
+      }
+      return r;
+    };
+  }
+  /* The tiered "Jobs in <place>" list sorts on tlMatchDetail().total. */
+  var prevDetail = window.tlMatchDetail;
+  if (typeof prevDetail === 'function') {
+    window.tlMatchDetail = function (c, j) {
+      var r = prevDetail.apply(this, arguments);
+      var s = aiScore(c, j);
+      if (r && s !== undefined) {
+        r.total = s;
+        r.verdict = s == null ? 'maybe' : s >= 80 ? 'yes' : s >= 60 ? 'maybe' : 'no';
       }
       return r;
     };
@@ -521,24 +615,216 @@
   if (typeof prevExplain === 'function') {
     window.matchExplanation = function (c, j) {
       var r = prevExplain.apply(this, arguments);
-      var m = j && MATCH[j.id];
-      if (r && m && !m.gone) {
-        r.score = m.score;
-        r.matched = m.matchedSkills.slice();
-        r.missing = m.missingSkills.slice();
+      var s = aiScore(c, j);
+      if (r && s !== undefined) {
+        var m = aiOf(j.id);
+        r.score = s;
+        if (m) { r.matched = m.matchedSkills.slice(); r.missing = m.missingSkills.slice(); }
       }
       return r;
     };
   }
-
-  function lineHtml(m, withPct) {
-    var parts = [];
-    if (withPct) parts.push('<b>' + h(m.score) + '% match</b>');
-    (m.line || []).forEach(function (p) {
-      parts.push('<span class="' + (p.ok ? 'ok' : 'no') + '">' + (p.ok ? '✓ ' : '✗ ') + h(p.text) + '</span>');
-    });
-    return parts.join(' · ');
+  var prevShould = window.shouldApplyRecommendation;
+  if (typeof prevShould === 'function') {
+    window.shouldApplyRecommendation = function (c, j) {
+      if (aiScore(c, j) === null) {
+        return { label: 'No AI Match for this job yet', tone: 'neutral',
+          detail: 'This job does not list the skills it needs (or your match is still loading), so there is no AI Match. Read the job description to judge the fit.' };
+      }
+      return prevShould.apply(this, arguments);
+    };
   }
+  var prevReady = window.applicationReadiness;
+  if (typeof prevReady === 'function') {
+    window.applicationReadiness = function (c, j) {
+      var r = prevReady.apply(this, arguments);
+      if (r && aiScore(c, j) === null) {
+        /* no AI Match: readiness is the profile alone, not a made-up match */
+        var q = Number(r.quality) || 0;
+        r.score = q; r.match = null;
+        r.label = q >= 80 ? 'Ready to apply' : q >= 60 ? 'Mostly ready' : 'Needs prep before applying';
+      }
+      return r;
+    };
+  }
+  /* My Applications quotes the job's AI Match, not the recruiter's screening score. */
+  var prevTimeline = window.applicationTimelineCard;
+  if (typeof prevTimeline === 'function') {
+    window.applicationTimelineCard = function (a) {
+      var html = prevTimeline.apply(this, arguments);
+      if (!a || !isCandidate() || typeof html !== 'string') return html;
+      var j = jobOf(a.jobId);
+      var s = aiScore(me(), j);
+      return html.replace(/<span class="score [^"]*">-?[\d.]+% match<\/span>|<span class="score [^"]*">(?:undefined|null)% match<\/span>/,
+        s == null ? '' : '<span class="score ' + (s >= 80 ? 'hi' : s >= 60 ? 'mid' : 'lo') + '">🎯 ' + h(s) + '% AI Match</span>');
+    };
+  }
+
+  /* ---- the bottom line of a card: real gaps, words only, never a % ---- */
+  function gapItems(m) {
+    var out = [];
+    var e = m.experience || {};
+    if (e.fit === 'unknown') out.push('Experience not on profile');
+    else if ((e.fit === 'outside' || e.fit === 'far') && e.required) out.push('Experience: job asks ' + e.required);
+    var miss = m.missingSkills || [];
+    miss.slice(0, 3).forEach(function (s) { out.push(s); });
+    if (miss.length > 3) out.push('+' + (miss.length - 3) + ' more skills');
+    return out;
+  }
+  function gapHtml(m) {
+    var g = gapItems(m);
+    if (!g.length) return '';
+    return '<div class="tlpu-gap">' + g.map(function (x) { return '<span>⚠ ' + h(x) + '</span>'; }).join('<i aria-hidden="true">│</i>') + '</div>';
+  }
+
+  /* ---- "Why this match?": the match details beside (desktop) or under (phone) the card ---- */
+  var OPEN = Object.create(null);           // jobId -> true while its details are open
+  var HIDE_KEY = 'tlpu.whyHidden.v1';
+  function hiddenMap() { try { return JSON.parse(localStorage.getItem(HIDE_KEY) || '{}') || {}; } catch (e) { return {}; } }
+  function hiddenFor(jobId) {
+    var c = me(); if (!c) return [];
+    var v = hiddenMap()[c.id + '|' + jobId];
+    return Array.isArray(v) ? v : [];
+  }
+  function hideReason(jobId, key) {
+    var c = me(); if (!c) return;
+    try {
+      var all = hiddenMap(); var k = c.id + '|' + jobId;
+      var v = Array.isArray(all[k]) ? all[k] : [];
+      if (v.indexOf(key) < 0) v.push(key);
+      all[k] = v;
+      localStorage.setItem(HIDE_KEY, JSON.stringify(all));
+    } catch (e) { /* a private window: the row still goes, for this page */ }
+  }
+  function skillChips(list, cls, mark) {
+    return '<div class="tlc-chips">' + list.map(function (s) {
+      return '<span class="tlc-chip ' + cls + '">' + mark + ' ' + h(s) + '</span>';
+    }).join('') + '</div>';
+  }
+  /* The reason rows, built from the server's record for this job and this profile. */
+  function reasonRows(m) {
+    var rows = [];
+    var e = m.experience || {};
+    if (e.required || e.profile) {
+      rows.push({ key: 'experience', head: (e.ok ? '✅' : '⚠️') + ' Experience Match',
+        text: (e.required || 'Not stated') + ' · Your profile: ' + (e.profile || 'not on your profile') });
+    }
+    var l = m.location || {};
+    if (l.jobLocation || l.preferred) {
+      rows.push({ key: 'location', head: '📍 Location Match',
+        text: (l.jobLocation || 'Not stated') + (l.reason === 'remote' ? ' (remote)' : '')
+          + ' · Your preferred location: ' + (l.preferred || 'not set') });
+    }
+    (m.reasons || []).forEach(function (x) {
+      if (x && /^(salary|education|mode)$/.test(x.key)) {
+        rows.push({ key: x.key, head: '✅ ' + ({ salary: 'Salary', education: 'Education', mode: 'Work mode' })[x.key], text: x.text });
+      }
+    });
+    if (m.recommendation) rows.push({ key: 'ai', head: '🤖 AI Recommendation', text: m.recommendation });
+    var gone = hiddenFor(m.jobId);
+    return rows.filter(function (r) { return gone.indexOf(r.key) < 0; });
+  }
+  function detailInner(m, opt) {
+    opt = opt || {};
+    var out = opt.page ? '' : '<h4 class="tlc-dh">🎯 Why this job matches you</h4>';
+    if (opt.page && m.score != null) {
+      out += '<p class="tlc-note">' + h(m.matchedCount) + ' of the ' + h(m.required) + ' skills this job asks for are on your profile.</p>';
+    } else if (m.score == null) {
+      out += '<p class="tlc-note">This job does not list the skills it needs, so there is no AI Match percentage.</p>';
+    } else {
+      out += '<p class="tlc-note">Your AI Match is <b>' + h(m.score) + '%</b>: ' + h(m.matchedCount) + ' of the '
+        + h(m.required) + ' skills this job asks for.</p>';
+    }
+    if (m.skillsStated) {
+      out += '<div class="tlc-sec"><div class="tlc-h">✅ Matched Skills (' + m.matchedSkills.length + '/' + m.required + ')</div>'
+        + (m.matchedSkills.length ? skillChips(m.matchedSkills, 'ok', '✓') : '<div class="tlc-t">None of this job\'s skills are on your profile yet.</div>') + '</div>';
+      out += '<div class="tlc-sec"><div class="tlc-h">' + (m.missingSkills.length ? '⚠️ Missing Skills (' + m.missingSkills.length + ')' : '✅ Missing Skills (0)') + '</div>'
+        + (m.missingSkills.length ? skillChips(m.missingSkills, 'miss', '○') : '<div class="tlc-t">None - you have every skill this job lists.</div>') + '</div>';
+    }
+    var rows = reasonRows(m);
+    out += '<ul class="tlc-reasons">' + rows.map(function (r) {
+      return '<li class="tlc-r" data-reason="' + h(r.key) + '"><div class="tlc-rb"><div class="tlc-h">' + h(r.head) + '</div>'
+        + '<div class="tlc-t">' + h(r.text) + '</div></div>'
+        + '<button type="button" class="tlc-rm" onclick="event.stopPropagation();tlcRemove(this)" aria-label="Remove: ' + h(r.head.replace(/^\S+\s/, '')) + '">✕ Remove</button></li>';
+    }).join('') + '</ul>'
+      + '<div class="tlc-none"' + (rows.length ? ' hidden' : '') + '>No match reasons selected.</div>';
+    return out;
+  }
+  function cardFor(jobId) {
+    return document.querySelector('#app .rj-card.tlc[data-tljob="' + String(jobId).replace(/"/g, '') + '"]');
+  }
+  function setOpen(card, jobId, animate) {
+    var grid = card.querySelector('.tlc-grid') || card;
+    var panel = grid.querySelector('.tlc-detail');
+    if (!panel) {
+      panel = document.createElement('aside');
+      panel.className = 'tlc-detail' + (animate ? ' tlc-anim' : '');
+      panel.id = 'tlcd-' + String(jobId).replace(/[^A-Za-z0-9_-]/g, '');
+      panel.setAttribute('aria-label', 'Why this job matches you');
+      panel.addEventListener('click', function (e) { e.stopPropagation(); });
+      grid.appendChild(panel);
+    }
+    var m = aiOf(jobId);
+    if (m) panel.innerHTML = detailInner(m);
+    else {
+      panel.innerHTML = '<h4 class="tlc-dh">🎯 Why this job matches you</h4><p class="tlc-note">Working out your match…</p>';
+      if (!MATCH[jobId]) wantMatches([jobId]);
+    }
+    card.classList.add('tlc-open');
+    var b = card.querySelector('.rj-why');
+    if (b) { b.textContent = 'Hide match details ↑'; b.setAttribute('aria-expanded', 'true'); b.setAttribute('aria-controls', panel.id); }
+  }
+  function setClosed(card) {
+    var p = card.querySelector('.tlc-detail');
+    if (p) p.remove();
+    card.classList.remove('tlc-open');
+    var b = card.querySelector('.rj-why');
+    if (b) { b.textContent = 'Why this match? ↓'; b.setAttribute('aria-expanded', 'false'); }
+  }
+  /* Everywhere that offered "Why this match?" / "Why NN%?" opens the same details. */
+  function whyThisMatch(jobId, btn) {
+    var card = (btn && btn.closest && btn.closest('.rj-card.tlc')) || cardFor(jobId);
+    if (card) {
+      if (OPEN[jobId]) { delete OPEN[jobId]; setClosed(card); }
+      else { OPEN[jobId] = true; setOpen(card, jobId, true); }
+      return;
+    }
+    /* no card on screen (a page without one): the same details in a sheet */
+    var m = aiOf(jobId);
+    if (!m) { wantMatches([jobId]); say('Working out your match - try again in a moment', '⏳'); return; }
+    var opener = document.activeElement;
+    overlay('<div class="tlc-detail tlc-sheet">' + detailInner(m) + '</div>'
+      + '<div class="tlpu-acts"><button type="button" class="btn btn-ghost" onclick="tlpuCloseSheet()">Close</button></div>');
+    var sheet = document.querySelector('#tlpuOverlay .tlpu-sheet');
+    if (sheet) {
+      sheet.setAttribute('data-job', jobId);
+      sheet.setAttribute('aria-label', 'Why this job matches you');
+      var f = sheet.querySelector('button'); if (f) try { f.focus(); } catch (e) {}
+      sheet.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') { closeOverlay(); if (opener && opener.focus) try { opener.focus(); } catch (x) {} }
+      });
+    }
+  }
+  window.tlMatchModal = whyThisMatch;
+  window.cpWhy = whyThisMatch;
+  window.tlcRemove = function (btn) {
+    var li = btn && btn.closest('.tlc-r');
+    var host = li && li.closest('.tlc-detail');
+    var card = btn.closest('.rj-card.tlc');
+    var sheet = btn.closest('.tlpu-sheet');
+    var jobId = card ? card.getAttribute('data-tljob') : sheet ? sheet.getAttribute('data-job')
+      : (host && host.getAttribute('data-job')) || jobPageId();
+    if (!li || !host) return;
+    hideReason(jobId, li.getAttribute('data-reason'));
+    var next = li.nextElementSibling || li.previousElementSibling;
+    li.remove();
+    if (!host.querySelector('.tlc-r')) {
+      var none = host.querySelector('.tlc-none'); if (none) none.hidden = false;
+    }
+    /* focus stays in the details: the next Remove, else the toggle */
+    var to = (next && next.querySelector('.tlc-rm')) || (card && card.querySelector('.rj-why')) || host.querySelector('button');
+    if (to) try { to.focus(); } catch (e) {}
+  };
 
   /* ================================================================ *
    * 3. share
@@ -1014,22 +1300,31 @@
     var strip = document.createElement('div');
     strip.className = 'tlpu-strip';
     strip.setAttribute('onclick', 'event.stopPropagation()');
-    var hasPct = !!el.querySelector('.badge-match,.rj-score');
+    /* the bottom line: real gaps in words - the AI Match at the top is the
+       card's only percentage */
     var why = '';
+    var mm = MATCH[id];
     if (isCandidate()) {
-      var mm = MATCH[id];
-      if (mm && !mm.gone) why = '<div class="tlpu-why">' + lineHtml(mm, !hasPct) + '</div>';
+      if (mm && !mm.gone) why = gapHtml(mm);
       else wantMatches([id]);
     } else if (!session()) {
       why = '<div class="tlpu-why"><a href="#/login/candidate">Log in to see your match</a></div>';
     }
     var badges = badgesHtml(job);
-    strip.innerHTML = why
-      + '<div class="tlpu-row"><div class="tlpu-badges">' + badges + '</div>'
-      + (expired(job) ? '' : '<button type="button" class="tlpu-share" onclick="event.stopPropagation();tlpuShare(\'' + h(id) + '\')">↗ Share</button>')
-      + '</div>';
+    var share = expired(job) ? '' : '<button type="button" class="tlpu-share" onclick="event.stopPropagation();tlpuShare(\'' + h(id) + '\')">↗ Share</button>';
     var foot = el.querySelector('.foot,.rj-foot,.jr-foot-meta');
-    if (foot && foot.parentNode === el) el.insertBefore(strip, foot); else el.appendChild(strip);
+    if (el.classList.contains('tlc') && foot) {
+      /* the candidate job card: Share joins the action bar, the gaps sit under it */
+      strip.innerHTML = badges ? '<div class="tlpu-row"><div class="tlpu-badges">' + badges + '</div></div>' : '';
+      if (badges) foot.parentNode.insertBefore(strip, foot);
+      if (share) foot.insertAdjacentHTML('beforeend', share.replace('class="tlpu-share"', 'class="rj-btn tlpu-share"'));
+      if (why) foot.insertAdjacentHTML('afterend', why);
+      if (OPEN[id]) setOpen(el, id, false);
+    } else {
+      strip.innerHTML = why
+        + '<div class="tlpu-row"><div class="tlpu-badges">' + badges + '</div>' + share + '</div>';
+      if (foot && foot.parentNode === el) el.insertBefore(strip, foot); else el.appendChild(strip);
+    }
     if (expired(job)) closeApplyButtons(el);
   }
 
@@ -1064,9 +1359,9 @@
       if (!m) { wantMatches([id]); body = '<div class="tlpu-why">Working out your match…</div>'; }
       else if (!m.gone) body = breakdownHtml(m);
     } else {
-      body = '<div class="tlpu-why"><a href="#/login/candidate">Log in to see your match</a> - your skills, experience and location against this job.</div>';
+      body = '<div class="tlpu-why"><a href="#/login/candidate">Log in to see your match</a> - your skills against the skills this job asks for.</div>';
     }
-    var title = isCandidate() ? (MATCH[id] && !MATCH[id].gone ? 'Your match · ' + h(MATCH[id].score) + '%' : 'Your match')
+    var title = isCandidate() ? (aiOf(id) && aiOf(id).score != null ? '🎯 ' + h(aiOf(id).score) + '% AI Match' : 'Your match')
       : (r === 'recruiter' || r === 'admin') ? 'Last date, urgency and sharing' : 'Your match';
     panel.innerHTML = '<div class="panel-head"><h2>' + title + '</h2></div>'
       + '<div class="panel-body">' + top + body + '</div>';
@@ -1079,23 +1374,7 @@
     if (expired(job)) closeApplyButtons(app);
   }
   function breakdownHtml(m) {
-    var kv = function (k, v) { return '<div class="tlpu-kv"><span class="k">' + h(k) + '</span><span>' + v + '</span></div>'; };
-    var ok = function (b) { return b ? '<span class="ok" style="color:#1d7a45;font-weight:700">✓</span> ' : '<span style="color:#b42318;font-weight:700">✗</span> '; };
-    var out = '<div class="tlpu-why">' + lineHtml(m, true) + '</div>';
-    if (m.skillsStated) {
-      out += kv('Skills', (m.matchedSkills.length ? ok(true) + h(m.matchedSkills.join(', ')) : '')
-        + (m.impliedSkills && m.impliedSkills.length ? (m.matchedSkills.length ? '<br>' : '') + '~ ' + h(m.impliedSkills.join(', ')) + ' (in your resume)' : '')
-        + (m.missingSkills.length ? ((m.matchedSkills.length || (m.impliedSkills || []).length) ? '<br>' : '') + ok(false) + h(m.missingSkills.join(', ')) + ' missing' : ''));
-    }
-    var e = m.experience || {};
-    out += kv('Experience', e.years != null
-      ? ok(e.ok) + h(e.years) + ' yrs' + (e.required ? ' · job asks ' + h(e.required) : '')
-      : ok(false) + 'not on your profile' + (e.required ? ' · job asks ' + h(e.required) : ''));
-    var l = m.location || {};
-    out += kv('Location', ok(l.ok) + h(l.reason || '') + (l.jobLocation ? ' · ' + h(l.jobLocation) : ''));
-    var s = m.salary || {};
-    out += kv('Salary', s.fit === 'unknown' ? 'add your expected salary to compare'
-      : ok(s.ok) + (s.fit === 'within' ? 'your expectation fits' : s.fit === 'slightly_above' ? 'your expectation is slightly above' : 'your expectation is above') + (s.offered ? ' · ' + h(s.offered) : ''));
+    var out = '<div class="tlc-detail tlc-page" data-job="' + h(m.jobId) + '">' + detailInner(m, { page: true }) + '</div>';
     if (m.missingSkills.length) {
       out += '<div><div class="tlpu-kv"><span class="k">Improve your match</span><span>'
         + m.missingSkills.slice(0, 6).map(function (sk) {
@@ -1121,7 +1400,7 @@
       var m = ID_RE.exec(el.innerHTML);
       var j = m && jobOf(m[1]);
       var mm = j && MATCH[j.id];
-      var s = mm && !mm.gone ? mm.score : (j && c && prevCms ? Number(prevCms(c, j)) || 0 : 0);
+      var s = mm && !mm.gone && mm.score != null ? mm.score : -1;
       return { el: el, i: i, s: s + (urgent(j) ? 10 : 0) };
     });
     var sorted = keyed.slice().sort(function (a, b) { return b.s - a.s || a.i - b.i; });
@@ -1279,7 +1558,7 @@
         var md = n.metadata || {};
         return '<div class="notif-row tlpu-n ' + (n.read ? '' : 'unread') + '"><div class="notif-msg"><b>' + h(n.title) + '</b>'
           + h(md.jobTitle || '') + (md.company ? ' · ' + h(md.company) : '')
-          + (md.matchPercent != null ? ' · <span class="tlpu-m">' + h(md.matchPercent) + '% match</span>' : '')
+          + (md.matchPercent != null ? ' · <span class="tlpu-m">🎯 ' + h(md.matchPercent) + '% AI Match</span>' : '')
           + (md.line ? '<br><span style="color:#5b6676">' + h(md.line) + '</span>' : '') + '</div>'
           + '<div class="notif-meta"><span>' + h(String(n.createdAt || '').slice(0, 10)) + '</span>'
           + '<button class="ss-link" onclick="tlpuOpenAlert(\'' + h(n.id) + '\')">Apply now</button></div></div>';

@@ -34,7 +34,7 @@ import { wrap, badRequest, notFound, forbidden, ApiError, CODES } from '../error
 import { requireAuth, requireRole } from '../auth.js';
 import { toJob, toApplication } from '../shapes.js';
 import {
-  CHIP_SQL, parseChips, normaliseChipSettings, nearMeFilter, explainMatch, loadAiSettings,
+  CHIP_SQL, parseChips, normaliseChipSettings, nearMeFilter, explainMatch,
   missingForOneClick, newShareCode, shareText, shareLines, toPublicUrl, isLocalUrl, ogTags, SHARE_CHANNELS, endOfIstDay, escHtml,
 } from '../portal/core.js';
 import { kickUrgent } from '../portal/alerts.js';
@@ -226,10 +226,9 @@ export default function portalUpgradeRoutes() {
            left join companies co on co.id = j.company_id where j.id = any($1)`, [ids])).rows,
     }));
     if (!data.cand) throw notFound('Your profile could not be found.');
-    const settings = await loadAiSettings();
     const byId = new Map(data.jobs.map((j) => [j.id, j]));
     res.json({
-      matches: ids.filter((id) => byId.has(id)).map((id) => explainMatch(byId.get(id), data.cand, settings)),
+      matches: ids.filter((id) => byId.has(id)).map((id) => explainMatch(byId.get(id), data.cand)),
       missing: ids.filter((id) => !byId.has(id)),
     });
   }));

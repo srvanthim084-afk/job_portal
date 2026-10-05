@@ -31,13 +31,20 @@
  * measure of being in the right city with a plausible number of years,
  * and a microbiologist sat at 58% against Human Resource Recruiter.
  *
- * Only those above the configured threshold are notified.
+ * This multi-factor number is the RECRUITER's screening score. A candidate
+ * is never shown it: what they see - and what the alert threshold below
+ * is compared with - is the AI Match (ai-match.js: the JD's required
+ * skills they have / the JD's required skills), returned here as
+ * `aiMatch`. Only those whose AI Match clears the threshold, and who pass
+ * the gates, are notified.
  *
  * Every number the engine produces comes with the evidence for it, because
  * a recruiter looking at "78%" needs to see WHICH skills matched before
  * they trust it, and a candidate who asks why they were contacted deserves
  * an answer better than "the algorithm".
  */
+
+import { aiMatch, canonicalSkill } from './ai-match.js';
 
 /** The default bar. A job may set its own; the environment may move this. */
 export const DEFAULT_THRESHOLD = Number(process.env.JOB_MATCH_THRESHOLD || 65);
@@ -71,20 +78,12 @@ const norm = (v) => String(v || '').toLowerCase().trim();
 /** "Node.js" and "nodejs" and "node js" are the same skill to a person. */
 const skillKey = (v) => norm(v).replace(/[.\-_/\\]/g, ' ').replace(/\s+/g, ' ').trim();
 
-/** Common ways the same skill is written. Kept small and explicit. */
-const ALIASES = new Map(Object.entries({
-  js: 'javascript', ts: 'typescript', 'node js': 'nodejs', node: 'nodejs',
-  'react js': 'react', reactjs: 'react', 'angular js': 'angular', angularjs: 'angular',
-  'spring boot': 'springboot', springboot: 'springboot',
-  postgres: 'postgresql', 'ms sql': 'sql server', mssql: 'sql server',
-  'c sharp': 'c#', dotnet: '.net', 'asp net': 'asp.net',
-  py: 'python', golang: 'go', k8s: 'kubernetes',
-}));
-
-const canonical = (v) => {
-  const k = skillKey(v);
-  return ALIASES.get(k) || k;
-};
+/*
+ * One normalisation for every matcher: ai-match.js owns the alias table
+ * (JS / JavaScript, ReactJS / React, Node / Node.js, Postgres / PostgreSQL,
+ * ML / Machine Learning ...). This file used to keep its own copy.
+ */
+const canonical = (v) => canonicalSkill(v);
 
 const words = (v) => norm(v).split(/[^a-z0-9+#.]+/).filter((w) => w.length > 2);
 
@@ -409,8 +408,13 @@ export function matchCandidate(job, cand, { threshold = DEFAULT_THRESHOLD } = {}
   const score = ceiling == null ? weighted : Math.min(weighted, ceiling);
 
   const breakdown = { skills, experience, role, location, education, preferences };
+  /* The candidate-facing AI Match (skills vs the JD only). `score` above is
+     the recruiter's multi-factor screening number; anything that tells a
+     CANDIDATE a percentage - and the alert threshold below - uses this. */
+  const ai = aiMatch(job, cand);
   const out = {
     score,
+    aiMatch: ai,
     /*
      * What the score was measured against, and what it could not be.
      * Named rather than implied: a recruiter comparing two numbers needs
@@ -478,8 +482,15 @@ export function matchCandidate(job, cand, { threshold = DEFAULT_THRESHOLD } = {}
     return out;
   }
 
-  if (score < threshold) {
-    out.reason = `scored ${score}, below the ${threshold} threshold`;
+  /* The bar is the AI Match a candidate is shown, so "you were told about
+     this job" and "your AI Match is NN%" can never disagree. A JD with no
+     skills has no AI Match, and alerts nobody on a profile match. */
+  if (ai.score == null) {
+    out.reason = 'the job lists no skills, so there is no AI Match';
+    return out;
+  }
+  if (ai.score < threshold) {
+    out.reason = `AI Match ${ai.score}, below the ${threshold} threshold`;
     return out;
   }
 
