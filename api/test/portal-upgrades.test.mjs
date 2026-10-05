@@ -346,8 +346,8 @@ test('share: the link moves to PUBLIC_SHARE_URL (path and ?ref kept); blank fiel
   assert.equal(t.includes('Location'), false);
   assert.equal(t.includes('Job Type'), false);
   assert.equal(t.includes('undefined'), false);
-  assert.match(t, /👨‍⚕️ \*Staff Nurse\*/);
-  assert.equal(shareText({}, 'https://x.test/job/j2').includes('*Job Opportunity*'), true);
+  assert.match(t, /📢 Staff Nurse/);
+  assert.equal(shareText({}, 'https://x.test/job/j2').includes('📢 Job Opportunity'), true);
 
   const j = await job({ title: 'Public Share Role', location: 'Guntur', pay: '₹3 LPA' });
   process.env.PUBLIC_SHARE_URL = 'https://jobs.example.in';
@@ -362,6 +362,51 @@ test('share: the link moves to PUBLIC_SHARE_URL (path and ?ref kept); blank fiel
   }
 });
 
+test('share: a walk-in job carries its walk-in block; a regular job never does; empty fields are left out', async () => {
+  const w = await job({ title: 'HR Recruiter', location: 'KPHB, Hyderabad', pay: '₹3 LPA', exp: '0-Any', kind: 'walkin',
+    type: 'Walk-in', urgent: true, walkinDate: '2026-10-10' });
+  await raw(`update jobs set education='Any Degree', requirements=$2, walkin_from='10:00', walkin_to='16:00',
+             walkin_venue='TeamLink Consultants (OPC) Pvt. Ltd.', walkin_contact='HR Desk', walkin_phone='9032321414'
+             where id=$1`, [w, ['Good Communication Skills', 'Telugu & English are Mandatory']]);
+  await raw(`update jobs set urgent_until = now() + interval '7 days' where id=$1`, [w]);
+  const ws = await makeClient(base).post(`/api/jobs/${w}/share`, { channel: 'whatsapp' });
+  assert.equal(ws.status, 201, JSON.stringify(ws.body));
+  const t = ws.body.text;
+  for (const line of ['👋 Hi! I found this job opportunity and thought it might be suitable for you.',
+    '📢 Urgent Hiring – HR Recruiter', '🎓 Qualification: Any Degree', '💼 Experience: 0-Any', '🌟 Freshers Can Apply',
+    '💰 Salary: ₹3 LPA', '📍 Location: KPHB, Hyderabad', '✅ Requirements', '• Telugu & English are Mandatory',
+    '🚶 Walk-In Interview', '📅 Walk-In Date: 10 October 2026', '⏰ Interview Time: 10:00 AM – 4:00 PM',
+    '📄 Please carry:', '• Updated Resume – Hard Copy', '• A copy of this Job Post',
+    '⚠️ Important: The job post copy must be shown at the main gate entrance.', '📍 Venue:',
+    'TeamLink Consultants (OPC) Pvt. Ltd.', '📞 Contact: HR Desk – 9032321414',
+    `👉 View Job & Apply: ${base}/job/${w}?ref=${ws.body.code}`]) {
+    assert.ok(t.split('\n').includes(line), `missing line: ${line}\n---\n${t}`);
+  }
+  assert.equal(/💼 Job Type: Walk-in/.test(t), false, 'walk-in is not shown as a job type line');
+  /* the WhatsApp link decodes back to exactly the message: emojis, ₹, &, new lines survive */
+  assert.equal(decodeURIComponent(ws.body.links.whatsapp.replace('https://wa.me/?text=', '')), t);
+  assert.equal(/[\s]/.test(ws.body.links.whatsapp.slice('https://wa.me/?text='.length)), false, 'unencoded characters in the link');
+
+  const r = await job({ title: 'Software Developer', location: 'Hyderabad', pay: '₹5-8 LPA', exp: '1-3 yrs', mode: 'Hybrid' });
+  const rs = await makeClient(base).post(`/api/jobs/${r}/share`, { channel: 'copy' });
+  const rt = rs.body.text;
+  assert.match(rt, /📢 Software Developer/);
+  assert.match(rt, /💼 Job Type: Full-time/);
+  assert.match(rt, /🏢 Work From Home: Hybrid/);
+  for (const word of ['Walk-In', 'Venue', 'main gate', 'Hard Copy', 'Please carry']) {
+    assert.equal(rt.includes(word), false, `"${word}" in a regular job's share`);
+  }
+
+  const m = await job({ title: 'Field Assistant', location: '', pay: '', exp: '' });
+  await raw(`update jobs set location=null, pay_label=null, exp_label=null, education=null, mode=null, employment_type=null where id=$1`, [m]);
+  const ms = await makeClient(base).post(`/api/jobs/${m}/share`, { channel: 'copy' });
+  const mt = ms.body.text;
+  for (const word of ['undefined', 'null', 'NaN', 'Salary', 'Location', 'Experience', 'Qualification', 'Job Type']) {
+    assert.equal(mt.includes(word), false, `"${word}" in a share of a job without it:\n${mt}`);
+  }
+  assert.match(mt, /📢 Field Assistant/);
+});
+
 test('share: code, text and link preview without the client name; clicks and applies counted', async () => {
   const j = await job({ title: 'Share Role', location: 'Nellore', pay: '₹3-4 LPA' });
   const anon = makeClient(base);
@@ -370,26 +415,28 @@ test('share: code, text and link preview without the client name; clicks and app
   const link = `${base}/job/${j}?ref=${s.body.code}`;
   assert.equal(s.body.url, link);
   assert.equal(s.body.text, [
-    '🌟 *TeamLink Consultancy*', '', '📢 *Job Opportunity*', '', '👨‍⚕️ *Share Role*', '',
-    'I thought this job opportunity might be relevant for you.', '',
-    '📍 *Location:* Nellore', '💼 *Job Type:* Full-time', '',
-    '👉 *View Job & Apply:*', link, '', 'Please check the job details and apply if interested.', '',
-    '*TeamLink Consultancy*'].join('\n'));
+    '👋 Hi! I found this job opportunity and thought it might be suitable for you.', '',
+    '📢 Share Role', `🏢 ${CLIENT_NAME}`, '💼 Experience: 2-4 yrs', '💰 Salary: ₹3-4 LPA',
+    '📍 Location: Nellore', '💼 Job Type: Full-time', '🏢 Work From Home: Not Available', '',
+    `👉 View Job & Apply: ${link}`].join('\n'));
+  assert.equal(s.body.body, s.body.text.split('\n').slice(0, -2).join('\n'), 'body = the message without its link');
   assert.equal(decodeURIComponent(s.body.links.whatsapp.replace('https://wa.me/?text=', '')), s.body.text);
   assert.equal(s.body.publicLink, false, 'a 127.0.0.1 link is reported as not public');
   assert.ok(s.body.links.whatsapp.startsWith('https://wa.me/?text='));
-  assert.equal(JSON.stringify(s.body).includes(CLIENT_NAME), false, 'no client name in the share');
-  assert.equal(JSON.stringify(s.body).toLowerCase().includes('acme'), false);
+  /* The owner's share spec shows the company the card shows; nothing about
+     the sharer and nothing internal. */
+  for (const word of ['undefined', 'null', 'NaN', 'rpu1', 'Rec PU', 'cand', 'stage', 'score']) {
+    assert.equal(s.body.text.includes(word), false, `"${word}" in the share`);
+  }
 
   /* a link-preview robot reads the tags and is not counted */
   const bot = await fetch(`${base}/job/${j}?ref=${s.body.code}`, { headers: { 'user-agent': 'WhatsApp/2.23' } });
   const html = await bot.text();
   assert.equal(bot.status, 200);
-  assert.match(html, /<meta property="og:title" content="Share Role - Nellore">/);
-  assert.match(html, /og:description" content="₹3-4 LPA/);
+  assert.match(html, /<meta property="og:title" content="Share Role – Acme Hospitals">/);
+  assert.match(html, /og:description" content="2-4 yrs \| Nellore \| ₹3-4 LPA"/);
   assert.match(html, /og:image" content="[^"]+\/icons\/icon-512\.png"/);
   assert.match(html, /history\.replaceState\(null,'',"\/\?ref=[^"]+#\/job\//);
-  assert.equal(html.slice(0, 4000).includes(CLIENT_NAME), false, 'no client name in the preview');
 
   /* a person opening it is counted, and their application credited */
   const c = await candidate('Shared With');
