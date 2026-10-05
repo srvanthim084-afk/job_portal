@@ -16,7 +16,10 @@ resume score + tips, is built separately.)
 Files: `supabase/migrations/0095_portal_upgrades.sql`, `api/src/portal/core.js`,
 `api/src/portal/alerts.js`, `api/src/routes/portal-upgrades.js`,
 `web/teamlink-portal-upgrades.js`, `api/test/portal-upgrades.test.mjs`,
-`tools/verify-portal-upgrades.mjs`. Small anchored edits: `api/src/app.js`
+`tools/verify-portal-upgrades.mjs`; the Undo hold (0104):
+`supabase/migrations/0104_screening_calls_and_undo.sql`,
+`api/src/notify/apply-hold.js`, `api/src/notify/apply-messages.js`,
+`api/test/screening-calls-and-undo.test.mjs`. Small anchored edits: `api/src/app.js`
 (mount + sweep + `/job/:id`), `api/src/shapes.js` (`toJob` carries
 `expiresAt`, `urgent`, `urgentUntil`), `web/index.html` (one `<script>` line).
 
@@ -121,10 +124,43 @@ job page all go this way.
 - After the tap: "Applied ✓" with **Undo (10)**. `DELETE /api/applications/:id`
   withdraws it — only the applicant, only within 10 seconds of `applied_at`
   (`application_undo()`, 409 `UNDO_EXPIRED` after). There is no candidate
-  withdraw after that, as before. Note: the confirmation email and the AI
-  interview invitation are sent the moment the application exists; Undo
-  removes the application and its in-app records but cannot recall an email
-  already delivered.
+  withdraw after that, as before.
+- **Nothing goes out that Undo cannot take back (0104).** For an
+  application made by one-click apply, the candidate's outbound messages
+  wait until the Undo window has passed: the interview invitation /
+  "Application received" (email, SMS, WhatsApp, IVR, Naukri) and the AI
+  interview invitation. They are sent only if the application still exists.
+  Undo deletes the application, and its hold goes with it, so nothing is
+  sent.
+  - The hold is a row (`application_outbound_holds`), written in the
+    application's own transaction. It falls due at `applied_at` + 10 s +
+    a margin (`ONE_CLICK_HOLD_MARGIN_SECONDS`, default 5, so 15 s; never
+    less than 11 s).
+  - Two ways it is sent, both through one `UPDATE … RETURNING` claim
+    (`application_outbound_claim()`), so it is sent once whichever gets
+    there first: a timer in the process that took the application (the
+    prompt path), and a sweep (`startOutboundHoldSweep`, first pass 5 s
+    after boot, then every 30 s, `OUTBOUND_HOLD_SWEEP_MS`) that sends any
+    hold that is due and unsent. That sweep is what a restart in between
+    relies on. A claim older than 10 minutes without a "sent" mark is
+    claimable again.
+  - The messages are the same code as an ordinary apply
+    (`api/src/notify/apply-messages.js`, moved out of the route unchanged).
+    Each channel's outcome is in `notification_deliveries`, as before, and
+    the existing retry sweep handles a failed channel.
+  - The response says so: `notify` and `aiInterview` are
+    `{held: true, sendsAt, reason: 'undo_window'}` for a one-click apply.
+  - Not held: the in-app notification (it appears at once and Undo removes
+    it, as before), everything recruiter-facing, and every other way of
+    applying. The hold is set by the one-click route on the request itself
+    (`req.oneClickApply`), never by a body field, so an ordinary
+    `POST /api/applications` cannot ask for it (tested).
+  - The screening-questions sweep does not send its no-password link to an
+    application whose hold is still unsent.
+  - In the browser, Undo now remembers the ids it withdrew and drops them
+    from any refresh that was already in flight when Undo was pressed.
+    Applying returns sooner now that no message is sent inline, and such a
+    late refresh used to put "✓ Applied" back on the card.
 - Incomplete profile: a sheet "Fill 2 things to apply" with only the missing
   fields (resume as a file); "Save & apply" saves them to the profile and
   continues the apply. "Apply without them" makes the ordinary application,
@@ -224,6 +260,8 @@ announcement straight away.
 | `PORTAL_ALERT_MAX_ATTEMPTS` | 5 | delivery attempts per channel |
 | `PORTAL_ALERT_RETRY_MS` | 900000 | retry spacing (× attempt) |
 | `PORTAL_ALERT_MAX` | 500 | candidates alerted per job per event per run |
+| `ONE_CLICK_HOLD_MARGIN_SECONDS` | 5 | one-click candidate messages wait 10 s (Undo) + this (1–120) |
+| `OUTBOUND_HOLD_SWEEP_MS` | 30000 | how often held messages left by a restart are looked for |
 
 ## Tests
 
@@ -237,6 +275,13 @@ announcement straight away.
   duplicates on re-run, B/C recomputed at send time, email failing → inbox
   delivered and the email retried, inbox failing → email delivered and the
   inbox retried.
+- `api/test/screening-calls-and-undo.test.mjs` (ports 5466 / 9986, mock 9974)
+  covers the Undo hold. Undone inside the window: no email or SMS reaches the
+  mock provider, even after the window. Not undone: after the window, exactly
+  the emails and SMS an ordinary apply sends, once. Timer lost (a restart):
+  nothing until the sweep, then once; two sweeps racing still send once. Also:
+  an ordinary apply and a body `oneClick` flag hold nothing; only the engine
+  can claim or list holds, and only the applicant can create one.
 - `tools/verify-portal-upgrades.mjs` (Playwright, 390×844 phone), against an
   isolated instance with `PUBLIC_ORIGIN` set to it. WhatsApp and LinkedIn are
   stubbed in the browser; nothing external is reached.

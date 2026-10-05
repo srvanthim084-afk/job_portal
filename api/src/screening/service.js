@@ -37,10 +37,13 @@ export async function loadScreeningSettings() {
       return {
         standard: Array.isArray((by.screening || {}).standard) ? by.screening.standard : [],
         answerWeight: Number.isFinite(w) ? Math.max(0, Math.min(100, w)) : DEFAULT_ANSWER_WEIGHT,
+        // An AI call that is already being made may also ask an application's
+        // pending questions (api/src/ai/call). Off unless an admin turns it on.
+        askOnAiCalls: (by.screening || {}).askOnAiCalls === true,
       };
     });
   } catch {
-    return { standard: [], answerWeight: DEFAULT_ANSWER_WEIGHT };
+    return { standard: [], answerWeight: DEFAULT_ANSWER_WEIGHT, askOnAiCalls: false };
   }
 }
 
@@ -301,6 +304,9 @@ export async function runScreeningSweep(opts = {}) {
         where screening_status = 'pending' and screening_link_sent_at is null
           and applied_at > $1::timestamptz - interval '14 days'
           and stage not in ('rejected','withdrawn','selected','joined')
+          -- a one-click application inside its Undo window: not yet (0104)
+          and not exists (select 1 from application_outbound_holds h
+                           where h.application_id = applications.id and h.sent_at is null)
         order by applied_at limit 200`, [at])).rows,
     due: (await c.query(
       `select id from applications

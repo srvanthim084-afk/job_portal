@@ -18,6 +18,11 @@
  * rule and every permission. A failed must-have is never shown to the
  * candidate - their screen says "Application submitted" either way.
  *
+ * The current-location answer (stdKey current_location, or options.places)
+ * offers place suggestions from the places index as the person types -
+ * GET /api/places/search when signed in, POST /api/screening/link/places
+ * (by the link token) on the no-password page. Free text is still allowed.
+ *
  * window.TLScreening.beforeApply(jobId) -> Promise<
  *     null                    the job asks nothing (or it is not a TeamLink job)
  *   | {answers:[...], saveDefaults}   answered; the next POST /api/applications
@@ -85,6 +90,13 @@
       '.tlsq-ans .a{font-weight:700}.tlsq-ans .w{font-size:11.5px;color:#6b7a90;grid-column:1/3}',
       '.tlsq-warn{background:#fff7e6;border:1px solid #ffd591;color:#874d00;border-radius:8px;padding:8px 10px;font-size:12.5px;margin:8px 0}',
       '.tlsq-page{max-width:640px;margin:24px auto;padding:0 16px}',
+      '.tlsq-place{position:relative}',
+      '.tlsq-sug{position:absolute;left:0;right:0;top:100%;margin-top:4px;z-index:5;background:#fff;border:1px solid #d5dce6;border-radius:9px;box-shadow:0 10px 30px rgba(15,23,42,.14);max-height:240px;overflow:auto}',
+      '.tlsq-sug[hidden]{display:none}',
+      '.tlsq-sugi{display:block;width:100%;text-align:left;padding:9px 12px;border:0;border-bottom:1px solid #f0f3f7;background:#fff;cursor:pointer;font-size:13.5px;color:#1d2733}',
+      '.tlsq-sugi:last-child{border-bottom:0}',
+      '.tlsq-sugi small{display:block;color:#6b7a90;font-size:11.5px;margin-top:1px}',
+      '.tlsq-sugi.on,.tlsq-sugi:hover{background:#eef4ff}',
       '@media (max-width:600px){.tlsq-ov{padding:0}.tlsq-box{border-radius:0;min-height:100%}.tlsq-bd{max-height:none}}',
     ].join('\n');
     document.head.appendChild(s);
@@ -116,6 +128,26 @@
     return true;
   }
 
+  /* The current-location question: answered with the places search. */
+  function isPlaceQ(q) {
+    return q.type === 'short_text' && (q.stdKey === 'current_location' || !!(q.options && q.options.places));
+  }
+
+  /* "Denduluru, Andhra Pradesh" - the name and its state, so two places of
+     one name can be told apart; a state on its own is just its name. */
+  function placeValue(n) {
+    var path = (n && n.path) || [];
+    var st = path.length ? path[path.length - 1] : '';
+    return n.type === 'state' || !st || st === n.name ? n.name : n.name + ', ' + st;
+  }
+
+  function signedInPlaces(q) {
+    if (!api()) return Promise.resolve([]);
+    return api().get('/places/search?limit=8&q=' + encodeURIComponent(q)).then(function (r) {
+      return (r && r.results) || [];
+    });
+  }
+
   function fieldHtml(q, a, err) {
     var o = q.options || {};
     var v = a ? a.value : undefined;
@@ -140,9 +172,14 @@
         + (o.unit ? '<div class="tlsq-unit">In ' + h(o.unit) + '</div>' : '');
     } else if (q.type === 'date') {
       html += '<input id="' + id + '" type="date" value="' + h(v || '') + '" data-text="1">';
+    } else if (isPlaceQ(q)) {
+      html += '<div class="tlsq-place"><input id="' + id + '" type="text" maxlength="200" value="' + h(v || '') + '" data-text="1"'
+        + ' data-place="1" placeholder="City, e.g. Hyderabad" autocomplete="off" role="combobox" aria-autocomplete="list"'
+        + ' aria-expanded="false" aria-controls="' + id + '_sug">'
+        + '<div class="tlsq-sug" id="' + id + '_sug" role="listbox" hidden></div></div>'
+        + '<div class="tlsq-unit">Pick a suggestion or type your own</div>';
     } else {
-      html += '<input id="' + id + '" type="text" maxlength="200" value="' + h(v || '') + '" data-text="1"'
-        + (o.places ? ' placeholder="City, e.g. Hyderabad" autocomplete="address-level2"' : '') + '>';
+      html += '<input id="' + id + '" type="text" maxlength="200" value="' + h(v || '') + '" data-text="1">';
     }
     var f = o.followUp;
     if (f && v != null && String(v).toLowerCase() === String(f.when).toLowerCase()) {
@@ -158,8 +195,85 @@
    * Mount an answer form into `host`. Returns { values(), errors(map) }.
    * `state` = { questions, answers:{qid:{value,detail}} }
    */
-  function mountForm(host, state, onChange) {
+  function mountForm(host, state, onChange, opts) {
     var errs = {};
+    var searchPlaces = (opts && opts.searchPlaces) || signedInPlaces;
+    var sug = { timer: null, seq: 0, items: [], active: -1, input: null };
+
+    function sugBox(input) { return input && document.getElementById(input.id + '_sug'); }
+    function hideSug(input) {
+      var box = sugBox(input || sug.input);
+      if (box) { box.hidden = true; box.innerHTML = ''; }
+      if (input || sug.input) (input || sug.input).setAttribute('aria-expanded', 'false');
+      sug.items = []; sug.active = -1;
+    }
+    function paintSug(input) {
+      var box = sugBox(input);
+      if (!box) return;
+      if (!sug.items.length) { hideSug(input); return; }
+      box.innerHTML = sug.items.map(function (n, i) {
+        var rest = (n.label || '').split(' · ').slice(1).join(' · ');
+        return '<button type="button" class="tlsq-sugi' + (i === sug.active ? ' on' : '') + '" role="option" id="' + input.id + '_o' + i + '"'
+          + ' aria-selected="' + (i === sug.active ? 'true' : 'false') + '" data-place-pick="' + i + '">'
+          + h(n.name) + (rest ? '<small>' + h(rest) + '</small>' : '') + '</button>';
+      }).join('');
+      var opening = box.hidden;
+      box.hidden = false;
+      input.setAttribute('aria-expanded', 'true');
+      /* At the bottom of a scrolling panel the list would open out of sight. */
+      if (opening && box.scrollIntoView) { try { box.scrollIntoView({ block: 'nearest' }); } catch (e) {} }
+      if (sug.active >= 0) input.setAttribute('aria-activedescendant', input.id + '_o' + sug.active);
+      else input.removeAttribute('aria-activedescendant');
+    }
+    function lookUp(input) {
+      clearTimeout(sug.timer);
+      var q = String(input.value || '').trim();
+      sug.input = input;
+      if (q.length < 2) { hideSug(input); return; }
+      var mine = ++sug.seq;
+      sug.timer = setTimeout(function () {
+        Promise.resolve().then(function () { return searchPlaces(q); }).then(function (list) {
+          if (mine !== sug.seq || document.activeElement !== input) return;
+          sug.items = (list || []).slice(0, 8); sug.active = -1;
+          paintSug(input);
+        }, function () { if (mine === sug.seq) hideSug(input); });
+      }, 200);
+    }
+    function pick(input, i) {
+      var n = sug.items[i];
+      if (!n || !input) return;
+      var qid = input.closest('[data-q]').getAttribute('data-q');
+      var cur = state.answers[qid] || {};
+      cur.value = placeValue(n);
+      state.answers[qid] = cur;
+      input.value = cur.value;
+      sug.seq++;
+      hideSug(input);
+      progress();
+    }
+    host.addEventListener('mousedown', function (e) {
+      if (e.target.closest && e.target.closest('[data-place-pick]')) e.preventDefault();   // keep the focus
+    });
+    host.addEventListener('keydown', function (e) {
+      var input = e.target;
+      if (!input.hasAttribute || !input.hasAttribute('data-place') || !sug.items.length) return;
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        var n = sug.items.length;
+        sug.active = e.key === 'ArrowDown' ? (sug.active + 1) % n : (sug.active <= 0 ? n - 1 : sug.active - 1);
+        paintSug(input);
+      } else if (e.key === 'Enter' && sug.active >= 0) {
+        e.preventDefault(); pick(input, sug.active);
+      } else if (e.key === 'Escape') {
+        sug.seq++; hideSug(input);
+      }
+    });
+    host.addEventListener('focusout', function (e) {
+      if (e.target.hasAttribute && e.target.hasAttribute('data-place')) {
+        var input = e.target;
+        setTimeout(function () { if (document.activeElement !== input) { sug.seq++; hideSug(input); } }, 150);
+      }
+    });
     function progress() {
       var n = state.questions.filter(function (q) { return isAnswered(q, state.answers[q.id]); }).length;
       var t = state.questions.length;
@@ -176,6 +290,12 @@
       progress();
     }
     host.addEventListener('click', function (e) {
+      var pk = e.target.closest('[data-place-pick]');
+      if (pk) {
+        var inp = pk.closest('.tlsq-place').querySelector('input[data-place]');
+        pick(inp, Number(pk.getAttribute('data-place-pick')));
+        return;
+      }
       var b = e.target.closest('[data-set],[data-toggle]');
       if (!b) return;
       var qid = b.closest('[data-q]').getAttribute('data-q');
@@ -208,6 +328,7 @@
       else cur.value = e.target.value;
       state.answers[qid] = cur;
       progress();
+      if (e.target.hasAttribute('data-place')) lookUp(e.target);
     });
     draw();
     return {
@@ -415,7 +536,14 @@
     }
     app.innerHTML = '<div class="tlsq-page"><div style="font-weight:800;color:#0f2540;font-size:18px;margin-bottom:12px">TeamLink</div>' + body + '</div>';
     if (linkState.data && !linkState.done && !linkState.error) {
-      var form = mountForm(document.getElementById('tlsqLinkForm'), linkState.state);
+      var form = mountForm(document.getElementById('tlsqLinkForm'), linkState.state, null, {
+        /* No session here: the link token is what lets this page search places. */
+        searchPlaces: function (q) {
+          return api().post('/screening/link/places', { token: token, q: q, limit: 8 }).then(function (r) {
+            return (r && r.results) || [];
+          });
+        },
+      });
       document.getElementById('tlsqLinkSubmit').addEventListener('click', function () {
         if (!form.check()) { say('Please answer every question', '⚠️'); return; }
         var btn = this; btn.disabled = true;
@@ -617,7 +745,7 @@
       var list = (d.answers || []).map(function (a) {
         return '<div class="tlsq-ans"><div>' + h(a.question) + '</div><div class="a">' + h(answerText(a.answer, a.type))
           + (staff && a.mustHaveNotMet ? ' <span class="tlsq-b red">⚠ Must-have not met</span>' : '') + '</div>'
-          + (staff ? '<div class="w">' + h(a.answeredBy || (a.source === 'link' ? 'Answered by the candidate (link)' : 'Answered by the candidate'))
+          + (staff ? '<div class="w">' + h(a.answeredBy || (a.source === 'link' ? 'Answered by the candidate (link)' : a.source === 'ai_call' ? 'Answered on an AI call' : 'Answered by the candidate'))
             + ' · ' + h(when(a.answeredAt)) + '</div>' : '') + '</div>';
       }).join('');
       var scores = staff ? '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">'
@@ -979,6 +1107,11 @@
             + '<label style="font-size:12px;white-space:nowrap">Weight <select data-std-w="' + i + '">' + [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(function (n) { return '<option' + (q.weight === n ? ' selected' : '') + '>' + n + '</option>'; }).join('') + '</select></label></div>';
         }).join('')
         + '<div style="font-size:11.5px;color:var(--text-soft);margin:4px 0 10px">{location} and {mode} are filled in from each job. Never name a client: candidates see these.</div>'
+        + '<label style="display:flex;gap:8px;align-items:flex-start;border:1px solid var(--line,#e4eaf2);border-radius:8px;padding:10px;margin:0 0 12px;font-size:13px">'
+        + '<input type="checkbox" id="tlsqAiCalls"' + (s.askOnAiCalls ? ' checked' : '') + ' style="margin-top:2px">'
+        + '<span><b>AI calls ask the pending screening questions</b><br><span style="font-size:11.5px;color:var(--text-soft)">'
+        + 'Only when AI calling is set up. When the AI calling agent is already calling a candidate about a job, it also asks that application\'s unanswered questions; '
+        + 'answers are saved as "Answered on an AI call" with the same checks as the form. It never changes who is called or when.</span></span></label>'
         + '<button class="btn btn-primary btn-sm" type="button" id="tlsqAdminSave">Save screening settings</button>';
       body.querySelector('#tlsqAdminSave').addEventListener('click', function () {
         var std = (s.standard || []).map(function (q, i) {
@@ -988,7 +1121,8 @@
             weight: Number(body.querySelector('[data-std-w="' + i + '"]').value),
           });
         });
-        api().put('/screening/settings', { standard: std, answerWeight: Number(body.querySelector('#tlsqWeight').value) }).then(function () {
+        api().put('/screening/settings', { standard: std, answerWeight: Number(body.querySelector('#tlsqWeight').value),
+          askOnAiCalls: !!body.querySelector('#tlsqAiCalls').checked }).then(function () {
           say('Screening settings saved', '✅');
         }, function (err) { say((err && err.message) || 'Could not save', '⚠️'); });
       });

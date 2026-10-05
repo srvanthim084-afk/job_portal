@@ -66,6 +66,7 @@ import { startInterviewPrepSweep } from './interview/reminders.js';
 import sharedCandidateRoutes, { engagementRefusalAudit } from './routes/shared-candidates.js';
 import availabilityRoutes from './routes/availability.js';
 import { startAvailabilitySweep } from './notify/availability-checks.js';
+import { startOutboundHoldSweep } from './notify/apply-hold.js';
 
 /*
  * The background work belongs to the APPLICATION, not to one entry point.
@@ -129,6 +130,9 @@ function startBackgroundWork(logger) {
     /* "Still looking?" re-confirmations, Not-confirmed marking and the
        end of the 90-day placed period. Hourly, idempotent, quiet at night. */
     backgroundStops.push(startAvailabilitySweep());
+    /* One-click apply (0104): candidate messages held through the Undo
+       window that a restart left unsent. */
+    backgroundStops.push(startOutboundHoldSweep());
   } catch (err) {
     console.error('[background] could not start:', err.message);
   }
