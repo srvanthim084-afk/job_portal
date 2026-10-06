@@ -529,6 +529,8 @@ test('publishing a draft through the API tells the candidate (the publish hook c
   assert.equal(n.length, 1, 'the bell entry arrived from the publish hook: '
     + JSON.stringify((await raw(`select * from candidate_saved_job_alerts where job_id=$1`, [draft])).rows));
   assert.equal(n[0].job_id, draft);
+  /* the inbox entry is written first and the email follows: wait for it rather than race it */
+  for (let i = 0; i < 100 && !mailsTo(K.email).length; i += 1) await new Promise((r) => setTimeout(r, 100));
   assert.equal(mailsTo(K.email).length, 1);
 });
 
