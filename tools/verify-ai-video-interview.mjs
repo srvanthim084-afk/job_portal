@@ -53,7 +53,8 @@ const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: `$
 const STUBS = (secs) => {
   window.__TLVI_TEST__ = { answerSecs: secs };
   window.__spoken = [];
-  window.__say = '';
+  let sayVal = '';
+  Object.defineProperty(window, '__say', { configurable: true, get: () => sayVal, set: (v) => { sayVal = v; window.__sayPending = !!v; } });
   window.__srStarts = 0;
   function Utt(text) { this.text = text; }
   window.SpeechSynthesisUtterance = Utt;
@@ -67,15 +68,26 @@ const STUBS = (secs) => {
     constructor() { this.lang = ''; this.continuous = false; this.interimResults = false; this._t = []; }
     start() {
       window.__srStarts += 1;
-      const say = String(window.__say || '');
-      if (!say) return;
-      const words = say.split(' ');
-      const res = (text, isFinal) => { const r = [{ transcript: text, confidence: 0.9 }]; r.isFinal = isFinal; return { resultIndex: 0, results: [r] }; };
-      this._t.push(setTimeout(() => this.onresult && this.onresult(res(words.slice(0, Math.ceil(words.length * 0.6)).join(' '), false)), 200));
-      this._t.push(setTimeout(() => this.onresult && this.onresult(res(say, true)), 700));
+      /* A continuous recogniser: whatever the test sets in window.__say is
+         "heard" once - an interim half first, then the whole as a final
+         result - whether it was set before this started or while it runs. */
+      const res = (idx, finals, interim) => {
+        const results = finals.map((t) => { const r = [{ transcript: t, confidence: 0.9 }]; r.isFinal = true; return r; });
+        if (interim) { const r = [{ transcript: interim, confidence: 0.9 }]; r.isFinal = false; results.push(r); }
+        return { resultIndex: idx, results };
+      };
+      const finals = [];
+      this._i = setInterval(() => {
+        if (!window.__sayPending || !window.__say) return;
+        window.__sayPending = false;
+        const say = String(window.__say), words = say.split(' ');
+        const idx = finals.length;
+        if (this.onresult) this.onresult(res(idx, finals, words.slice(0, Math.ceil(words.length * 0.6)).join(' ')));
+        this._t.push(setTimeout(() => { finals.push(say); if (this.onresult) this.onresult(res(idx, finals, '')); }, 450));
+      }, 120);
     }
-    stop() { this._t.forEach(clearTimeout); }
-    abort() { this._t.forEach(clearTimeout); }
+    stop() { this._t.forEach(clearTimeout); clearInterval(this._i); }
+    abort() { this._t.forEach(clearTimeout); clearInterval(this._i); }
   }
   window.SpeechRecognition = FakeRecognition;
   window.webkitSpeechRecognition = FakeRecognition;
@@ -304,6 +316,8 @@ await check('Submit early (Enter on the focused button), then ONE follow-up on t
 });
 
 await check('the transcript auto-scrolls to the newest line', async () => {
+  await p.waitForFunction(() => document.querySelectorAll('#aiivTranscript .tlvi-line').length >= 7, null, { timeout: 8000 }).catch(() => {});
+  await p.waitForTimeout(400);
   const sc = await p.evaluate(() => { const b = document.getElementById('aiivTranscript'); return { h: b.scrollHeight, c: b.clientHeight, t: b.scrollTop }; });
   must(sc.h > sc.c, `not enough lines to scroll (${sc.h}/${sc.c})`);
   must(sc.t + sc.c >= sc.h - 4, `not at the bottom (${sc.t}+${sc.c} of ${sc.h})`);
@@ -377,7 +391,7 @@ await check('End interview: a confirmation that Escape cancels; confirming submi
   must(/Your interview is complete/.test(done) && /What happens next/.test(done), done.slice(0, 120));
   must(!/\d+\s*%|score|rank|shortlist|reject/i.test(done), `the candidate is shown a result: ${done}`);
   must(await p.evaluate(() => window.__spoken.filter((x) => /interview is complete/i.test(x)).length === 1), 'the thank-you was not said once');
-  await p.waitForFunction(() => !/Saving/.test((document.getElementById('tlviUploads') || {}).textContent || ''), null, { timeout: 40000 });
+  await p.waitForFunction(() => window.TLVI.uploads.pending() === 0, null, { timeout: 60000 });
   await shot(p, '6-complete');
 });
 
@@ -389,7 +403,7 @@ await check('on the server: completed, the transcript per question, recordings l
   }, interviewId);
   must(mine.iv && mine.iv.status === 'completed', `status ${mine.iv && mine.iv.status}`);
   const r = mine.recs;
-  must(r.length >= 4, `${r.length} recordings`);
+  must(r.length >= 4, `${r.length} recordings: ${r.map((x) => x.seq + x.part).join(',')}; failed uploads: ${JSON.stringify(await p.evaluate(() => TLVI.uploads.failed()))}`);
   must(r.every((x) => x.candidateId === mine.cand && x.jobId === jobId && x.interviewId === interviewId && x.size > 0), 'a recording is not linked right');
   must(r.some((x) => x.seq === 2 && x.part === 'followup'), 'the follow-up answer has no recording');
   must(r.some((x) => x.seq === 3), 'the question answered across the drop has no recording');
@@ -411,8 +425,16 @@ await check('on the server: completed, the transcript per question, recordings l
 });
 
 /* ---- permission denied, in a browser that does not grant it ------------ */
-const denyBrowser = await chromium.launch({ args: ['--use-fake-device-for-media-stream'] });
-const dctx = await denyBrowser.newContext({ viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce' });
+/* The browser refuses the camera: getUserMedia rejects with NotAllowedError, exactly as it does when the
+   person clicks Block, until window.__denyMedia is cleared (which is what allowing it in the settings does). */
+const dctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce', permissions: ['camera', 'microphone'] });
+await dctx.addInitScript(() => {
+  window.__denyMedia = true;
+  if (!navigator.mediaDevices) return;
+  const real = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+  navigator.mediaDevices.getUserMedia = (c) => (window.__denyMedia
+    ? Promise.reject(new DOMException('Permission denied', 'NotAllowedError')) : real(c));
+});
 await dctx.addInitScript(STUBS, SECS);
 const d = await dctx.newPage();
 watch(d, 'denied');
@@ -458,7 +480,7 @@ await check('permission denied: help with steps and Retry; Retry works once allo
   must(/Retry/.test(await text(d, '.tlvi-actions')), 'no Retry');
   must(await d.evaluate(() => document.querySelector('.tlvi-check').dataset.state === 'fail'), 'the camera check did not fail');
   await shot(d, '7-permission-denied');
-  await dctx.grantPermissions(['camera', 'microphone'], { origin: new URL(BASE).origin });
+  await d.evaluate(() => { window.__denyMedia = false; });
   await d.click('.tlvi-actions .tlvi-btn.primary');
   await d.waitForFunction(() => document.querySelector('.tlvi-check') && document.querySelector('.tlvi-check').dataset.state === 'ok', null, { timeout: 10000 })
     .catch(() => { throw new Error('Retry did not turn the camera on after permission was granted'); });
@@ -471,7 +493,6 @@ await check('no page errors', async () => {
   must(errors.length === 0, errors.slice(0, 4).join(' | '));
 });
 
-await denyBrowser.close();
 await browser.close();
 console.log(failed ? `\n${failed} failed` : '\nall passed');
 process.exit(failed ? 1 : 0);

@@ -655,8 +655,12 @@
         var opts = { videoBitsPerSecond: 350000, audioBitsPerSecond: 48000 };
         if (type) opts.mimeType = type;
         var rec = new window.MediaRecorder(stream, opts);
-        R = { rec: rec, chunks: [], started: Date.now(), pausedMs: 0, pausedAt: 0 };
-        rec.ondataavailable = function (e) { if (e.data && e.data.size) R && R.chunks.push(e.data); };
+        /* The chunks belong to THIS recorder, not to whichever one is current:
+           the last chunk arrives after the next question may already have
+           started its own recorder. */
+        var mine = { rec: rec, chunks: [], started: Date.now() };
+        R = mine;
+        rec.ondataavailable = function (e) { if (e.data && e.data.size) mine.chunks.push(e.data); };
         rec.start(1000);
         return true;
       } catch (e) {
