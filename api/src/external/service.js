@@ -778,10 +778,26 @@ export function startExternalSyncSweep() {
 
   let stopped = false;
   let running = false;
+  let lastClosures = 0;
+
+  /*
+   * 0115: DUE, NOT "SIX HOURS AFTER THIS PROCESS STARTED".
+   *
+   * The sweep used to be a bare setInterval(run, 6h) that never ran at
+   * boot. Every restart (and a night of downtime) reset that clock, so a
+   * server restarted more often than every six hours never synced at all -
+   * and postings removed at their source stayed open. Now a short tick
+   * asks each source whether it is DUE (its last attempt older than its
+   * interval), from the database, so a sync that was missed while the
+   * server was down runs within minutes of it coming back, and a restart
+   * inside the interval still syncs nothing (no hammering on boot).
+   */
+  const dueAt = sourceDueAt;
 
   const run = async () => {
     if (stopped || running) return;
     running = true;
+    let synced = 0;
     try {
       /* 0108: a source whose licence has expired, been revoked or had its
          consent withdrawn is switched off first, with the reason on record
@@ -803,17 +819,19 @@ export function startExternalSyncSweep() {
       for (const s of live) {
         if (stopped) break;
         /* 0108: a checked source syncs on its own interval and waits out its
-           backoff. A preserved one (Greenhouse) keeps the old cadence. */
+           backoff. A preserved one (Greenhouse) keeps the old cadence - the
+           global interval - now counted from its last attempt (0115). */
         const policy = sourcePolicy(s);
         if (!policy.preserve) {
           if (s.next_sync_after && new Date(s.next_sync_after) > new Date()) {
             console.log(`[external] ${s.name}: backing off until ${new Date(s.next_sync_after).toISOString()}`);
             continue;
           }
-          const dueAt = s.last_attempt_at
-            ? new Date(s.last_attempt_at).getTime() + policy.syncIntervalHours * 3600000 - 10 * 60000 : 0;
-          if (dueAt > Date.now()) continue;
+          if (dueAt(s, policy.syncIntervalHours) > Date.now()) continue;
+        } else if (dueAt(s, hours) > Date.now()) {
+          continue;
         }
+        synced += 1;
         try {
           const out = await syncSource(ENGINE, s.id, { scheduled: true });
           console.log(`[external] ${s.name}: ${out.status}`
@@ -825,6 +843,11 @@ export function startExternalSyncSweep() {
         }
       }
 
+      /* The closing passes below are database-only; they run after a sync,
+         and otherwise once per interval. */
+      if (!synced && Date.now() - lastClosures < every) return;
+      lastClosures = Date.now();
+
       /* A posting that has stopped appearing in its feed has been taken
          down. Closed rather than deleted: a candidate who applied to it
          still has an application pointing at it. */
@@ -835,6 +858,10 @@ export function startExternalSyncSweep() {
       }
       if (closed) console.log(`[external] ${closed} posting(s) closed after `
         + `${config.externalJobs.activeDays} days unseen`);
+      /* 0115: a live near-duplicate hidden behind a posting that has just
+         closed is shown again (and regrouped with any other live twin). */
+      const released = await safe('release duplicates', () => releaseClosedDuplicates(ENGINE));
+      if (released) await safe('relink', () => store.relinkDuplicates(ENGINE));
 
       /* And anything the country rule would refuse, for a pool built
          before the rule existed. */
@@ -850,11 +877,30 @@ export function startExternalSyncSweep() {
     }
   };
 
-  /* Not on boot: a restart should not hammer every board. The first run
-     is one interval away, and "Sync now" covers the impatient case. */
-  const timer = setInterval(run, every);
+  /* 0115: a short tick, and a first one soon after boot. Only sources that
+     are DUE sync, so a restart does not hammer every board - but one that
+     was down past the interval catches up instead of waiting six more
+     hours (and resetting again on the next restart). */
+  const tickMs = Math.min(every, Math.max(60, Number(process.env.EXTERNAL_SYNC_TICK_SECONDS) || 900) * 1000);
+  const bootMs = Math.max(0, Number(process.env.EXTERNAL_SYNC_BOOT_DELAY_SECONDS ?? 120)) * 1000;
+  const first = setTimeout(run, bootMs);
+  if (first.unref) first.unref();
+  const timer = setInterval(run, tickMs);
   if (timer.unref) timer.unref();
-  return () => { stopped = true; clearInterval(timer); };
+  return () => { stopped = true; clearTimeout(first); clearInterval(timer); };
+}
+
+/** 0115: when a source is next due to sync (ms since epoch; 0 = now). Ten
+    minutes' slack so a tick that lands just short of the interval counts. */
+export function sourceDueAt(s, hours) {
+  const last = s && (s.last_attempt_at || s.last_sync_at);
+  return last ? new Date(last).getTime() + hours * 3600000 - 10 * 60000 : 0;
+}
+
+/** 0115: postings hidden as a duplicate of one that has since closed. */
+export async function releaseClosedDuplicates(session) {
+  return withUser(session, async (c) => Number((await c.query(
+    `select external_jobs_release_closed_duplicates() as n`)).rows[0]?.n || 0));
 }
 
 /**
@@ -882,7 +928,15 @@ export async function closeStalePostings(session) {
           and j.status = 'open'
           and j.synced_at < now() - (coalesce(s.close_grace_days, $1::int) || ' days')::interval
           and (s.provider = any($2::text[])
-               or (s.last_success_started_at is not null and j.synced_at < s.last_success_started_at))`,
+               or (s.last_success_started_at is not null and j.synced_at < s.last_success_started_at))
+          /* 0115: "unseen" is not "gone" when the posting's own source
+             confirmed it open in the last two days - which is exactly the
+             case of a board bigger than EXTERNAL_SYNC_JOB_LIMIT, whose
+             postings past the cap a sync never returns. Removed ones are
+             closed by the link check instead, on the source's word. */
+          and not exists (select 1 from external_job_link_checks k
+                           where k.external_job_id = j.id and k.outcome = 'available'
+                             and k.checked_at > now() - interval '2 days')`,
       [days, PRESERVED]);
     return rowCount;
   });

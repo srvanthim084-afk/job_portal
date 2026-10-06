@@ -27,6 +27,11 @@
  * "Apply Clicked" - against the candidate when signed in, as a bare count
  * otherwise - and never as an application.
  *
+ * 0115: before the tab is pointed anywhere, the server is asked whether the
+ * posting still exists at its source (GET .../:id/availability). One that
+ * was taken down says "Job no longer available" and the tab opened for it
+ * is closed - the candidate never lands on the employer's 404.
+ *
  * TeamLink jobs are untouched: their cards, Apply button and application
  * flow are exactly what they were.
  */
@@ -211,26 +216,89 @@
        real block is rare here because this runs inside the click. */
     return win;
   }
+  /*
+   * 0115: IS IT STILL THERE? Apply Now first asks TeamLink, which asks the
+   * posting's own source (Greenhouse/Lever's public job endpoint, or a
+   * bounded HEAD of the job's URL). A posting taken down at its source is
+   * closed there and then, and the candidate is told "Job no longer
+   * available" here instead of landing on the employer's 404. When the
+   * check cannot reach the source the original URL opens exactly as before.
+   *
+   * The tab is opened INSIDE the click (so no pop-up blocker objects),
+   * blank, with no opener, and only pointed at the original URL once the
+   * answer is "available"; otherwise it is closed and the message is shown
+   * in the page.
+   */
+  var say = function (msg, icon) { if (typeof window.toast === 'function') toast(msg, icon || 'ℹ️'); };
+  function availability(id) {
+    return fetch('/api/portal/external-jobs/' + encodeURIComponent(id) + '/availability',
+      { credentials: 'same-origin', cache: 'no-store' })
+      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (b) { b.__http = r.status; return b; }); });
+  }
+  /* The job turned out to be gone: this page stops offering it. */
+  function markGone(id, applyLink, message) {
+    var j = X.byId[id] || (X.byId[id] = { id: id });
+    j.applyLink = applyLink;
+    if (applyLink === 'job_unavailable') { j.status = 'CLOSED'; j.externalStatus = 'Expired'; }
+    j.originalJobUrl = null;
+    if (X.jobs) X.jobs = X.jobs.filter(function (x) { return x.id !== id || applyLink !== 'job_unavailable'; });
+    /* Every Apply control for this job on the page, replaced where it
+       stands - the External Jobs cards, the details page, Saved Jobs. */
+    try {
+      var esc = (window.CSS && CSS.escape) ? CSS.escape(id) : id.replace(/[^\w-]/g, '');
+      var sel = 'button[onclick*="tlpxApply(\'' + esc + '\')"],'
+        + 'button[onclick*=\'xjApply("' + esc + '")\'],button[onclick*="xjApply(\'' + esc + '\')"]';
+      Array.prototype.forEach.call(document.querySelectorAll(sel), function (b) {
+        var span = document.createElement('span');
+        span.className = 'tlpx-na';
+        span.setAttribute('role', 'status');
+        span.setAttribute('data-unavailable', id);
+        span.textContent = message;
+        b.parentNode.replaceChild(span, b);
+      });
+    } catch (e) { /* the message below still says it */ }
+  }
   window.tlpxApply = function (id) {
     var j = X.byId[id];
-    var go = function (job) {
-      var st = linkState(job);
-      if (st === 'gone') { if (typeof window.toast === 'function') toast('Job no longer available', 'ℹ️'); return; }
-      if (st === 'nolink') { if (typeof window.toast === 'function') toast('Application link unavailable', 'ℹ️'); return; }
-      openUrl(job.originalJobUrl);
-      record(job.id);
-      if (typeof window.toast === 'function') toast('Opened ' + siteOf(job) + ' in a new tab — apply there', '↗️');
-    };
-    if (j && (j.__full || j.originalJobUrl !== undefined)) { go(j); return; }
-    /* Not in the page's list (e.g. opened from another screen): ask once.
-       A blank tab is opened inside the click so the browser allows it, and
-       pointed at the original URL when the answer comes. */
+    /* Already known to be gone: nothing to open, nothing to ask. */
+    if (j && (j.__full || j.originalJobUrl !== undefined) && linkState(j) !== 'ok') {
+      say(linkState(j) === 'gone' ? 'Job no longer available' : 'Application link unavailable');
+      return;
+    }
     var tab = null;
-    try { tab = window.open('', '_blank'); if (tab) tab.opener = null; } catch (e) { tab = null; }
-    one(id).then(function (full) {
-      if (linkState(full) === 'ok' && tab) { tab.location.replace(full.originalJobUrl); record(full.id); return; }
-      if (tab) try { tab.close(); } catch (e) { /* ignore */ }
-      go(full);
+    try {
+      tab = window.open('', '_blank');
+      if (tab) {
+        tab.opener = null;
+        try { tab.document.title = 'Opening the original job page…'; } catch (e) { /* not ours to write */ }
+      }
+    } catch (e) { tab = null; }
+    var closeTab = function () { if (tab) { try { tab.close(); } catch (e) { /* ignore */ } } };
+    var send = function (url) {
+      if (tab && !tab.closed) {
+        try { tab.location.replace(url); } catch (e) { tab = null; }
+      }
+      if (!tab) openUrl(url);
+      record(id);
+      say('Opened ' + siteOf(X.byId[id] || j) + ' in a new tab — apply there', '↗️');
+    };
+    availability(id).then(function (a) {
+      if (a && a.available && a.url) { send(a.url); return; }
+      closeTab();
+      var applyLink = (a && a.applyLink) || 'job_unavailable';
+      var msg = applyLink === 'link_unavailable' ? 'Application link unavailable' : 'Job no longer available';
+      markGone(id, applyLink, msg);
+      /* Still counted: the click happened. The server records it against
+         a closed posting, which creates nothing. */
+      record(id);
+      say(msg);
+      if (/^#\/job\/xjob_/.test(location.hash || '')) rerender();
+    }, function () {
+      /* TeamLink itself did not answer: fall back to what the page already
+         had, exactly as before 0115. */
+      if (j && linkState(j) === 'ok') { send(j.originalJobUrl); return; }
+      closeTab();
+      say('Could not open the job just now — please try again', '⚠️');
     });
   };
 

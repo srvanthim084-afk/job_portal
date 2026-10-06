@@ -55,6 +55,7 @@ import { startJoiningSweep } from './notify/joining.js';
 import { startProfileNudgeSweep } from './notify/profile-nudge.js';
 import { startBulkMessageSweep } from './notify/bulk.js';
 import { startExternalSyncSweep } from './external/service.js';
+import { startExternalLinkSweep } from './external/availability.js';
 import { startApplyReminderSweep } from './external/reminder.js';
 import { startSavedSearchAlerts } from './notify/saved-search-alerts.js';
 import { startWalkinJobs } from './notify/walkin-jobs.js';
@@ -120,6 +121,9 @@ function startBackgroundWork(logger) {
     backgroundStops.push(startProfileNudgeSweep());
     backgroundStops.push(startBulkMessageSweep());
     backgroundStops.push(startExternalSyncSweep());
+    /* 0115: open external postings re-checked against their source, in
+       small batches; only a confirmed removal closes one. */
+    backgroundStops.push(startExternalLinkSweep());
     /* One reminder per unanswered external application, ever. The claim
        that makes that true is in the database (0077), not here. */
     backgroundStops.push(startApplyReminderSweep());

@@ -222,6 +222,9 @@ for (const [t, k] of [['T2', 'naukri'], ['T3', 'shine'], ['T4', 'indeed']]) {
     const before = (await clicks()).length;
     const [popup] = await Promise.all([cctx.waitForEvent('page', { timeout: 10000 }), card.locator('button', { hasText: /^Apply/ }).first().click()]);
     await popup.waitForLoadState('domcontentloaded');
+    /* 0115: the tab opens blank inside the click and is pointed at the
+       stored URL once the server confirms the posting still exists. */
+    await popup.waitForURL(FEEDS[k].url(1), { timeout: 10000 }).catch(() => {});
     must(popup.url() === FEEDS[k].url(1), 'opened ' + popup.url());
     must(!(await cand.locator('#tlafForm').count()) && !(await cand.locator('[role="dialog"]').count()), 'a screen came in between');
     must(await popup.evaluate(() => window.opener === null), 'the new tab can reach TeamLink (no noopener)');
@@ -275,6 +278,7 @@ await check('T2-T4 signed out: not on the public board; the external job page op
   pub.on('request', (q) => reqs.push(q.url()));
   const [popup] = await Promise.all([pctx.waitForEvent('page', { timeout: 10000 }), pub.locator('article button', { hasText: 'Apply Now' }).first().click()]);
   await popup.waitForLoadState('domcontentloaded');
+  await popup.waitForURL(FEEDS.indeed.url(1), { timeout: 10000 }).catch(() => {});   // 0115: blank first, then the URL
   must(popup.url() === FEEDS.indeed.url(1), 'opened ' + popup.url());
   await pub.waitForTimeout(600);
   must(reqs.some((x) => /\/api\/portal\/external-jobs\/[^/]+\/click$/.test(x)), 'the click was not counted');
