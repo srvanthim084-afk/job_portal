@@ -144,9 +144,11 @@ async function open(p, h) {
 /* the complete page: every section, the buttons, the way back */
 async function completePage(p, job, where) {
   const t = await appText(p);
-  for (const sec of ['Job description', 'Responsibilities', 'Requirements', 'Key skills', 'Education', 'Team', 'About ', 'Your match']) {
+  for (const sec of ['Job description', 'Responsibilities', 'Requirements', 'Key skills', 'Education', 'Team', 'About ']) {
     must(t.includes(sec), `${where}: no "${sec}" section`);
   }
+  /* the match panel: "Your match", or M2's "🎯 N% AI Match" once the score is in */
+  must(/Your match|% AI Match/.test(t), `${where}: no "Your match" / "AI Match" section`);
   must(await p.locator('#app .tljd-back:visible').count() >= 1, `${where}: no "← Back to Jobs"`);
   must(/Apply Now|Easy Apply|Application submitted/.test(t), `${where}: no Apply Now`);
   must(/Save job|Saved/.test(t), `${where}: no Save Job`);
@@ -199,7 +201,7 @@ for (const [label, vp, mobile] of [['desktop', { width: 1366, height: 820 }, fal
     must(await hash(p) === '#/job/' + A.id, 'URL is ' + await hash(p));
     must((await h1(p)).includes(A.title), 'heading: ' + await h1(p));
     must(await p.evaluate(() => scrollY) < 50, 'the page did not open at the top');
-    await p.waitForFunction(() => /Your match ·/.test((document.querySelector('.tlpu-jp') || {}).textContent || ''), null, { timeout: 10000 });
+    await p.waitForFunction(() => /Your match ·|% AI Match/.test((document.querySelector('.tlpu-jp') || {}).textContent || ''), null, { timeout: 10000 });
     await completePage(p, A, 'job page');
     /* "← Back to Jobs" is on screen and nothing (the header) covers it */
     const hit = await p.evaluate(() => {
@@ -219,12 +221,20 @@ for (const [label, vp, mobile] of [['desktop', { width: 1366, height: 820 }, fal
       await new Promise((res) => setTimeout(res, 300));
       const f = document.querySelector('.site-footer');
       const fr = f ? f.getBoundingClientRect() : null;
+      /* a signed-in candidate's job page is inside the candidate shell
+         (verify-candidate-header), which has no public footer: there the
+         page's last panel is what comes into view at the bottom */
+      const last = Array.from(document.querySelectorAll('#app .tljd .panel')).filter((e) => e.offsetParent)
+        .reduce((a, e) => (!a || e.getBoundingClientRect().bottom > a.getBoundingClientRect().bottom ? e : a), null);
+      const lr = last ? last.getBoundingClientRect() : null;
       return { y: scrollY, ih: innerHeight, sh: document.documentElement.scrollHeight, sw: document.documentElement.scrollWidth, vw: innerWidth,
-        footer: !!fr && fr.top < innerHeight && fr.bottom > 0 };
+        shell: !!document.querySelector('#app .cp-hd'),
+        footer: !!fr && fr.top < innerHeight && fr.bottom > 0,
+        lastPanel: !!lr && lr.bottom <= innerHeight + 1 && lr.bottom > 0 };
     });
     must(r.sh > r.ih, 'the page is not taller than the window');
     must(r.y + r.ih >= r.sh - 2, `did not reach the bottom (${r.y}+${r.ih} of ${r.sh})`);
-    must(r.footer, 'the footer is not in view at the bottom');
+    must(r.shell ? r.lastPanel : r.footer, r.shell ? 'the last panel is not in view at the bottom' : 'the footer is not in view at the bottom');
     must(r.sw <= r.vw + 1, `sideways scroll: ${r.sw} > ${r.vw}`);
     if (mobile) {
       const order = await p.evaluate(() => {
