@@ -1,5 +1,5 @@
 -- =====================================================================
--- 0111: deleting a candidate no longer fails on the resume-score queue
+-- 0114: deleting a candidate no longer fails on the resume-score queue
 --
 -- 0094 queues a re-score whenever a candidate's education or experience
 -- rows change - including when one is DELETED. Deleting the candidate

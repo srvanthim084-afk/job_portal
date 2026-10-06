@@ -293,7 +293,7 @@ test('a candidate reads only their own scores; only the engine writes them', asy
   assert.equal((await A.get('/api/resume-scores?ids=' + B.id)).status, 403);
 });
 
-test('0111: a candidate with education and experience rows can still be deleted', async () => {
+test('0114: a candidate with education and experience rows can still be deleted', async () => {
   /* The rows' own re-score trigger used to queue the candidate being
      deleted, and the queue's foreign key rolled the delete back. */
   const D = await candidate('Delete Me', `rs.delete.${Date.now()}@tl-sink.local`);
