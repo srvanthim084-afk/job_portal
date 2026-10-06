@@ -140,11 +140,14 @@ export default function sharedCandidateRoutes() {
           [req.params.id, jobId])).rows;
         const verdict = (await c.query(`select * from can_engage($1, $2, null)`,
           [req.params.id, jobId])).rows[0];
-        return { cand, rows, verdict };
+        const holderVisible = verdict && verdict.holder_recruiter_id
+          ? (await c.query(`select app_recruiter_in_scope($1) as v`, [verdict.holder_recruiter_id])).rows[0].v
+          : false;
+        return { cand, rows, verdict, holderVisible };
       });
       if (!out) throw notFound('That candidate could not be found.');
 
-      const v = toVerdict(out.verdict);
+      const v = toVerdict(out.verdict, out.holderVisible);
       v.message = verdictMessage(v);
       const holder = out.rows.find((x) => x.is_holder && x.is_active && !x.is_me);
       res.json({
@@ -327,9 +330,24 @@ export default function sharedCandidateRoutes() {
       const out = await withUser(req.session, async (c) => {
         const cand = (await c.query(`select id, name from candidates where id = $1`, [b.candidateId])).rows[0];
         if (!cand) return null;
+        /* 0117: 'holder' is the anonymous handle a refusal carries when the
+           holder is outside the caller's scope - resolved here, on the
+           server, so the client never learns who it is. */
+        if (b.recruiterId === 'holder') {
+          const h = (await c.query(
+            `select holder_recruiter_id, role_key, job_title from can_engage($1, $2, null)`,
+            [b.candidateId, b.jobId || null])).rows[0];
+          b.recruiterId = (h && h.holder_recruiter_id) || null;
+          if (!b.recruiterId) return { cand, eng: null };
+          if (req.session.role === 'recruiter' && b.recruiterId === req.session.profileId) {
+            throw badRequest('That is you.');
+          }
+          b.__eng = { recruiter_name: 'the recruiter working this candidate',
+                      role_key: h.role_key, job_title: h.job_title };
+        }
         /* Only to somebody who actually has an engagement with this
            person - not a way to message any recruiter about anybody. */
-        const eng = (await c.query(`select recruiter_name, role_key, job_title from candidate_engagements($1, $2)
+        const eng = b.__eng || (await c.query(`select recruiter_name, role_key, job_title from candidate_engagements($1, $2)
                                       where recruiter_id = $3 limit 1`,
           [b.candidateId, b.jobId || null, b.recruiterId])).rows[0];
         if (!eng) return { cand, eng: null };

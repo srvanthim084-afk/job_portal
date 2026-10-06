@@ -27,6 +27,8 @@ import {
   toInterview, toOffer, toNotification, toPerson, attachPrimary,
 } from '../shapes.js';
 import { teamlinkOnly } from '../jobs/source-scope.js';
+import { homeStatsOn } from './dashboard.js';
+import { publicSession } from '../scope.js';
 
 export default function bootstrapRoutes() {
   const r = Router();
@@ -61,14 +63,37 @@ export default function bootstrapRoutes() {
       const jobs        = await c.query(`select * from jobs_with_counts
         ${staff ? '' : `where ${teamlinkOnly()} or id in (select job_id from applications)`}
         order by published_at desc nulls last, id`);
-      const candidates  = await c.query(`select * from candidates order by id`);
+      /*
+       * 0117: A RECRUITER'S BROWSER IS NOT HANDED THE WHOLE DATABASE.
+       *
+       * It used to receive every readable candidate (the shared pool: tens
+       * of thousands of people, each with the fields a colleague recorded).
+       * Now a recruiter or team lead receives the candidates in a talent
+       * pool they may read plus the applicants to jobs they may read - their
+       * own desk, their department's for a team lead. Everyone else on the
+       * database is reached through Find Candidates, which asks the server
+       * and returns the shared basic profile. Admins and every other role
+       * are unchanged.
+       */
+      const scopedCandidates = session && session.role === 'recruiter';
+      const candidates  = await c.query(scopedCandidates
+        ? `select c.* from candidates c
+            where exists (select 1 from talent_pool tp where tp.candidate_id = c.id)
+               or exists (select 1 from applications a where a.candidate_id = c.id)
+               or app_recruiter_in_scope(c.owner_recruiter_id)
+            order by c.id`
+        : `select * from candidates order by id`);
       const applications= await c.query(`select * from applications order by applied_at desc`);
       const interviews  = await c.query(`select * from interviews order by scheduled_date desc nulls last`);
       const offers      = await c.query(`select * from offers order by extended_at desc`);
       const notifications = session
         ? await c.query(`select * from notifications order by created_at desc limit 200`)
         : empty;
-      const recruiters  = await c.query(`select * from recruiters order by name`);
+      /* 0117: a recruiter is told about themselves (and a team lead about
+         their department's recruiters), not the whole firm's staff list. */
+      const recruiters  = await c.query(session && session.role === 'recruiter'
+        ? `select * from recruiters where app_recruiter_in_scope(id) order by name`
+        : `select * from recruiters order by name`);
       const clients     = await c.query(`select * from client_users order by name`);
       // A BDE reads the pool and pushes records out to the agency's ATS; the
       // pipeline screens they reuse look their profile up by id, the same way
@@ -92,7 +117,15 @@ export default function bootstrapRoutes() {
                            from ai_interviews order by completed_at desc limit 200`)
         : empty;
 
-      const cands = candidates.rows.map(toCandidate);
+      /* 0117: a recruiter's own talent_pool row supplies the notes and tags on the shape. */
+      const poolRows = scopedCandidates
+        ? (await c.query(`select distinct on (candidate_id) tp.*, (tp.recruiter_id = app_recruiter_id()) as mine
+             from talent_pool tp order by tp.candidate_id, (tp.recruiter_id = app_recruiter_id()) desc, tp.added_at desc`)).rows
+        : [];
+      const poolBy = new Map(poolRows.map((p) => [p.candidate_id, p]));
+      const cands = candidates.rows.map((x) => (scopedCandidates
+        ? toCandidate(x, { staff: true, pool: poolBy.get(x.id) })
+        : toCandidate(x)));
 
       /*
        * THE SIGNED-IN CANDIDATE'S OWN EDUCATION AND WORK HISTORY.
@@ -155,6 +188,10 @@ export default function bootstrapRoutes() {
           nextStage: s.next_stage || null,
         })),
         aiSettings:  settings.rows[0] ? settings.rows[0].value : {},
+        /* 0117: the four departments (admin's role + department selector). */
+        departments: (await c.query(`select id, name from departments order by sort_order`)).rows,
+        /* 0117: the Home and Jobs dashboard numbers, counted in scope on the server. */
+        homeStats:   session && session.role === 'recruiter' ? await homeStatsOn(c, session) : null,
         aiInterviews: aiInterviews.rows.map((r) => ({
           id: r.id,
           applicationId: r.application_id,
@@ -183,6 +220,7 @@ export default function bootstrapRoutes() {
       session: session
         ? {
             role: session.role, id: session.profileId, userId: session.userId,
+            ...publicSession(session),
             mustChangePassword: !!(temp && temp.must_change_password),
           }
         : null,

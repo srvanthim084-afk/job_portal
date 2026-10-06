@@ -19,6 +19,7 @@ import bcrypt from 'bcryptjs';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { config, originAllowed } from './config.js';
 import { withUser } from './db.js';
+import { scopeFields } from './scope.js';
 import { unauthorized, sessionExpired, forbidden, CODES, ApiError } from './errors.js';
 
 const sha256 = (s) => createHash('sha256').update(s).digest('hex');
@@ -81,6 +82,7 @@ export async function login({ email, password, userAgent, ip }) {
         userId: user.id,
         role: user.role,
         profileId: profile ? profile.profile_id : null,
+        ...(await scopeFields(c, user.id, user.role)),
         email: user.email,
       },
     };
@@ -176,7 +178,8 @@ export async function resolveSession(token) {
     const { rows } = await c.query(`select * from auth_resolve_session($1)`, [hash]);
     if (!rows.length) return null;
     const r = rows[0];
-    return { userId: r.user_id, role: r.role, profileId: r.profile_id, tokenHash: hash };
+    return { userId: r.user_id, role: r.role, profileId: r.profile_id, tokenHash: hash,
+      ...(await scopeFields(c, r.user_id, r.role)) };
   });
 }
 
@@ -241,6 +244,7 @@ export async function impersonate(userId, { userAgent, ip } = {}) {
         userId: user.id,
         role: user.role,
         profileId: profile ? profile.profile_id : null,
+        ...(await scopeFields(c, user.id, user.role)),
         email: user.email,
       },
     };

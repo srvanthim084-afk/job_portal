@@ -29,8 +29,33 @@ export const ENGAGEMENT_CODES = {
 const iso = (v) => (v ? new Date(v).toISOString() : null);
 
 /** The verdict, in the shape every route and the screen use. */
-export function toVerdict(r) {
+export function toVerdict(r, holderVisible = false) {
   if (!r) return { decision: 'allowed', reason: null };
+  /*
+   * 0117: THE RULE STAYS, THE IDENTITY DOES NOT.
+   *
+   * Two recruiters still may not work the same person for the same role,
+   * so a hold is still reported. But who holds it, for which job and how
+   * far along is another recruiter's pipeline: unless the holder is in the
+   * caller's scope (themselves, a team lead's department, an admin's
+   * everyone) the verdict carries "Another recruiter", the hold's end
+   * date, and nothing else. recruiterId 'holder' is a handle the
+   * message-holder route resolves on the server.
+   */
+  if (r.holder_recruiter_id && !holderVisible) {
+    return {
+      decision: r.decision,
+      reason: r.reason || null,
+      roleKey: null,
+      anonymous: true,
+      holder: {
+        recruiterId: 'holder', name: 'Another recruiter', level: r.level || null,
+        jobTitle: null, status: null, statusLabel: null, lastActivity: null,
+        holdExpiresAt: iso(r.hold_expires_at), lastChannel: null, lastOutcome: null,
+      },
+      overrideId: r.override_id != null ? Number(r.override_id) : null,
+    };
+  }
   return {
     decision: r.decision,
     reason: r.reason || null,
@@ -75,6 +100,11 @@ export function verdictMessage(v) {
     return 'This candidate joined through TeamLink recently. Contact for another role is blocked until '
       + `${fmtDate(h.holdExpiresAt)} (replacement period).`;
   }
+  if (v.anonymous) {
+    return v.decision === 'blocked'
+      ? `Another recruiter is already working on this candidate. Hold ends ${fmtDate(h.holdExpiresAt)} if no activity.`
+      : 'Another recruiter contacted this candidate recently. Contact anyway?';
+  }
   if (v.decision === 'blocked') {
     return `${h.name} is processing this candidate for ${roleName(h, v.roleKey)}`
       + `${h.statusLabel ? ` (${h.statusLabel})` : ''}. Hold ends ${fmtDate(h.holdExpiresAt)} if no activity.`;
@@ -90,9 +120,15 @@ export async function canEngage(session, candidateId, { jobId = null, roleKey = 
   if (!session || !['recruiter', 'bde', 'admin'].includes(session.role)) {
     return { decision: 'allowed', reason: null, holder: null };
   }
-  const row = await withUser(session, async (c) => (await c.query(
-    `select * from can_engage($1, $2, $3)`, [candidateId, jobId || null, roleKey || null])).rows[0]);
-  const v = toVerdict(row);
+  const { row, visible } = await withUser(session, async (c) => {
+    const row = (await c.query(
+      `select * from can_engage($1, $2, $3)`, [candidateId, jobId || null, roleKey || null])).rows[0];
+    const visible = row && row.holder_recruiter_id
+      ? (await c.query(`select app_recruiter_in_scope($1) as v`, [row.holder_recruiter_id])).rows[0].v
+      : false;
+    return { row, visible };
+  });
+  const v = toVerdict(row, visible);
   v.message = verdictMessage(v);
   return v;
 }
@@ -108,7 +144,10 @@ export async function canEngageMany(session, candidateIds, { jobId = null, roleK
     for (const id of candidateIds) {
       const row = (await c.query(`select * from can_engage($1, $2, $3)`,
         [id, jobId || null, roleKey || null])).rows[0];
-      const v = toVerdict(row);
+      const visible = row && row.holder_recruiter_id
+        ? (await c.query(`select app_recruiter_in_scope($1) as v`, [row.holder_recruiter_id])).rows[0].v
+        : false;
+      const v = toVerdict(row, visible);
       v.message = verdictMessage(v);
       out.set(id, v);
     }
@@ -190,9 +229,9 @@ export async function requireEngage(session, candidateId, {
 export function forViewer(cand, editable) {
   if (editable) return { ...cand, canEdit: true };
   const out = { ...cand, canEdit: false };
-  delete out.recruiterNotes;
-  delete out.internalRemarks;
-  delete out.candidateNotes;
+  /* 0117: the notes on the shape are the viewer's OWN talent_pool row
+     (or absent) - nothing on the shared row - so they are not stripped
+     here; the shared profile drops them in basicProfile(). */
   delete out.interviewPrefs;
   return out;
 }

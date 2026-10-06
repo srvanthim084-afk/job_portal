@@ -1243,11 +1243,17 @@ DATA.candidateById = id=>byId(DATA.candidates,id);
 DATA.recruiterById = id=>byId(DATA.recruiters,id);
 DATA.clientById = id=>byId(DATA.clients,id);
 DATA.stageMeta = id=>byId(DATA.stages,id) || {id,label:id};
-DATA.jobsFor = companyId => DATA.jobs.filter(j=>j.companyId===companyId);
+/* 0117: a signed-in RECRUITER's DATA is scoped on the server - their own jobs,
+   a team lead's whole department's - so "this recruiter's jobs" is simply
+   DATA.jobs. Filtering them by company here would hide a department
+   colleague's jobs that sit under another company. Every other role (and
+   the public site) keeps the company filter exactly as it was. */
+const tlStaffScoped = () => !!(typeof STATE!=='undefined' && STATE.session && STATE.session.role==='recruiter');
+DATA.jobsFor = companyId => tlStaffScoped() ? DATA.jobs.slice() : DATA.jobs.filter(j=>j.companyId===companyId);
 DATA.openJobs = () => DATA.jobs.filter(j=>j.status!=='closed' && j.status!=='draft' && !j.paused && !j.archived && !(typeof window.jobIsExpired==='function' && window.jobIsExpired(j)));
 DATA.openJobsFor = companyId => DATA.openJobs().filter(j=>j.companyId===companyId);
 DATA.candidatesFor = jobId => DATA.candidates.filter(c=>c.appliedJobId===jobId);
-DATA.candidatesForCompany = companyId => DATA.candidates.filter(c=> c.appliedJobId && DATA.jobById(c.appliedJobId) && DATA.jobById(c.appliedJobId).companyId===companyId);
+DATA.candidatesForCompany = companyId => DATA.candidates.filter(c=> c.appliedJobId && DATA.jobById(c.appliedJobId) && (tlStaffScoped() || DATA.jobById(c.appliedJobId).companyId===companyId));
 
 /* Extra applications beyond each candidate's one seeded "primary" pipeline entry — e.g. a
    candidate applying (via Apply Now) to a newly published job, or an AI Rediscovery invite.
@@ -1299,7 +1305,8 @@ const STATE = {
 };
 
 function initials(name){ return name.split(' ').map(w=>w[0]).slice(0,2).join('').toUpperCase(); }
-function esc(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+/* A missing value prints as nothing, never as the word "undefined" (0117). */
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 /* A job or company field for display. A job saved in the database without
    an experience, pay, mode or type label, or a company without an about /
    industry / founded year, comes back with the key missing - and esc()
@@ -3775,7 +3782,7 @@ c-35 31 -71 37 -111 16z"/>
       </nav>
       <div class="side-foot">
         <div class="avatar" style="background:${railColor}">${esc(initials(who.name))}</div>
-        <div class="who"><b>${esc(who.name)}</b><span>${esc(who.title||who.email)}</span></div>
+        <div class="who"><b>${esc(who.name)}</b><span>${esc(role==='recruiter'&&STATE.session&&STATE.session.scopeRole==='teamlead'?('Team Lead'+(STATE.session.departmentName?' · '+STATE.session.departmentName:'')):(who.title||who.email))}</span></div>
         <button onclick="doLogout()">Exit</button>
       </div>
     </aside>
@@ -5118,8 +5125,8 @@ function allApplicationsForCompany(companyId){
   const list = [];
   // Candidates who registered but haven't applied to anything yet have no appliedJobId — skip them here
   // rather than calling DATA.jobById(null), which would throw when reading job.companyId below.
-  DATA.candidates.forEach(c=>{ if(!c.appliedJobId) return; const job=DATA.jobById(c.appliedJobId); if(job && job.companyId===companyId) list.push({id:'primary__'+c.id, candidateId:c.id, jobId:c.appliedJobId, stage:c.stage, matchScore:c.matchScore, appliedAt:'2 weeks ago', primary:true}); });
-  DATA.applications.forEach(a=>{ const job=DATA.jobById(a.jobId); if(job && job.companyId===companyId) list.push({...a, primary:false}); });
+  DATA.candidates.forEach(c=>{ if(!c.appliedJobId) return; const job=DATA.jobById(c.appliedJobId); if(job && (tlStaffScoped() || job.companyId===companyId)) list.push({id:'primary__'+c.id, candidateId:c.id, jobId:c.appliedJobId, stage:c.stage, matchScore:c.matchScore, appliedAt:'2 weeks ago', primary:true}); });
+  DATA.applications.forEach(a=>{ const job=DATA.jobById(a.jobId); if(job && (tlStaffScoped() || job.companyId===companyId)) list.push({...a, primary:false}); });
   return list;
 }
 function personCell(cand){
@@ -5412,10 +5419,19 @@ function pageRecruiterDash(section, params){
     const editing = STATE.editJobId ? DATA.jobById(STATE.editJobId) : null;
     content = `
     <div class="stat-row">
-      ${statTile('Open roles', myJobs.filter(j=>j.status!=='closed').length)}
-      ${statTile('Total applicants', apps.length)}
-      ${statTile('Avg. AI match', Math.round(apps.reduce((s,a)=>s+a.matchScore,0)/(apps.length||1))+'%')}
-      ${statTile('Featured listings', myJobs.filter(j=>j.featured).length)}
+      ${(function(){
+        /* 0117: counted by the server in this user's scope (own jobs, a team
+           lead's department, an admin's everything); the browser's own count
+           of its scoped data is the fallback. Zero scored applicants is a
+           dash, never "NaN%" or a made-up 0%. */
+        const hs=window.tlHomeStats?tlHomeStats():null;
+        const scored=apps.filter(a=>a.matchScore!=null);
+        const avg=hs?hs.applications.avgAiMatch:(scored.length?Math.round(scored.reduce((s,a)=>s+a.matchScore,0)/scored.length):null);
+        return statTile('Open roles', hs?hs.jobs.activeRoles:myJobs.filter(j=>j.status!=='closed').length)
+          + statTile('Total applicants', hs?hs.applications.total:apps.length)
+          + statTile('Avg. AI match', avg==null?'—':avg+'%')
+          + statTile('Featured listings', hs?hs.jobs.featured:myJobs.filter(j=>j.featured).length);
+      })()}
     </div>
     ${editing ? `
     <div class="panel" style="margin-bottom:18px"><div class="panel-head"><div><h2>Edit job — ${esc(editing.title)}</h2><div class="desc">Changes go live on the candidate site the moment you save</div></div></div><div class="panel-body">
@@ -5457,7 +5473,7 @@ function pageRecruiterDash(section, params){
     <div class="two-col">
       <div class="panel"><div class="panel-head"><h2>${esc(co.name)} — job postings</h2></div><div class="panel-body pad0"><div class="tbl-wrap"><table class="data">
         <thead><tr><th>Role</th><th>Location</th><th>Experience</th><th>Applicants</th><th>Posted</th><th>Status</th><th>Actions</th></tr></thead>
-        <tbody>${myJobs.map(j=>`<tr><td class="clickable" onclick="navigate('/job/${j.id}')"><b>${esc(j.title)}</b></td><td>${esc(j.location)}</td><td>${esc(j.exp)}</td><td>${apps.filter(a=>a.jobId===j.id).length}</td><td>${esc(j.posted)}</td><td>${jobStatusBadge(j)}</td>
+        <tbody>${myJobs.map(j=>`<tr><td class="clickable" onclick="navigate('/job/${j.id}')"><b>${esc(j.title)}</b></td><td>${orNS(j.location)}</td><td>${orNS(j.exp)}</td><td>${apps.filter(a=>a.jobId===j.id).length}</td><td>${orNS(j.posted,'—')}</td><td>${jobStatusBadge(j)}</td>
           <td class="row-actions"><button class="btn btn-ghost btn-sm" onclick="startEditJob('${j.id}')">Edit</button> ${j.status==='closed' ? `<button class="btn btn-sm btn-primary" onclick="toggleJobStatus('${j.id}')">Reopen</button>` : `<button class="btn btn-sm btn-danger-ghost" onclick="toggleJobStatus('${j.id}')">Close</button>`}</td></tr>`).join('')}</tbody>
       </table></div></div></div>
       <div class="panel"><div class="panel-head"><div><h2>AI Job Creation</h2><div class="desc">Describe the role, let AI draft the JD and screening questions</div></div></div><div class="panel-body">
@@ -5997,7 +6013,7 @@ function pageClientDash(section){
     </div>
     <div class="panel"><div class="panel-head"><h2>Your open roles with ${'TeamLink'}</h2></div><div class="panel-body pad0"><div class="tbl-wrap"><table class="data">
       <thead><tr><th>Role</th><th>Location</th><th>Applicants</th><th>Shortlisted</th><th>Status</th></tr></thead>
-      <tbody>${myJobs.map(j=>`<tr class="clickable" onclick="navigate('/job/${j.id}')"><td><b>${esc(j.title)}</b></td><td>${esc(j.location)}</td><td>${apps.filter(a=>a.jobId===j.id).length}</td><td>${myCandidates.filter(c=>c.appliedJobId===j.id && CLIENT_VISIBLE_STAGES.includes(c.stage)).length}</td><td>${jobStatusBadge(j)}</td></tr>`).join('')}</tbody>
+      <tbody>${myJobs.map(j=>`<tr class="clickable" onclick="navigate('/job/${j.id}')"><td><b>${esc(j.title)}</b></td><td>${orNS(j.location)}</td><td>${apps.filter(a=>a.jobId===j.id).length}</td><td>${myCandidates.filter(c=>c.appliedJobId===j.id && CLIENT_VISIBLE_STAGES.includes(c.stage)).length}</td><td>${jobStatusBadge(j)}</td></tr>`).join('')}</tbody>
     </table></div></div></div>`;
   }
 
@@ -6169,7 +6185,7 @@ function pageAdminDash(section){
     <div class="panel"><div class="panel-head"><div><h2>All jobs</h2><div class="desc">${DATA.jobs.length} listings across ${DATA.companies.length} companies</div></div></div>
     <div class="panel-body pad0"><div class="tbl-wrap"><table class="data">
       <thead><tr><th>Role</th><th>Company</th><th>Location</th><th>Applicants</th><th>Status</th></tr></thead>
-      <tbody>${DATA.jobs.map(j=>`<tr class="clickable" onclick="navigate('/job/${j.id}')"><td><b>${esc(j.title)}</b></td><td>${esc(DATA.companyById(j.companyId).name)}</td><td>${esc(j.location)}</td><td>${j.applicants}</td><td>${jobStatusBadge(j)}</td></tr>`).join('')}</tbody>
+      <tbody>${DATA.jobs.map(j=>`<tr class="clickable" onclick="navigate('/job/${j.id}')"><td><b>${esc(j.title)}</b></td><td>${esc(DATA.companyById(j.companyId).name)}</td><td>${orNS(j.location)}</td><td>${j.applicants}</td><td>${jobStatusBadge(j)}</td></tr>`).join('')}</tbody>
     </table></div></div></div>`;
   }
 
@@ -12441,6 +12457,22 @@ a.rec-nav-link{text-decoration:none}
   };
 
   /* ------------ Home dashboard (all live TeamLink data) ------------ */
+  /* The numbers the server counted in this user's scope (0117). Taken from
+     the bootstrap, then refreshed from /api/recruiter/home-stats each time
+     Home opens, so a job posted a moment ago is counted. */
+  window.tlHomeStats=function(){ return DATA.homeStats||null; };
+  let hsBusy=false;
+  window.tlHomeStatsKick=function(){
+    if(hsBusy||!window.TL||!TL.api) return;
+    hsBusy=true;
+    TL.api.get('/recruiter/home-stats').then(function(r){
+      hsBusy=false;
+      if(!r||!r.stats) return;
+      const before=JSON.stringify(DATA.homeStats||null);
+      DATA.homeStats=r.stats;
+      if(before!==JSON.stringify(r.stats) && /#\/recruiter\/(home|jobs)?$/.test(location.hash||'') && typeof render==='function') render();
+    },function(){ hsBusy=false; });
+  };
   function pageRecruiterHome(rec){
     const co=DATA.companyById(rec.companyId);
     const apps=allApplicationsForCompany(rec.companyId);
@@ -12450,11 +12482,16 @@ a.rec-nav-link{text-decoration:none}
     const openJobs=jobs.filter(j=>j.status==='open'&&!j.archived).length;
     const published=jobs.filter(j=>jp(j)==='Published').length;
     const drafts=jobs.filter(j=>j.status==='draft').length;
-    const immediate=DATA.candidates.filter(c=>/immediate/i.test(String(c.noticePeriod||''))).length;
-    const fresh=DATA.candidates.filter(c=>Number(c.profileUpdatedDaysAgo!=null?c.profileUpdatedDaysAgo:999)<=7).length;
+    /* 0117: every number on this page is counted by the SERVER in the
+       caller's scope (recruiter: own, team lead: department, admin: all):
+       the people who applied to those jobs plus the pool in scope. The
+       global candidate total belongs to Find Candidates, not to Home. */
+    const hs=window.tlHomeStats?tlHomeStats():null;
+    const immediate=hs?hs.candidates.immediateJoiners:DATA.candidates.filter(c=>/immediate/i.test(String(c.noticePeriod||''))).length;
+    const fresh=hs?hs.candidates.newLast7Days:0;
     let recents=[]; try{ recents=JSON.parse(localStorage.getItem('teamlink_recent_candidate_searches')||'[]').slice(0,5); }catch(e){}
     const today=new Date().toISOString().slice(0,10);
-    const upcoming=(DATA.interviews||[]).filter(iv=>{ const j=DATA.jobById(iv.jobId); return j&&j.companyId===rec.companyId&&String(iv.date||'')>=today; }).slice(0,5);
+    const upcoming=(DATA.interviews||[]).filter(iv=>{ const j=DATA.jobById(iv.jobId); return j&&(tlStaffScoped()||j.companyId===rec.companyId)&&String(iv.date||'')>=today; }).slice(0,5);
     const recentApps=apps.slice().sort((a,b)=>String(b.appliedOn||b.appliedAt||'').localeCompare(String(a.appliedOn||a.appliedAt||''))).slice(0,5);
     let issues=[]; try{ issues=JSON.parse(localStorage.getItem('teamlink_feedback_v1')||'[]').filter(x=>x&&x.kind==='issue'&&x.status!=='Resolved'&&(!x.companyId||x.companyId===rec.companyId)); }catch(e){}
     let history=[]; try{ history=JSON.parse(localStorage.getItem('teamlink_notification_history_v1')||'[]').slice(0,5); }catch(e){}
@@ -12469,19 +12506,22 @@ a.rec-nav-link{text-decoration:none}
            read as "10 candidates" with no relation to the recruiter */
         const apps2=(typeof allApplicationsForCompany==='function')?allApplicationsForCompany(rec.companyId):[];
         const mine={}; apps2.forEach(a=>{ if(a&&a.candidateId) mine[a.candidateId]=1; });
-        const n=Object.keys(mine).length;
-        return `<div class="stat-tile rh-tile" onclick="navigate('/recruiter/find-candidates')">
-          <div class="lbl">Total Candidates</div><div class="val tabular">${DATA.candidates.length}</div>
-          <div class="foot"><b>${n}</b> in your talent pool · rest searchable</div></div>`;
+        const nApplied=hs?hs.candidates.applied:Object.keys(mine).length;
+        const nPool=hs?hs.candidates.inTalentPool:0;
+        const total=hs?hs.candidates.total:Object.keys(mine).length;
+        const who=(STATE.session&&STATE.session.scopeRole==='teamlead')?'your department’s talent pool':'your talent pool';
+        return `<div class="stat-tile rh-tile" onclick="navigate('/recruiter/talent-pool')">
+          <div class="lbl">Total Candidates</div><div class="val tabular">${total}</div>
+          <div class="foot"><b>${nApplied}</b> applied · <b>${nPool}</b> in ${who}</div></div>`;
       })()}
       ${statTile('New Candidates (7d)',fresh)}
-      ${statTile('Shortlisted',n('shortlisted'))}
-      ${statTile('Open Jobs',openJobs)}
+      ${statTile('Shortlisted',hs?hs.applications.shortlisted:n('shortlisted'))}
+      ${statTile('Open Jobs',hs?hs.jobs.openJobs:openJobs)}
     </div>
     <div class="stat-row" style="grid-template-columns:repeat(3,1fr)">
-      ${statTile('Published / Draft',published+' / '+drafts)}
+      ${statTile('Published / Draft',(hs?hs.jobs.published:published)+' / '+(hs?hs.jobs.drafts:drafts))}
       ${statTile('Immediate Joiners',immediate)}
-      ${statTile('Pending Actions',pendingScreen+shortNoIv+issues.length)}
+      ${statTile('Pending Actions',(hs?hs.applications.pendingScreening:pendingScreen)+(hs?hs.applications.shortlisted:shortNoIv)+issues.length)}
     </div>
     <div class="home-grid">
       <div class="panel"><div class="panel-head"><div><h2>Recent Searches</h2><div class="desc">Click to run again</div></div><button class="btn btn-ghost btn-sm" onclick="navigate('/recruiter/smart-search')">Manage</button></div>
@@ -12504,6 +12544,7 @@ a.rec-nav-link{text-decoration:none}
   window.pageRecruiterDash=function(section,params){
     if(section==='home'){
       const rec=DATA.recruiterById(STATE.session.id);
+      setTimeout(window.tlHomeStatsKick,0);
       return dashShell('recruiter','home','Home',`Recruiter · ${esc(DATA.companyById(rec.companyId).name)}`,pageRecruiterHome(rec));
     }
     return prevPage(section,params);
@@ -18277,7 +18318,18 @@ body .cap-feedbar{bottom:0}
 
   /* ---- outreach tally, scoped to this recruiter's company ---- */
   window.rhOutreach=function(rec){
-    const jobIds={}; (DATA.jobs||[]).forEach(j=>{ if(j.companyId===rec.companyId) jobIds[j.id]=true; });
+    /* 0117: counted on the server in the caller's scope - what they sent
+       (a team lead's department, an admin's everything) and what the system
+       sent about their jobs - not from whatever this browser remembers. */
+    const hs=window.tlHomeStats&&tlHomeStats();
+    if(hs&&hs.outreach){
+      const o=hs.outreach, ch=k=>({sent:o[k].sent,failed:o[k].failed,viewed:0,reached:o[k].reached,who:{}});
+      return { email:ch('email'), whatsapp:ch('whatsapp'), sms:ch('sms'),
+        inapp:{sent:o.inapp.sent,read:o.inapp.read},
+        totalSent:o.totalSent, totalViewed:o.totalViewed, totalFailed:o.totalFailed,
+        candidatesReached:o.candidatesReached };
+    }
+    const jobIds={}; (DATA.jobs||[]).forEach(j=>{ if(tlStaffScoped()||j.companyId===rec.companyId) jobIds[j.id]=true; });
     const hist=(RJ(HKEY,[])||[]).filter(h=>h&&(!h.jobId||jobIds[h.jobId]));
     const chan=h=>{ const t=String(h.type||''); if(/whatsapp/i.test(t)) return 'whatsapp'; if(/sms/i.test(t)) return 'sms'; return 'email'; };
     const out={email:{sent:0,failed:0,viewed:0,who:{}},whatsapp:{sent:0,failed:0,viewed:0,who:{}},sms:{sent:0,failed:0,viewed:0,who:{}}};
@@ -18309,14 +18361,15 @@ body .cap-feedbar{bottom:0}
 
   /* ---- who applied to which post ---- */
   window.rhJobStats=function(rec){
-    const jobs=(DATA.jobs||[]).filter(j=>j.companyId===rec.companyId);
+    const jobs=(DATA.jobs||[]).filter(j=>tlStaffScoped()||j.companyId===rec.companyId);
     const apps=(typeof allApplicationsForCompany==='function')
       ? allApplicationsForCompany(rec.companyId)
       : (DATA.applications||[]);
+    const hsPer=(window.tlHomeStats&&tlHomeStats()&&tlHomeStats().perJob)||null;
     const rows=jobs.map(j=>{
       const mine=apps.filter(a=>a.jobId===j.id);
       const ids={}; mine.forEach(a=>ids[a.candidateId]=1);
-      const n=Object.keys(ids).length;
+      const n=hsPer&&hsPer[j.id]!=null?hsPer[j.id]:Object.keys(ids).length;
       const viewedMap=rhViewed();
       const viewed=Object.keys(ids).filter(id=>viewedMap[id]).length;
       return {job:j,applied:n,viewed:viewed,status:j.status||'published'};
@@ -18337,9 +18390,12 @@ body .cap-feedbar{bottom:0}
   window.rhActivityHtml=function(rec){
     const o=rhOutreach(rec), js=rhJobStats(rec);
     const viewedN=Object.keys(rhViewed()).length;
-    const totalCands=(DATA.candidates||[]).length;
-    const pct=totalCands?Math.round(viewedN/totalCands*100):0;
-    const reachPct=totalCands?Math.round(o.candidatesReached/totalCands*100):0;
+    /* 0117: the denominator is the people in THIS scope (applied + pool),
+       never the size of the whole database. */
+    const hsAll=window.tlHomeStats&&tlHomeStats();
+    const totalCands=hsAll?hsAll.candidates.total:(DATA.candidates||[]).length;
+    const pct=totalCands?Math.min(100,Math.round(viewedN/totalCands*100)):0;
+    const reachPct=totalCands?Math.min(100,Math.round(o.candidatesReached/totalCands*100)):0;
     const foot=d=>{
       const bits=[`<b>${d.viewed}</b> viewed`];
       if(d.failed) bits.push(`<i>${d.failed} failed</i>`);
@@ -18352,7 +18408,7 @@ body .cap-feedbar{bottom:0}
     return `
     <div class="rh-sec"><h3>Outreach sent &amp; viewed</h3><span class="sub">${o.totalSent} message${o.totalSent===1?'':'s'} to ${o.candidatesReached} candidate${o.candidatesReached===1?'':'s'} · ${o.totalViewed} viewed${o.totalFailed?` · ${o.totalFailed} failed`:''}</span></div>
     <div class="stat-row">
-      ${tile('Emails Sent',o.email.sent,(function(){const n=Object.keys(o.email.who).length;
+      ${tile('Emails Sent',o.email.sent,(function(){const n=o.email.reached!=null?o.email.reached:Object.keys(o.email.who).length;
          return `<b>${n}</b> candidate${n===1?'':'s'} reached`+(o.email.failed?` · <i>${o.email.failed} failed</i>`:'');})(),'/recruiter/notifications')}
       ${tile('WhatsApp Sent',o.whatsapp.sent,foot(o.whatsapp),'/recruiter/notifications')}
       ${tile('SMS Sent',o.sms.sent,foot(o.sms),'/recruiter/notifications')}
@@ -18360,8 +18416,8 @@ body .cap-feedbar{bottom:0}
     </div>
     <div class="rh-sec"><h3>Reach &amp; response</h3><span class="sub">from your ${js.jobs} job post${js.jobs===1?'':'s'}</span></div>
     <div class="stat-row">
-      ${tile('Profiles Viewed',viewedN,`${pct}% of the ${totalCands} candidates on TeamLink`,'/recruiter/find-candidates')}
-      ${tile('Candidates Reached',o.candidatesReached,`${reachPct}% of the database contacted`,'/recruiter/notifications')}
+      ${tile('Profiles Viewed',viewedN,`${pct}% of the ${totalCands} candidates in your pipeline and pool`,'/recruiter/find-candidates')}
+      ${tile('Candidates Reached',o.candidatesReached,`${reachPct}% of your candidates contacted`,'/recruiter/notifications')}
       ${tile('Applications Received',js.total,`across <b>${js.withApps}</b> job post${js.withApps===1?'':'s'}`,'/recruiter/applications')}
       ${tile('Posts With No Applicants',Math.max(0,js.published-js.withApps),js.published?`of ${js.published} published post${js.published===1?'':'s'}`:'no published posts yet','/recruiter/jobs')}
     </div>
@@ -28747,7 +28803,10 @@ table.data td .tl-af b{white-space:normal}
     s.loading = true;
     tpPaint();
 
-    var p = ['limit='+PAGE, 'offset='+s.offset];
+    /* 0117: scope=pool asks for the TALENT POOL view - only the people in a
+       pool this user may read (their own; a team lead's department; an
+       admin's all) - not the shared database Find Candidates searches. */
+    var p = ['scope=pool', 'limit='+PAGE, 'offset='+s.offset];
     if(s.q) p.push('q='+encodeURIComponent(s.q));
     if(s.skills) p.push('skills='+encodeURIComponent(s.skills));
     if(s.location) p.push('location='+encodeURIComponent(s.location));
@@ -29182,7 +29241,13 @@ table.data td .tl-af b{white-space:normal}
               + '<td><input type="checkbox" '+(s.picked[c.id]?'checked':'')
               +   ' onchange="tpPick(\''+Q(c.id)+'\',this.checked)"></td>'
               + '<td class="who"><b>'+E(c.name||'—')+'</b>'
-              +   (c.title?'<span>'+E(c.title)+'</span>':'')+'</td>'
+              +   (c.title?'<span>'+E(c.title)+'</span>':'')
+              /* 0117: a team lead (and an admin) reads the pool of every
+                 recruiter in scope, so each row says whose it is. The server
+                 sends the names to nobody else. */
+              +   (c.poolEntry && c.poolEntry.recruiters && c.poolEntry.recruiters.length
+                    ? '<span class="mut" title="Whose talent pool this person is in">Pool: '+E(c.poolEntry.recruiters.join(', '))+'</span>' : '')
+              +   '</td>'
               + '<td>'+(c.phone?E(c.phone):'<span class="mut">—</span>')+'</td>'
               + '<td>'+(c.email?E(c.email):'<span class="mut">—</span>')+'</td>'
               + '<td><div class="sk">'+(sk.length
@@ -29845,7 +29910,7 @@ table.data td .tl-af b{white-space:normal}
     if(picked.length){ go(picked, 'selected candidate' + (picked.length===1?'':'s')); return; }
 
     /* Nothing ticked: everything the filters match. */
-    var p = ['limit=5000', 'offset=0'];
+    var p = ['scope=pool', 'limit=5000', 'offset=0'];
     if(s.q) p.push('q=' + encodeURIComponent(s.q));
     if(s.skills) p.push('skills=' + encodeURIComponent(s.skills));
     if(s.location) p.push('location=' + encodeURIComponent(s.location));

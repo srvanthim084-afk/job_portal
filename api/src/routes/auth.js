@@ -17,6 +17,7 @@ import {
   setSessionCookie, clearSessionCookie, issueCsrfToken, requireAuth,
 } from '../auth.js';
 import { toCandidate, toPerson } from '../shapes.js';
+import { publicSession } from '../scope.js';
 /* 0109: the multi-step registration - consent, the Candidate ID, one
    account per mobile, sign-up and sign-in abuse limits, the welcome. */
 import {
@@ -255,6 +256,7 @@ export default function authRoutes() {
     res.json({
       session: {
         role: session.role, id: session.profileId, email: session.email,
+        ...publicSession(session),
         mustChangePassword: !!(temp && temp.must_change_password),
       },
     });
@@ -427,6 +429,7 @@ export default function authRoutes() {
     res.json({
       session: {
         role: req.session.role, id: req.session.profileId,
+        ...publicSession(req.session),
         mustChangePassword: !!(temp && temp.must_change_password),
       },
       profile,

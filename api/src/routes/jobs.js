@@ -17,6 +17,7 @@ import { runJobAlertsInBackground } from '../notify/job-alerts.js';
 import { normaliseWalkinBody, checkWalkin } from '../portal/walkin-jobs.js';
 import { kickWalkinNotices } from '../notify/walkin-jobs.js';
 import { jobsPageScope, teamlinkOnly } from '../jobs/source-scope.js';
+import { sql } from '../scope.js';
 
 /* Who reads the ATS rather than the Jobs page. */
 const isStaff = (s) => !!s && ['recruiter', 'admin', 'bde', 'client'].includes(s.role);
@@ -106,6 +107,28 @@ function parse(schema, body) {
   return out.data;
 }
 
+/**
+ * LOCATION AND EXPERIENCE ARE REQUIRED (0117).
+ *
+ * Both columns were nullable and the schema above made them optional, so a
+ * job could be saved with neither - and the recruiter's own Job postings
+ * table printed the word "undefined" in both cells. A new job needs both;
+ * an edit may leave them alone (a job that predates this keeps its nulls
+ * until somebody edits them) but may not blank them.
+ */
+function requireJobFields(body, creating) {
+  const details = {};
+  const blank = (v) => v === undefined || v === null || String(v).trim() === '';
+  for (const [key, label] of [['location', 'Location'], ['exp', 'Experience']]) {
+    if (creating ? blank(body[key]) : (body[key] !== undefined && blank(body[key]))) {
+      details[key] = `${label} is required.`;
+    }
+  }
+  if (Object.keys(details).length) {
+    throw badRequest('Location and experience are required on a job posting.', details);
+  }
+}
+
 /** Same shape as the prototype's generated ids, so nothing on screen changes. */
 const newJobId = () => 'j_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
 
@@ -175,10 +198,11 @@ export default function jobRoutes() {
        * `?mine=all` opts back in, for a screen that genuinely wants the
        * whole board.
        */
-      if (req.session && req.session.role === 'recruiter'
-          && req.query.mine !== 'all' && req.session.profileId) {
-        params.push(req.session.profileId);
-        where.push(`recruiter_id = $${params.length}`);
+      /* 0117: no `?mine=all` any more. A recruiter's jobs are their own (a
+         team lead's, their department's) and row-level security says so;
+         the scope is stated here as well so a count and a page agree. */
+      if (req.session && req.session.role === 'recruiter') {
+        where.push(sql.job(view));
       }
 
       const clause = where.length ? `where ${where.join(' and ')}` : '';
@@ -212,6 +236,7 @@ export default function jobRoutes() {
 
   r.post('/jobs', requireAuth(), requireRole('recruiter', 'admin'), wrap(async (req, res) => {
     const body = parse(jobSchema, normaliseWalkinBody(req.body));
+    requireJobFields(body, true);
     // 0106: a walk-in is checked here, whichever screen sent it.
     checkWalkin(body, null);
     const id = (req.body && req.body.id) || newJobId();
@@ -354,6 +379,7 @@ export default function jobRoutes() {
   /** Edit. Updates in place — never inserts, never changes the id. */
   r.put('/jobs/:id', requireAuth(), requireRole('recruiter', 'admin'), wrap(async (req, res) => {
     const body = parse(jobSchema, normaliseWalkinBody(req.body));
+    requireJobFields(body, false);
     const id = req.params.id;
 
     const job = await withUser(req.session, async (c) => {

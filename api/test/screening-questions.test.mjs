@@ -162,11 +162,11 @@ test('a question naming the client, or the word "client", is refused; >2 must-ha
 test('another company\'s recruiter cannot read the rules or change the questions', async () => {
   const id = await job();
   const put = await recruiter2.put(`/api/jobs/${id}/screening-questions`, { questions: [] });
-  assert.equal(put.status, 403);
+  assert.ok([403, 404].includes(put.status), String(put.status));
   const read = await recruiter2.get(`/api/jobs/${id}/screening-questions`);
-  assert.equal(read.status, 200);
-  assert.equal(read.body.questions.length, 0, 'no rules for a job that is not theirs');
-  assert.equal(read.body.editable, false);
+  assert.ok([200, 404].includes(read.status), String(read.status)); /* 0117: a job outside the scope is not there at all */
+  if (read.status === 200) assert.equal(read.body.questions.length, 0, 'no rules for a job that is not theirs');
+  if (read.status === 200) assert.equal(read.body.editable, false);
   assert.equal((await qs(id)).length, 6, 'nothing changed');
 });
 

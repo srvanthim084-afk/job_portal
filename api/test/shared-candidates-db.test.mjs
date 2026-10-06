@@ -74,6 +74,9 @@ test('boot', async () => {
                ('rB', $2, 'Priya', 'rb@db.test', 'co_x')`, [uid.rA, uid.rB]);
   await raw(`insert into admins (id, user_id, name, email) values ('adm', $1, 'Admin', 'ad@db.test')`,
     [uid.admin]);
+  /* 0117: both recruiters are in one department, which is what a "team" note
+     now means; neither is a team lead, so neither sees the other's work. */
+  await raw(`update users set department_id = 'healthcare' where id in ($1, $2)`, [uid.rA, uid.rB]);
 
   // jobs: A owns the coder roles at X, B owns a coder role and a rep role
   await raw(`insert into jobs (id, title, company_id, recruiter_id, status) values
@@ -146,19 +149,22 @@ test('contacted only -> B is warned and may continue; a different role is free',
     // the raw contact rows (and their detail) are not B's to read
     assert.equal((await q(`select count(*)::int n from candidate_contact_history where candidate_id='c1'`))[0].n, 0);
 
+    /* 0117: what A did is A's. The activity panel lists engagements the
+       caller may see - their own, a team lead's department - so B gets none. */
     const e = await q(`select * from candidate_engagements('c1', 'jB')`);
-    assert.equal(e.length, 1);
-    assert.equal(e[0].recruiter_name, 'Ravi');
-    assert.equal(e[0].same_role, true, 'Senior Medical Coder vs Medical Coder must be the same role');
-    assert.equal(e[0].same_job, false);
-    assert.equal(e[0].level, 'contacted');
-    assert.equal(e[0].last_channel, 'phone');
-    assert.equal(e[0].last_outcome, 'interested');
+    assert.equal(e.length, 0, 'another recruiter\'s engagement came back through the panel');
     assert.ok(!JSON.stringify(e).includes('secret note'), 'a note leaked through the summary');
 
+    /* The RULE stays: two recruiters do not work one person for one role.
+       Senior Medical Coder vs Medical Coder is the same role, so B is warned. */
     const same = (await q(`select * from can_engage('c1', 'jB', null)`))[0];
     assert.equal(same.decision, 'warn');
-    assert.equal(same.holder_name, 'Ravi');
+    assert.ok(same.holder_name, 'the engine still knows who holds the candidate');
+    /* ... but the sentence a person reads does not say who (engagement_holder_visible) */
+    assert.equal((await q(`select engagement_holder_visible($1) v`, [same.holder_name]))[0].v, false);
+    assert.equal((await q(`select app_recruiter_in_scope($1) v`, [same.holder_recruiter_id]))[0].v, false);
+    assert.match((await q(`select engagement_block_message('in_process', $1, 'Senior Medical Coder', 'medical coder', null, now()) m`,
+      [same.holder_name]))[0].m, /^Another recruiter is already working on this candidate/);
 
     const other = (await q(`select * from can_engage('c1', 'jBr', null)`))[0];
     assert.equal(other.decision, 'allowed', 'a different role must not be restricted');
@@ -185,9 +191,12 @@ test('in process -> B is blocked on the server; a different role is not', async 
 
     const err = await expectError(
       () => q(`insert into applications (id, job_id, candidate_id) values ('app_b1', 'jB', 'c1')`), 'TLB01');
-    assert.match(err.message, /Ravi is processing this candidate for Senior Medical Coder/);
+    /* 0117: still refused, but the refusal does not name A or A's job */
+    assert.match(err.message, /^Another recruiter is already working on this candidate/);
+    assert.ok(!err.message.includes('Ravi') && !err.message.includes('Senior Medical Coder'), err.message);
     const detail = JSON.parse(err.detail);
-    assert.equal(detail.holderName, 'Ravi');
+    assert.equal(detail.holderName, 'Another recruiter');
+    assert.equal(detail.jobTitle, undefined);
 
     // a different role is still free
     await q(`insert into applications (id, job_id, candidate_id) values ('app_b_rep', 'jBr', 'c1')`);
@@ -356,10 +365,13 @@ test('badges: one per candidate, about OTHER recruiters', async () => {
   await as('rB', async () => {
     const b = await q(`select * from engagement_badges(array['c1','c3','c4','c5'], null)`);
     const by = Object.fromEntries(b.map((x) => [x.candidate_id, x]));
-    assert.equal(by.c3.kind, 'in_process', JSON.stringify(by.c3));
-    assert.equal(by.c3.recruiter_name, 'Ravi');
-    assert.equal(by.c4.kind, 'in_process');
-    assert.ok(Array.isArray(by.c1.others));
+    /* 0117: a badge is about engagements the caller may see; a plain
+       recruiter may not see a colleague's, so there is none and no name. */
+    assert.equal(by.c3.kind, null, JSON.stringify(by.c3));
+    assert.equal(by.c3.recruiter_name, null);
+    assert.equal(by.c4.kind, null);
+    assert.ok(Array.isArray(by.c1.others) && by.c1.others.length === 0);
+    assert.ok(!JSON.stringify(b).includes('Ravi'), 'a colleague\'s name came back in a badge');
   });
   await as('rA', async () => {
     const b = await q(`select * from engagement_badges(array['c2'], null)`);

@@ -374,7 +374,7 @@ test('a failed request does not poison the next one', async () => {
 test('recruiter creates a job, edits it, and the Job ID never changes', async () => {
   const created = await recruiter.post('/api/jobs', {
     title: 'Platform Engineer', companyId: 'technova',
-    location: 'Bengaluru', type: 'Full-time', status: 'draft',
+    location: 'Bengaluru', exp: '3-5 yrs', type: 'Full-time', status: 'draft',
     skills: ['Go', 'Kubernetes'],
   });
   assert.equal(created.status, 201);
@@ -400,7 +400,10 @@ test("recruiter cannot edit another company's job", async () => {
   const r2 = makeClient(`http://127.0.0.1:${API_PORT}`);
   await r2.post('/api/auth/login', { email: 'r2@test.local', password: 'TestPass123' });
   const res = await r2.put('/api/jobs/j1', { title: 'HIJACKED', companyId: 'technova' });
-  assert.equal(res.status, 403);
+  /* 0117: a job outside the caller's scope is not there at all (404) - the
+     same answer as a job that never existed - rather than a 403 that says
+     it exists. Either way nothing was changed. */
+  assert.ok([403, 404].includes(res.status), `status ${res.status}`);
 
   const check = await recruiter.get('/api/jobs/j1');
   assert.notEqual(check.body.job.title, 'HIJACKED');
@@ -1005,7 +1008,7 @@ test('companies: a job can then be created against it', async () => {
   await admin.post('/api/auth/login', { email: 'a1@test.local', password: 'TestPass123' });
   const res = await admin.post('/api/jobs', {
     id: 'NW1', title: 'Platform Engineer', companyId: 'northwind-systems',
-    location: 'Pune', type: 'Full-time', status: 'open',
+    location: 'Pune', exp: '2-4 yrs', type: 'Full-time', status: 'open',
   });
   assert.equal(res.status, 201, JSON.stringify(res.body));
   assert.equal(res.body.job.companyId, 'northwind-systems');

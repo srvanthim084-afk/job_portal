@@ -285,13 +285,24 @@ await check("recruiter's private notes do not leak to another recruiter", async 
   eq(theirs, 0, `r2 can read ${theirs} of r1's notes`);
 });
 
-await check('a TEAM note is readable by another recruiter, and still not writable', async () => {
+await check('a TEAM note is readable only inside the author\'s department, and never writable by another', async () => {
   await as('r1', 'recruiter');
   await db.exec(`insert into candidate_comments (candidate_id,recruiter_id,tag,body,visibility)
                  values ('cand1','r1','team','r1 team note','team')`);
+  /* 0117: no department yet -> another recruiter reads nothing of r1's */
+  await as('r2', 'recruiter');
+  eq((await q(`select body from candidate_comments`)).map((x) => x.body), [], 'what r2 reads of r1\'s notes with no shared department');
+  /* the same department -> the team note, and only the team note */
+  await asService();
+  await db.exec(`update users set department_id = 'healthcare'
+                  where id in (select user_id from recruiters where id in ('r1','r2'))`);
   await as('r2', 'recruiter');
   const seen = await q(`select body from candidate_comments`);
-  eq(seen.map((x) => x.body), ['r1 team note'], 'what r2 reads of r1\'s notes');
+  eq(seen.map((x) => x.body), ['r1 team note'], 'what r2 reads of r1\'s notes in one department');
+  await asService();
+  await db.exec(`update users set department_id = null
+                  where id in (select user_id from recruiters where id in ('r1','r2'))`);
+  await as('r2', 'recruiter');
   let forged = false;
   try {
     await db.exec(`insert into candidate_comments (candidate_id,recruiter_id,body) values ('cand1','r1','forged')`);
@@ -306,9 +317,10 @@ await check("another recruiter's raw contact history is not readable (only the s
   await as('r2', 'recruiter');
   eq((await q(`select count(*)::int n from candidate_contact_history where candidate_id='cand1'`))[0].n, 0,
     'raw contact rows visible to another recruiter');
+  /* 0117: nor the summary - what r1 did with a candidate is r1's (and their
+     team lead's), so another recruiter's panel is empty. */
   const summary = await q(`select * from candidate_engagements('cand1', null)`);
-  if (!summary.length) throw new Error('the engagement summary is empty');
-  if (JSON.stringify(summary).includes('r1 said this')) throw new Error('the summary carries the note');
+  if (summary.length) throw new Error('another recruiter\'s engagement is in the summary');
 });
 
 await check("recruiter cannot schedule an interview for another company's job", async () => {
@@ -382,7 +394,9 @@ await check('a draft job is invisible through the VIEWS too', async () => {
 
 await check('AI score is visible to candidate, recruiter, client AND admin', async () => {
   await asService();
-  // cand1 -> j1 (technova). r1 is a technova recruiter, c1 a technova client.
+  // cand1 -> j1 (technova). r1 owns j1 (0117: a recruiter reads the AI interviews
+  // of THEIR jobs, not of the company's), c1 is a technova client.
+  await db.exec(`update jobs set recruiter_id = 'r1' where id = 'j1'`);
   await db.exec(`
     insert into ai_interviews (id, application_id, candidate_id, job_id, status, mode,
                                content_scored, question_set_hash)

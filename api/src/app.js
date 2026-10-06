@@ -77,6 +77,9 @@ import { startWalkinAtsSweep } from './notify/walkin-ats.js';
 /* 0110: "New job like one you saved". */
 import savedJobAlertRoutes from './routes/saved-job-alerts.js';
 import atsRecordRoutes from './routes/ats-record.js';
+/* 0117: role-based scoping - the talent pool and the scoped dashboard numbers. */
+import talentPoolRoutes from './routes/talent-pool.js';
+import dashboardRoutes from './routes/dashboard.js';
 import { startSavedJobAlerts } from './notify/saved-job-alerts.js';
 import jobPublishingRoutes, { publishingJobHooks, publishingPublicRoutes } from './routes/job-publishing.js';
 import { startPublishingSweep } from './publishing/service.js';
@@ -395,6 +398,8 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', resumeScoreRoutes());
   app.use('/api', voiceSearchRoutes());
   app.use('/api', sharedCandidateRoutes());
+  app.use('/api', talentPoolRoutes());
+  app.use('/api', dashboardRoutes());
   app.use('/api', availabilityRoutes());
   app.use('/api', registrationRoutes());
   app.use('/api', walkinAtsRoutes());

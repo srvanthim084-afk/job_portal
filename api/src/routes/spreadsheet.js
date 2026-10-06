@@ -374,6 +374,7 @@ export default function spreadsheetRoutes() {
       const updated = [];
       const skipped = [];
       const merges = [];
+      const pooledIds = [];          // existing people the importer now has a pool row for
       const importId = preview ? null : newId('imp');
 
       // The import runs as the CALLER: a recruiter importing a list is
@@ -460,24 +461,22 @@ export default function spreadsheetRoutes() {
            * this would be merging two people who each told us who they
            * are.
            */
-          const existing = (await c.query(
-            `select id, name, email, phone from candidates
-              where ($1 <> '' and lower(email) = $1)
-                 /*
-                  * The LAST TEN DIGITS, not the whole string.
-                  *
-                  * A Naukri export writes "+91 98450 00111" and the same
-                  * person may already be stored as "9845000111". Compared
-                  * whole, those are different numbers, and the import
-                  * created a second copy of somebody it was holding the
-                  * phone number of. Ten digits identify an Indian mobile
-                  * whatever precedes them.
-                  */
-                 or ($2 <> '' and length(regexp_replace($2, '[^0-9]', '', 'g')) >= 10
-                     and right(regexp_replace(coalesce(phone,''), '[^0-9]', '', 'g'), 10)
-                       = right(regexp_replace($2, '[^0-9]', '', 'g'), 10))
-              limit 1`, [email, phone])).rows[0]
-            || (await c.query(
+          /*
+           * 0117: asked of the WHOLE table (candidate_find_by_contact answers
+           * with an id and nothing else), then read back under the caller's
+           * rights. A person who exists but is private to somebody else is
+           * not duplicated and not merged into: the row is skipped.
+           *
+           * The LAST TEN DIGITS of the phone, not the whole string: a Naukri
+           * export writes "+91 98450 00111" and the same person may already
+           * be stored as "9845000111".
+           */
+          const matchedId = (email || phone)
+            ? (await c.query(`select candidate_find_by_contact($1, $2) as id`, [email, phone])).rows[0].id
+            : null;
+          const existing = (matchedId && (await c.query(
+            `select id, name, email, phone from candidates where id = $1`, [matchedId])).rows[0])
+            || (!matchedId && (await c.query(
             `select id, name, email, phone from candidates
               where lower(name) = lower($1)
                 and coalesce(email, '') = '' and coalesce(phone, '') = ''
@@ -485,7 +484,15 @@ export default function spreadsheetRoutes() {
                   ($2 <> '' and lower(coalesce(current_company, '')) = lower($2))
                   or ($3 <> '' and lower(coalesce(location, '')) = lower($3))
                 )
-              limit 1`, [name, company, place])).rows[0];
+              limit 1`, [name, company, place])).rows[0]) || undefined;
+
+          /* On file, but private to somebody else: never duplicated, never
+             touched, and nothing about them is said. */
+          if (matchedId && !existing) {
+            skipped.push({ line, name,
+              reason: 'this person is already on file and their profile is private - not imported' });
+            continue;
+          }
 
           const skills = splitList(at(row, 'skills'));
           // "5 Year(s) 6 Month(s)" is 5.5, not 56.
@@ -548,10 +555,23 @@ export default function spreadsheetRoutes() {
               sets.push(`skills = case when coalesce(array_length(skills,1),0) = 0
                                        then $${vals.length}::text[] else skills end`);
             }
+            /* 0117: the person already exists - reused, never duplicated -
+               and the importing recruiter gets a talent_pool row of their
+               own for them (their notes and tags are theirs). */
+            if (!preview) {
+              await c.query(`select talent_pool_link($1, 'imported')`, [existing.id]);
+              pooledIds.push(existing.id);
+            }
+            let filledGaps = 0;
             if (sets.length && !preview) {
               vals.push(existing.id);
-              await c.query(`update candidates set ${sets.join(', ')}, updated_at = now()
-                              where id = $${vals.length}`, vals);
+              /* Row-level security decides whether this recruiter may edit
+                 the shared profile; when they may not, nothing is filled
+                 and nothing is logged as merged. */
+              filledGaps = (await c.query(`update candidates set ${sets.join(', ')}, updated_at = now()
+                              where id = $${vals.length}`, vals)).rowCount;
+            }
+            if (filledGaps) {
               /* WHICH GAPS. The merge only ever fills empty columns, so
                  the interesting question afterwards is which ones it
                  filled - and months later, on whose authority. */
@@ -678,6 +698,17 @@ export default function spreadsheetRoutes() {
                 `update candidates set import_id = $1, sourced_at = now()
                   where id = any($2)`,
                 [importId, imported.map((x) => x.id)]);
+            }
+            /* 0117: the importing recruiter's pool rows carry this upload
+               (for the people the file created and the ones it found). */
+            if (req.session.role === 'recruiter' && req.session.profileId
+                && (imported.length || pooledIds.length)) {
+              await c.query(
+                `update talent_pool
+                    set origin = 'imported', import_id = $1, updated_at = now()
+                  where recruiter_id = $2 and candidate_id = any($3) and import_id is null`,
+                [importId, req.session.profileId,
+                 imported.map((x) => x.id).concat(pooledIds)]);
             }
 
             for (const m of merges) {
@@ -892,6 +923,10 @@ export default function spreadsheetRoutes() {
 
       const rows = await withUser(req.session, async (c) => (await c.query(
         `select c.*,
+                /* 0117: what a colleague noted about where they came from is
+                   theirs; shown only for people in a pool the caller may read. */
+                case when exists (select 1 from talent_pool tp where tp.candidate_id = c.id)
+                     then c.source_details end as source_details_scoped,
                 (select count(*) from ai_call_sessions s where s.candidate_id = c.id) as calls,
                 (select s.outcome from ai_call_sessions s
                   where s.candidate_id = c.id and s.outcome is not null
@@ -919,7 +954,7 @@ export default function spreadsheetRoutes() {
         c.expected_ctc ? Number((Number(c.expected_ctc) / 100000).toFixed(2)) : '',
         [...new Set([...(c.skills || []), ...(c.technical_skills || [])])].join('; '),
         c.education || '', c.notice_period || '', c.email || '', c.phone || '',
-        c.resume_file || '', c.source || 'Unknown', c.source_details || '',
+        c.resume_file || '', c.source || 'Unknown', c.source_details_scoped || '',
         c.created_at ? new Date(c.created_at).toISOString().slice(0, 10) : '',
         c.do_not_contact ? 'Yes' : '',
         ({ en: 'English', hi: 'Hindi', te: 'Telugu' })[c.preferred_language] || '',

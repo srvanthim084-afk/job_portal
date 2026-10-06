@@ -670,6 +670,8 @@
 
       p.then(function (res) {
         TL.knownJobIds[j.id] = true;
+        /* 0117: the dashboard cards are the server's count in scope; ask again. */
+        if (window.tlHomeStatsKick) setTimeout(window.tlHomeStatsKick, 300);
         // adopt the server's view (derived applicants, posted label)
         var local = DATA.jobById(j.id);
         if (local && res && res.job) Object.assign(local, res.job);
@@ -768,6 +770,11 @@
     if (!DATA.bdes) DATA.bdes = [];
     refill(DATA.bdes, d.bdes || []);
     if (d.admin) DATA.admin = d.admin;
+    /* 0117: the four departments, and the dashboard numbers the SERVER
+       counted in this user's scope (recruiter: own, team lead: their
+       department, admin: all). Null for anyone but a recruiter. */
+    DATA.departments = d.departments || [];
+    DATA.homeStats = d.homeStats || null;
 
     if (d.stages && d.stages.length) {
       refill(DATA.stages, d.stages);
@@ -803,6 +810,11 @@
         /* Whether they are still on a password somebody else generated.
            Carried on the session so the gate survives a refresh. */
         mustChangePassword: !!payload.session.mustChangePassword,
+        /* 0117: what the SERVER derived - never anything the page chose. */
+        scopeRole: payload.session.scopeRole || payload.session.role,
+        departmentId: payload.session.departmentId || null,
+        departmentName: payload.session.departmentName || null,
+        teamLead: !!payload.session.teamLead,
       };
     } else {
       STATE.session = null;
@@ -860,7 +872,27 @@
     } catch (e) { /* storage blocked, or a value that is not a list */ }
   }
 
+  /*
+   * 0117: ONE USER'S SAVED SEARCHES, FOLDERS, BOOKMARKS AND NOTIFICATION
+   * SETTINGS ARE NOT THE NEXT USER'S.
+   *
+   * These live in the in-memory map above and are mirrored to /api/prefs per
+   * user. loadPrefs() only ever ADDED the signed-in user's keys, so signing
+   * out of one recruiter and into another on the same page left the first
+   * one's folders, saved searches and message history in memory for the
+   * second. When the person changes, everything that is not device-local is
+   * dropped before the new user's own preferences are read.
+   */
+  var prefsOwner = null;
+  function forgetOtherUsersPrefs(uid) {
+    if (prefsOwner && prefsOwner !== uid) {
+      Object.keys(mem).forEach(function (k) { if (!isLocalOnly(k)) delete mem[k]; });
+    }
+    prefsOwner = uid || null;
+  }
+
   function loadPrefs() {
+    forgetOtherUsersPrefs(TL.session ? (TL.session.userId || TL.session.id || 'x') : null);
     if (!TL.session) return Promise.resolve();
     return api.get('/prefs').then(function (res) {
       var prefs = (res && res.prefs) || {};
@@ -6509,7 +6541,8 @@
           + '<td>' + esc(x.employeeId || '—') + '</td>'
           + '<td>' + esc(x.department || '—')
             + '<div style="font-size:11.5px;color:var(--text-soft)">'
-            + esc(x.designation || '') + (x.team ? ' · ' + esc(x.team) : '') + '</div></td>'
+            + esc(x.designation || '') + (x.team ? ' · ' + esc(x.team) : '')
+            + (x.accessRole === 'teamlead' ? ' · <b>Team Lead</b>' : '') + '</div></td>'
           + '<td>' + x.assignedRequirements + '</td>'
           + '<td><b>' + x.totalCandidates + '</b></td>'
           + counts
@@ -6555,6 +6588,23 @@
       + 'background:var(--card);color:var(--text);font-size:13px"></div>';
   }
 
+  /* 0117: the role and department selectors. The four departments come from
+     the server (bootstrap); a team lead needs one. The server stores both on
+     the login and derives the session's scope from them - the browser never
+     tells the API who anybody's team lead is. */
+  function scopeSelect(id, label, options, value) {
+    return '<div class="fgroup"><label>' + esc(label) + '</label>'
+      + '<select id="' + id + '" style="width:100%;padding:10px 12px;border-radius:8px;'
+      + 'border:1px solid var(--line);background:var(--card);color:var(--text);font-size:13px">'
+      + options.map(function (o) {
+          return '<option value="' + esc(o[0]) + '"' + (o[0] === (value || '') ? ' selected' : '') + '>' + esc(o[1]) + '</option>';
+        }).join('') + '</select></div>';
+  }
+  function deptOptions() {
+    return [['', 'No department']].concat((DATA.departments || []).map(function (d) { return [d.id, d.name]; }));
+  }
+  var ROLE_OPTIONS = [['recruiter', 'Recruiter'], ['teamlead', 'Team Lead']];
+
   TL.staff.add = function () {
     var ok = staffModal('Add Recruiter',
       '<div class="review-grid">'
@@ -6563,10 +6613,10 @@
         + field('tlSfEmp', 'Employee ID', { placeholder: 'e.g. TL-1042' })
         + field('tlSfEmail', 'Email', { required: true, type: 'email', placeholder: 'kiran@teamlinkcs.com' })
         + field('tlSfMobile', 'Mobile Number', { placeholder: '+91 90000 00000' })
-        + field('tlSfDept', 'Department', { placeholder: 'e.g. Talent Acquisition' })
+        + scopeSelect('tlSfDept', 'Department', deptOptions(), '')
         + field('tlSfDesig', 'Designation', { placeholder: 'e.g. Senior Recruiter' })
       + '</div><div>'
-        + field('tlSfRole', 'Recruiter Role', { placeholder: 'e.g. Recruiter, Team Lead' })
+        + scopeSelect('tlSfRole', 'Role', ROLE_OPTIONS, 'recruiter')
         + field('tlSfTeam', 'Assigned Team', { placeholder: 'e.g. Healthcare' })
         + field('tlSfPass', 'Password', { required: true, type: 'password', placeholder: 'At least 8 characters' })
         + field('tlSfPass2', 'Confirm Password', { required: true, type: 'password' })
@@ -6604,14 +6654,15 @@
       name: val('tlSfName'), email: val('tlSfEmail'),
       password: val('tlSfPass'), confirmPassword: val('tlSfPass2'),
       employeeId: val('tlSfEmp'), mobile: val('tlSfMobile'),
-      department: val('tlSfDept'), designation: val('tlSfDesig'),
-      recruiterRole: val('tlSfRole'), team: val('tlSfTeam'),
+      departmentId: val('tlSfDept'), designation: val('tlSfDesig'),
+      accessRole: val('tlSfRole') || 'recruiter', team: val('tlSfTeam'),
       loginStatus: (document.getElementById('tlSfStatus') || {}).value || 'active',
     };
 
     // Said here so the person is not sent to the server to be told
     // something the form already knows.
     if (!body.name || !body.email) return say('A name and an email address are required.');
+    if (body.accessRole === 'teamlead' && !body.departmentId) return say('A team lead needs a department.');
     if (body.password.length < 8) return say('The password must be at least 8 characters.');
     if (body.password !== body.confirmPassword) return say('The two passwords do not match.');
 
@@ -6638,7 +6689,9 @@
       + field('tlSeName', 'Employee Name') + field('tlSeEmp', 'Employee ID')
       + field('tlSeMobile', 'Mobile Number')
       + '</div><div>'
-      + field('tlSeDept', 'Department') + field('tlSeDesig', 'Designation')
+      + scopeSelect('tlSeDept', 'Department', deptOptions(), x.departmentId || '')
+      + scopeSelect('tlSeRole', 'Role', ROLE_OPTIONS, x.accessRole || 'recruiter')
+      + field('tlSeDesig', 'Designation')
       + field('tlSeTeam', 'Assigned Team')
       + '</div></div>'
       + '<div class="req-note">The email is the login and is not changed here — '
@@ -6650,7 +6703,7 @@
       + '</div>');
 
     [['tlSeName', x.name], ['tlSeEmp', x.employeeId], ['tlSeMobile', x.mobile],
-     ['tlSeDept', x.department], ['tlSeDesig', x.designation], ['tlSeTeam', x.team]]
+     ['tlSeDesig', x.designation], ['tlSeTeam', x.team]]
       .forEach(function (p) {
         var el = document.getElementById(p[0]);
         if (el) el.value = p[1] || '';
@@ -6659,10 +6712,17 @@
 
   TL.staff.saveEdit = function (id) {
     var val = function (i) { var e = document.getElementById(i); return e ? e.value.trim() : ''; };
-    api.patch('/staff/recruiters/' + encodeURIComponent(id), {
+    var cur = TL.staff.list.filter(function (r) { return r.id === id; })[0] || {};
+    var body = {
       name: val('tlSeName'), employeeId: val('tlSeEmp'), mobile: val('tlSeMobile'),
-      department: val('tlSeDept'), designation: val('tlSeDesig'), team: val('tlSeTeam'),
-    }).then(function () {
+      designation: val('tlSeDesig'), team: val('tlSeTeam'),
+    };
+    /* Role and department are sent only when they were changed, so saving
+       an unrelated edit never rewrites a department that was typed as text
+       before departments were a list. */
+    if (val('tlSeDept') !== (cur.departmentId || '')) body.departmentId = val('tlSeDept');
+    if ((val('tlSeRole') || 'recruiter') !== (cur.accessRole || 'recruiter')) body.accessRole = val('tlSeRole');
+    api.patch('/staff/recruiters/' + encodeURIComponent(id), body).then(function () {
       staffClose(); staffSay('Saved', '✅'); TL.staff.refresh();
     }).catch(function (e) { staffSay(e.message || 'It could not be saved', '⚠️'); });
   };

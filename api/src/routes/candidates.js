@@ -14,7 +14,7 @@ import { z } from 'zod';
 import { withUser } from '../db.js';
 import { wrap, badRequest, notFound, forbidden, ApiError, CODES } from '../errors.js';
 import { requireAuth, requireRole } from '../auth.js';
-import { toCandidate, toApplication, attachPrimary,
+import { toCandidate, toApplication, attachPrimary, basicProfile,
          toEducationRecord, toExperienceRecord } from '../shapes.js';
 import { inviteCandidate, resendCredentials } from '../notify/invite.js';
 import { treeAvailable, treeResolver, treeDescendantNames, treeNear } from '../place-tree.js';
@@ -24,6 +24,7 @@ import { appearanceToken } from '../profile-viewers/appearances.js';
 /* 0091 / 0092: shared candidates, the hold rules, and availability. */
 import { canEngageMany, recordContact, audit, editableSet, forViewer } from '../candidates/engagement.js';
 import { availabilityOf } from './availability.js';
+import { scopeOf } from '../scope.js';
 
 const STAFF_ROLES = ['recruiter', 'bde', 'admin'];
 
@@ -66,6 +67,7 @@ export default function candidateRoutes() {
       // UI can say when a result set was capped.
       const limit  = Math.min(parseInt(q.limit, 10) || 25, 500);
       const offset = Math.max(parseInt(q.offset, 10) || 0, 0);
+      const poolMode = String(q.scope || '') === 'pool' && STAFF_ROLES.includes(req.session.role);
 
       const skills    = list(q.skills);
       const locations = list(q.location);
@@ -336,7 +338,28 @@ export default function candidateRoutes() {
          * would silently answer a different question from the one the
          * recruiter asked.
          */
-        const poolStatuses = list(q.poolStatus);
+        /*
+         * 0117: TWO VIEWS OF THE SAME TABLE, AND THEY ARE NOT THE SAME.
+         *
+         *   Find Candidates   (no `scope`)   the SHARED database: every
+         *                     candidate the caller may read, whoever
+         *                     imported them. Basic profile only.
+         *   Talent Pool       (`scope=pool`)  only people in a talent_pool
+         *                     row the caller may read - their own, their
+         *                     department's for a team lead, everyone's for
+         *                     an admin - with that row's notes and tags.
+         *
+         * `scope` selects a VIEW. It cannot widen anything: the pool
+         * subquery below runs under row-level security, so a recruiter
+         * asking for `scope=pool` gets their own pool and nobody else's.
+         * The pool-only filters (poolStatus, contacted) are ignored
+         * outside it, because on the shared search they would answer
+         * "has a colleague worked this person?".
+         */
+        if (poolMode) {
+          push(`exists (select 1 from talent_pool tp where tp.candidate_id = candidates.id)`);
+        }
+        const poolStatuses = poolMode ? list(q.poolStatus) : [];
         if (poolStatuses.length) {
           params.push(poolStatuses);
           push(`pool_status = any($${params.length})`);
@@ -473,18 +496,45 @@ export default function candidateRoutes() {
           ? await c.query(`select * from applications where candidate_id = any($1)`, [ids])
           : { rows: [] };
 
-        return { total: total.rows[0].n, rows: rows.rows, apps: apps.rows };
+        /* The caller's own talent_pool row for each person on this page
+           (a team lead's or admin's falls back to the most recent one in
+           their scope) - read under row-level security. */
+        const pools = poolMode && ids.length
+          ? (await c.query(
+              `select distinct on (candidate_id) tp.*, (tp.recruiter_id = app_recruiter_id()) as mine
+                 from talent_pool tp where tp.candidate_id = any($1)
+                order by tp.candidate_id, (tp.recruiter_id = app_recruiter_id()) desc, tp.added_at desc`,
+              [ids])).rows
+          : [];
+
+        /* Whose pool each person is in: for a team lead (their department's
+           recruiters) and an admin only. A plain recruiter sees their own
+           pool, so there is nobody to name. */
+        if (poolMode && ids.length && (scopeOf(req.session).teamLead || req.session.role === 'admin')) {
+          const names = (await c.query(
+            `select tp.candidate_id, array_agg(distinct r.name order by r.name) as names
+               from talent_pool tp join recruiters r on r.id = tp.recruiter_id
+              where tp.candidate_id = any($1) group by tp.candidate_id`, [ids])).rows;
+          const by = new Map(names.map((x) => [x.candidate_id, x.names]));
+          for (const p of pools) p.recruiters = by.get(p.candidate_id) || [];
+        }
+
+        return { total: total.rows[0].n, rows: rows.rows, apps: apps.rows, pools };
       });
 
       /* Find Candidates is recruiter/admin/client only at the route
-         level, so the staff shape is correct here. 0091/0092: recruiters
-         and admins also get the availability status and whether they may
-         edit the row; a recruiter who may not edit it does not get the
-         owner's notes. A client gets neither. */
+         level. 0091/0092: recruiters and admins also get the availability
+         status and whether they may edit the row.
+         0117: WITHOUT `scope=pool` the row is the SHARED basic profile
+         (basicProfile strips every recruiter-specific key); the Talent Pool
+         view adds the caller's own pool row (notes, tags, status). */
       const staffView = STAFF_ROLES.includes(req.session.role);
+      const poolById = new Map((out.pools || []).map((p) => [p.candidate_id, p]));
       const cands = out.rows.map((x) => {
-        const c = toCandidate(x, { staff: true });
-        return staffView ? { ...forViewer(c, !!x._editable), availabilityStatus: availabilityOf(x) } : c;
+        const c = toCandidate(x, { staff: true, pool: poolById.get(x.id) });
+        if (!staffView) return c;
+        const shaped = { ...forViewer(c, !!x._editable), availabilityStatus: availabilityOf(x) };
+        return poolMode ? shaped : basicProfile(shaped);
       });
       const extra = attachPrimary(cands, out.apps.map(toApplication));
 
@@ -552,8 +602,12 @@ export default function candidateRoutes() {
   r.get('/candidates/source-counts', requireAuth(),
     requireRole('recruiter', 'bde', 'admin'), wrap(async (req, res) => {
       const rows = await withUser(req.session, async (c) => (await c.query(
+        /* 0117: counts over the TALENT POOL in the caller's scope (own; a
+           team lead's department; admin all), not the whole database. */
         `select coalesce(source, 'Unknown') as source, count(*)::int as n
-           from candidates
+           from candidates c
+          where ${req.session.role === 'bde' ? 'true'
+                  : 'exists (select 1 from talent_pool tp where tp.candidate_id = c.id)'}
           group by coalesce(source, 'Unknown')
           order by n desc, source asc`)).rows);
 
@@ -587,17 +641,29 @@ export default function candidateRoutes() {
                 employment_type, responsibilities, leaving_reason
            from candidate_experience where candidate_id=$1 order by sort_order, id`,
         [req.params.id]);
-      return { row: rows[0], apps: apps.rows, edu: edu.rows, exp: exp.rows };
+      /* 0117: the caller's talent_pool row for this person, if there is
+         one in their scope (own first). Without one the profile is the
+         shared basic profile and nothing more. */
+      const pool = STAFF_ROLES.includes(req.session.role)
+        ? (await c.query(
+            `select tp.*, (tp.recruiter_id = app_recruiter_id()) as mine
+               from talent_pool tp where tp.candidate_id = $1
+              order by (tp.recruiter_id = app_recruiter_id()) desc, tp.added_at desc limit 1`,
+            [req.params.id])).rows[0] || null
+        : null;
+      return { row: rows[0], apps: apps.rows, edu: edu.rows, exp: exp.rows, pool };
     });
     if (!out) throw notFound('That candidate could not be found.');
 
     /* A candidate can read their OWN row through this route, and must
        not read the recruiter's notes on themselves. */
-    let cand = toCandidate(out.row, { staff: req.session.role !== 'candidate' });
-    /* 0091/0092: shared profile, private notes; availability for staff. */
+    let cand = toCandidate(out.row, { staff: req.session.role !== 'candidate', pool: out.pool });
+    /* 0091/0092: shared profile; availability for staff.
+       0117: the recruiter-specific layer only with a pool row in scope. */
     if (STAFF_ROLES.includes(req.session.role)) {
       const editable = (await editableSet(req.session, [out.row.id])).has(out.row.id);
       cand = { ...forViewer(cand, editable), availabilityStatus: availabilityOf(out.row) };
+      if (!out.pool && req.session.role !== 'admin') cand = basicProfile(cand);
     } else if (req.session.role === 'candidate') {
       cand.availabilityStatus = availabilityOf(out.row);
     }
@@ -635,6 +701,27 @@ export default function candidateRoutes() {
   const ENGINE = { userId: '', role: 'admin', profileId: null };
 
   const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+
+  /**
+   * The recruiter-specific layer of a manual add (0117): notes, remarks and
+   * tags go on the CALLER's talent_pool row, never on `candidates`. For an
+   * administrator (no recruiter profile) there is no pool row to write.
+   */
+  async function savePoolLayer(c, candidateId, b) {
+    const notes = (b.recruiterNotes || '').trim() || null;
+    const remarks = (b.internalRemarks || '').trim() || null;
+    const cNotes = (b.candidateNotes || '').trim() || null;
+    const tags = Array.isArray(b.tags) ? b.tags.filter(Boolean).slice(0, 40) : [];
+    if (!notes && !remarks && !cNotes && !tags.length) return;
+    await c.query(
+      `update talent_pool
+          set notes = coalesce($2, notes), internal_remarks = coalesce($3, internal_remarks),
+              candidate_notes = coalesce($4, candidate_notes),
+              tags = case when cardinality($5::text[]) > 0 then $5::text[] else tags end,
+              updated_at = now()
+        where candidate_id = $1 and recruiter_id = app_recruiter_id()`,
+      [candidateId, notes, remarks, cNotes, tags]);
+  }
 
   /** The last ten digits, which is how two Indian mobile numbers are the
       same number whether or not somebody typed +91. */
@@ -977,6 +1064,41 @@ export default function candidateRoutes() {
           'A candidate with similar information already exists.', { duplicates });
       }
 
+      /*
+       * 0117: ONE PERSON, ONE CANDIDATE ROW - even when the recruiter says
+       * "add anyway". The candidates table is the shared master record,
+       * deduplicated by email and mobile; what is the recruiter's own is
+       * the talent_pool row (notes, tags) beside it. So an existing person
+       * is REUSED: the caller gets a pool row of their own and the notes
+       * they typed go on it. Somebody the caller may not read (a private
+       * profile) cannot be reused, and is not duplicated either.
+       */
+      if (duplicates.length) {
+        const target = duplicates.find((d) => d.visible);
+        if (!target) {
+          throw new ApiError(409, CODES.DUPLICATE_CANDIDATE,
+            'That email address or mobile number already belongs to a candidate.', { duplicates });
+        }
+        const reused = await withUser(req.session, async (c) => {
+          const ok = (await c.query(`select talent_pool_link($1, 'added') as ok`, [target.id])).rows[0].ok;
+          if (ok) await savePoolLayer(c, target.id, b);
+          const { rows } = await c.query(`select * from candidates where id = $1`, [target.id]);
+          const pool = (await c.query(
+            `select tp.*, true as mine from talent_pool tp
+              where tp.candidate_id = $1 and tp.recruiter_id = app_recruiter_id()`, [target.id])).rows[0] || null;
+          return { row: rows[0], pool, linked: ok };
+        });
+        if (!reused.row) throw notFound('That candidate could not be found.');
+        return res.status(200).json({
+          candidate: toCandidate(reused.row, { staff: true, pool: reused.pool }),
+          reused: true,
+          pooled: reused.linked,
+          resumePending: false,
+          duplicatesAccepted: duplicates.length,
+          credentials: { attempted: false, sent: false, accountCreated: false, delivery: {} },
+        });
+      }
+
       const name = [b.firstName, b.lastName].filter(Boolean).join(' ').trim();
       const id = newId('cand');
       const ownerRecruiterId = req.session.role === 'recruiter' ? req.session.profileId : null;
@@ -1119,7 +1241,13 @@ export default function candidateRoutes() {
             [employers, id]);
         }
 
-        return (await c.query(`select * from candidates where id = $1`, [id])).rows[0];
+        /* 0117: notes and tags are the recruiter's, on their pool row. */
+        await savePoolLayer(c, id, b);
+        const row = (await c.query(`select * from candidates where id = $1`, [id])).rows[0];
+        row.__pool = (await c.query(
+          `select tp.*, true as mine from talent_pool tp
+            where tp.candidate_id = $1 and tp.recruiter_id = app_recruiter_id()`, [id])).rows[0] || null;
+        return row;
       });
 
       /* ---- the portal login ------------------------------------------ *
@@ -1137,7 +1265,7 @@ export default function candidateRoutes() {
        * it is never returned here and never logged. `delivery` says only
        * which channel reached which status.
        */
-      const shaped = toCandidate(candidate, { staff: true });
+      const shaped = toCandidate(candidate, { staff: true, pool: candidate.__pool });
       let credentials = { attempted: false, sent: false, accountCreated: false, delivery: {} };
 
       if (b.sendCredentials !== false) {

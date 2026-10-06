@@ -103,7 +103,7 @@ test('boot', async () => {
 let REG, WJ, WJ2;
 
 test('1 / 23: a regular job and a job saved before job types existed both read as Regular', async () => {
-  const r = await recruiter.post('/api/jobs', { title: 'Store Associate', companyId: 'co_wk', location: 'Hyderabad', type: 'Full-time', status: 'open', gender: 'Male' });
+  const r = await recruiter.post('/api/jobs', { title: 'Store Associate', companyId: 'co_wk', location: 'Hyderabad', exp: '1-3 yrs', type: 'Full-time', status: 'open', gender: 'Male' });
   assert.equal(r.status, 201, JSON.stringify(r.body));
   REG = r.body.job.id;
   assert.equal(r.body.job.jobType, 'regular');

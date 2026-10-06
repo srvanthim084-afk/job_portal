@@ -76,7 +76,7 @@ test('boot: TeamLink jobs A..., external jobs B...', async () => {
 
   /* ---- TeamLink jobs, posted by the recruiter through the API ---- */
   const post = async (key, body) => {
-    const r = await rec.post('/api/jobs', { companyId: 'co_s', status: 'open', type: 'Full-time', desc: `${body.title} - a TeamLink posting.`, ...body });
+    const r = await rec.post('/api/jobs', { companyId: 'co_s', status: 'open', type: 'Full-time', exp: '2-5 yrs', location: 'Hyderabad', desc: `${body.title} - a TeamLink posting.`, ...body });
     assert.equal(r.status, 201, `${key}: ${JSON.stringify(r.body)}`);
     T[key] = r.body.job.id;
     return r.body.job;
@@ -347,7 +347,7 @@ test('16. A saved search made on Jobs stores TEAMLINK, and stays TeamLink-only w
 
 test('17. A job a recruiter posts is TEAMLINK automatically and appears on Jobs', async () => {
   /* Even if the request claims otherwise: the recruiter never chooses. */
-  const r = await rec.post('/api/jobs', { companyId: 'co_s', status: 'open', title: 'Python Trainee', location: 'Hyderabad',
+  const r = await rec.post('/api/jobs', { companyId: 'co_s', status: 'open', title: 'Python Trainee', location: 'Hyderabad', exp: '0-1 yrs',
     skills: ['Python'], source: 'Naukri', sourceType: 'EXTERNAL', desc: 'A new TeamLink posting.' });
   assert.equal(r.status, 201, JSON.stringify(r.body));
   assert.equal(r.body.job.sourceType, 'TEAMLINK');
@@ -356,7 +356,7 @@ test('17. A job a recruiter posts is TEAMLINK automatically and appears on Jobs'
   assert.ok(idsOf((await anon.get('/api/jobs?q=Python&limit=200')).body.jobs).includes(T.fresh));
   assert.ok(!idsOf((await anon.get('/api/portal/external-jobs?q=trainee')).body.jobs).includes(T.fresh));
   /* An administrator's posting too. */
-  const a = await admin.post('/api/jobs', { companyId: 'co_s', status: 'open', title: 'Admin Python Role', location: 'Hyderabad', skills: ['Python'] });
+  const a = await admin.post('/api/jobs', { companyId: 'co_s', status: 'open', title: 'Admin Python Role', location: 'Hyderabad', exp: '3-6 yrs', skills: ['Python'] });
   assert.equal(a.status, 201);
   assert.equal(a.body.job.sourceType, 'TEAMLINK');
 });

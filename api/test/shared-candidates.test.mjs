@@ -86,6 +86,8 @@ test('boot', async () => {
     [await user('ravi@tl-sink.local', 'recruiter'), await user('priya@tl-sink.local', 'recruiter')]);
   await raw(`insert into admins (id, user_id, name, email) values ('adm', $1, 'Admin', 'admin@tl-sink.local')`,
     [await user('admin@tl-sink.local', 'admin')]);
+  /* 0117: one department (what a "team" note means now); neither is a team lead. */
+  await raw(`update users set department_id = 'healthcare' where email in ('ravi@tl-sink.local', 'priya@tl-sink.local')`);
   await raw(`insert into jobs (id, title, company_id, recruiter_id, status, location) values
      ('jA',  'Senior Medical Coder',   'co_x', 'rA', 'open', 'Nellore'),
      ('jA2', 'Medical Coder II',       'co_x', 'rA', 'open', 'Nellore'),
@@ -132,17 +134,21 @@ test('A logs a call -> B gets the orange badge and a warning, and may contact an
   assert.equal(log.status, 201, JSON.stringify(log.body));
   assert.ok(log.body.comment, 'the note was not saved as a comment');
 
+  /* 0117: what A did is A's. B gets no badge, no panel row and no name -
+     only the rule: B is still warned before contacting the same person for
+     the same role. */
   const badge = (await B.post('/api/engagement/badges', { candidateIds: [ids.c1], jobId: 'jB' })).body.badges[ids.c1];
-  assert.equal(badge.kind, 'contacted');
-  assert.equal(badge.recruiterName, 'Ravi');
+  assert.equal(badge.kind, null);
+  assert.equal(badge.recruiterName, null);
 
   const panel = await B.get(`/api/candidates/${ids.c1}/engagements?jobId=jB`);
   assert.equal(panel.status, 200);
-  assert.equal(panel.body.engagements[0].recruiterName, 'Ravi');
-  assert.equal(panel.body.engagements[0].sameRole, true);
-  assert.equal(panel.body.engagements[0].lastOutcome, 'interested');
+  assert.equal(panel.body.engagements.length, 0, 'a colleague\'s engagement was listed');
   assert.equal(panel.body.verdict.decision, 'warn');
-  assert.match(panel.body.verdict.message, /Ravi contacted this candidate for Senior Medical Coder/);
+  assert.equal(panel.body.verdict.holder.name, 'Another recruiter');
+  assert.equal(panel.body.verdict.holder.jobTitle, null);
+  assert.match(panel.body.verdict.message, /^Another recruiter contacted this candidate recently/);
+  assert.ok(!JSON.stringify(panel.body).includes('Ravi'), 'the colleague\'s name came back');
   assert.ok(!JSON.stringify(panel.body).includes('4 LPA'), 'the private note leaked through the panel');
 
   const comments = await B.get(`/api/candidates/${ids.c1}/comments`);
@@ -168,14 +174,16 @@ test('A moves them into process -> B is blocked on the server, for this role onl
   await A.put(`/api/applications/${ids.appA}/status`, { stage: 'interview_scheduled' });
 
   const badge = (await B.post('/api/engagement/badges', { candidateIds: [ids.c1], jobId: 'jB' })).body.badges[ids.c1];
-  assert.equal(badge.kind, 'in_process');
-  assert.equal(badge.statusLabel, 'Interview Scheduled');
+  assert.equal(badge.kind, null, 'a colleague\'s pipeline stage came back in a badge');
+  assert.equal(badge.statusLabel, null);
 
   const addB = await B.post('/api/applications', { jobId: 'jB', candidateId: ids.c1 });
   assert.equal(addB.status, 409, JSON.stringify(addB.body));
   assert.equal(addB.body.error.code, 'ENGAGEMENT_BLOCKED');
-  assert.match(addB.body.error.message, /Ravi is processing this candidate for Senior Medical Coder \(Interview Scheduled\)/);
-  assert.equal(addB.body.error.details.engagement.holderName, 'Ravi');
+  /* still refused - but the refusal does not name Ravi, the role or the stage (0117) */
+  assert.match(addB.body.error.message, /^Another recruiter is already working on this candidate/);
+  assert.equal(addB.body.error.details.engagement.holderName, 'Another recruiter');
+  assert.ok(!JSON.stringify(addB.body).includes('Ravi'));
   assert.ok(await eventually(async () => (await auditOf(ids.c1)).includes('blocked')),
     'the refused add-to-job was not logged');
 
@@ -226,8 +234,13 @@ test('bulk message: BLOCK always skipped, WARN skipped unless ticked', async () 
 });
 
 test('Message <holder> reaches the holder', async () => {
-  const m = await B.post('/api/engagement/message-holder',
+  /* 0117: B is never told who the holder is, so a named recruiter is refused
+     and the anonymous handle 'holder' is resolved on the server. */
+  const named = await B.post('/api/engagement/message-holder',
     { candidateId: ids.c1, recruiterId: 'rA', message: 'She called me about the coder role - can we talk?' });
+  assert.equal(named.status, 400, 'B addressed a colleague it should not know is working this candidate');
+  const m = await B.post('/api/engagement/message-holder',
+    { candidateId: ids.c1, recruiterId: 'holder', message: 'She called me about the coder role - can we talk?' });
   assert.equal(m.status, 201, JSON.stringify(m.body));
   const n = await A.get('/api/notifications');
   assert.ok(n.body.notifications.some((x) => x.type === 'ENGAGEMENT_MESSAGE'), 'Ravi never got the message');

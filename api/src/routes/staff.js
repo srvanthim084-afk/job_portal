@@ -28,6 +28,7 @@ import {
   requireAuth, requireRole, hashPassword, impersonate, setSessionCookie, issueCsrfToken,
 } from '../auth.js';
 import { markImpersonatedSession } from './profile-viewers.js';
+import { publicSession } from '../scope.js';
 
 function parse(schema, body) {
   const out = schema.safeParse(body || {});
@@ -64,6 +65,10 @@ const toRecruiter = (r) => ({
   department: r.department || undefined,
   designation: r.designation || r.title || undefined,
   recruiterRole: r.recruiter_role || undefined,
+  /* 0117: the scope an administrator sets - a department, and whether the
+     recruiter leads it. 'teamlead' is stored as users.is_team_lead. */
+  departmentId: r.department_id || undefined,
+  accessRole: r.is_team_lead ? 'teamlead' : 'recruiter',
   team: r.team || undefined,
   companyId: r.company_id || undefined,
   // Whether they can sign in, and nothing about how.
@@ -78,6 +83,18 @@ const toRecruiter = (r) => ({
     return acc;
   }, {}),
 });
+
+/** staff_recruiter_scope_set, with its refusals as 400s a form can show. */
+async function setScope(c, recruiterId, departmentId, teamLead) {
+  try {
+    return (await c.query(`select staff_recruiter_scope_set($1,$2,$3) as out`,
+      [recruiterId, departmentId, teamLead])).rows[0].out;
+  } catch (err) {
+    if (err && err.code === '42501') throw forbidden('Only an administrator may set a role or department.');
+    throw badRequest('That role and department could not be set.',
+      { departmentId: 'Choose one of the four departments - a team lead needs one.' });
+  }
+}
 
 export default function staffRoutes() {
   const r = Router();
@@ -99,6 +116,7 @@ export default function staffRoutes() {
 
     const rows = await withUser(req.session, async (c) => (await c.query(
       `select rec.*, u.status as user_status, u.last_login_at,
+              u.department_id, u.is_team_lead,
               (select count(*)::int from jobs j where j.recruiter_id = rec.id) as jobs,
               count(distinct a.candidate_id)::int as candidates,
               ${stageCounts}
@@ -107,7 +125,7 @@ export default function staffRoutes() {
          left join jobs j2 on j2.recruiter_id = rec.id
          left join applications a
                 on a.job_id = j2.id or a.recruiter_id = rec.id
-        group by rec.id, u.status, u.last_login_at
+        group by rec.id, u.status, u.last_login_at, u.department_id, u.is_team_lead
         order by rec.name`)).rows);
 
     res.json({ recruiters: rows.map(toRecruiter) });
@@ -134,6 +152,10 @@ export default function staffRoutes() {
       team: z.string().trim().max(80).optional(),
       companyId: z.string().trim().max(64).optional(),
       loginStatus: z.enum(['active', 'inactive']).optional(),
+      /* 0117: the scope. A department id from the four seeded departments,
+         and whether this recruiter leads it. */
+      departmentId: z.string().trim().max(40).optional().or(z.literal('')),
+      accessRole: z.enum(['recruiter', 'teamlead']).optional(),
     }), req.body);
 
     // Checked here as well as in the browser: a form is a convenience,
@@ -150,13 +172,17 @@ export default function staffRoutes() {
         throw new ApiError(409, 'EMAIL_TAKEN',
           'That address already signs in. Use another, or reset the existing account.');
       }
-      return (await c.query(
+      const out = (await c.query(
         `select staff_recruiter_create($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) as out`,
         [b.name, email, await hashPassword(b.password),
          b.designation || 'Recruiter', b.companyId || null,
          b.employeeId || null, b.mobile || null, b.department || null,
          b.recruiterRole || null, b.team || null,
          b.loginStatus || 'active'])).rows[0].out;
+      if (b.departmentId || b.accessRole === 'teamlead') {
+        out.scope = await setScope(c, out.id, b.departmentId || null, b.accessRole === 'teamlead');
+      }
+      return out;
     });
 
     res.status(201).json({ recruiter: made });
@@ -209,6 +235,8 @@ export default function staffRoutes() {
       designation: z.string().trim().max(120).optional(),
       recruiterRole: z.string().trim().max(80).optional(),
       team: z.string().trim().max(80).optional(),
+      departmentId: z.string().trim().max(40).optional().or(z.literal('')),
+      accessRole: z.enum(['recruiter', 'teamlead']).optional(),
     }), req.body);
 
     // The email is NOT editable here. It is the login, and changing it
@@ -227,13 +255,29 @@ export default function staffRoutes() {
         vals.push(b[k] === '' ? null : b[k]);
         sets.push(`${col} = $${vals.length}`);
       }
-      if (!sets.length) throw badRequest('Nothing to update.');
-      vals.push(req.params.id);
-      const upd = await c.query(
-        `update recruiters set ${sets.join(', ')}, updated_at = now()
-          where id = $${vals.length} returning *`, vals);
-      if (!upd.rowCount) throw notFound('That recruiter could not be found.');
-      return upd.rows[0];
+      const scopeAsked = b.departmentId !== undefined || b.accessRole !== undefined;
+      if (!sets.length && !scopeAsked) throw badRequest('Nothing to update.');
+      let row;
+      if (sets.length) {
+        vals.push(req.params.id);
+        const upd = await c.query(
+          `update recruiters set ${sets.join(', ')}, updated_at = now()
+            where id = $${vals.length} returning *`, vals);
+        if (!upd.rowCount) throw notFound('That recruiter could not be found.');
+        row = upd.rows[0];
+      }
+      if (scopeAsked) {
+        const cur = (await c.query(
+          `select u.department_id, u.is_team_lead from recruiters r left join users u on u.id = r.user_id
+            where r.id = $1`, [req.params.id])).rows[0];
+        if (!cur) throw notFound('That recruiter could not be found.');
+        await setScope(c, req.params.id,
+          b.departmentId !== undefined ? (b.departmentId || null) : cur.department_id,
+          b.accessRole !== undefined ? b.accessRole === 'teamlead' : !!cur.is_team_lead);
+      }
+      return (await c.query(
+        `select rec.*, u.department_id, u.is_team_lead from recruiters rec
+           left join users u on u.id = rec.user_id where rec.id = $1`, [req.params.id])).rows[0] || row;
     });
 
     res.json({ recruiter: toRecruiter(out) });
@@ -312,7 +356,8 @@ export default function staffRoutes() {
       issueCsrfToken(res);
 
       res.json({
-        session: { role: session.role, id: session.profileId, email: session.email },
+        session: { role: session.role, id: session.profileId, email: session.email,
+                   ...publicSession(session) },
         recruiter: { id: rec.id, name: rec.name, email: rec.email },
       });
     }));

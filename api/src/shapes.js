@@ -224,6 +224,9 @@ export function toCandidate(r, opts = {}) {
    * that is not an options object is treated as no options at all.
    */
   const staff = !!opts && typeof opts === 'object' && opts.staff === true;
+  /* 0117: the recruiter-specific layer (notes, tags) comes from the
+     caller's talent_pool row, never from the shared candidates row. */
+  const pool = (staff && opts.pool) || null;
   return {
     id: r.id,
     /* 0109: the human Candidate ID (TL-CAN-000123). `id` stays the key. */
@@ -379,23 +382,33 @@ export function toCandidate(r, opts = {}) {
     emailOptIn: r.email_opt_in === undefined ? true : !!r.email_opt_in,
     smsOptIn: r.sms_opt_in === undefined ? true : !!r.sms_opt_in,
     preferredContactMethod: nz(r.preferred_contact_method),
-    candidateNotes: nz(r.candidate_notes),
     /*
-     * RECRUITER NOTES AND INTERNAL REMARKS ARE STAFF-ONLY.
+     * RECRUITER NOTES, INTERNAL REMARKS AND TAGS ARE STAFF-ONLY, AND THEY
+     * ARE THE RECRUITER'S OWN (0117).
      *
      * `GET /candidates/:id` and `GET /auth/me` both hand a candidate
      * their own row through this function, so anything listed
      * unconditionally here is something the candidate reads about
-     * themselves. "Internal remarks" that the subject can read are not
-     * internal. They appear only when the caller says the reader is
+     * themselves. They appear only when the caller says the reader is
      * staff, and the default is that they are not - so a caller that
      * forgets to ask leaks nothing.
+     *
+     * They are read from the talent_pool row passed as `opts.pool`, not
+     * from `candidates`: the same person has a separate note and tag set
+     * for every recruiter who saved them, and the shared row holds none.
      */
     ...(staff ? {
-      recruiterNotes: nz(r.recruiter_notes),
-      internalRemarks: nz(r.internal_remarks),
+      candidateNotes: pool ? nz(pool.candidate_notes) : undefined,
+      recruiterNotes: pool ? nz(pool.notes) : undefined,
+      internalRemarks: pool ? nz(pool.internal_remarks) : undefined,
+      tags: pool ? arr(pool.tags) : [],
+      poolEntry: pool ? {
+        origin: pool.origin, addedAt: pool.added_at ? new Date(pool.added_at).toISOString() : undefined,
+        mine: !!pool.mine,
+        /* Whose pool - sent only for a team lead or admin (never a plain recruiter). */
+        recruiters: Array.isArray(pool.recruiters) ? pool.recruiters : undefined,
+      } : undefined,
     } : {}),
-    tags: arr(r.tags),
     entryMethod: nz(r.entry_method),
     photoFile: nz(r.photo_file),
     /* Agreed on a call, not booked in a diary - see migration 0058. */
@@ -718,4 +731,29 @@ function furthestAlong(apps) {
   // Everything is on hold or closed: the most recent of them.
   return apps.reduce((best, a) =>
     (String(a.appliedAt || '') > String(best.appliedAt || '') ? a : best));
+}
+
+/**
+ * THE SHARED PROFILE (0117): what Find Candidates and a profile opened from
+ * it may carry.
+ *
+ * Every recruiter, team lead and admin can search the whole candidate
+ * database, so a row in that search is the person's basic profile and
+ * nothing a colleague recorded about them: no notes, tags or remarks, no
+ * pool status, nothing that says who imported or saved them, no pipeline
+ * score, no internal reference. Applied as a deny-list on the full shape
+ * (the screen reads a hundred fields from it) and tested by listing every
+ * key it returns.
+ */
+export const RECRUITER_ONLY_KEYS = [
+  'recruiterNotes', 'internalRemarks', 'candidateNotes', 'tags', 'poolEntry',
+  'poolStatus', 'importId', 'interviewPrefs', 'assignedRecruiterId', 'referredBy',
+  'candidateReference', 'priority', 'hiringType', 'sourceDetails', 'followUpSent',
+  'daysSilent', 'aiInterviewScore', 'qualified', 'entryMethod',
+  'onboardingLaterCount', 'onboardingDismissedAt',
+];
+export function basicProfile(cand) {
+  const out = { ...cand };
+  for (const k of RECRUITER_ONLY_KEYS) delete out[k];
+  return out;
 }

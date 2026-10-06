@@ -222,8 +222,8 @@ test('who may do what: a recruiter cannot open Integrations or publish somebody 
   assert.equal((await recruiter.put('/api/admin/integrations/NAUKRI', { enabled: false })).status, 403);
   assert.equal((await recruiter.post('/api/admin/integrations/NAUKRI/test', {})).status, 403);
   assert.equal((await makeClient(base).get('/api/admin/integrations')).status, 401);
-  assert.equal((await recruiter2.put(`/api/jobs/${J1}/publications`, { destinations: ALL })).status, 403);
-  assert.equal((await recruiter2.get(`/api/jobs/${J1}/publications`)).status, 403);
+  assert.ok([403, 404].includes((await recruiter2.put(`/api/jobs/${J1}/publications`, { destinations: ALL })).status));
+  assert.ok([403, 404].includes((await recruiter2.get(`/api/jobs/${J1}/publications`)).status)); /* 0117: a job outside the scope is not there (404) */
   const other = await recruiter2.get(`/api/job-publications?jobIds=${J1}`);
   assert.deepEqual(other.body.publications, {}, 'RLS: another recruiter reads none of these rows');
   const mine = await recruiter.get(`/api/job-publications?jobIds=${J1}`);
