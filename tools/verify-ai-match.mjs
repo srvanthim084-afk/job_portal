@@ -287,19 +287,32 @@ for (const V of VIEWS.filter((v) => !process.env.VIEW || process.env.VIEW.split(
     await p.click(`${card(full.id)} .rj-why`);
   });
 
-  await check(`${V.name} 4b. the external job card: no %, Apply Now opens the original posting`, async () => {
-    const sel = '#app .rj-card[data-external="1"]';
-    await p.waitForSelector(sel, { timeout: 10000 });
-    const ext = await p.$$eval(sel, (a, t) => a.filter((x) => x.innerText.includes(t)).map((x) => x.innerText), `External Verify Role ${stamp}`);
-    must(ext.length === 1, 'external card not listed');
-    must(!/\d+\s*%/.test(ext[0]), 'a % on the external card');
-    const [pop] = await Promise.all([
-      ctx.waitForEvent('page', { timeout: 8000 }),
-      p.$$eval(sel, (a, t) => { const c = a.find((x) => x.innerText.includes(t)); c.querySelector('.rj-btn.pri').click(); }, `External Verify Role ${stamp}`),
-    ]);
+  /* Job source separation (0113): the Jobs page lists TeamLink jobs only, so the
+     external posting is checked where it lives - the External Jobs page - and
+     the Jobs page is checked to NOT carry it. */
+  await check(`${V.name} 4b. the external job: not on the Jobs page; on External Jobs with no AI Match %, Apply opens the original posting`, async () => {
+    const title = `External Verify Role ${stamp}`;
+    must(!(await p.evaluate(() => document.querySelectorAll('#app .rj-card[data-external], #app [data-external]').length)), 'an external card on the Jobs page');
+    must(!(await p.$eval('#app', (e) => e.innerText)).includes(title), 'the external job is listed on the Jobs page');
+    await go(p, '#/candidate/external-jobs');
+    await p.waitForFunction(() => typeof window.xjFilter === 'function' && document.querySelector('.xj-card, .xj-empty'), null, { timeout: 20000 });
+    await p.evaluate((q) => window.xjFilter('skill', q), title);
+    const cardX = p.locator('.xj-card', { hasText: title }).first();
+    await cardX.waitFor({ timeout: 20000 });
+    const txt = await cardX.innerText();
+    must(!/AI Match/i.test(txt), 'an AI Match label on the external card: ' + txt.slice(0, 120));
+    must(!(await cardX.locator('.tlc-pct, .rj-score').count()), 'the TeamLink AI Match badge is on the external card');
+    const popP = ctx.waitForEvent('page', { timeout: 10000 });
+    popP.catch(() => {});
+    /* The first view applies; this candidate's later views find the job already "Apply Clicked", whose
+       way back to the original posting is "Open job again" in External Applications. Both go to EXT_URL. */
+    await p.locator('.xj-card', { hasText: title }).locator('button', { hasText: /^(Apply|Open job again)$/ }).first().click({ timeout: 8000 });
+    const pop = await popP;
     await pop.waitForLoadState().catch(() => {});
     must(pop.url() === EXT_URL, 'opened ' + pop.url());
     await pop.close();
+    await go(p, '#/candidate/search');
+    await p.waitForSelector(card(gap.id), { timeout: 15000 });
   });
 
   await check(`${V.name} 5. every action still works: Save, Job Description, Share, View Job, Apply Now`, async () => {
