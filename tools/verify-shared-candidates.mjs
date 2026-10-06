@@ -2,13 +2,14 @@
  * Shared candidates and "already contacted", in a real browser.
  *
  *   1  recruiter A adds a candidate and logs a call (Medical Coder)
- *   2  recruiter B finds them in the Talent Pool: ORANGE badge
- *      "Contacted today · Senior Medical Coder · <A>"
- *   3  B opens the profile: TeamLink activity lists A; WhatsApp asks
- *      "Contact anyway?" (warn)
+ *   2  recruiter B finds them in Find Candidates (the database is shared)
+ *      - with NO badge and nobody's name (0117: what A did is A's) - and
+ *      they are not in B's own Talent Pool
+ *   3  B opens the profile: the activity panel says nothing about A; WhatsApp
+ *      still asks "Contact anyway?" (the one-recruiter-per-role rule stays)
  *   4  A adds them to the job and moves them to Interview
- *   5  B sees the RED badge "In process", and on the profile the Call /
- *      WhatsApp / Log call buttons are disabled with the hold message
+ *   5  on the profile the Call / WhatsApp / Log call buttons are disabled
+ *      with a hold message that names neither A, the job nor the stage
  *   6  the server refuses B's add-to-job (409 ENGAGEMENT_BLOCKED)
  *   7  B requests an admin override from the profile
  *   8  the admin approves it on Admin -> Shared candidates
@@ -126,26 +127,32 @@ await check('1. A logs a call about the candidate', async () => {
   must(r.ok, r.message);
 });
 
-await check('2. B sees the orange "Contacted" badge in the Talent Pool', async () => {
+await check('2. B finds the candidate in Find Candidates (shared) - with no badge, no name - and NOT in B\'s own Talent Pool', async () => {
   await B.reload(); await B.waitForFunction(() => window.TL && TL.ready === true, null, { timeout: 30000 });
+  /* 0117: the candidate is SHARED: B finds them by searching the whole database ... */
+  const found = await api(B, 'get', `/candidates?q=${encodeURIComponent(candName)}&availabilityAll=true`);
+  must(found.ok && found.v.candidates.some((c) => c.id === CID), 'B cannot find the shared candidate');
+  /* ... but what A did with them is A's: no badge, nobody's name. */
+  const badge = await api(B, 'post', '/engagement/badges', { candidateIds: [CID], jobId: JB.id });
+  must(badge.ok && badge.v.badges[CID].kind === null && !JSON.stringify(badge.v).includes(RA.name), 'a badge told B about A');
+  /* and the Talent Pool is B's own: A's candidate is not in it. */
   await findInPool(B);
-  await B.waitForSelector('#tpHost .tlsc-orange', { timeout: 10000 });
-  const t = await B.$eval('#tpHost .tlsc-orange', (e) => e.textContent);
-  must(/Contacted today/.test(t) && t.includes(RA.name), `badge: ${t}`);
-  await shot(B, '2-orange-badge');
+  must(await B.$$eval('#tpHost .tlsc-orange, #tpHost .tlsc-red', (e) => e.length) === 0, 'a badge in the Talent Pool');
+  must(!(await B.$eval('#tpHost', (e) => e.innerText)).includes(candName), 'A\'s candidate is in B\'s Talent Pool');
+  await shot(B, '2-no-badge-own-pool');
 });
 
-await check('3. B opens the profile: TeamLink activity, and WhatsApp warns first', async () => {
-  await go(B, `#/recruiter/candidate-profile?id=${CID}`);
-  await B.waitForSelector('#tlscPanel table', { timeout: 10000 });
+await check('3. B opens the shared profile: nothing about A in the activity panel, and WhatsApp still warns first', async () => {
+  await go(B, `#/recruiter/candidate-profile?id=${CID}`, 2200);
+  await B.waitForSelector('#tlscPanel', { timeout: 10000 });
   const panel = await B.$eval('#tlscPanel', (e) => e.innerText);
-  must(panel.includes(RA.name) && /Interested/.test(panel), `panel: ${panel.slice(0, 200)}`);
+  must(!panel.includes(RA.name) && !/Interested/.test(panel), `panel names A: ${panel.slice(0, 200)}`);
   must(!/15 days notice/.test(panel), 'the private note leaked into the panel');
   await shot(B, '3a-activity-panel');
   await B.click('#tlscWa');
   await B.waitForSelector('#tlscAnyway', { timeout: 8000 });
   const m = await B.$eval('#fcrModalHost', (e) => e.innerText);
-  must(new RegExp(`${RA.name} contacted this candidate for Senior Medical Coder`).test(m), `warn: ${m.slice(0, 200)}`);
+  must(/Another recruiter contacted this candidate recently/.test(m) && !m.includes(RA.name), `warn: ${m.slice(0, 200)}`);
   must(/Contact anyway/.test(m) && /Message/.test(m), 'warn buttons missing');
   await shot(B, '3b-warn-popup');
   await B.evaluate(() => TLEngagement._cancel());
@@ -158,18 +165,19 @@ await check('4. A adds them to the job and moves them to Interview', async () =>
   must(mv.ok, mv.message);
 });
 
-await check('5. B sees the red badge, and blocked buttons on the profile', async () => {
+await check('5. B is blocked on the profile - and the block does not say who, which job or how far', async () => {
   await B.evaluate(() => TLEngagement.invalidate());
-  await findInPool(B);
-  await B.waitForSelector('#tpHost .tlsc-red', { timeout: 10000 });
-  const t = await B.$eval('#tpHost .tlsc-red', (e) => e.textContent);
-  must(/In process/.test(t) && t.includes(RA.name), `badge: ${t}`);
-  await shot(B, '5a-red-badge');
-  await go(B, `#/recruiter/candidate-profile?id=${CID}`);
-  await B.waitForSelector('#tlscPanel .tlsc-banner-red', { timeout: 10000 });
+  await go(B, `#/recruiter/candidate-profile?id=${CID}`, 2200);
+  await B.waitForSelector('#tlscPanel .tlsc-banner-red', { timeout: 10000 }).catch(async () => {
+    const seen = await B.$eval('#tlscPanel', (e) => e.innerText).catch(() => '(no panel)');
+    const v = await api(B, 'get', `/candidates/${CID}/engagements`);
+    throw new Error(`no red banner; panel: ${seen.slice(0, 160).replace(/\s+/g, ' ')} | verdict: ${JSON.stringify(v.v && v.v.verdict || v).slice(0, 220)}`);
+  });
   const banner = await B.$eval('#tlscPanel .tlsc-banner-red', (e) => e.innerText);
-  must(new RegExp(`${RA.name} is processing this candidate for Senior Medical Coder ${stamp} \\(Interview Scheduled\\)`).test(banner), banner);
+  must(/Another recruiter is already working on this candidate/.test(banner), banner);
+  must(!banner.includes(RA.name) && !/Senior Medical Coder|Interview Scheduled/.test(banner), `the block names A's work: ${banner}`);
   must(/Hold ends/.test(banner), 'no hold end date');
+  await shot(B, '5a-blocked-no-names');
   for (const id of ['#tlscCall', '#tlscWa', '#tlscLog']) {
     must(await B.$eval(id, (e) => e.disabled), `${id} is not disabled`);
   }

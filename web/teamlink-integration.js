@@ -2905,6 +2905,33 @@
     return realCandidateById(id) || demoById[id];
   };
 
+  /*
+   * 0117: A SHARED PROFILE OPENED BY ITS LINK.
+   *
+   * A recruiter's browser now holds their own desk (their pool, their
+   * applicants) rather than the whole database, so a profile link to
+   * somebody from the shared Find Candidates database - a bookmark, a
+   * message, a refresh - names a candidate the page does not have yet.
+   * Ask the server once; it answers with the SHARED basic profile (or the
+   * full one when the person is in a pool the caller may read), or 404 for
+   * somebody the caller may not read. Then draw again.
+   */
+  var askedForCandidate = Object.create(null);
+  var candidateWithDemo = DATA.candidateById;
+  DATA.candidateById = function (id) {
+    var c = candidateWithDemo(id);
+    if (!c && id && TL.ready && TL.session && (TL.session.role === 'recruiter' || TL.session.role === 'admin')
+        && !askedForCandidate[id]) {
+      askedForCandidate[id] = true;
+      api.get('/candidates/' + encodeURIComponent(id)).then(function (res) {
+        if (!res || !res.candidate) return;
+        if (!candidateWithDemo(id)) DATA.candidates.push(res.candidate);
+        if (typeof window.render === 'function') window.render();
+      }).catch(function () { /* not theirs to read: the page says "not found" */ });
+    }
+    return c;
+  };
+
   var demoList = [];
 
   function isDemoRoute() {

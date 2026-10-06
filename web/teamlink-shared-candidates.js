@@ -470,8 +470,8 @@
     }
     var why = blocked ? (v.message || 'Held by another recruiter') : '';
     var rows = (d.engagements || []);
-    return '<div class="panel-head"><div><h2>TeamLink activity</h2>'
-      + '<div class="desc">Who at TeamLink has worked with this candidate, for which role. Notes and message text stay with the recruiter who wrote them.</div></div>'
+    return '<div class="panel-head"><div><h2>Your TeamLink activity</h2>'
+      + '<div class="desc">Your own work with this candidate (a team lead sees the whole department). What colleagues in other teams did is theirs; only the rule that two recruiters do not work one role at once is shared.</div></div>'
       + '<div class="tlsc-actions">'
       + '<select id="tlscRole" title="Check against one of your jobs" onchange="TLEngagement._role(\'' + js(id) + '\', this.value)">' + jobOptions(jobId).replace('No specific job', 'Any role') + '</select>'
       + '<button class="btn btn-ghost btn-sm" id="tlscCall"' + (blocked ? dis(why) : phone ? '' : dis('No phone number on file')) + ' onclick="TLEngagement._call(\'' + js(id) + '\')">📞 Call</button>'
@@ -491,7 +491,7 @@
             + '<td>' + h(levelText(e)) + '</td>'
             + '<td>' + (e.isActive && e.holdExpiresAt ? 'until ' + h(dateText(e.holdExpiresAt)) : '<span class="tlsc-sub">ended</span>') + '</td></tr>';
         }).join('') + '</tbody></table></div>'
-        : '<p class="empty-note" style="padding:6px 0">Nobody at TeamLink has contacted this candidate yet.</p>')
+        : '<p class="empty-note" style="padding:6px 0">You have no activity with this candidate yet.</p>')
       + '</div>';
   }
 
