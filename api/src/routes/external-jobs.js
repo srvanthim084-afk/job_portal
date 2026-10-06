@@ -43,6 +43,8 @@ import { withUrlKey } from '../external/service.js';
 import { toLicence, licenceRequirement, toPortalJob, toPortalJobV2 } from '../external/shapes.js';
 /* 0113: the External Jobs page's endpoints are EXTERNAL only (external_jobs). */
 import { externalPageScope, matchJobs, EXTERNAL } from '../jobs/source-scope.js';
+/* 0115: is the posting still there? */
+import { checkAvailability, availabilityAnswer } from '../external/availability.js';
 
 const STAFF = ['recruiter', 'bde', 'admin'];
 
@@ -212,8 +214,44 @@ h1{font-size:19px;margin:0 0 8px}p{margin:0 0 14px;color:#42505f}a{color:#1d6ff2
       return res.json({ recorded: true, status: 'Apply Clicked', applyLink: 'job_unavailable' });
     }
     const d = destination(t);
-    await event(id, d.ok ? 'external_redirect_success' : 'external_redirect_failure', d.ok ? '' : d.code);
-    res.json({ recorded: true, status: 'Apply Clicked', applyLink: d.ok ? 'available' : 'link_unavailable' });
+    if (!d.ok) {
+      await event(id, 'external_redirect_failure', d.code);
+      return res.json({ recorded: true, status: 'Apply Clicked', applyLink: 'link_unavailable' });
+    }
+    /* 0115: a posting its source has taken down is not "available". The
+       answer is cached, so the page's own availability check a moment ago
+       makes this free. */
+    const a = await checkAvailability(PORTAL, id);
+    if (a.state === 'removed' || a.state === 'closed') {
+      await event(id, 'external_redirect_failure', 'removed_at_source');
+      return res.json({ recorded: true, status: 'Apply Clicked', applyLink: 'job_unavailable' });
+    }
+    await event(id, 'external_redirect_success');
+    res.json({ recorded: true, status: 'Apply Clicked', applyLink: 'available' });
+  }));
+
+  /*
+   * GET /api/portal/external-jobs/:id/availability   (0115)
+   *
+   * What Apply Now asks BEFORE it sends anybody anywhere: is the posting
+   * still there at its source? The answer is the stored original URL
+   * (already through the one link rule), or "Job no longer available" -
+   * in which case the posting has just been closed, on the source's own
+   * word, and no URL is handed out. A check that cannot reach the source
+   * says so (checked: 'unconfirmed') and still hands out the URL: our
+   * network is never held against the job.
+   *
+   * Records nothing about the visitor and counts nothing: the click is
+   * counted by /click or /external/apply, as before.
+   */
+  r.get('/portal/external-jobs/:id/availability', wrap(async (req, res) => {
+    const id = String(req.params.id).slice(0, 80);
+    const a = await checkAvailability(PORTAL, id);
+    if (a.state === 'link_unavailable' && a.target) {
+      console.warn(`[external] availability: link refused for ${id} (${a.target.source_key}): ${a.reason}`);
+    }
+    res.set('Cache-Control', 'no-store');
+    res.status(a.state === 'not_found' ? 404 : 200).json({ id, ...availabilityAnswer(a) });
   }));
 
   r.get('/portal/external-jobs/:id/apply', wrap(async (req, res) => {
@@ -243,6 +281,13 @@ h1{font-size:19px;margin:0 0 8px}p{margin:0 0 14px;color:#42505f}a{color:#1d6ff2
       await redirectRefused(PORTAL, t, d.reason);
       return sorry(res, 422, 'Redirect unavailable',
         'The link we have for it does not look safe to follow, so we have not sent you there. The job has been reported.');
+    }
+    /* 0115: confirmed removed at its source -> no redirect to a dead page. */
+    const a = await checkAvailability(PORTAL, id);
+    if (a.state === 'removed' || a.state === 'closed') {
+      await event(id, 'external_redirect_failure', 'removed_at_source');
+      return sorry(res, 410, 'This job is no longer available',
+        `The original posting on ${t.source_name || 'its website'} has been taken down, so there is nowhere to apply.`);
     }
     await event(id, 'external_redirect_success');
     res.set('Referrer-Policy', 'no-referrer');
@@ -865,6 +910,11 @@ h1{font-size:19px;margin:0 0 8px}p{margin:0 0 14px;color:#42505f}a{color:#1d6ff2
         return res.status(422).json({ ok: false, status: 'invalid_url',
           error: { code: 'INVALID_URL', message: 'Redirect unavailable: this job’s link does not look safe to follow, so we have not opened it.' } });
       }
+      /* 0115: a posting its source has taken down is closed here, on the
+         source's own word, and applyExternally below then answers
+         "closed" - no URL handed out, no application row (and the
+         failure is counted once, below, as 'closed'). */
+      await checkAvailability(PORTAL, externalJobId);
     }
 
     const out = await applyExternally(req.session, { candidateId, externalJobId, auto });
