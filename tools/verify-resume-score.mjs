@@ -141,16 +141,25 @@ await check('2. Profile shows the score; "Fix now" opens that exact field', asyn
 });
 
 await check('3. the profile improves -> Re-score -> "Score improved from X to Y"', async () => {
+  /* On the score page FIRST, with a score loaded just now. Opening the
+     page more than 30 s after the last load re-reads the score, and the
+     server re-scores a changed profile on that read - the page then says
+     "Up from X to Y" (its wording for a change it found by itself) and
+     Re-score has nothing left to improve. That was a race in this check,
+     not in the product: the change has to reach Re-score first. */
+  await go(A.p, '#/candidate/resume-score');
+  await A.p.waitForSelector('.tlrs-ring');
+  await A.p.evaluate(() => TLResumeScore.load(true));
   const r = await A.p.evaluate((id) => TL.api.put(`/candidates/${id}`, {
     location: 'Hyderabad', summary: 'Accounts assistant with 2 years of GST filing and Tally ERP. Handled 120 invoices a day and cut billing errors by 15%.',
     skills: ['Tally ERP', 'GST', 'Excel', 'Accounts Payable', 'Bank Reconciliation', 'TDS', 'Invoicing', 'MS Excel pivot tables'],
     certifications: ['Tally Prime', 'GST Practitioner'], education: 'B.Com, Osmania University, 2022', preferredRole: 'Accounts Assistant',
   }).then(() => 'ok', (e) => e.message), A.id);
   must(r === 'ok', r);
-  await go(A.p, '#/candidate/resume-score');
-  await A.p.waitForSelector('.tlrs-ring');
   await A.p.evaluate(() => tlrsRescore());
-  await A.p.waitForSelector('.tlrs-msg.good', { timeout: 15000 });
+  /* Until Re-score has answered - a line already on the page is not its answer. */
+  await A.p.waitForFunction(() => !/Scoring/.test((document.querySelector('button[onclick="tlrsRescore()"]') || {}).textContent || 'Scoring')
+    && document.querySelector('.tlrs-msg.good'), null, { timeout: 15000 });
   const msg = await A.p.evaluate(() => document.querySelector('.tlrs-msg.good').textContent);
   const m = /Score improved from (\d+) to (\d+)/.exec(msg);
   must(m && Number(m[2]) > Number(m[1]), msg);

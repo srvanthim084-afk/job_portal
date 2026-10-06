@@ -103,7 +103,15 @@ function explain(err) {
 
 /** newCount for each search: open jobs published since it was last viewed -
     in the dataset the search was saved on, and only that one (0113). */
-async function withNewCounts(c, rows) {
+/*
+ * `tier` is worked out BEFORE the transaction and handed in. The first
+ * call loads the place index (tens of MB, several seconds); awaited in
+ * here it held the database connection - on the embedded engine the ONLY
+ * connection - for all of that time, so every other request, a page
+ * reload included, queued behind it and timed out ("timeout exceeded
+ * when trying to connect"). The alert engine already did it this way.
+ */
+async function withNewCounts(c, rows, tier) {
   if (!rows.length) return [];
   const pool = { [TEAMLINK]: null, [EXTERNAL]: null };
   if (rows.some((r) => r.source_type !== EXTERNAL)) {
@@ -121,7 +129,6 @@ async function withNewCounts(c, rows) {
         where x.status = 'open'`)).rows.map(asMatchableExternal);
   }
   const hidden = new Set((await c.query(`select job_id from hidden_jobs`)).rows.map((r) => r.job_id));
-  const tier = await locationTierFunction();
   const now = Date.now();
   return rows.map((r) => {
     const since = new Date(r.last_viewed_at).getTime();
@@ -167,10 +174,11 @@ export default function savedSearchRoutes() {
   }));
 
   r.get('/saved-searches', requireAuth(), requireRole('candidate'), wrap(async (req, res) => {
+    const tier = await locationTierFunction();
     const list = await withUser(req.session, async (c) => {
       const rows = (await c.query(
         `select * from candidate_saved_searches order by created_at desc`)).rows;
-      return withNewCounts(c, rows);
+      return withNewCounts(c, rows, tier);
     });
     res.json({ savedSearches: list, limit: MAX });
   }));

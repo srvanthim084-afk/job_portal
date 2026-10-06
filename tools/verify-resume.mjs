@@ -14,9 +14,11 @@
  *   node tools/verify-resume.mjs      (needs npm run dev on :4323)
  */
 import { chromium } from 'playwright';
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
+import { TINY_PDF } from './lib/apply-form.mjs';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
+import { fillRegistration } from './lib/registration-form.mjs';
 
 const BASE = process.env.TL_URL || 'http://localhost:4323/';
 const DIR = resolve('var/test-resumes');
@@ -86,7 +88,6 @@ console.log('\nreal files, through the real button');
 for (const [label, file, minFields] of [
   ['a real DOCX fills the form', 'Resume - Sravanthi.docx', 10],
   ['a real multi-page PDF fills the form', 'Resume - Sravanthi.pdf', 9],
-  ['a real TXT fills the form', 'Resume - Sravanthi.txt', 10],
 ]) {
   // eslint-disable-next-line no-loop-func
   await check(label, async () => {
@@ -120,13 +121,29 @@ await check('the DOCX yields MORE than the PDF (its tables are read)', async () 
   must(docx.values.regNotice, 'notice period, which is in a table, was not extracted');
 });
 
+/* 0109: the registration form takes PDF, DOC or DOCX only (the owner's
+   rule, checked before anything is sent). A TXT is refused there, in
+   those words; the server still reads TXT for the paths that send it. */
+await check('the registration form refuses a TXT, and says which types it takes', async () => {
+  await gotoRegister(); await clearForm();
+  const r = await uploadResume('Resume - Sravanthi.txt');
+  must(/not a PDF, DOC or DOCX/i.test(r.status), `status was "${r.status.slice(0, 90)}"`);
+  must(!Object.keys(r.values).some((k) => k !== 'regNotice' && k !== 'regQualification'), 'a refused file filled the form: ' + JSON.stringify(r.values));
+});
+
 console.log('\nwhat it says when a file cannot be read');
 
 await check('an empty file is reported as empty, not as a broken file', async () => {
-  await gotoRegister(); await clearForm();
-  const r = await uploadResume('Empty resume.txt');
-  must(/no readable text/i.test(r.status), `status was "${r.status.slice(0, 90)}"`);
-  must(!/something went wrong/i.test(r.status), 'the old generic message came back');
+  /* Asked of the server directly: the form no longer sends a TXT. */
+  const out = await page.evaluate(async () => {
+    const fd = new FormData();
+    fd.append('resume', new File([''], 'Empty resume.txt', { type: 'text/plain' }));
+    const r = await fetch('/api/resume/extract', { method: 'POST', body: fd, credentials: 'same-origin' });
+    const j = await r.json().catch(() => ({}));
+    return { status: r.status, message: (j.error && j.error.message) || j.message || JSON.stringify(j).slice(0, 200) };
+  });
+  must(out.status === 400 && /file is empty|no readable text/i.test(out.message), `the server said ${out.status} "${String(out.message).slice(0, 120)}"`);
+  must(!/something went wrong/i.test(out.message), 'the old generic message came back');
 });
 
 await check('a failed read does not wipe what the candidate typed', async () => {
@@ -135,7 +152,11 @@ await check('a failed read does not wipe what the candidate typed', async () => 
     const e = document.getElementById('regName');
     e.value = 'Typed By Hand'; e.dataset.userSet = '1';
   });
-  await uploadResume('Empty resume.txt');
+  /* A PDF the server cannot read (0109: the form no longer sends a TXT, so
+     an empty TXT never reaches the reader at all). */
+  writeFileSync(resolve(DIR, 'Unreadable resume.pdf'), TINY_PDF);
+  const r = await uploadResume('Unreadable resume.pdf');
+  must(/could not be read|no readable text/i.test(r.status), `the read did not fail: "${r.status.slice(0, 90)}"`);
   const name = await page.evaluate(() => document.getElementById('regName').value);
   must(name === 'Typed By Hand', `the typed name became "${name}"`);
 });
@@ -176,31 +197,11 @@ await check('register with an extracted resume, and find it in the database', as
   await gotoRegister(); await clearForm();
   await uploadResume('Resume - Sravanthi.docx');
 
-  // Fill only what the resume cannot supply.
-  await page.evaluate((em) => {
-    const set = (id, v) => {
-      const e = document.getElementById(id);
-      if (!e) return;
-      e.value = v; e.dataset.userSet = '1';
-      e.dispatchEvent(new Event('input', { bubbles: true }));
-      e.dispatchEvent(new Event('change', { bubbles: true }));
-    };
-    set('regEmail', em);
-    set('regPassword', 'ResumeTest@2026');
-    const tick = (id) => { const e = document.getElementById(id); if (e && !e.checked) e.click(); };
-    tick('regConsentTerms'); tick('regConsentResume');
-    const q = document.getElementById('regQualification');
-    if (q && !q.value && q.options.length > 1) q.selectedIndex = 1;
-    const n = document.getElementById('regNotice');
-    if (n && !n.value && n.options.length > 1) n.selectedIndex = 1;
-    const t = document.querySelector('input[name="regCandidateType"]');
-    if (t && !document.querySelector('input[name="regCandidateType"]:checked')) t.click();
-  }, email);
-
-  await page.evaluate(() => {
-    const b = [...document.querySelectorAll('button')].find((x) => /create account/i.test(x.textContent));
-    b.click();
-  });
+  // Fill only what the resume cannot supply. 0109: on the seven steps
+  // (tools/lib/registration-form.mjs), the resume already attached.
+  const left = await fillRegistration(page, { onlyEmpty: true, email, password: 'ResumeTest@2026' });
+  must(!left.length, 'the form did not validate: ' + JSON.stringify(left));
+  await page.click('#regSubmitBtn');
   await page.waitForTimeout(4000);
 
   const session = await page.evaluate(() => (STATE.session ? STATE.session.id : null));

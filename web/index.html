@@ -3305,7 +3305,7 @@ function submitCandidateRegistration(ev){
      candidate's behalf was how a blank became "Immediate" on a record a
      recruiter then read as a fact about them. */
   const noticePeriod = document.getElementById('regNotice').value;
-  const preferredWorkModes = [...document.querySelectorAll('.opt-row input[type="checkbox"]:checked')].map(cb=>cb.value);
+  const preferredWorkModes = [...document.querySelectorAll('#regWorkModeGroup input[type="checkbox"]:checked')].map(cb=>cb.value);
   const whatsappOptIn = !!document.getElementById('regConsentWhatsapp').checked;
 
   if(candidateEmailTaken(email)){ toast('This email is already registered — try logging in instead', '⚠️'); return; }

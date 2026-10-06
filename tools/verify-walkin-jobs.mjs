@@ -39,6 +39,7 @@ import { mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TINY_PDF, completeApplyForm } from './lib/apply-form.mjs';
+import { registerThroughForm } from './lib/registration-form.mjs';
 
 const BASE = (process.env.TL_URL || 'http://127.0.0.1:4421/').replace(/\/?$/, '/');
 const url = new URL(BASE);
@@ -389,23 +390,12 @@ await check('10. signed out: register, then the same job\'s form opens', async (
   must(await clickApplyOnPage(p), 'no Apply button');
   await p.waitForTimeout(900);
   must(/^#\/register\/candidate/.test(await p.evaluate(() => location.hash)), 'not on registration');
-  await p.fill('#regName', 'Signup Verify');
-  await p.fill('#regMobile', phone());
-  await p.fill('#regLocation', 'Hyderabad');
-  await p.fill('#regEmail', `wk.signup.${stamp}@tl-verify.test`);
-  await p.fill('#regPassword', `Signup${stamp}7`);
-  await p.evaluate(() => {
-    const q = document.getElementById('regQualification'); const o = Array.from(q.options).find((x) => x.value); q.value = o.value; q.dispatchEvent(new Event('change', { bubbles: true }));
-    const n = document.getElementById('regNotice'); const o2 = Array.from(n.options).find((x) => x.value); n.value = o2.value; n.dispatchEvent(new Event('change', { bubbles: true }));
-    const m = document.querySelector('#regWorkModeGroup input[type="checkbox"]'); if (m && !m.checked) m.click();
-    ['regConsentTerms', 'regConsentResume'].forEach((id) => { const x = document.getElementById(id); if (!x.checked) x.click(); });
+  /* 0109: the registration is seven steps now; tools/lib/registration-form.mjs
+     fills each field on its own step (the ids are the same as before). */
+  await registerThroughForm(p, {
+    name: 'Signup Verify', phone: phone(), email: `wk.signup.${stamp}@tl-verify.test`,
+    password: `Signup${stamp}7`, skills: 'Excel, Communication', prefLocation: 'Hyderabad', expSalary: '4',
   });
-  await p.fill('#regSkills', 'Excel, Communication');
-  await p.fill('#regPrefLocation', 'Hyderabad');
-  await p.fill('#regExpSalary', '4');
-  await p.evaluate(() => { ['regPrefLocation', 'regExpSalary', 'regNotice'].forEach((id) => window.regTouch && regTouch(id)); validateRegisterForm(); });
-  await p.click('#regSubmitBtn');
-  await p.waitForFunction(() => STATE.session && STATE.session.role === 'candidate', null, { timeout: 20000 });
   await p.waitForTimeout(3000);
   await wizardAway(p);
   await p.waitForSelector('#tlafForm', { timeout: 15000 });

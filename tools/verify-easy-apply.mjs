@@ -20,6 +20,7 @@ import { chromium } from 'playwright';
 import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
+import { fillRegistration } from './lib/registration-form.mjs';
 
 const BASE = process.env.TL_URL || 'http://localhost:4323/';
 const DIR = resolve('var/test-resumes');
@@ -44,49 +45,40 @@ async function session() {
   return { ctx, page };
 }
 
-/** Registers through the real form, with a real resume file. */
+/**
+ * Registers through the real form, with a real resume file.
+ *
+ * 0109: the form is seven steps and a resume is REQUIRED on it, so it can
+ * no longer make an account without one. With a file this goes through
+ * the form (tools/lib/registration-form.mjs: the resume first, then only
+ * the fields it left empty). Without one - the "no resume" and "another
+ * candidate" checks - the account is made the way the API still allows,
+ * POST /auth/register, and the page signed in as it.
+ */
 async function registerWithResume(page, email, file) {
   await page.evaluate(() => { location.hash = '#/register/candidate'; });
   await page.waitForTimeout(800);
 
-  if (file) {
-    const [chooser] = await Promise.all([
-      page.waitForEvent('filechooser'),
-      page.evaluate(() => {
-        const b = [...document.querySelectorAll('button')].find((x) => /upload resume/i.test(x.textContent));
-        b.click();
-      }),
-    ]);
-    await chooser.setFiles(resolve(DIR, file));
-    await page.waitForTimeout(5000);          // extraction is a server round trip
+  if (!file) {
+    const ok = await page.evaluate((em) => window.TL.api.post('/auth/register', {
+      name: 'Easy Apply Tester', email: em, password: 'EasyApply@2026',
+      phone: '9' + String(Math.floor(1e8 + Math.random() * 9e8)),
+      preferredLocation: 'Hyderabad', expectedCtc: 4, noticePeriod: 'Immediate', preferredWorkModes: ['Hybrid'],
+      consent: { terms: true, communication: true, resumeProcessing: true },
+    }).then(() => window.TL.refresh()).then(() => true, () => false), email);
+    if (!ok) return null;
+    await page.waitForTimeout(1500);
+    return page.evaluate(() => (STATE.session ? STATE.session.id : null));
   }
 
-  await page.evaluate((em) => {
-    const set = (id, v) => {
-      const e = document.getElementById(id);
-      if (!e) return;
-      e.value = v; e.dataset.userSet = '1';
-      e.dispatchEvent(new Event('input', { bubbles: true }));
-      e.dispatchEvent(new Event('change', { bubbles: true }));
-    };
-    const fill = (id, v) => { const e = document.getElementById(id); if (e && !e.value) set(id, v); };
-    set('regEmail', em); set('regPassword', 'EasyApply@2026');
-    fill('regName', 'Easy Apply Tester'); fill('regMobile', '9876500321');
-    fill('regLocation', 'Hyderabad'); fill('regSkills', 'Java, SQL');
-    fill('regPrefLocation', 'Hyderabad');
-    const q = document.getElementById('regQualification');
-    if (q && !q.value && q.options.length > 1) { q.selectedIndex = 1; q.dispatchEvent(new Event('change', { bubbles: true })); }
-    const tick = (id) => { const e = document.getElementById(id); if (e && !e.checked) e.click(); };
-    tick('regConsentTerms'); tick('regConsentResume');
-    const t = document.querySelector('input[name="regCandidateType"]');
-    if (t && !document.querySelector('input[name="regCandidateType"]:checked')) t.click();
-    if (typeof validateRegisterForm === 'function') validateRegisterForm();
-  }, email);
-
-  await page.evaluate(() => {
-    const b = [...document.querySelectorAll('button')].find((x) => /create account/i.test(x.textContent));
-    if (b && !b.disabled) b.click();
+  const left = await fillRegistration(page, {
+    resume: resolve(DIR, file), resumeFirst: true, onlyEmpty: true,
+    email, password: 'EasyApply@2026', name: 'Easy Apply Tester',
+    skills: 'Java, SQL', prefLocation: 'Hyderabad',
   });
+  if (left.length) throw new Error('the registration form did not validate: ' + JSON.stringify(left));
+  await page.click('#regSubmitBtn');
+  await page.waitForFunction(() => STATE.session && STATE.session.role === 'candidate', null, { timeout: 20000 }).catch(() => {});
   await page.waitForTimeout(6000);            // registration + profile + resume upload
   return page.evaluate(() => (STATE.session ? STATE.session.id : null));
 }

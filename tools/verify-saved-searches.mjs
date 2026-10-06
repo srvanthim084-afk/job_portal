@@ -88,7 +88,11 @@ await check('saving it from the panel works and the button turns to ✓ Saved', 
   await page.waitForSelector('#tlssName', { timeout: 5000 });
   must((await page.inputValue('#tlssName')).toLowerCase() === word.toLowerCase(), 'the name was not pre-filled');
   await page.click('#tlssSave');
-  await page.waitForTimeout(1500);
+  /* The button changes when the server has answered; on a fresh instance
+     the first saved-search requests also load the place index, so this
+     waits for the answer (up to 10 s) rather than a fixed 1.5 s. */
+  await page.waitForFunction(() => /Saved/.test((document.querySelector('.rj-count button') || {}).textContent || ''),
+    null, { timeout: 10000 }).catch(() => {});
   const t = await page.textContent('.rj-count button');
   must(/Saved/.test(t), `button reads "${t}"`);
 });

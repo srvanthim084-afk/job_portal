@@ -122,7 +122,19 @@ export async function withUser(session, fn, attempt = 0) {
       [session?.userId ?? '', session?.role ?? 'anon']
     );
     const out = await fn(client);
-    await client.query('commit');
+    /*
+     * COMMIT on a transaction that was already aborted does not fail: the
+     * server rolls it back and answers with the command tag ROLLBACK. A
+     * route would then report success for writes that never happened.
+     * Treated exactly like 25P02 below - aborted from outside, done again
+     * once on a fresh transaction, and an error if it happens twice.
+     */
+    const done = await client.query('commit');
+    if (done && done.command === 'ROLLBACK') {
+      const lost = new Error('the transaction was rolled back at COMMIT');
+      lost.code = '25P02';
+      throw lost;
+    }
     client.release();
     return out;
   } catch (err) {

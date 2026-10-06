@@ -23,6 +23,7 @@
 import { chromium } from 'playwright';
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
+import { fillRegistration } from './lib/registration-form.mjs';
 
 const BASE = process.env.TL_URL || 'http://127.0.0.1:4323/';
 let failed = 0;
@@ -96,27 +97,10 @@ await check('the page is connected to the backend', async () => {
 
 await check('register creates a real account', async () => {
   await go(page, '#/register/candidate');
-  await page.evaluate(({ em, pw }) => {
-    const set = (id, v) => {
-      const e = document.getElementById(id);
-      if (!e) return;
-      e.value = v;
-      e.dispatchEvent(new Event('input', { bubbles: true }));
-      e.dispatchEvent(new Event('change', { bubbles: true }));
-    };
-    const tick = (id) => { const e = document.getElementById(id); if (e && !e.checked) e.click(); };
-    set('regName', 'Flow Test'); set('regMobile', '9876500022'); set('regLocation', 'Hyderabad');
-    set('regEmail', em); set('regPassword', pw); set('regSkills', 'Java, SQL');
-    set('regPrefLocation', 'Hyderabad'); set('regExpSalary', '12');
-    set('regResumeText', 'QA engineer with 3 years of Java and SQL experience.');
-    for (const id of ['regQualification', 'regNotice']) {
-      const el = document.getElementById(id);
-      if (el && el.options.length > 1) { el.selectedIndex = 1; el.dispatchEvent(new Event('change', { bubbles: true })); }
-    }
-    const type = document.querySelector('input[name="regCandidateType"]');
-    if (type) type.click();
-    tick('regConsentTerms'); tick('regConsentResume');
-  }, { em: email, pw: PASSWORD });
+  /* 0109: seven steps; tools/lib/registration-form.mjs fills each one. */
+  const left = await fillRegistration(page, { name: 'Flow Test', phone: '9876500022', location: 'Hyderabad',
+    email, password: PASSWORD, skills: 'Java, SQL', prefLocation: 'Hyderabad', expSalary: '12' });
+  must(!left.length, 'the form did not validate: ' + JSON.stringify(left));
 
   must(await clickByText(page, /create account/), 'no "Create account" button on the form');
   await page.waitForTimeout(3000);

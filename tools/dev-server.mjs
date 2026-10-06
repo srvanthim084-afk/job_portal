@@ -105,6 +105,7 @@ if (!existsSync(join(WEB, 'index.html'))) {
 
 const REAL_DB = !!process.env.DATABASE_URL;
 let stopDb = async () => {};
+let startCheckpoints = () => {};
 let describeDb = '';
 let seedAccounts = [];
 
@@ -197,13 +198,28 @@ if (REAL_DB) {
    * This is a MITIGATION, not crash safety. An embedded engine is for
    * development. Real business data belongs on a real PostgreSQL server —
    * set DATABASE_URL and this entire branch is skipped.
+   *
+   * THROUGH THE API'S OWN CONNECTION, NEVER db.exec ON A TIMER. PGlite is
+   * ONE backend session, and pglite-socket locks it per protocol message,
+   * not per transaction - so a db.exec('checkpoint') from here used to run
+   * INSIDE whatever transaction the API had open. That transaction had
+   * done SET LOCAL ROLE app_api, CHECKPOINT was refused ("permission
+   * denied"), the refusal aborted the API's transaction, and the API's
+   * next COMMIT quietly answered ROLLBACK. Measured: POST /auth/register
+   * created the account, lost it at COMMIT, then failed its own sign-in
+   * with "Incorrect email or password." Sent as a query on the pool's
+   * single connection instead, it waits for that transaction to finish
+   * and runs outside it, as the connection's own (superuser) login.
    */
   const CHECKPOINT_MS = parseInt(process.env.CHECKPOINT_MS, 10) || 5000;
-  const ticker = setInterval(() => { db.exec('checkpoint').catch(() => {}); }, CHECKPOINT_MS);
-  ticker.unref();
+  let ticker = null;
+  startCheckpoints = (pool) => {
+    ticker = setInterval(() => { pool.query('checkpoint').catch(() => {}); }, CHECKPOINT_MS);
+    ticker.unref();
+  };
 
   stopDb = async () => {
-    clearInterval(ticker);
+    if (ticker) clearInterval(ticker);
     await db.exec('checkpoint').catch(() => {});
     await pgServer.stop().catch(() => {});
     await db.close().catch(() => {});
@@ -280,6 +296,7 @@ const { providerStatus } = await import('../api/src/notify/providers.js');
 const c = await getPool().connect();
 let dbUser;
 try { dbUser = await assertUnprivileged(c); } finally { c.release(); }
+startCheckpoints(getPool());
 
 const app = createApp({ serveStatic: WEB });
 const server = app.listen(PORT, () => {

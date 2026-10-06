@@ -1354,8 +1354,14 @@
     var skills = list(g('regSkills'));
     if (skills.length) out.skills = skills;
 
+    /* The work-mode group only. 0109 put more .opt-row checkboxes on the
+       form (Preferred Employment Type, Preferred Communication - "email"
+       ticked by default), and the bare '.opt-row' selector swept them all
+       in: every form registration stored "email" as a work mode, and a
+       candidate who ticked enough of them had the whole profile PUT
+       refused ("at most 10"), so the profile was never saved. */
     var modes = [].slice.call(
-      document.querySelectorAll('.opt-row input[type="checkbox"]:checked'))
+      document.querySelectorAll('#regWorkModeGroup input[type="checkbox"]:checked'))
       .map(function (cb) { return cb.value; });
     if (modes.length) out.preferredWorkModes = modes;
 
