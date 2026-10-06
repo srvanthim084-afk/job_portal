@@ -666,7 +666,7 @@
         var mine = { rec: rec, chunks: [], started: Date.now() };
         R = mine;
         rec.ondataavailable = function (e) { if (e.data && e.data.size) mine.chunks.push(e.data); };
-        rec.start(1000);
+        rec.start(250);
         return true;
       } catch (e) {
         console.error('TeamLink: the answer could not be recorded on this device.', e);
@@ -691,7 +691,14 @@
           resolve(blob && blob.size ? { blob: blob, durationMs: Date.now() - cur.started } : null);
         };
         cur.rec.onstop = finish;
-        try { if (cur.rec.state !== 'inactive') cur.rec.stop(); else finish(); } catch (e) { finish(); }
+        try {
+          if (cur.rec.state !== 'inactive') {
+            /* Ask for what has been captured so far BEFORE stopping: a recorder stopped just ahead of its
+               first time slice can otherwise hand back nothing at all. */
+            try { if (cur.rec.state === 'recording') cur.rec.requestData(); } catch (e) { /* stop() still flushes */ }
+            cur.rec.stop();
+          } else finish();
+        } catch (e) { finish(); }
         setTimeout(finish, 3000);
       });
     },

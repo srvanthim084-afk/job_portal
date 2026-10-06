@@ -301,7 +301,7 @@ await check(`timer: amber in the last 10 s, and the answer is submitted for the 
 await check('Submit early (Enter on the focused button), then ONE follow-up on the same question', async () => {
   await p.evaluate(() => { window.__say = 'Yes I can.'; });
   await waitListening(p);
-  await p.waitForTimeout(900);
+  await p.waitForTimeout(2600);
   await p.focus('#tlviSubmit');
   await p.keyboard.press('Enter');
   await p.waitForFunction(() => /Follow-up/.test((document.querySelector('.tlvi-q') || {}).textContent || ''), null, { timeout: 10000 });
@@ -311,7 +311,7 @@ await check('Submit early (Enter on the focused button), then ONE follow-up on t
   await shot(p, '3-follow-up');
   await p.evaluate(() => { window.__say = 'Last year I used our ATS and LinkedIn to fill a warehouse drive, and we hired 12 people in two weeks.'; });
   await waitListening(p);
-  await p.waitForTimeout(900);
+  await p.waitForTimeout(2600);
   await p.click('#tlviSubmit');
   await p.waitForFunction(() => /^Question 3 of/.test((document.getElementById('tlviQn') || {}).textContent || '')
     && !/Follow-up/.test(document.querySelector('.tlvi-q').textContent), null, { timeout: 10000 });
@@ -374,7 +374,7 @@ await check('layout at 390: camera, question, transcript, controls stacked; cont
 await check('End interview: a confirmation that Escape cancels; confirming submits; no score is shown', async () => {
   await p.evaluate(() => { window.__say = 'I keep a tracker in Excel for every requisition and update it daily.'; });
   await waitListening(p);
-  await p.waitForTimeout(900);
+  await p.waitForTimeout(2600);
   await p.click('#tlviEnd');
   await p.waitForSelector('.tlvi-dialog[role="alertdialog"]', { timeout: 4000 });
   must(/Keep going/.test(await p.evaluate(() => document.activeElement.textContent)), 'the safe choice is not focused');
@@ -385,6 +385,7 @@ await check('End interview: a confirmation that Escape cancels; confirming submi
   await p.focus('#tlviEnd');
   await p.keyboard.press('Enter');
   await p.waitForSelector('.tlvi-dialog', { timeout: 4000 });
+  await p.waitForFunction(() => document.activeElement && document.activeElement.closest('.tlvi-dialog'), null, { timeout: 2000 });
   await p.keyboard.press('Tab');
   must(/End interview/.test(await p.evaluate(() => document.activeElement.textContent)), 'Tab did not reach End interview');
   await p.keyboard.press('Enter');
@@ -392,6 +393,8 @@ await check('End interview: a confirmation that Escape cancels; confirming submi
   const done = await text(p, '.tlvi-done');
   must(/Your interview is complete/.test(done) && /What happens next/.test(done), done.slice(0, 120));
   must(!/\d+\s*%|score|rank|shortlist|reject/i.test(done), `the candidate is shown a result: ${done}`);
+  await p.waitForFunction(() => window.__spoken.some((x) => /interview is complete/i.test(x)), null, { timeout: 4000 }).catch(() => {});
+  await p.waitForTimeout(500);
   must(await p.evaluate(() => window.__spoken.filter((x) => /interview is complete/i.test(x)).length === 1), 'the thank-you was not said once');
   await p.waitForFunction(() => window.TLVI.uploads.pending() === 0, null, { timeout: 60000 });
   await shot(p, '6-complete');
