@@ -634,6 +634,9 @@ await check('touch phone (360, taps): tap the icon, tap keys, tap Close; docked;
   const after = await tp.evaluate(() => ({ open: TLKeyboard.isOpen(), im: document.querySelector('.tlvk-cb-input').getAttribute('inputmode'),
     onIcon: document.activeElement === document.querySelector('.tlvk-cb-input + .tlvk-icon') }));
   must(!after.open && after.im === null && after.onIcon, JSON.stringify(after));
+  await tp.waitForTimeout(800);
+  const hash = await tp.evaluate(() => location.hash);
+  must(hash === '#/candidate/career', 'the tap on Close fell through to the page underneath: ' + hash);
   await tp.screenshot({ path: join(SHOTS, '360-touch-after-close.png') });
   await tc.close();
 });

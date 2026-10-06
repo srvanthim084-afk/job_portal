@@ -248,7 +248,7 @@
    * ------------------------------------------------------------------ */
   var S = {
     root: null, group: null, open: false, field: null, fieldId: '', prevIM: null, committed: '',
-    mode: 'abc', compact: null, built: '', shift: 0, lastShift: 0,
+    swallowUntil: 0, mode: 'abc', compact: null, built: '', shift: 0, lastShift: 0,
     repeatT: null, repeatI: null, pad: null, lift: null, bodyMO: null,
   };
 
@@ -267,6 +267,14 @@
     r.addEventListener('pointerdown', onKeyPointerDown);
     r.addEventListener('mousedown', function (e) { e.preventDefault(); });        // the field keeps the focus
     r.addEventListener('click', onKeyClick);
+    /* A key acts on pointerdown. When that closes the keyboard, the click that follows a touch lands
+       on whatever was underneath it (the page's bottom bar, say): swallow it. */
+    document.addEventListener('click', function (e) {
+      if (Date.now() < S.swallowUntil) {
+        S.swallowUntil = 0;                       // that one click only
+        e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+      }
+    }, true);
     r.addEventListener('contextmenu', function (e) { e.preventDefault(); });
     document.body.appendChild(r);
     S.root = r;
@@ -475,6 +483,7 @@
     window.addEventListener('pointerup', stopRepeat, true);
     window.addEventListener('pointercancel', stopRepeat, true);
     var name = k.getAttribute('data-k');
+    if (name === 'close') S.swallowUntil = Date.now() + 700;
     act(name, k);
     if (name === 'bksp') {
       S.repeatT = setTimeout(function () {
