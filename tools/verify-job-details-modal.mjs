@@ -72,8 +72,12 @@ for (const [label, vp, mobile] of [['desktop', { width: 1366, height: 820 }, fal
 
   await check(`${label}: the card's "Job description" opens a full-window modal with the ✕ in view`, async () => {
     await p.evaluate(() => window.scrollTo(0, 260));
-    const btn = await p.$(`#app button[onclick*="tlJdModal('${jobId}')"]`);
-    if (btn) { await btn.scrollIntoViewIfNeeded(); await btn.click(); } else await p.evaluate((id) => window.tlJdModal(id), jobId);
+    /* The card re-renders once its AI Match arrives, so the button is found and
+       clicked through a locator (re-resolved on each try), never a stale handle. */
+    const sel = `#app button[onclick*="tlJdModal('${jobId}')"]`;
+    await p.waitForTimeout(1200);
+    if (await p.locator(sel).count()) await p.locator(sel).first().click({ timeout: 10000 });
+    else await p.evaluate((id) => window.tlJdModal(id), jobId);
     await p.waitForSelector('#fcrModalHost.tl-jd-full .fcr-jd-body');
     /* where the page stood when the modal opened - it must not move until it closes */
     const before = await p.evaluate(() => scrollY);
