@@ -46,7 +46,7 @@ try {
   /* ---- a candidate, and an application ---------------------------- */
   const reg = await api('post', '/auth/register', {
     name: 'Interview Email Test', email: EMAIL, password: PASSWORD,
-    phone: '+91 90000 00003', location: 'Hyderabad', role: 'candidate',
+    phone: '+91 90000 00003', location: 'Hyderabad', role: 'candidate', preferredLocation: 'Hyderabad', expectedCtc: 4, noticePeriod: 'Immediate', preferredWorkModes: ['Hybrid'],
   });
   candidateId = (reg.candidate && reg.candidate.id) || reg.candidateId || null;
   check(!!candidateId, `a test candidate exists (${candidateId})`);

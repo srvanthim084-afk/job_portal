@@ -3284,6 +3284,11 @@
   if (typeof prevAiivSubmit === 'function') {
     window.aiivSubmit = function () {
       var out = prevAiivSubmit.apply(this, arguments);
+      /* The video interview screen (teamlink-ai-video-interview.js) saves
+         every answer as it is given and finishes the session itself, through
+         TL.finishAiSession below. Nothing is posted twice, and the old path
+         that sent the BROWSER's own scores (recordAiInterview) is not taken. */
+      if (window.TLVI && window.TLVI.ownsSubmission) return out;
       try {
         var appId = TL.__aiivAppId || (window.AIIV && window.AIIV.appId);
 
@@ -3434,6 +3439,21 @@
     var app = (DATA.applications || []).filter(function (a) {
       return a.applicationId === appId || a.id === appId;
     }).pop();
+    /* The portal's own reference may not be on the application row (a
+       record made in this browser before the row was refreshed). The
+       record itself knows its candidate and job, and so does the row. */
+    if (!app && window.__LC && window.__LC.apps) {
+      var local = null;
+      Object.keys(window.__LC.apps).forEach(function (k) {
+        if (window.__LC.apps[k] && window.__LC.apps[k].applicationId === appId) local = window.__LC.apps[k];
+      });
+      if (local) {
+        app = (DATA.applications || []).filter(function (a) {
+          return a.candidateId === local.candidateId && a.jobId === local.jobId && !/^lc_/.test(String(a.id));
+        }).pop() || null;
+        if (app) return { rec: local, app: app, applicationId: app.id };
+      }
+    }
     if (!app) return null;
 
     var rec = (typeof window.__lcRecFor === 'function')
@@ -3580,7 +3600,40 @@
     var found = TL.aiivRec(appId);
     if (!found || !found.applicationId) return Promise.resolve(null);
 
-    var p = api.post('/ai-interviews/session', { applicationId: found.applicationId })
+    /*
+     * CARRY ON, DON'T START AGAIN.
+     *
+     * A reload or a dropped connection used to throw the interview away:
+     * every answer lived in the page until the end. Answers are now saved
+     * as they are given, so an interview this browser was in the middle
+     * of (its id is in sessionStorage) is RESUMED from what the SERVER
+     * holds - GET /progress says which question is next. sessionStorage
+     * only remembers which interview it was and the transcript lines;
+     * the server is the record. An interview the proctor stopped is not
+     * resumed.
+     */
+    var kept = window.TLVI ? window.TLVI.store.get(appId) : null;
+    var resume = (kept && kept.interviewId && !kept.stopped)
+      ? api.get('/ai-interviews/' + encodeURIComponent(kept.interviewId) + '/progress')
+        .then(function (p) {
+          if (!p || !p.resumable || p.applicationId !== found.applicationId) return null;
+          var at = p.resumeAt;
+          var q = at ? (p.questions || []).filter(function (x) { return x.seq === at.seq; })[0] : null;
+          if (window.TLVI) window.TLVI.transcript.reset(kept.lines || []);
+          if (typeof window.tlIntegrityStart === 'function') window.tlIntegrityStart(p.interviewId);
+          return {
+            interviewId: p.interviewId, expiresAt: p.expiresAt, startedAt: p.startedAt,
+            speech: p.speech || null, questions: p.questions || [], resumed: true,
+            resumeAt: at ? { seq: at.seq, part: at.part,
+              followUp: at.part === 'followup' && q && q.followUp ? q.followUp.question : null,
+              kind: at.part === 'followup' && q && q.followUp ? q.followUp.kind : null } : null,
+          };
+        }, function () { return null; })
+      : Promise.resolve(null);
+
+    var p = resume.then(function (r) {
+      return r || api.post('/ai-interviews/session', { applicationId: found.applicationId });
+    })
       .then(function (r) {
         var ses = {
           appId: appId,
@@ -3588,9 +3641,13 @@
           expiresAt: r.expiresAt,
           startedAt: r.startedAt,
           deadlineHours: r.deadlineHours,
+          speech: r.speech || null,
+          resumeAt: r.resumeAt || null,
+          resumed: !!r.resumed,
           questions: (r.questions || []).map(toProtoQuestion),
         };
         TL.__aiivSession = ses;
+        if (window.TLVI) window.TLVI.store.save(appId, { interviewId: ses.interviewId, stopped: null });
         return ses;
       })
       .catch(function (err) {
@@ -3603,6 +3660,42 @@
 
     TL.__aiivPlan = p;
     return p;
+  };
+
+  /**
+   * Finish the session on the server and reflect the SERVER's result.
+   *
+   * The video interview screen calls this once every answer has already
+   * been saved (POST /answer, one per question as it is given). It throws
+   * on failure so the screen can retry and say so, rather than marking an
+   * interview complete that the server never finished.
+   */
+  TL.finishAiSession = function (rec, ses) {
+    return api.post('/ai-interviews/' + encodeURIComponent(ses.interviewId) + '/finish', {})
+      .then(function (res) {
+        if (res && res.alreadyFinished) return { id: res.aiInterviewId, status: 'completed' };
+        var saved = res && res.aiInterview;
+        if (!saved) throw new ApiFailure('SERVER_ERROR', 'The server did not confirm the interview.');
+        TL.aiInterviews = (TL.aiInterviews || []).filter(function (x) { return x.id !== saved.id; });
+        TL.aiInterviews.unshift(saved);
+        var ai = rec.aiInterview || (rec.aiInterview = {});
+        ai.serverId = saved.id;
+        // The pipeline screens read the score off the candidate and the
+        // application; the server computed it. The interview screen itself
+        // never shows it.
+        var c = DATA.candidateById(saved.candidateId);
+        if (c) c.aiInterviewScore = saved.overallPercentage;
+        var app = (DATA.applications || []).filter(function (x) {
+          return x.candidateId === saved.candidateId && x.jobId === saved.jobId;
+        }).pop();
+        if (app) {
+          app.aiScore = saved.overallPercentage;
+          app.interviewScore = saved.overallPercentage;
+          if (app.stage === 'applied' || app.stage === 'ai_screening') app.stage = 'ai_interview_done';
+        }
+        TL.__aiivSession = null;
+        return saved;
+      });
   };
 
   /** Send the transcripts to the session that asked the questions. */
@@ -3691,6 +3784,17 @@
     };
   }
 
+  /** The interview screen's own record for a portal reference. */
+  function localRecByRef(ref) {
+    var lc = window.__LC;
+    if (!ref || !lc || !lc.apps) return null;
+    var out = null;
+    Object.keys(lc.apps).forEach(function (k) {
+      if (lc.apps[k] && lc.apps[k].applicationId === ref) out = lc.apps[k];
+    });
+    return out;
+  }
+
   // Ask the server's questions, not the browser's.
   var prevBeginQuestions = window.aiivBeginQuestions;
   if (typeof prevBeginQuestions === 'function') {
@@ -3700,25 +3804,24 @@
       var plan = TL.__aiivPlan || TL.planAiSession(appId);
 
       return Promise.resolve(plan).then(function (ses) {
-        // The prototype's own start: it sets the phase, renders, and
-        // schedules the first question 60ms later. It also regenerates the
-        // question list, so the server's set is put back immediately
-        // afterwards - before anything reads it.
-        var out = prevBeginQuestions.apply(self, args);
-
-        if (ses && ses.questions && ses.questions.length) {
-          var found = TL.aiivRec(ses.appId);
-          var rec = found && found.rec;
-          if (rec && rec.aiInterview) {
+        /* The server's questions go on the record BEFORE the interview
+           module starts, because it no longer has questions of its own to
+           fall back on: no session means it shows "We could not prepare
+           your interview" with Try again. The record is the one the screen
+           itself reads (looked up by the portal reference first). */
+        var rec = localRecByRef(appId) || ((TL.aiivRec(appId) || {}).rec);
+        if (rec && rec.aiInterview) {
+          if (ses && ses.questions && ses.questions.length) {
             rec.aiInterview.questions = ses.questions.slice();
             rec.aiInterview.expiresAt = ses.expiresAt;
             // The deadline the server will actually enforce.
             if (ses.expiresAt) rec.aiInterview.deadline = ses.expiresAt;
-            try { if (typeof window.persist === 'function') window.persist(); } catch (e) {}
-            if (typeof window.render === 'function') window.render();
+          } else {
+            rec.aiInterview.questions = [];
           }
+          try { if (typeof window.persist === 'function') window.persist(); } catch (e) {}
         }
-        return out;
+        return prevBeginQuestions.apply(self, args);
       });
     };
   }

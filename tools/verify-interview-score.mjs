@@ -64,7 +64,7 @@ async function interview(tag, name, answerFor) {
   const reg = await api('post', '/auth/register', {
     name, email, password: 'Str0ngPass123',
     phone: '+91 90000 0' + String(made.length).padStart(4, '0'),
-    location: 'Hyderabad', role: 'candidate',
+    location: 'Hyderabad', role: 'candidate', preferredLocation: 'Hyderabad', expectedCtc: 4, noticePeriod: 'Immediate', preferredWorkModes: ['Hybrid'],
   });
   const candidateId = (reg.candidate && reg.candidate.id) || reg.candidateId;
   made.push({ candidateId, email, name });
