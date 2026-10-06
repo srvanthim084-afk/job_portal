@@ -195,6 +195,18 @@ for (const [label, vp, mobile] of [['desktop', { width: 1366, height: 820 }, fal
   });
   if (!A || !B) { console.log(`  STOP  ${label}: steps 3-15 need the two jobs from step 2`); failed += 1; await ctx.close(); continue; }
   await check(`${label} 3-5. View Job opens the complete page of that job, at #/job/<its id>, and stays`, async () => {
+    /* The AI Match answer arrives after the cards are painted and adds each card's gap line, which moves
+       the cards below it. "Back to Jobs" puts the card where it was when it was CLICKED, so that is the
+       position to compare with: take it once the cards have stopped moving, immediately before the click. */
+    {
+      let prev = null, same = 0;
+      for (let i = 0; i < 40 && same < 3; i++) {
+        const t = await viewJobBtn(p, A.id).evaluate((e) => Math.round(e.closest('.rj-card').getBoundingClientRect().top));
+        same = t === prev ? same + 1 : 0; prev = t;
+        await p.waitForTimeout(250);
+      }
+      cardTop = prev;
+    }
     await viewJobBtn(p, A.id).click();
     await waitTitle(p, A.title);
     await p.waitForTimeout(2500);                     /* nothing sends it back by itself */
