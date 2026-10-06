@@ -584,6 +584,9 @@
   var filters = { status: '', notice: '', ctc: '' };
 
   function appIdsIn(row) {
+    /* The Applications table names its row's application (data-app-id). */
+    var own = row.getAttribute('data-app-id');
+    if (own && !/^primary__/.test(own)) return [own];
     var out = [];
     var html = row.innerHTML;
     var re = /'(app_[A-Za-z0-9_-]+)'/g; var m;
@@ -671,10 +674,17 @@
 
   function bulkSend() {
     var ids = [];
-    document.querySelectorAll('tr[data-tlsq-app]').forEach(function (tr) {
-      var cb = tr.querySelector('input[type=checkbox]');
-      if (cb && cb.checked && tr.style.display !== 'none') ids = ids.concat(tr.getAttribute('data-tlsq-app').split(','));
-    });
+    var sel = window.TLAppSelection;
+    if (sel && typeof sel.active === 'function' && sel.active()) {
+      /* The selection is the Set behind the "N selected" bar - the same
+         applications it counts, including any a filter has hidden. */
+      ids = sel.get();
+    } else {
+      document.querySelectorAll('tr[data-tlsq-app]').forEach(function (tr) {
+        var cb = tr.querySelector('input[type=checkbox]');
+        if (cb && cb.checked && tr.style.display !== 'none') ids = ids.concat(tr.getAttribute('data-tlsq-app').split(','));
+      });
+    }
     if (!ids.length) { say('Tick the candidates to send the questions to', '☑️'); return; }
     api().post('/screening/send', { applicationIds: ids }).then(function (r) {
       var skipped = r.results.filter(function (x) { return x.skipped; }).length;

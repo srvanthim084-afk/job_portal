@@ -5504,7 +5504,7 @@ function pageRecruiterDash(section, params){
     <div class="panel-body pad0"><div class="tbl-wrap tl-apps-wrap"><table class="data">
       <thead><tr><th>Candidate<span class="th-sub">Location · Experience · Ref ID</span></th><th>Applied for<span class="th-sub">Job · Client</span></th><th>Applied on<span class="th-sub">Date · Source</span></th><th>AI Match<span class="th-sub">Match · Interview score</span></th><th>Stage</th><th>Actions</th></tr></thead>
       <tbody>${(typeof window.sortAppsNewestFirst==='function'?sortAppsNewestFirst(apps):apps).map(a=>{ const c=DATA.candidateById(a.candidateId), j=DATA.jobById(a.jobId);
-        return `<tr><td class="clickable" onclick="navigate('/recruiter/candidate-profile?id=${c.id}')">${personCell(c)}</td><td>${esc(j.title)}${(typeof window.tlCoTag==='function')?tlCoTag(j):''}</td><td style="font-size:12px;white-space:nowrap">${typeof window.appliedOnHtml==='function'?appliedOnHtml(a,c):esc(a.appliedAt||'—')}</td><td><span class="score ${scoreClass(a.matchScore)}">${a.matchScore}%</span>${typeof window.tlInterviewTag==='function'?tlInterviewTag(a,typeof c!=='undefined'?c:null):''}</td><td>${stageBadge(a.stage)}</td>
+        return `<tr data-app-id="${esc(a.id)}"><td class="clickable" onclick="navigate('/recruiter/candidate-profile?id=${c.id}')">${personCell(c)}</td><td>${esc(j.title)}${(typeof window.tlCoTag==='function')?tlCoTag(j):''}</td><td style="font-size:12px;white-space:nowrap">${typeof window.appliedOnHtml==='function'?appliedOnHtml(a,c):esc(a.appliedAt||'—')}</td><td><span class="score ${scoreClass(a.matchScore)}">${a.matchScore}%</span>${typeof window.tlInterviewTag==='function'?tlInterviewTag(a,typeof c!=='undefined'?c:null):''}</td><td>${stageBadge(a.stage)}</td>
         <td class="row-actions">${(typeof window.tlNeedsScreening==='function'?tlNeedsScreening(a):(a.stage==='applied'||a.stage==='ai_screening')) ? `<button class="btn btn-ai btn-sm" onclick="runAIScreeningForApp('${a.id}')">Run AI Screening</button>` : (typeof window.tlScreenedTag==='function'?tlScreenedTag(a):'')}${(()=>{
             /* THE HANDOVER. A recruiter at Recruiter Review is not
                "advancing" anything - they are giving the file to the BDE,
@@ -29942,6 +29942,8 @@ table.data td .tl-af b{white-space:normal}
 <script src="teamlink-candidate-source.js"></script>
 <!-- One Export menu for every recruiter table that lists people. -->
 <script src="teamlink-export.js"></script>
+<!-- Recruiter -> Applications: one selection Set behind the row tick-boxes, the "N selected" bar and every bulk action on that table. -->
+<script src="teamlink-app-selection.js"></script>
 <!-- Save this search: one list of saved searches and job alerts, kept by the server. -->
 <script src="teamlink-saved-searches.js"></script>
 <!-- Location selector, every level: State -> District -> Mandal -> Village. -->
