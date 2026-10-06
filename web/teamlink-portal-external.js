@@ -164,6 +164,13 @@
       + '</div></article></div></section>';
   }
 
+  /* The header is chosen where every page's is (index.html
+     tlCandidateChrome): a signed-in candidate gets the candidate shell with
+     External Jobs lit; anyone else gets this page exactly as before. */
+  function chrome(html) {
+    var c = typeof window.tlCandidateChrome === 'function' ? window.tlCandidateChrome(html) : null;
+    return c === null ? html : c;
+  }
   function wrapDetail() {
     var prev = window.pageJobDetail;
     if (typeof prev !== 'function' || prev.__tlpx) return;
@@ -172,12 +179,12 @@
       var j = X.byId[id];
       if (!j || (!j.__full && !j.missing)) {
         one(id);
-        if (!j) return '<section class="block" style="padding-top:48px"><div class="wrap"><div class="panel"><div class="panel-body" style="text-align:center;padding:40px">Loading the job…</div></div></div></section>';
+        if (!j) return chrome('<section class="block" style="padding-top:48px"><div class="wrap"><div class="panel"><div class="panel-body" style="text-align:center;padding:40px">Loading the job…</div></div></div></section>');
       }
       if (j && j.title && !j.missing) {
         try { document.title = j.title + (j.company ? ' at ' + j.company : '') + ' · External job via ' + (j.sourceName || j.source) + ' · TeamLink'; } catch (e) { /* ignore */ }
       }
-      return detailHtml(j);
+      return chrome(detailHtml(j));
     };
     next.__tlpx = true;
     window.pageJobDetail = next;
