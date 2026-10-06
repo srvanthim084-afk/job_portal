@@ -132,3 +132,8 @@ presenting an estimate as a content-based result.
 tools/verify-rls.mjs     6 tests — who can and cannot see a score
 api/test/api.test.mjs   10 tests — recording, recomputation, refusals, visibility
 ```
+
+---
+
+The candidate-facing screen, the interviewer rules, follow-ups, recordings
+and reconnect behaviour are described in `docs/AI-VIDEO-INTERVIEW.md`.

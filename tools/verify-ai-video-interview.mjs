@@ -407,7 +407,7 @@ await check('on the server: completed, the transcript per question, recordings l
   const r = mine.recs;
   must(r.length >= 4, `${r.length} recordings: ${r.map((x) => x.seq + x.part).join(',')}; failed uploads: ${JSON.stringify(await p.evaluate(() => TLVI.uploads.failed()))}`);
   must(r.every((x) => x.candidateId === mine.cand && x.jobId === jobId && x.interviewId === interviewId && x.size > 0), 'a recording is not linked right');
-  must(r.some((x) => x.seq === 2 && x.part === 'followup'), 'the follow-up answer has no recording');
+  must(r.some((x) => x.seq === 2 && x.part === 'followup'), `the follow-up answer has no recording (have ${r.map((x) => x.seq + x.part).join(',')}; failed ${JSON.stringify(await p.evaluate(() => TLVI.uploads.failed()))})`);
   must(r.some((x) => x.seq === 3), 'the question answered across the drop has no recording');
 
   const staff = await rp.evaluate(async ({ id, cand }) => {
