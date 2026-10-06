@@ -1493,7 +1493,64 @@ function siteFooter(){
     </div>
   </footer>`;
 }
+/* WHICH HEADER A PAGE GETS - the one place that decides.
+
+   A signed-in candidate who opens a job, a company or the jobs board
+   from the portal stays in the portal: those pages are drawn inside the
+   candidate shell (cpShell, the same header every #/candidate/* page has:
+   Jobs · Internships · Walk-in Jobs · Companies · Career Resources ·
+   External Jobs, the bell, messages, the profile menu, and the phone
+   drawer). Signed out, and for recruiter / client / admin, nothing
+   changes: the public header and footer.
+
+   CANDIDATE_CHROME maps a route to the tab that is lit ('job' lights
+   Jobs, '' lights none). A route not in it is public-site only - home,
+   login, register, the demos - and keeps the public header for everyone.
+
+   While the page is still parsing, or the portal is still asking the
+   server who is signed in (a refresh), the answer is not known yet: the
+   page is drawn with no header at all, never the public one, so a
+   candidate's refresh does not flash the public header before the
+   candidate header arrives. The render that follows the answer decides. */
+const CANDIDATE_CHROME = { job:'job', jobs:'job', company:'companies', about:'' };
+function tlCandidateChromeTab(){
+  const parts = currentRoute().parts;
+  const p0 = parts[0] || '';
+  if(!Object.prototype.hasOwnProperty.call(CANDIDATE_CHROME, p0)) return null;
+  if(p0==='job' && /^xjob_/.test(parts[1]||'')) return 'external-jobs';
+  return CANDIDATE_CHROME[p0];
+}
+/* 'unknown' | 'candidate' | 'public' - from the session the page already has */
+function tlChromeAudience(){
+  /* still parsing (scripts paint before teamlink-integration.js has even
+     loaded), or loaded and still waiting for /api/bootstrap - whose
+     session, not a stored one, is the signed-in user */
+  if(document.readyState==='loading' || (window.TL && TL.ready!==true)) return 'unknown';
+  if(STATE.session && STATE.session.role==='candidate') return 'candidate';
+  return 'public';
+}
+/* The candidate shell around a page, or null when this page/visitor keeps
+   its own layout. Shared by withChrome and the external job page. */
+function tlCandidateChrome(bodyHtml){
+  const tab = tlCandidateChromeTab();
+  if(tab===null) return null;
+  const who = tlChromeAudience();
+  if(who==='unknown') return `<main>${bodyHtml}</main>`;
+  if(who!=='candidate' || typeof window.cpShell!=='function') return null;
+  if(!DATA.candidateById(STATE.session.id)) return `<main>${bodyHtml}</main>`;   /* profile not loaded yet */
+  let html = window.cpShell(tab, `<main>${bodyHtml}</main>`);
+  /* the page keeps its own spacing: the shell adds none around it */
+  html = html.replace('<div class="cp-wrap">', '<div class="cp-wrap tl-cpx">');
+  if(tab==='job'){
+    html = html.replace(/<a class="[^"]*"( onclick="tlNavJobs\(\)">Jobs<\/a>)/, '<a class="on"$1')
+      .replace(/<button class="[^"]*"( onclick="location\.hash='#\/candidate\/search'"><i>💼<\/i>Jobs<\/button>)/, '<button class="on"$1');
+  }
+  return html;
+}
+window.tlCandidateChrome = tlCandidateChrome;
 function withChrome(active, bodyHtml){
+  const cand = tlCandidateChrome(bodyHtml);
+  if(cand!==null) return cand;
   return `${siteHeader(active)}<main>${bodyHtml}</main>${siteFooter()}`;
 }
 </script>
@@ -25090,6 +25147,11 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
    the top of the page and covered "← Back to Jobs". On the job page the
    header grows to fit. */
 @media (max-width:860px){ body:has(.tljd) .site-header-inner{height:auto} }
+/* A job / company / jobs-board page inside the candidate shell
+   (tlCandidateChrome) keeps its own spacing: the shell adds no padding
+   around it, except room on a phone for the shell's bottom tab bar. */
+body .cp-wrap.tl-cpx{padding:0}
+@media (max-width:900px){ body .cp-wrap.tl-cpx{padding:0 0 96px} }
 @media (max-width:920px){
   .tljd .two-col{display:flex;flex-direction:column;gap:0}
   .tljd .two-col > div{display:contents}
