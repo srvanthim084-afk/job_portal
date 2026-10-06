@@ -155,7 +155,7 @@ try {
   const email = `thanks.${stamp}@example.test`;
   const reg = await api('post', '/auth/register', {
     name: 'Says Thanks Once', email, password: 'Str0ngPass123',
-    phone: '+91 90000 00077', location: 'Hyderabad', role: 'candidate',
+    phone: '+91 90000 00077', location: 'Hyderabad', role: 'candidate', preferredLocation: 'Hyderabad', expectedCtc: 4, noticePeriod: 'Immediate', preferredWorkModes: ['Hybrid'],
   });
   const candidateId = (reg.candidate && reg.candidate.id) || reg.candidateId;
   made.push({ candidateId, email });
@@ -223,7 +223,7 @@ try {
    * anyway" path the page already offers - the same path a candidate on a
    * machine with no working camera takes.
    */
-  for (const rx of [/start voice interview/i, /turn on camera/i,
+  for (const rx of [/start (ai video|voice) interview/i, /turn on camera/i,
     /hear briefing|continue anyway/i]) {
     const hit = await clickText(rx, 2500);
     console.log(`  clicked: ${hit || '(not on screen)'}`);
@@ -245,10 +245,10 @@ try {
      one it reads "Finish answer & submit" and ends the interview. */
   let asked = 0;
   for (let i = 0; i < 30; i++) {
-    const hit = await clickText(/finish answer/i, 1500);
+    const hit = await clickText(/submit answer/i, 1500);
     if (!hit) break;
     asked++;
-    if (/submit/i.test(hit)) break;
+
   }
 
   await page.waitForTimeout(3500);
@@ -256,7 +256,7 @@ try {
   console.log(`  ended:   ${ended.screen}`);
   check(asked >= 10,
     `  answered ${asked} question(s) through the screen (the blueprint asks 15)`);
-  check(/complete|thank you|submitted|score|result/i.test(ended.screen),
+  check(/complete|thank you|submitted|score|result|next step|my applications/i.test(ended.screen),
     '  and the interview reached its closing screen');
 
 

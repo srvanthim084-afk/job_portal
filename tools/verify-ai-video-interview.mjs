@@ -203,6 +203,8 @@ await check('device check: camera, microphone and internet pass; the video is mi
   must(v.fit === 'cover', `object-fit ${v.fit}`);
   must(v.live && v.w > 0, 'no live camera picture');
   must(v.onCam, 'no "You are on camera"');
+  must(await p.evaluate(() => getComputedStyle(document.getElementById('tlviCamOff')).display === 'none'),
+    'the camera-off avatar is drawn over the live picture');
   must(/Internet/.test(await text(p, '.tlvi-checklist')) && /Connected/.test(await text(p, '.tlvi-checklist')), 'internet check');
   await shot(p, '1-device-check-1280');
 });

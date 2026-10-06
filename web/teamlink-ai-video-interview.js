@@ -199,6 +199,11 @@
     'background:rgba(243,244,248,.97);box-shadow:0 -6px 18px rgba(16,21,36,.08);padding:10px 12px calc(10px + env(safe-area-inset-bottom))}',
     '.tlvi-controls .tlvi-btn{flex:1 1 calc(50% - 12px)}',
     '}',
+    /* `hidden` must win over the display rules above (the camera-off avatar is display:flex). */
+    '.tlvi [hidden]{display:none !important}',
+    /* The interview is a focused flow with its own controls pinned to the bottom of the phone,
+       so the portal\'s bottom tab bar and floating assistant button step aside while it is on screen. */
+    '@media (max-width:767px){body:has(.tlvi[data-phase]) .cap-tabs,body:has(.tlvi[data-phase]) .cp-bottom,body:has(.tlvi[data-phase]) .cp-fab{display:none !important}}',
     '@media (prefers-reduced-motion:reduce){',
     '.tlvi *,.tlvi-modal *{transition:none !important;animation:none !important;scroll-behavior:auto !important}',
     '}',

@@ -121,7 +121,7 @@ const api = async (m, p, b) => {
 try {
   const reg = await api('post', '/auth/register', {
     name: 'Proctor Test', email: EMAIL, password: PASSWORD,
-    phone: '+91 90000 00004', location: 'Hyderabad', role: 'candidate',
+    phone: '+91 90000 00004', location: 'Hyderabad', role: 'candidate', preferredLocation: 'Hyderabad', expectedCtc: 4, noticePeriod: 'Immediate', preferredWorkModes: ['Hybrid'],
   });
   candidateId = (reg.candidate && reg.candidate.id) || reg.candidateId || null;
   await api('post', '/auth/login', { email: EMAIL, password: PASSWORD, role: 'candidate' });
