@@ -457,6 +457,19 @@
     el.style.transform = 'scaleX(' + v.toFixed(3) + ')';
   };
 
+  /** The device check heard the microphone: tick it in place, so the live camera is not re-created. */
+  TLVI.micHeardNow = function () {
+    var item = document.querySelectorAll('.tlvi-check')[1];
+    if (!item) return;
+    item.setAttribute('data-state', 'ok');
+    var svg = item.querySelector('svg');
+    if (svg) svg.outerHTML = I.ok;
+    var sp = item.querySelector('div > span:last-of-type');
+    if (sp) sp.textContent = 'We can hear you.';
+    var b = item.querySelector('b span');
+    if (b) b.textContent = '(passed)';
+  };
+
   TLVI.status = function (text, icon) {
     var s = byId('aiivStatus');
     if (s) s.textContent = text;

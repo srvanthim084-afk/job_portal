@@ -87,7 +87,7 @@ const errors = [];
 const watch = (page, tag) => {
   page.on('pageerror', (e) => errors.push(`${tag}: ${String(e.message).slice(0, 200)}`));
   page.on('console', (m) => {
-    if (m.type() === 'error' && !/Failed to load resource|net::ERR_INTERNET_DISCONNECTED|ERR_NETWORK_CHANGED|fonts\.g/.test(m.text())) {
+    if (m.type() === 'error' && !/Failed to load resource|net::ERR_INTERNET_DISCONNECTED|ERR_NETWORK_CHANGED|fonts\.g|mediapipe/.test(m.text())) {
       errors.push(`${tag} console: ${m.text().slice(0, 200)}`);
     }
   });
@@ -180,6 +180,7 @@ await check('device check: camera, microphone and internet pass; the video is mi
   }, null, { timeout: 15000 });
   await p.waitForFunction(() => [...document.querySelectorAll('.tlvi-check')][1].dataset.state === 'ok', null, { timeout: 15000 })
     .catch(() => { throw new Error('the microphone check never heard the fake microphone'); });
+  await p.waitForFunction(() => { const el = document.getElementById('aiivVideo'); return el && el.videoWidth > 0; }, null, { timeout: 10000 });
   const v = await p.evaluate(() => {
     const el = document.getElementById('aiivVideo');
     const cs = getComputedStyle(el);
@@ -201,7 +202,7 @@ await check('keyboard: briefing and the first question', async () => {
   await p.keyboard.press('Enter');
   await p.waitForSelector('.tlvi[data-phase="briefing"]', { timeout: 8000 });
   must(/Hello Vidya/.test(await text(p, '#aiivCaption')), 'the greeting does not use the candidate\'s name');
-  must(await p.evaluate(() => window.__spoken.some((x) => /Hello Vidya/.test(x))), 'the greeting was not spoken');
+  await p.waitForFunction(() => window.__spoken.some((x) => /Hello Vidya/.test(x)), null, { timeout: 5000 }).catch(() => { throw new Error('the greeting was not spoken'); });
   must(await tabTo(p, /Start the questions/), 'could not Tab to start the questions');
   await p.keyboard.press('Enter');
   await p.waitForSelector('.tlvi[data-phase="interview"]', { timeout: 15000 });

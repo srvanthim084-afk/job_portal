@@ -26127,7 +26127,7 @@ table.data td .tl-af b{white-space:normal}
     (function loop(){
       if(!AIIV.started || AIIV.phase!=='camera' || AIIV.camState!=='on'){ AIIV.checkRaf=null; return; }
       var l=rmsLevel(); if(window.TLVI) TLVI.meter(l);
-      if(l>VAD_THRESH && !AIIV.micHeard){ AIIV.micHeard=true; aiivRerender(); }
+      if(l>VAD_THRESH && !AIIV.micHeard){ AIIV.micHeard=true; if(window.TLVI) TLVI.micHeardNow(); else aiivRerender(); }
       AIIV.checkRaf=requestAnimationFrame(loop);
     })();
   }
@@ -26413,13 +26413,21 @@ table.data td .tl-af b{white-space:normal}
     if(window.TLVI){ TLVI.transcript.add('AI', text); TLVI.timer(ANSWER_SECS, false); }
     saveLocal();
     setStatus('The interviewer is speaking…', 'speak');
-    sayQuestion(text, function(){
+    var asked=AIIV.askToken=(AIIV.askToken||0)+1;
+    var go=function(){
+      if(AIIV.askToken!==asked) return;      // a newer question took over
+      AIIV.askToken=asked+0.5;               // this one has begun listening
       AIIV.speaking=false;
       if(AIIV.phase!=='interview' || AIIV.paused || AIIV.saving || AIIV.listening) return;
       setStatus(AIIV.micOff ? 'Your microphone is muted. Unmute to answer.'
         : vadAvailable() ? 'Listening. Please answer aloud.' : 'Answer aloud, then press Submit answer.', 'mic');
       startListening();
-    });
+    };
+    sayQuestion(text, go);
+    /* A voice that never reports it has finished (some browsers drop the
+       end event, or have no voice installed) must not leave the candidate
+       waiting in silence with the clock stopped. */
+    setTimeout(go, Math.max(8000, Math.min(30000, String(text).split(/\s+/).length*700+3000)));
   }
   function renderAndAsk(){ AIIV.saving=false; render(); setTimeout(function(){ aiivAttach(); if(window.TLVI){ TLVI.transcript.paint(); TLVI.uploads.paint(); } askCurrent(); }, 60); }
 
