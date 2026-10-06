@@ -233,6 +233,16 @@ test('an instant alert is sent once per job, on every channel chosen', async () 
   assert.match(email.body.subject, /New job for "Crane": Crane Operator/);
   assert.match(email.body.html, /Stop this alert/);
   assert.match(email.body.html, /saved-searches\/stop\?token=/);
+  /* one new job: the job-opportunity format (owner, 2026-10-06), opening with the search it matched */
+  assert.match(email.body.text, /NEW JOB OPPORTUNITY/);
+  assert.match(email.body.text, /Hi! 👋 A new job matching your saved search "Crane" has just been posted/);
+  assert.ok(email.body.text.includes('🏥 Crane Operator'), email.body.text);
+  assert.match(email.body.text, new RegExp(`🔗 \\S+/\\?ss=[^#\\s]+#/job/${jid}`));
+  const sms = mock.received.slice(before).find((m) => m.url === '/sms');
+  assert.ok(sms, 'the SMS reached the mock provider');
+  assert.match(sms.body.message, /^TeamLink: New job for "Crane": Crane Operator/);
+  assert.match(sms.body.message, new RegExp(`Apply: \\S+#/job/${jid}$`));
+  assert.equal(sms.body.message.includes('\n'), false, 'the SMS is the compact one-liner');
 
   // Again, and through the sweep: nothing more.
   await alerts.runSavedSearchInstant(jid, { now: DAYTIME });

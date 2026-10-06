@@ -9,6 +9,7 @@
 
 import { emailLayout } from './layout.js';
 import { houseMessage, houseText } from './messages.js';
+import { jobOpportunityMessages } from './job-opportunity.js';
 import { walkinFacts, dateLabel, timeRange } from '../portal/walkin-jobs.js';
 
 const esc = (s) => String(s ?? '')
@@ -564,6 +565,22 @@ export function buildSavedSearchMessages(c) {
     + `See all results: ${c.searchUrl}\n\n`
     + `Stop this alert: ${c.stopUrl}\n\n— TeamLink`;
 
+  const note = `You get this because you saved the search "${label}" on TeamLink`
+    + ` with ${c.kind === 'instant' ? 'instant' : c.kind} alerts.`;
+
+  /* One new job: the shared job-opportunity format (job-opportunity.js,
+     owner 2026-10-06), opening with the search it matched. A digest of
+     several jobs stays a list - it is a summary, not one opportunity. */
+  if (one) {
+    const j = jobs[0];
+    const m = jobOpportunityMessages(j.record || j, {
+      kind: 'saved_search', label, applyUrl: j.url, company: j.company,
+      email: { subject, note: `${note} See all results: ${c.searchUrl}`, ctaLabel: 'View job & apply',
+               stopLink: { label: 'Stop this alert', url: c.stopUrl } },
+    });
+    return { email: m.email, sms: m.sms, whatsapp: m.whatsapp, inApp: m.inApp };
+  }
+
   const html = emailLayout({
     title: subject,
     preheader: lead,
@@ -572,8 +589,7 @@ export function buildSavedSearchMessages(c) {
     facts: one ? [['Role', jobs[0].title], ['Company', jobs[0].company],
                   ['Location', jobs[0].location], ['Pay', jobs[0].pay]] : [],
     cta: { label: one ? 'View job & apply' : 'See these jobs', url: one ? jobs[0].url : c.searchUrl },
-    note: `You get this because you saved the search "${label}" on TeamLink`
-      + ` with ${c.kind === 'instant' ? 'instant' : c.kind} alerts.`,
+    note,
     stopLink: { label: 'Stop this alert', url: c.stopUrl },
   });
 

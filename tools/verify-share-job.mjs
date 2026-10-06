@@ -123,14 +123,19 @@ await check('1. walk-in job: preview with the Walk-in badge; the WhatsApp messag
   must(/TeamLink Consultants/.test(sheet), 'company missing in the preview');
   walkUrl = await viaWhatsApp(A.ctx, A.p);
   const t = waText(walkUrl);
-  for (const l of ['👋 Hi! I found this job opportunity and thought it might be suitable for you.', `📢 HR Recruiter ${s}`,
-    '🎓 Qualification: Any Degree', '🌟 Freshers Can Apply', '💰 Salary: ₹3 LPA', '📍 Location: KPHB, Hyderabad',
-    '🚶 Walk-In Interview', '📅 Walk-In Date: 10 October 2026', '⏰ Interview Time: 10:00 AM – 4:00 PM',
+  /* the job-opportunity format (owner, 2026-10-06), the walk-in block before the apply CTA */
+  for (const l of ['*🚀 NEW JOB OPPORTUNITY – KPHB, Hyderabad*',
+    'Hi! 👋 We found a job opportunity that could be a great match for your profile!', `🏥 *HR Recruiter ${s}*`,
+    '🎓 Qualification: Any Degree', '💰 Salary: *₹3 LPA*', '📍 Location: *KPHB, Hyderabad*', "*⭐ What We're Looking For*",
+    '*🚶 Walk-In Interview*', '📅 Walk-In Date: 10 October 2026', '⏰ Interview Time: 10:00 AM – 4:00 PM',
+    '*👉 Interested? Explore the complete job details and apply now:*', "📩 Don't miss this opportunity — apply today!",
     '⚠️ Important: The job post copy must be shown at the main gate entrance.', '📍 Venue:',
-    'TeamLink Consultants (OPC) Pvt. Ltd.', 'Plot 12, KPHB Phase 1, Hyderabad 500072', '📞 Contact: HR Desk – 9032321414', '• Telugu & English are Mandatory']) {
+    'TeamLink Consultants (OPC) Pvt. Ltd.', 'Plot 12, KPHB Phase 1, Hyderabad 500072', '📞 Contact: HR Desk – 9032321414', '✅ Telugu & English are Mandatory']) {
     must(lines(t).includes(l), `missing: ${l}`);
   }
-  must(new RegExp(`👉 View Job & Apply: \\S+/job/${J.walk}\\?ref=`).test(t), 'no link to this job');
+  must(new RegExp(`^🔗 \\S+/job/${J.walk}\\?ref=[A-Za-z0-9_-]+$`, 'm').test(t), 'no link to this job');
+  const tl = lines(t);
+  must(tl.indexOf('*🚶 Walk-In Interview*') < tl.indexOf('*👉 Interested? Explore the complete job details and apply now:*'), 'the walk-in block is not before the apply CTA');
 });
 
 await check('4. WhatsApp: wa.me, the message encoded (emojis, ₹, &, line breaks survive)', async () => {
@@ -150,7 +155,7 @@ await check('5. Copy Link copies only the link, which opens this very job; Copy 
   await A.p.click('#tlpuOverlay [data-ch="details"]');
   await A.p.waitForTimeout(1200);
   const details = await A.p.evaluate(() => navigator.clipboard.readText());
-  must(details.startsWith('👋 Hi! I found this job opportunity') && details.includes('🚶 Walk-In Interview'), 'details: ' + details.slice(0, 80));
+  must(details.startsWith('*🚀 NEW JOB OPPORTUNITY') && details.includes('*🚶 Walk-In Interview*') && details.includes('🔗 '), 'details: ' + details.slice(0, 80));
   /* a friend opens the link */
   const F = await b.newContext();
   const fp = await F.newPage();
@@ -167,8 +172,8 @@ await check('2. regular job: normal message, no walk-in lines, its own link', as
   const sheet = await openSheet(A.p);
   must(!/Walk-in Interview/.test(sheet), 'walk-in badge on a regular job');
   const t = waText(await viaWhatsApp(A.ctx, A.p));
-  for (const l of [`📢 Software Developer ${s}`, '🎓 Qualification: B.Tech / M.Tech', '💼 Experience: 1-3 yrs', '💰 Salary: ₹5-8 LPA',
-    '📍 Location: Hyderabad', '💼 Job Type: Full-time']) must(lines(t).includes(l), `missing: ${l}`);
+  for (const l of [`🏥 *Software Developer ${s}*`, '🎓 Qualification: B.Tech / M.Tech', '💼 Experience: *1-3 yrs*', '💰 Salary: *₹5-8 LPA*',
+    '📍 Location: *Hyderabad*', '🕐 Job Type: Full-time', '🏠 Work From Home: Hybrid', '✅ JavaScript', '✅ REST APIs']) must(lines(t).includes(l), `missing: ${l}`);
   for (const w of ['Walk-In', 'Venue', 'main gate', 'Hard Copy', 'Please carry']) must(!t.includes(w), `"${w}" in a regular job's share`);
   must(t.includes(`/job/${J.reg}?ref=`), 'not this job\'s link');
 });
@@ -179,7 +184,7 @@ await check('3. a job with empty fields: no undefined / null / NaN, the rows are
   must(!/undefined|null|NaN/.test(sheet), 'preview: ' + sheet);
   const t = waText(await viaWhatsApp(A.ctx, A.p));
   for (const w of ['undefined', 'null', 'NaN', 'Salary', 'Qualification']) must(!t.includes(w), `"${w}" in:\n${t}`);
-  must(t.includes(`📢 Field Assistant ${s}`), 'title missing');
+  must(lines(t).includes(`🏥 *Field Assistant ${s}*`), 'title missing');
 });
 
 await check('privacy: nothing about the person sharing is in the message', async () => {
@@ -199,7 +204,7 @@ await check('6. phone: the sheet fits with no sideways scroll; More uses the dev
   await M.p.click('#tlpuOverlay [data-ch="native"]');
   await M.p.waitForTimeout(1200);
   const d = await M.p.evaluate(() => window.__shared);
-  must(d && /\/job\//.test(d.url) && d.text.startsWith('👋 Hi!') && !d.text.includes('View Job & Apply'), 'share data: ' + JSON.stringify(d).slice(0, 160));
+  must(d && /\/job\//.test(d.url) && d.text.startsWith('*🚀 NEW JOB OPPORTUNITY') && !d.text.includes('🔗 '), 'share data: ' + JSON.stringify(d).slice(0, 160));
   must(!M.errors.length, M.errors.join(' | '));
   await M.ctx.close();
 });

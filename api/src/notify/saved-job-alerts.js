@@ -56,6 +56,7 @@ import { config } from '../config.js';
 import { providers } from './providers.js';
 import { scoreRole, scoreSkills } from '../ai/match.js';
 import { companyLabel } from '../portal/alerts.js';
+import { toJob } from '../shapes.js';
 import { releaseNewJobNotice } from './new-job-notice.js';
 import {
   buildSavedJobAlertMessages, buildSavedJobDigestMessages, savedJobInboxLine,
@@ -288,24 +289,28 @@ async function deliverInstant({ cand, job, saved, rel, tpl, deps }) {
   const company = companyLabel(job.company_name);
   const savedCompany = companyLabel(saved.company_name);
   const url = jobUrl(job.id);
-  const email = buildSavedJobAlertMessages({
+  const built = buildSavedJobAlertMessages({
     candidateName: cand.name,
-    job: { title: job.title, company, location: job.location, pay: job.pay_label, exp: job.exp_label, url },
+    job: { ...toJob(job), company, url },
     saved: { title: saved.title, company: savedCompany, location: saved.location },
     why: rel.why,
     stopUrl: stopUrl(cand.id),
     savedUrl: savedUrl(),
-  }).email;
+  });
+  const email = built.email;
   email.link = url;
 
+  /* The inbox entry carries the whole job-opportunity message; the
+     owner's one-line wording stays as its summary (the bell's row). */
   const inApp = await attempt(deps.sendInApp, {
     cand, type: 'SAVED_JOB_SIMILAR', jobId: job.id,
     title: 'New job like one you saved',
-    message: savedJobInboxLine(job),
+    message: built.inApp,
     metadata: {
       event: 'saved_job_similar', jobTitle: job.title, company, location: job.location || null,
       savedJobId: saved.id, savedJobTitle: saved.title, reason: rel.reason,
-      applyUrl: `#/job/${job.id}`, cta: 'View job',
+      applyUrl: `#/job/${job.id}`, cta: 'View job', summary: savedJobInboxLine(job),
+      format: 'job_opportunity',
     },
   });
   const mail = await attempt(deps.sendEmail, { cand, email, templateId: tpl.saved_job_alert });

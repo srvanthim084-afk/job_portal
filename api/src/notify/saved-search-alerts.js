@@ -35,6 +35,7 @@ import { toCandidate, toJob } from '../shapes.js';
 import { jobMatchesFilters, locationTierFunction } from '../search/saved-match.js';
 import { claimNewJobNotice, releaseNewJobNotice, noticesFor } from './new-job-notice.js';
 import { TEAMLINK, teamlinkOnly } from '../jobs/source-scope.js';
+import { companyLabel } from '../portal/alerts.js';
 
 /* 0113: this engine announces TeamLink jobs, so it runs only the searches
    saved on the Jobs page. A search saved on External Jobs is never handed
@@ -197,9 +198,12 @@ async function deliver({ search, cand, kind, jobs, total, label, templateId, now
     label,
     kind,
     total,
+    /* The company is the label the job's card shows: never a client's
+       name (0051, companyLabel). `record` is the job itself, for the
+       one-job message's full format. */
     jobs: jobs.map((j) => ({
-      title: j.title, company: j.companyName, location: j.location, pay: j.pay,
-      url: jobUrl(j.id, search.id),
+      title: j.title, company: companyLabel(j.companyName), location: j.location, pay: j.pay,
+      url: jobUrl(j.id, search.id), record: j,
     })),
     searchUrl: searchUrl(search.id),
     stopUrl: stopUrl(search.id),
@@ -238,7 +242,7 @@ async function deliver({ search, cand, kind, jobs, total, label, templateId, now
       const one = jobs.length === 1 && total === 1;
       const note = {
         title: one ? `New job: ${jobs[0].title}` : `${total} new jobs for "${label}"`,
-        body: one ? [jobs[0].companyName, jobs[0].location].filter(Boolean).join(' · ') || label
+        body: one ? [companyLabel(jobs[0].companyName), jobs[0].location].filter(Boolean).join(' · ') || label
           : jobs.slice(0, 3).map((j) => j.title).join(', '),
         url: one ? jobUrl(jobs[0].id, search.id) : searchUrl(search.id),
         tag: `ss-${search.id}`,
@@ -290,7 +294,7 @@ async function deliver({ search, cand, kind, jobs, total, label, templateId, now
           templateId: channel === 'email' ? (templateId || undefined) : undefined,
           vars: {
             to_name: cand.name, candidate_name: cand.name,
-            job_title: jobs[0] ? jobs[0].title : '', company_name: jobs[0] ? jobs[0].companyName : '',
+            job_title: jobs[0] ? jobs[0].title : '', company_name: jobs[0] ? companyLabel(jobs[0].companyName) : '',
             portal_link: jobs.length === 1 ? jobUrl(jobs[0].id, search.id) : searchUrl(search.id),
             subject: messages.email.subject, message: messages.email.text,
           },

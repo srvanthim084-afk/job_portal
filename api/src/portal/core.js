@@ -22,6 +22,7 @@ import { toJob, toCandidate } from '../shapes.js';
 import { scoreExperience, scoreLocation, scoreEducation } from '../ai/match.js';
 import { aiMatch } from '../ai/ai-match.js';
 import { loadAiSettings } from '../ai/screening.js';
+import { jobOpportunityMessages, cleanField, isWalkinJob, safeCompany } from '../notify/job-opportunity.js';
 
 /* ------------------------------------------------------------------ *
  * time in India
@@ -344,126 +345,36 @@ export function newShareCode() {
   return randomBytes(6).toString('base64url');
 }
 
-/** A field worth printing: never "undefined", "null" or "[object Object]". */
-export const cleanField = (v) => {
-  if (v === undefined || v === null) return '';
-  const s = String(v).trim();
-  return s && !['undefined', 'null', '[object Object]'].includes(s) ? s : '';
-};
-
 /*
- * Sharing a job, candidate to candidate.
+ * Sharing a job, candidate to candidate (owner, 2026-10-06: "when we share
+ * the job description it should be like this only").
  *
- * The message reads as one person passing an opportunity to another -
- * "👋 Hi! I found this job opportunity and thought it might be suitable for
- * you." - followed by THAT job's own public details. Every line comes from
- * the job record and is left out when the job has no value for it; nothing
- * about the person sharing (no name, phone, email, candidate ID) and
- * nothing internal (stages, scores, recruiter, client or database ids) is
- * ever read. The walk-in block appears only for a walk-in job.
+ * The share message IS the job-alert message: notify/job-opportunity.js,
+ * the same function every job alert uses, with the share link
+ * (/job/<id>?ref=<code>, on PUBLIC_SHARE_URL) as its apply URL. Every line
+ * comes from the job record and is left out when the job has no value for
+ * it; nothing about the person sharing (no name, phone, email, candidate
+ * ID) and nothing internal (stages, scores, recruiter, client or database
+ * ids) is ever read. A walk-in job keeps its walk-in block, before the
+ * apply CTA.
  *
  * The company is the name the job's own card shows to candidates (passed in
  * as `company`); a name containing "client" is never printed (0051).
  */
-const WALKIN_CARRY_DEFAULT = ['Updated Resume – Hard Copy', 'A copy of this Job Post'];
-const WALKIN_GATE_NOTE = 'The job post copy must be shown at the main gate entrance.';
-
-const pick = (job, keys) => {
-  for (const k of keys) { const v = cleanField(job && job[k]); if (v) return v; }
-  return '';
-};
-const listOf = (v) => (Array.isArray(v) ? v : String(v || '').split(/\r?\n|;/))
-  .map((x) => cleanField(String(x).replace(/^[\s•\-*]+/, ''))).filter(Boolean);
-
-/** "09:00" -> "9:00 AM"; anything else as written. */
-function clock(t) {
-  const m = /^(\d{1,2}):(\d{2})/.exec(String(t || '').trim());
-  if (!m) return cleanField(t);
-  let hh = Number(m[1]); const ap = hh >= 12 ? 'PM' : 'AM';
-  hh = hh % 12 || 12;
-  return `${hh}:${m[2]} ${ap}`;
-}
-/** "2026-10-10" -> "10 October 2026"; anything else as written. */
-function longDate(d) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(d || '').trim());
-  if (!m) return cleanField(d);
-  const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-  return `${Number(m[3])} ${months[Number(m[2]) - 1]} ${m[1]}`;
-}
-export const isWalkinJob = (job) => !!job && (job.postingKind === 'walkin' || job.jobType === 'walk-in'
-  || /^walk.?in$/i.test(String(job.type || '')));
+export { cleanField, isWalkinJob };
 const freshersWelcome = (exp) => /fresher|^\s*0\s*(?:[-–—+]|to\b|$)/i.test(String(exp || ''));
-function homeWork(mode) {
-  const m = String(mode || '').toLowerCase();
-  if (!m) return '';
-  if (/remote|home|wfh/.test(m)) return 'Available';
-  if (/hybrid/.test(m)) return 'Hybrid';
-  return 'Not Available';
-}
-const safeCompany = (c) => { const v = cleanField(c); return v && !/\bclient\b/i.test(v) ? v : ''; };
-const mapLink = (u) => {
-  const v = cleanField(u);
-  return /^https:\/\/(www\.)?(google\.[a-z.]+\/maps|maps\.google\.[a-z.]+|maps\.app\.goo\.gl|goo\.gl\/maps)/i.test(v) ? v : '';
-};
 
-/** The message without its closing link - the phone's own share sheet adds the URL itself. */
-export function shareLines(job, { company = '' } = {}) {
-  const j = job || {};
-  const title = cleanField(j.title) || 'Job Opportunity';
-  const out = ['👋 Hi! I found this job opportunity and thought it might be suitable for you.', ''];
-  out.push(`📢 ${j.urgent ? 'Urgent Hiring – ' : ''}${title}`);
-  const co = safeCompany(company);
-  if (co) out.push(`🏢 ${co}`);
-  const edu = pick(j, ['education', 'qualification']);
-  if (edu) out.push(`🎓 Qualification: ${edu}`);
-  const exp = pick(j, ['exp', 'experience']);
-  if (exp) out.push(`💼 Experience: ${exp}`);
-  if (freshersWelcome(exp)) out.push('🌟 Freshers Can Apply');
-  const pay = pick(j, ['pay', 'salary']) || (Number(j.stipend) > 0 ? `₹${j.stipend} stipend` : '');
-  if (pay) out.push(`💰 Salary: ${pay}`);
-  const loc = pick(j, ['location']);
-  if (loc) out.push(`📍 Location: ${loc}`);
-  const walk = isWalkinJob(j);
-  const type = pick(j, ['type', 'employmentType']);
-  if (type && !/^walk.?in$/i.test(type)) out.push(`💼 Job Type: ${type}`);
-  const wfh = homeWork(j.mode);
-  if (wfh) out.push(`🏢 Work From Home: ${wfh}`);
-  const reqs = listOf(j.requirements).slice(0, 6);
-  if (reqs.length) out.push('', '✅ Requirements', ...reqs.map((r) => `• ${r}`));
+const shareMessages = (job, link, { company = '' } = {}) =>
+  jobOpportunityMessages(job || {}, { kind: 'share', applyUrl: link || '', company });
 
-  if (walk) {
-    out.push('', '🚶 Walk-In Interview');
-    const date = longDate(pick(j, ['walkinDate']));
-    if (date) out.push(`📅 Walk-In Date: ${date}`);
-    const from = clock(pick(j, ['walkinStartTime', 'walkinFrom']));
-    const to = clock(pick(j, ['walkinEndTime', 'walkinTo']));
-    if (from || to) out.push(`⏰ Interview Time: ${[from, to].filter(Boolean).join(' – ')}`);
-    const carry = listOf(j.walkinDocumentsToCarry || j.walkinDocuments);
-    out.push('📄 Please carry:', ...(carry.length ? carry : WALKIN_CARRY_DEFAULT).map((d) => `• ${d}`));
-    out.push(`⚠️ Important: ${WALKIN_GATE_NOTE}`);
-    const notes = cleanField(j.walkinInstructions);
-    if (notes) out.push(`ℹ️ ${notes}`);
-    const venue = pick(j, ['walkinVenue']);
-    const address = pick(j, ['walkinAddress']);
-    if (venue || address) {
-      out.push('', '📍 Venue:');
-      if (venue) out.push(venue);
-      if (address && address !== venue) out.push(...String(address).split(/\r?\n/).map((x) => x.trim()).filter(Boolean));
-    }
-    const maps = mapLink(j.walkinMapLink);
-    if (maps) out.push(`📍 Get Directions: ${maps}`);
-    const phone = pick(j, ['walkinContactNumber', 'walkinPhone']);
-    const person = pick(j, ['walkinContactPerson', 'walkinContact']);
-    if (phone || person) out.push(`📞 Contact: ${[person, phone].filter(Boolean).join(' – ')}`);
-  }
-  return out;
+/** The message without its "🔗 <link>" line - the phone's own share sheet adds the URL itself. */
+export function shareLines(job, opts = {}) {
+  return shareMessages(job, '', opts).body.split('\n');
 }
 
-/** The whole message, the job's link last. */
+/** The whole message, WhatsApp *bold* and all, with the job's link in its CTA. */
 export function shareText(job, link, opts = {}) {
-  const lines = shareLines(job, opts);
-  lines.push('', `👉 View Job & Apply: ${link}`);
-  return lines.join('\n');
+  return shareMessages(job, link, opts).whatsapp;
 }
 
 const LOCAL_HOSTS = ['localhost', '127.0.0.1', '[::1]', '::1'];

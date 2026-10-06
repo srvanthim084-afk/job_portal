@@ -366,8 +366,11 @@ test('share: the link moves to PUBLIC_SHARE_URL (path and ?ref kept); blank fiel
   assert.equal(t.includes('Location'), false);
   assert.equal(t.includes('Job Type'), false);
   assert.equal(t.includes('undefined'), false);
-  assert.match(t, /📢 Staff Nurse/);
-  assert.equal(shareText({}, 'https://x.test/job/j2').includes('📢 Job Opportunity'), true);
+  assert.match(t, /🏥 \*Staff Nurse\*/);
+  /* no title: no title line, never a placeholder */
+  const empty = shareText({}, 'https://x.test/job/j2');
+  assert.equal(empty.includes('🏥'), false);
+  assert.ok(empty.includes('🔗 https://x.test/job/j2'));
 
   const j = await job({ title: 'Public Share Role', location: 'Guntur', pay: '₹3 LPA' });
   process.env.PUBLIC_SHARE_URL = 'https://jobs.example.in';
@@ -392,17 +395,23 @@ test('share: a walk-in job carries its walk-in block; a regular job never does; 
   const ws = await makeClient(base).post(`/api/jobs/${w}/share`, { channel: 'whatsapp' });
   assert.equal(ws.status, 201, JSON.stringify(ws.body));
   const t = ws.body.text;
-  for (const line of ['👋 Hi! I found this job opportunity and thought it might be suitable for you.',
-    '📢 Urgent Hiring – HR Recruiter', '🎓 Qualification: Any Degree', '💼 Experience: 0-Any', '🌟 Freshers Can Apply',
-    '💰 Salary: ₹3 LPA', '📍 Location: KPHB, Hyderabad', '✅ Requirements', '• Telugu & English are Mandatory',
-    '🚶 Walk-In Interview', '📅 Walk-In Date: 10 October 2026', '⏰ Interview Time: 10:00 AM – 4:00 PM',
+  /* the job-opportunity format (owner, 2026-10-06), with the walk-in block before the apply CTA */
+  for (const line of ['*🚀 NEW JOB OPPORTUNITY – KPHB, Hyderabad*',
+    'Hi! 👋 We found a job opportunity that could be a great match for your profile!',
+    '🏥 *HR Recruiter*', '🎓 Qualification: Any Degree', '💼 Experience: *0-Any*',
+    '💰 Salary: *₹3 LPA*', '📍 Location: *KPHB, Hyderabad*', "*⭐ What We're Looking For*", '✅ Telugu & English are Mandatory',
+    '*🚶 Walk-In Interview*', '📅 Walk-In Date: 10 October 2026', '⏰ Interview Time: 10:00 AM – 4:00 PM',
     '📄 Please carry:', '• Updated Resume – Hard Copy', '• A copy of this Job Post',
     '⚠️ Important: The job post copy must be shown at the main gate entrance.', '📍 Venue:',
     'TeamLink Consultants (OPC) Pvt. Ltd.', '📞 Contact: HR Desk – 9032321414',
-    `👉 View Job & Apply: ${base}/job/${w}?ref=${ws.body.code}`]) {
+    '*👉 Interested? Explore the complete job details and apply now:*',
+    `🔗 ${base}/job/${w}?ref=${ws.body.code}`, "📩 Don't miss this opportunity — apply today!"]) {
     assert.ok(t.split('\n').includes(line), `missing line: ${line}\n---\n${t}`);
   }
-  assert.equal(/💼 Job Type: Walk-in/.test(t), false, 'walk-in is not shown as a job type line');
+  const tl = t.split('\n');
+  assert.ok(tl.indexOf('*🚶 Walk-In Interview*') < tl.indexOf('*👉 Interested? Explore the complete job details and apply now:*'),
+    'the walk-in block comes before the apply CTA');
+  assert.equal(/Job Type: Walk-in/.test(t), false, 'walk-in is not shown as a job type line');
   /* the WhatsApp link decodes back to exactly the message: emojis, ₹, &, new lines survive */
   assert.equal(decodeURIComponent(ws.body.links.whatsapp.replace('https://wa.me/?text=', '')), t);
   assert.equal(/[\s]/.test(ws.body.links.whatsapp.slice('https://wa.me/?text='.length)), false, 'unencoded characters in the link');
@@ -410,9 +419,9 @@ test('share: a walk-in job carries its walk-in block; a regular job never does; 
   const r = await job({ title: 'Software Developer', location: 'Hyderabad', pay: '₹5-8 LPA', exp: '1-3 yrs', mode: 'Hybrid' });
   const rs = await makeClient(base).post(`/api/jobs/${r}/share`, { channel: 'copy' });
   const rt = rs.body.text;
-  assert.match(rt, /📢 Software Developer/);
-  assert.match(rt, /💼 Job Type: Full-time/);
-  assert.match(rt, /🏢 Work From Home: Hybrid/);
+  assert.match(rt, /🏥 \*Software Developer\*/);
+  assert.match(rt, /🕐 Job Type: Full-time/);
+  assert.match(rt, /🏠 Work From Home: Hybrid/);
   for (const word of ['Walk-In', 'Venue', 'main gate', 'Hard Copy', 'Please carry']) {
     assert.equal(rt.includes(word), false, `"${word}" in a regular job's share`);
   }
@@ -424,7 +433,7 @@ test('share: a walk-in job carries its walk-in block; a regular job never does; 
   for (const word of ['undefined', 'null', 'NaN', 'Salary', 'Location', 'Experience', 'Qualification', 'Job Type']) {
     assert.equal(mt.includes(word), false, `"${word}" in a share of a job without it:\n${mt}`);
   }
-  assert.match(mt, /📢 Field Assistant/);
+  assert.match(mt, /🏥 \*Field Assistant\*/);
 });
 
 test('share: code, text and link preview without the client name; clicks and applies counted', async () => {
@@ -435,11 +444,17 @@ test('share: code, text and link preview without the client name; clicks and app
   const link = `${base}/job/${j}?ref=${s.body.code}`;
   assert.equal(s.body.url, link);
   assert.equal(s.body.text, [
-    '👋 Hi! I found this job opportunity and thought it might be suitable for you.', '',
-    '📢 Share Role', `🏢 ${CLIENT_NAME}`, '💼 Experience: 2-4 yrs', '💰 Salary: ₹3-4 LPA',
-    '📍 Location: Nellore', '💼 Job Type: Full-time', '🏢 Work From Home: Not Available', '',
-    `👉 View Job & Apply: ${link}`].join('\n'));
-  assert.equal(s.body.body, s.body.text.split('\n').slice(0, -2).join('\n'), 'body = the message without its link');
+    '*🚀 NEW JOB OPPORTUNITY – Nellore*', '',
+    'Hi! 👋 We found a job opportunity that could be a great match for your profile!', '',
+    '🏥 *Share Role*', `🏢 *${CLIENT_NAME}*`, '',
+    '💼 Experience: *2-4 yrs*', '💰 Salary: *₹3-4 LPA*', '📍 Location: *Nellore*', '🕐 Job Type: Full-time',
+    '🏠 Work From Home: Not Available', '',
+    '*👉 Interested? Explore the complete job details and apply now:*',
+    `🔗 ${link}`,
+    "📩 Don't miss this opportunity — apply today!", '',
+    `*${CLIENT_NAME}*`].join('\n'));
+  assert.equal(s.body.body, s.body.text.split('\n').filter((l) => l !== `🔗 ${link}`).join('\n'),
+    'body = the message without its link line');
   assert.equal(decodeURIComponent(s.body.links.whatsapp.replace('https://wa.me/?text=', '')), s.body.text);
   assert.equal(s.body.publicLink, false, 'a 127.0.0.1 link is reported as not public');
   assert.ok(s.body.links.whatsapp.startsWith('https://wa.me/?text='));
@@ -523,7 +538,12 @@ test('urgent hiring alert: above 60% only, both channels, applied skipped, never
   const inbox = (await raw(`select title, message, metadata from notifications where recipient_id=$1 and type='URGENT_HIRING'`, [at80.id])).rows;
   assert.equal(inbox.length, 1);
   assert.equal(inbox[0].title, 'Urgent hiring');
-  assert.match(inbox[0].message, /Alert Java Developer · Acme Hospitals · 80% match/);
+  /* the inbox entry is the full job-opportunity message (owner, 2026-10-06) */
+  assert.match(inbox[0].message, /^\*🚀 URGENT HIRING – Nellore\*\n\nHi! 👋 We found an urgent job opening that could be a great match for your profile \(80% match\)!/);
+  assert.ok(inbox[0].message.includes('🏥 *Alert Java Developer*'));
+  assert.ok(inbox[0].message.includes(`🏢 *${CLIENT_NAME}*`));
+  assert.ok(inbox[0].message.includes(`🔗 ${process.env.PUBLIC_ORIGIN.replace(/\/$/, '')}/#/job/${AJ}`), inbox[0].message);
+  assert.equal(inbox[0].metadata.format, 'job_opportunity');
   assert.equal(inbox[0].metadata.applyUrl, `#/job/${AJ}`);
   assert.equal(inbox[0].metadata.cta, 'Apply now');
   /* the candidate reads it through the API */
