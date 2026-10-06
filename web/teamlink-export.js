@@ -170,8 +170,20 @@
     return !!(tr && ownTick(tr));
   }
 
+  /* Recruiter -> Applications keeps its own selection (teamlink-app-
+     selection.js): one Set of application ids, drawn into the same tick
+     column. Export reads it rather than drawing a second one. */
+  function appSelection() {
+    var s = window.TLAppSelection;
+    return s && typeof s.active === 'function' && s.active() ? s : null;
+  }
+
   function decorate(table) {
     if (table.__tlx) return;
+    if (window.TLAppSelection && typeof TLAppSelection.owns === 'function' && TLAppSelection.owns(table)) {
+      TLAppSelection.sync();
+      return;
+    }
     var head = table.querySelector('thead tr');
     var body = table.querySelector('tbody');
     if (!head || !body) return;
@@ -254,6 +266,8 @@
     /* Where the screen owns the boxes it may also clear them - a filter
        change, a page turn - so the DOM is the truth for the rows that
        are on screen, and `picked` carries the ones that are not. */
+    var sel = appSelection();
+    if (sel) return sel.candidateIds();
     var t = document.querySelector(TABLE);
     if (t && tableHasOwnTicks(t)) {
       [].slice.call(t.querySelectorAll('tbody tr')).forEach(function (tr) {
