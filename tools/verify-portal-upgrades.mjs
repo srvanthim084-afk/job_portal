@@ -239,9 +239,11 @@ await check('4. Share -> WhatsApp opens wa.me with the job, the company its card
   await popup.waitForURL(/wa\.me|whatsapp/, { timeout: 8000 }).catch(() => {});
   const wa = decodeURIComponent(popup.url().replace(/\+/g, ' '));
   must(/wa\.me\/\?text=/.test(popup.url()) || /whatsapp/.test(popup.url()), 'opened ' + popup.url());
-  must(wa.includes(senior.title) && wa.includes('I found this job opportunity') && wa.includes('View Job & Apply') && wa.includes(`/job/${senior.id}?ref=`), 'text: ' + wa);
+  /* the job-opportunity format (owner, 2026-10-06) */
+  must(wa.includes(`🏥 *${senior.title}*`) && wa.includes('Hi! 👋 We found a job opportunity that could be a great match for your profile!')
+    && wa.includes('*👉 Interested? Explore the complete job details and apply now:*') && wa.includes(`🔗 `) && wa.includes(`/job/${senior.id}?ref=`), 'text: ' + wa);
   /* the owner's share spec: the company the job card shows (never a name containing "client") */
-  must(wa.split(String.fromCharCode(10)).includes(`🏢 ${CLIENT}`), 'no company line in the share');
+  must(wa.split(String.fromCharCode(10)).includes(`🏢 *${CLIENT}*`), 'no company line in the share');
   for (const w of ['undefined', 'null', 'NaN']) must(!wa.includes(w), `"${w}" in the share`);
   await popup.close();
   await cp.evaluate(() => window.tlpuCloseSheet());
@@ -283,6 +285,10 @@ await check('8. the urgent-hiring alert is in the bell with the match', async ()
   const html = await cp.evaluate(() => (typeof candidateBellHtml === 'function' ? candidateBellHtml() : ''));
   must(/Urgent hiring/.test(html) && /% AI Match/.test(html) && /Apply now/.test(html), 'bell: ' + html.replace(/<[^>]+>/g, ' ').slice(0, 300));
   must(!/\bclient\b/i.test(html.replace(/<[^>]+>/g, ' ')), 'the word client in the bell');
+  /* the full job-opportunity message, behind "View full message" */
+  must(/View full message/.test(html) && /URGENT HIRING/.test(html) && /What We(&#39;|')re Looking For|Interested\? Explore the complete job details/.test(html),
+    'no full message in the bell: ' + html.replace(/<[^>]+>/g, ' ').slice(0, 300));
+  must(!/undefined|\bnull\b|N\/A/.test(html.replace(/<[^>]+>/g, ' ')), 'a placeholder in the bell');
 });
 
 await check('9. the job page shows the full breakdown and Improve your match', async () => {

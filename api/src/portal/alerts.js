@@ -33,7 +33,8 @@
 import { withUser } from '../db.js';
 import { config } from '../config.js';
 import { providers } from '../notify/providers.js';
-import { emailLayout } from '../notify/layout.js';
+import { jobOpportunityMessages } from '../notify/job-opportunity.js';
+import { toJob } from '../shapes.js';
 import { claimNewJobNotice, releaseNewJobNotice } from '../notify/new-job-notice.js';
 import {
   explainMatch, aboveThreshold, notifyThreshold, daysLeft, istDay,
@@ -70,7 +71,13 @@ const fmtDate = (at) => {
   } catch { return istDay(at); }
 };
 
-export function alertContent(event, { job, company, score, candidateName }) {
+/*
+ * The message is the shared job-opportunity format (notify/job-opportunity.js,
+ * owner 2026-10-06): built only from the job record, the same body for the
+ * inbox and the email. The heading and the opening line say why it was sent
+ * (urgent hiring / the last date), as these alerts always did.
+ */
+export function alertContent(event, { job, company, score }) {
   const deadline = job.expires_at ? fmtDate(job.expires_at) : null;
   const match = `${Math.round(Number(score))}% match`;
   const url = applyUrl(job.id);
@@ -86,37 +93,27 @@ export function alertContent(event, { job, company, score, candidateName }) {
     ? `Urgent hiring: ${job.title} at ${company}`
     : `Last date to apply: ${job.title} – ${deadline}`;
 
-  const summary = [job.location, job.pay_label, job.exp_label, job.mode].filter(Boolean).join(' · ');
-  const body = `${line}\n\nYour profile is a ${match} for this role.`
-    + (summary ? `\n\n${job.title} · ${summary}` : '')
-    + (deadline ? `\n\nLast date to apply: ${deadline}.` : '');
-
-  const html = emailLayout({
-    title: subject,
-    preheader: `${match} · ${line}`,
-    greeting: candidateName ? `Hi ${candidateName},` : 'Hi,',
-    body,
-    facts: [
-      ['Role', job.title], ['Company', company], ['Location', job.location],
-      ['Pay', job.pay_label], ['Experience', job.exp_label], ['Your match', match],
-      ['Last date to apply', deadline],
-    ],
-    cta: { label: 'Apply now', url },
-    note: `You are receiving this because your TeamLink profile is a strong match (${match}) for this role.`,
+  const msg = jobOpportunityMessages(toJob(job), {
+    kind: event, applyUrl: url, company, matchPercent: score, deadline,
+    email: {
+      subject,
+      ctaLabel: 'Apply now',
+      note: `You are receiving this because your TeamLink profile is a strong match (${match}) for this role.`
+        + (deadline && event === 'urgent_hiring' ? ` Last date to apply: ${deadline}.` : ''),
+    },
   });
-  const text = `${candidateName ? `Hi ${candidateName},` : 'Hi,'}\n\n${body}\n\nApply now: ${url}\n\n— TeamLink`;
 
   return {
     inApp: {
       title,
-      message: `${job.title} · ${company} · ${match} — ${line}`,
+      message: msg.inApp,
       metadata: {
         event, jobTitle: job.title, company, matchPercent: Math.round(Number(score)),
         line, deadline: job.expires_at ? new Date(job.expires_at).toISOString() : null,
-        applyUrl: `#/job/${job.id}`, cta: 'Apply now',
+        applyUrl: `#/job/${job.id}`, cta: 'Apply now', format: 'job_opportunity',
       },
     },
-    email: { subject, html, text },
+    email: msg.email,
   };
 }
 

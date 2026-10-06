@@ -26,7 +26,8 @@
 import { withUser } from '../db.js';
 import { config } from '../config.js';
 import { providers } from './providers.js';
-import { buildEventMessages } from './templates.js';
+import { jobOpportunityMessages } from './job-opportunity.js';
+import { companyLabel } from '../portal/alerts.js';
 import { matchJob, DEFAULT_THRESHOLD } from '../ai/match.js';
 import { toCandidate, toJob } from '../shapes.js';
 import { claimNewJobNotice, releaseNewJobNotice, anySent } from './new-job-notice.js';
@@ -94,7 +95,8 @@ export async function runJobAlerts(jobId, opts = {}) {
   }
 
   const job = toJob(data.job);
-  job.companyName = data.job.company_name || 'TeamLink';
+  /* The label the job's card shows: never a client's name (0051). */
+  job.companyName = companyLabel(data.job.company_name);
   const scored = matchJob(job, data.candidates.map(toCandidate), { threshold });
 
   const out = {
@@ -155,20 +157,20 @@ async function sendAlert({ matchId, job, cand, match }) {
   // against the message that caused it.
   const jobUrl = `${base}/?alert=${encodeURIComponent(matchId)}#/job/${job.id}`;
 
-  const messages = buildEventMessages('JOB_MATCH_ALERT', {
-    candidateName: cand.name,
-    jobTitle: job.title,
-    company: job.companyName || 'TeamLink',
-    jobId: job.id,
-    applicationId: null,
-    location: job.location,
-    expLabel: job.exp,
-    payLabel: job.pay,
-    matchedSkills: match.matchedSkills,
-    portalUrl: jobUrl,
-    linkLabel: 'View job & apply',
-    smsLead: `New job matching your profile: ${job.title}` +
-             `${job.location ? ` - ${job.location}` : ''}. View & apply:`,
+  /* The shared job-opportunity format (job-opportunity.js, owner
+     2026-10-06), built only from the job record. The skills it matched on
+     are said in the email's small print, as the old alert said them. */
+  const skills = (match.matchedSkills || []).filter(Boolean);
+  const messages = jobOpportunityMessages(job, {
+    kind: 'profile_match',
+    applyUrl: jobUrl,
+    company: job.companyName,
+    email: {
+      subject: `A ${job.title} role matching your profile`,
+      ctaLabel: 'View job & apply',
+      note: 'You get this because this job matches your TeamLink profile'
+        + (skills.length ? ` (we matched you on: ${skills.join(', ')})` : '') + '.',
+    },
   });
 
   const status = {};

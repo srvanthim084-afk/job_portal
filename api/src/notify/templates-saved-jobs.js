@@ -13,9 +13,9 @@
  * reads a company itself.
  */
 import { emailLayout } from './layout.js';
+import { jobOpportunityMessages } from './job-opportunity.js';
 
 const line = (j) => [j.title, j.company, j.location, j.pay].filter(Boolean).join(' · ');
-const savedLine = (s) => [s.company, s.location].filter(Boolean).join(' · ');
 
 /** In-app text, exactly as the owner worded it. */
 export function savedJobInboxLine(job) {
@@ -23,37 +23,33 @@ export function savedJobInboxLine(job) {
 }
 
 /**
- * @param c { candidateName, job:{title, company, location, pay, exp, url},
+ * The instant alert, in the shared job-opportunity format
+ * (job-opportunity.js, owner 2026-10-06). The opening line says which saved
+ * job it is like - the reason this alert exists; the body is the same as
+ * every other job alert's.
+ *
+ * @param c { candidateName, job:{...the job record (toJob shape), company, url},
  *            saved:{title, company, location}, why, stopUrl, savedUrl }
+ * @returns {{ email:{subject,text,html}, inApp:string, whatsapp:string, sms:string }}
  */
 export function buildSavedJobAlertMessages(c) {
   const j = c.job || {};
   const s = c.saved || {};
-  const greeting = c.candidateName ? `Hi ${String(c.candidateName).trim().split(/\s+/)[0]},` : 'Hi,';
   const subject = `New job like one you saved: ${j.title}${j.location ? ` · ${j.location}` : ''}`;
-  const savedAs = `"${s.title}"${savedLine(s) ? ` (${savedLine(s)})` : ''}`;
-  const lead = `You saved ${savedAs} on TeamLink. A new job like it has just been posted:`;
   const why = c.why ? `Why we think it is similar: ${c.why}.` : '';
-
-  const text = `${greeting}\n\n${lead}\n\n• ${line(j)}\n  ${j.url}\n\n`
-    + (why ? `${why}\n\n` : '')
-    + `Your saved jobs: ${c.savedUrl}\n\n`
-    + `Stop these emails: ${c.stopUrl}\n\n— TeamLink`;
-
-  const html = emailLayout({
-    title: subject,
-    preheader: `Like the job you saved: ${s.title}`,
-    greeting,
-    body: `${lead}${why ? `\n\n${why}` : ''}`,
-    facts: [['Role', j.title], ['Company', j.company], ['Location', j.location],
-            ['Pay', j.pay], ['Experience', j.exp], ['Like the job you saved', s.title]],
-    cta: { label: 'View job & apply', url: j.url },
-    note: `You get this because you saved "${s.title}" and "Tell me about similar new jobs" is on. `
-      + 'You can turn it off on your Saved Jobs page, or with the link below.',
-    stopLink: { label: 'Stop similar-job emails', url: c.stopUrl },
+  const m = jobOpportunityMessages(j, {
+    kind: 'saved_job', applyUrl: j.url, company: j.company,
+    savedTitle: s.title, savedCompany: s.company, savedLocation: s.location,
+    email: {
+      subject,
+      preheader: `Like the job you saved: ${s.title}`,
+      note: [why, `You get this because you saved "${s.title}" and "Tell me about similar new jobs" is on. `
+        + `You can turn it off on your Saved Jobs page (${c.savedUrl}), or with the link below.`].filter(Boolean).join(' '),
+      stopLink: { label: 'Stop similar-job emails', url: c.stopUrl },
+      ctaLabel: 'View job & apply',
+    },
   });
-
-  return { email: { subject, text, html } };
+  return { email: m.email, inApp: m.inApp, whatsapp: m.whatsapp, sms: m.sms };
 }
 
 /**

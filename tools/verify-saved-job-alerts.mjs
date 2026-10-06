@@ -182,7 +182,10 @@ await check('3. a related job: a bell entry and an email naming the saved job', 
   for (let i = 0; i < 60 && !n.some((x) => x.jobId === related.id); i += 1) { await wait(500); n = await inbox(); }
   const hit = n.find((x) => x.jobId === related.id);
   must(hit, 'no SAVED_JOB_SIMILAR entry for the related job');
-  must(hit.message === 'New job like one you saved: ICU Staff Nurse · Hyderabad', hit.message);
+  /* the entry carries the full job-opportunity message (owner, 2026-10-06); the owner's line is its summary */
+  must((hit.metadata || {}).summary === 'New job like one you saved: ICU Staff Nurse · Hyderabad', JSON.stringify(hit.metadata));
+  must(/^\*🚀 NEW JOB OPPORTUNITY – Hyderabad\*/.test(hit.message) && hit.message.includes('🏥 *ICU Staff Nurse*')
+    && hit.message.includes(`#/job/${related.id}`), hit.message.slice(0, 200));
   let m = null;
   for (let i = 0; i < 30 && !m; i += 1) {
     m = mails.slice(before).find((x) => x.to.includes(email) && /New job like one you saved/.test(x.subject));
@@ -215,6 +218,11 @@ await check('4. the bell shows it', async () => {
   });
   await cp.waitForTimeout(1200);
   must(await cp.evaluate((id) => location.hash === `#/job/${id}`, related.id), 'the entry did not open the job');
+  /* ...with the full message over it */
+  const sheet = await cp.evaluate(() => { const x = document.querySelector('#tlpuOverlay .tlpu-sheet'); return x ? x.innerText : ''; });
+  must(/NEW JOB OPPORTUNITY/.test(sheet) && /You saved "Staff Nurse"/.test(sheet) && /View Job & Apply/.test(sheet), 'sheet: ' + sheet.slice(0, 200));
+  await shot(cp, '04b-full-message');
+  await cp.evaluate(() => window.tlpuCloseSheet && tlpuCloseSheet());
   const read = (await inbox()).find((x) => x.jobId === related.id);
   must(read && read.read === true, 'not marked read on the server');
 });

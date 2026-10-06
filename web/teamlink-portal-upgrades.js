@@ -130,6 +130,8 @@
     + '.tlc-none{font-size:12.5px;color:#8a94a6;padding:8px 0 2px}'
     + '.tlc-page{background:none;border:0;padding:0}'
     + '.tlpu-row{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}'
+    + '.tlpu-full{margin-top:6px}.tlpu-full summary{cursor:pointer;color:#1d6ff2;font-size:12.5px;font-weight:700}'
+    + '.tlpu-full-body{margin-top:6px;padding:10px 12px;background:#f7f9fc;border:1px solid #e4eaf2;border-radius:8px;font-size:13px;line-height:1.55;color:#243449;white-space:normal;word-break:break-word;max-height:320px;overflow:auto}'
     + '.tlpu-share{border:1px solid #d5dde8;background:#fff;color:#2b3a4d;border-radius:8px;padding:6px 11px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit;min-height:32px}'
     + '.tlpu-ov{position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:9998;display:flex;align-items:flex-end;justify-content:center}'
     + '.tlpu-sheet{background:#fff;width:100%;max-width:480px;border-radius:16px 16px 0 0;padding:18px 16px calc(18px + env(safe-area-inset-bottom));box-shadow:0 -8px 30px rgba(0,0,0,.18);max-height:90vh;overflow:auto}'
@@ -1547,6 +1549,17 @@
     if (!s || s.role !== 'candidate' || !window.TL || !Array.isArray(TL.notifications)) return [];
     return TL.notifications.filter(function (n) { return n && MINE[n.type] && String(n.recipientId) === String(s.id); }).slice(0, 10);
   }
+  /* The full job-opportunity message the server wrote (owner, 2026-10-06),
+     behind "View full message": escaped first, then WhatsApp *bold* and
+     line breaks. Shared with the saved-job bell (teamlink-saved-job-alerts.js). */
+  function opportunityHtml(n) {
+    var md = (n && n.metadata) || {};
+    if (md.format !== 'job_opportunity' || !n.message) return '';
+    var body = h(n.message).replace(/\*([^*\n]+)\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
+    return '<details class="tlpu-full" onclick="event.stopPropagation()"><summary>View full message</summary>'
+      + '<div class="tlpu-full-body">' + body + '</div></details>';
+  }
+  window.tlpuOpportunityHtml = opportunityHtml;
   var prevBell = window.candidateBellHtml;
   if (typeof prevBell === 'function') {
     window.candidateBellHtml = function () {
@@ -1559,7 +1572,8 @@
         return '<div class="notif-row tlpu-n ' + (n.read ? '' : 'unread') + '"><div class="notif-msg"><b>' + h(n.title) + '</b>'
           + h(md.jobTitle || '') + (md.company ? ' · ' + h(md.company) : '')
           + (md.matchPercent != null ? ' · <span class="tlpu-m">🎯 ' + h(md.matchPercent) + '% AI Match</span>' : '')
-          + (md.line ? '<br><span style="color:#5b6676">' + h(md.line) + '</span>' : '') + '</div>'
+          + (md.line ? '<br><span style="color:#5b6676">' + h(md.line) + '</span>' : '')
+          + opportunityHtml(n) + '</div>'
           + '<div class="notif-meta"><span>' + h(String(n.createdAt || '').slice(0, 10)) + '</span>'
           + '<button class="ss-link" onclick="tlpuOpenAlert(\'' + h(n.id) + '\')">Apply now</button></div></div>';
       }).join('');
@@ -1584,6 +1598,60 @@
     n.read = true;
     if (n.jobId) window.navigate('/job/' + n.jobId);
   };
+
+  /* The full job-opportunity message as a sheet over the job it is about:
+     what a tap on the alert in the candidate portal's bell opens. */
+  function showOpportunity(n) {
+    var md = (n && n.metadata) || {};
+    if (md.format !== 'job_opportunity' || !n.message) return;
+    var body = h(n.message).replace(/\*([^*\n]+)\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
+    overlay('<h3 id="tlpuOppH">' + h(n.title || 'New job opportunity') + '</h3>'
+      + '<div class="tlpu-full-body" style="max-height:60vh">' + body + '</div>'
+      + '<div class="tlpu-acts">'
+      + (n.jobId ? '<button type="button" class="btn btn-primary" onclick="tlpuCloseSheet();navigate(\'/job/' + h(encodeURIComponent(n.jobId)) + '\')">View Job &amp; Apply</button>' : '')
+      + '<button type="button" class="btn btn-ghost" onclick="tlpuCloseSheet()">Close</button></div>');
+    var sheet = document.querySelector('#tlpuOverlay .tlpu-sheet');
+    if (sheet) sheet.setAttribute('aria-labelledby', 'tlpuOppH');
+  }
+  window.tlpuShowOpportunity = function (id) {
+    var n = ((window.TL && TL.notifications) || []).filter(function (x) { return x.id === id; })[0];
+    if (n) showOpportunity(n);
+  };
+
+  /* The candidate portal's own bell (cpShell reads cpNotifications()): the
+     urgent-hiring and last-date alerts as one line each; a tap marks it
+     read, opens the job and shows the full message over it. */
+  function wrapPortalBell() {
+    var prev = window.cpNotifications;
+    if (typeof prev !== 'function' || prev.__tlpu) return;
+    var next = function () {
+      var out = prev.apply(this, arguments) || [];
+      myAlerts().forEach(function (n) {
+        if (out.some(function (x) { return x.id === n.id; })) return;
+        var md = n.metadata || {};
+        var text = (n.title || 'Job alert') + ': ' + [md.jobTitle, md.company].filter(Boolean).join(' · ')
+          + (md.matchPercent != null ? ' · ' + md.matchPercent + '% match' : '');
+        out.push({ id: n.id, text: text, ts: n.createdAt, read: !!n.read, go: n.jobId ? '#/job/' + n.jobId : '#/candidate/home' });
+      });
+      return out.sort(function (x, y) { return (Date.parse(y.ts || 0) || 0) - (Date.parse(x.ts || 0) || 0); }).slice(0, 25);
+    };
+    next.__tlpu = true;
+    window.cpNotifications = next;
+    var prevMark = window.cpMark;
+    if (typeof prevMark === 'function' && !prevMark.__tlpu) {
+      var m = function (kind, id) {
+        var n = kind === 'n' ? ((window.TL && TL.notifications) || []).filter(function (x) { return x.id === id; })[0] : null;
+        if (n && MINE[n.type] && !n.read && TL.markNotificationRead) { TL.markNotificationRead(id); n.read = true; }
+        var r = prevMark.apply(this, arguments);
+        if (n && n.metadata && n.metadata.format === 'job_opportunity') setTimeout(function () { showOpportunity(n); }, 60);
+        return r;
+      };
+      m.__tlpu = true;
+      window.cpMark = m;
+    }
+  }
+  wrapPortalBell();
+  setTimeout(wrapPortalBell, 0);
 
   /* ================================================================ *
    * admin: the chip list

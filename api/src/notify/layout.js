@@ -62,6 +62,9 @@ const esc = (v) => String(v == null ? '' : v)
  * @param opts.cta       { label, url } - one button, never two
  * @param opts.note      small print under the button
  * @param opts.company   the sender's name in the footer
+ * @param opts.bodyHtml  instead of `body`: markup the caller has already
+ *                       escaped (the job-opportunity message builds its own)
+ * @param opts.afterCtaHtml  already-escaped markup under the button
  */
 export function emailLayout(opts = {}) {
   const company = opts.company || 'TeamLink Consultants';
@@ -141,8 +144,9 @@ export function emailLayout(opts = {}) {
 
       <tr><td class="tl-pad" style="padding:${title ? '16px' : '26px'} 34px 4px">
         ${opts.greeting ? para(opts.greeting) : ''}
-        ${paragraphs.map(para).join('')}
+        ${opts.bodyHtml ? opts.bodyHtml : paragraphs.map(para).join('')}
         ${cta}
+        ${opts.afterCtaHtml || ''}
       </td></tr>
 
       ${factRows ? `<tr><td class="tl-pad" style="padding:6px 34px 0">

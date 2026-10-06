@@ -190,6 +190,7 @@
     return '<div class="notif-row tlsja-n ' + (n.read ? '' : 'unread') + '"><div class="notif-msg"><b>' + h(n.title) + '</b><br>'
       + h(md.jobTitle || '') + (md.company ? ' · ' + h(md.company) : '') + (md.location ? ' · ' + h(md.location) : '')
       + (md.savedJobTitle ? '<br><span style="color:#5b6676">Like “' + h(md.savedJobTitle) + '”, which you saved</span>' : '')
+      + (typeof window.tlpuOpportunityHtml === 'function' ? window.tlpuOpportunityHtml(n) : '')
       + '</div><div class="notif-meta">' + when
       + '<button class="ss-link" onclick="tlsjaOpen(\'' + h(js(n.id)) + '\')">View job</button></div></div>';
   }
@@ -233,7 +234,10 @@
         var md = n.metadata || {};
         var text = n.type === 'SAVED_JOB_DIGEST'
           ? (n.title || 'More new jobs like ones you saved') + (n.message ? ' — ' + n.message : '')
-          : (n.message || n.title) + (md.savedJobTitle ? ' (like “' + md.savedJobTitle + '”, which you saved)' : '');
+          /* The full job-opportunity message is too long for a menu line:
+             the owner's one-line summary is shown here instead. */
+          : (md.summary || (md.format === 'job_opportunity' ? '' : n.message) || n.title)
+            + (md.savedJobTitle ? ' (like “' + md.savedJobTitle + '”, which you saved)' : '');
         out.push({ id: n.id, text: text, ts: n.createdAt, read: !!n.read,
           go: n.type === 'SAVED_JOB_SIMILAR' && n.jobId ? '#/job/' + n.jobId : '#/candidate/saved' });
       });

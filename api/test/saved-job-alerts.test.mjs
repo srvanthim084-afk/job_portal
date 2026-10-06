@@ -146,7 +146,14 @@ test('a related job: one inbox entry and one email naming the saved job; an unre
   const n = await inbox(A.id);
   assert.equal(n.length, 1);
   assert.equal(n[0].title, 'New job like one you saved');
-  assert.equal(n[0].message, 'New job like one you saved: ICU Staff Nurse · Nellore');
+  /* the full job-opportunity message (owner, 2026-10-06); the owner's one-line wording is its summary */
+  assert.equal(n[0].metadata.summary, 'New job like one you saved: ICU Staff Nurse · Nellore');
+  assert.equal(n[0].metadata.format, 'job_opportunity');
+  assert.match(n[0].message, /^\*🚀 NEW JOB OPPORTUNITY – Nellore\*\n\nHi! 👋 You saved "Staff Nurse" \(Sunrise Hospitals · Nellore\) on TeamLink\./);
+  for (const l of ['🏥 *ICU Staff Nurse*', '🏢 *Sunrise Hospitals*', '💰 Salary: *₹3.5-4.5 LPA*', '📍 Location: *Nellore*',
+    '🏠 Work From Home: Not Available', `🔗 ${process.env.PUBLIC_ORIGIN.replace(/\/$/, '')}/#/job/${rel}`]) {
+    assert.ok(n[0].message.split('\n').includes(l), `inbox message is missing "${l}":\n${n[0].message}`);
+  }
   assert.equal(n[0].job_id, rel);
   assert.equal(n[0].metadata.applyUrl, `#/job/${rel}`);
   assert.equal(n[0].metadata.savedJobId, savedA);
@@ -348,6 +355,21 @@ test('dedupe with the profile-match job alert and urgent hiring', async () => {
   assert.equal((await raw(`select count(*)::int n from notifications where recipient_id=$1 and type='URGENT_HIRING'`, [P.id])).rows[0].n, 0);
   const emails = allMailsTo(P.email);
   assert.equal(emails.length, 1, 'one email for this job, from the profile match: ' + emails.map((m) => m.body.subject).join(' | '));
+  /* the profile-match alert is in the job-opportunity format (owner, 2026-10-06) */
+  const pmMail = emails[0].body;
+  assert.equal(pmMail.subject, 'A Senior Java Developer role matching your profile');
+  assert.match(pmMail.text, /^🚀 NEW JOB OPPORTUNITY – Nellore\n\nHi! 👋 We found a job opportunity that could be a great match for your profile!/);
+  for (const l of ['🏥 Senior Java Developer', '🏢 Sunrise Hospitals', '💼 Experience: 2-4 yrs', '🏠 Work From Home: Not Available']) {
+    assert.ok(pmMail.text.split('\n').includes(l), `profile-match email is missing "${l}":\n${pmMail.text}`);
+  }
+  assert.match(pmMail.text, new RegExp(`🔗 http://127\\.0\\.0\\.1:\\d+/\\?alert=jm_[a-z0-9]+#/job/${j}`));
+  assert.match(pmMail.text, /we matched you on: /);
+  assert.match(pmMail.html, />View job &amp; apply</);
+  /* SMS and WhatsApp have no provider here: nothing went out on them */
+  assert.equal(mock.received.some((m) => m.url !== '/email'), false);
+  const pmSt = (await raw(`select email_status, sms_status, whatsapp_status from job_matches where job_id=$1 and candidate_id=$2`,
+    [j, P.id])).rows[0];
+  assert.deepEqual(pmSt, { email_status: 'sent', sms_status: 'not_configured', whatsapp_status: 'skipped_no_address' });
 
   /* and urgent first: the saved-job alert then stays quiet */
   const j2 = await job({ title: 'Java Developer II', skills: ['Java', 'Spring', 'SQL', 'AWS'], exp: '2-4 yrs', });
