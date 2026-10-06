@@ -55,7 +55,7 @@ let candidateId, applicationId, jobId, interviewId, questions;
 
 await check('a candidate applies, so there is something to interview for', async () => {
   const reg = await api('post', '/auth/register',
-    { name: 'Interview Tester', email, password: 'IvTest@2026' });
+    { name: 'Interview Tester', email, password: 'IvTest@2026', phone: '9' + String(Math.floor(1e8 + Math.random() * 9e8)), preferredLocation: 'Hyderabad', expectedCtc: 4, noticePeriod: 'Immediate', preferredWorkModes: ['Hybrid'] });
   candidateId = reg.candidateId;
   must(candidateId, 'registration returned no candidate');
 
