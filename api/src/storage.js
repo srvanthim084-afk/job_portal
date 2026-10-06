@@ -239,6 +239,66 @@ export function getStorage() {
   return config.storageDriver === 'supabase' ? supabaseDriver : localDriver;
 }
 
+/* ------------------------------------------------------------------ *
+ * Interview recordings (0116)
+ *
+ * The same rules as a resume - magic bytes over the browser's word, a
+ * size limit, a uuid key, the same driver, no public URL - with an
+ * audio/video allowlist in place of the document one. MediaRecorder
+ * produces WebM in Chromium and Firefox and MP4 in Safari; Ogg and WAV are
+ * accepted for an audio-only recorder.
+ * ------------------------------------------------------------------ */
+const RECORDING_SIGNATURES = [
+  // EBML header: WebM / Matroska
+  { ext: 'webm', mime: 'video/webm',
+    test: (b) => b.length > 4 && b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3 },
+  // ISO BMFF: 'ftyp' at offset 4
+  { ext: 'mp4', mime: 'video/mp4',
+    test: (b) => b.length > 12 && b.toString('latin1', 4, 8) === 'ftyp' },
+  { ext: 'ogg', mime: 'audio/ogg',
+    test: (b) => b.length > 4 && b.toString('latin1', 0, 4) === 'OggS' },
+  { ext: 'wav', mime: 'audio/wav',
+    test: (b) => b.length > 12 && b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WAVE' },
+];
+
+export const RECORDING_EXT = RECORDING_SIGNATURES.map((s) => s.ext);
+export const RECORDING_MAX_BYTES = () =>
+  Math.max(256 * 1024, Number(process.env.INTERVIEW_RECORDING_MAX_BYTES || 25 * 1024 * 1024));
+
+/**
+ * @param claimedMime the browser's Content-Type, used only to tell an
+ *                    audio-only WebM from a video one when storing the
+ *                    type to serve it back with
+ */
+export function validateRecording(buffer, claimedMime = '') {
+  if (!buffer || !buffer.length) {
+    throw new ApiError(400, CODES.UPLOAD_FAILED, 'That recording appears to be empty.');
+  }
+  const max = RECORDING_MAX_BYTES();
+  if (buffer.length > max) {
+    throw new ApiError(413, CODES.FILE_TOO_LARGE,
+      `That recording is too large. The limit is ${Math.round(max / 1024 / 1024)}MB.`);
+  }
+  const match = RECORDING_SIGNATURES.find((s) => s.test(buffer));
+  if (!match) {
+    throw new ApiError(415, CODES.UNSUPPORTED_FILE,
+      'That recording is not a supported audio or video format (WebM, MP4, Ogg or WAV).');
+  }
+  let mime = match.mime;
+  if (match.ext === 'webm' && /^audio\/webm/i.test(String(claimedMime))) mime = 'audio/webm';
+  if (match.ext === 'mp4' && /^audio\/(?:mp4|m4a|x-m4a)/i.test(String(claimedMime))) mime = 'audio/mp4';
+  return { ext: match.ext, mime, size: buffer.length };
+}
+
+export async function storeRecording({ candidateId, interviewId, buffer, claimedMime }) {
+  const { ext, mime, size } = validateRecording(buffer, claimedMime);
+  const safe = (s) => String(s).replace(/[^A-Za-z0-9_-]/g, '');
+  const key = `interviews/${safe(candidateId)}/${safe(interviewId)}/${randomUUID()}.${ext}`;
+  const digest = createHash('sha256').update(buffer).digest('hex');
+  await getStorage().put(key, buffer, mime);
+  return { path: key, mime, size, sha256: digest };
+}
+
 /**
  * Stores a validated resume and returns the metadata the database keeps.
  * The key is content-addressed by a random uuid rather than the user's

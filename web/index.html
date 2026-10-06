@@ -25776,10 +25776,17 @@ table.data td .tl-af b{white-space:normal}
      Only the candidate's video is shown (no AI avatar). Silence / skip → that question scores 0
      and the agent advances (per-question timeout). Scoring is written back and marked visible to
      candidate, recruiter, BDE and client. Identity/lip-sync/voice checks are Simulated. */
-  var ANSWER_SECS=45, MIN_VOICE_MS=1200, VAD_THRESH=0.045;
+  /* 40 seconds an answer (the owner's default). A test can shorten it with
+     window.__TLVI_TEST__ = { answerSecs } set before the page loads; nothing
+     in production does. */
+  var ANSWER_SECS=(function(){ var t=window.__TLVI_TEST__, n=t&&Number(t.answerSecs); return n>=3&&n<=600?Math.round(n):40; })(), MIN_VOICE_MS=1200, VAD_THRESH=0.045;
   var AIIV={ appId:null, phase:'camera', idx:0, started:false, stream:null, camState:'off',
     answers:[], listening:false, timeLeft:0, timerId:null, rafId:null, voicedMs:0, spoke:false,
     audioCtx:null, analyser:null, rec:null, sttText:'', sttFinal:'', briefSpoken:false };
+  /* PUBLISHED, read-only. teamlink-interview-integrity.js has always read
+     window.AIIV - for its second-voice check and to show its strike-two
+     stop - and it was never set, so both silently did nothing. */
+  try{ Object.defineProperty(window, 'AIIV', { configurable:true, get:function(){ return AIIV; } }); }catch(e){}
   var BRIEF=[
     'Please make sure you are in a quiet, private room.',
     'Please wear headphones for this interview.',
@@ -25895,8 +25902,10 @@ table.data td .tl-af b{white-space:normal}
      re-rendered, or finished while a click is still in flight, and
      reading rec.aiInterview off nothing threw a TypeError that killed
      the page under the candidate mid-interview. */
-  function curQs(rec){ if(!rec || !rec.aiInterview) return [];
-    if(!rec.aiInterview.questions || !rec.aiInterview.questions.length){ rec.aiInterview.questions=generateQuestions(rec); try{ persist(); }catch(e){} } return rec.aiInterview.questions; }
+  /* The questions are the SERVER's (POST /api/ai-interviews/session).
+     generateQuestions() is no longer a fallback: an interview the server
+     did not plan is an interview it cannot record or grade. */
+  function curQs(rec){ if(!rec || !rec.aiInterview) return []; return rec.aiInterview.questions || []; }
 
   /* ---- content-based answer scoring (evaluates what was actually said) ---- */
   function normTxt(t){ return String(t||'').toLowerCase(); }
@@ -26031,36 +26040,75 @@ table.data td .tl-af b{white-space:normal}
   function stopSpeak(){ try{ window.speechSynthesis&&speechSynthesis.cancel(); }catch(e){} }
 
   /* ---- camera + mic ---- */
-  function aiivAttach(){ try{ var v=document.getElementById('aiivVideo'); if(v && AIIV.stream){ v.srcObject=AIIV.stream; v.muted=true; v.play&&v.play().catch(function(){}); } }catch(e){} }
+  function aiivAttach(){ try{ var v=document.getElementById('aiivVideo'); if(v && AIIV.stream){ if(v.srcObject!==AIIV.stream) v.srcObject=AIIV.stream; v.muted=true; v.play&&v.play().catch(function(){}); } }catch(e){} }
   function aiivRerender(){ render(); setTimeout(aiivAttach, 40); }
-  function setupAudio(stream){ try{ var AC=window.AudioContext||window.webkitAudioContext; if(!AC) return; AIIV.audioCtx=new AC(); var src=AIIV.audioCtx.createMediaStreamSource(stream); AIIV.analyser=AIIV.audioCtx.createAnalyser(); AIIV.analyser.fftSize=512; src.connect(AIIV.analyser); }catch(e){ AIIV.analyser=null; } }
+  function setupAudio(stream){ try{ var AC=window.AudioContext||window.webkitAudioContext; if(!AC) return; AIIV.audioCtx=new AC(); var src=AIIV.audioCtx.createMediaStreamSource(stream); AIIV.analyser=AIIV.audioCtx.createAnalyser(); AIIV.analyser.fftSize=512; src.connect(AIIV.analyser); if(AIIV.audioCtx.state==='suspended'&&AIIV.audioCtx.resume) AIIV.audioCtx.resume().catch(function(){}); }catch(e){ AIIV.analyser=null; } }
   function rmsLevel(){ try{ if(!AIIV.analyser) return 0; var buf=new Uint8Array(AIIV.analyser.fftSize); AIIV.analyser.getByteTimeDomainData(buf); var s=0; for(var i=0;i<buf.length;i++){ var v=(buf[i]-128)/128; s+=v*v; } return Math.sqrt(s/buf.length); }catch(e){ return 0; } }
+  /* THE DEVICE CHECK. Camera, microphone and the connection are checked
+     before anything is asked. A refused permission is not a dead end: the
+     screen says which, gives step-by-step help, and Retry asks again. */
   window.aiivEnableCamera=function(){
-    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){ AIIV.camState='unsupported'; aiivRerender(); return; }
-    navigator.mediaDevices.getUserMedia({video:true, audio:true}).then(function(s){ AIIV.stream=s; AIIV.camState='on'; setupAudio(s); aiivRerender(); })
-      .catch(function(err){ AIIV.camState=(err&&(err.name==='NotAllowedError'||err.name==='SecurityError'))?'denied':'unsupported'; aiivRerender(); });
+    AIIV.camErr=null;
+    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){ AIIV.camState='unsupported'; AIIV.camErr='unsupported'; aiivRerender(); return; }
+    navigator.mediaDevices.getUserMedia({video:{width:{ideal:640},height:{ideal:480},facingMode:'user'}, audio:{echoCancellation:true,noiseSuppression:true}})
+      .then(function(s){ AIIV.stream=s; AIIV.camState='on'; AIIV.micOff=false; AIIV.camOff=false; setupAudio(s); aiivRerender(); checkLoop(); if(!AIIV.net||AIIV.net.state!=='ok') aiivRecheckNetwork(); })
+      .catch(function(err){ var n=err&&err.name;
+        AIIV.camErr=(n==='NotAllowedError'||n==='SecurityError'||n==='PermissionDeniedError')?'denied'
+          :(n==='NotFoundError'||n==='DevicesNotFoundError'||n==='OverconstrainedError')?'notfound'
+          :(n==='NotReadableError'||n==='TrackStartError'||n==='AbortError')?'busy':'error';
+        AIIV.camState=AIIV.camErr==='denied'?'denied':'error'; aiivRerender(); });
+  };
+  /* The microphone, heard during the device check: the level bar moves
+     and "We can hear you" appears once the candidate says something. */
+  function checkLoop(){
+    if(AIIV.checkRaf) return;
+    (function loop(){
+      if(!AIIV.started || AIIV.phase!=='camera' || AIIV.camState!=='on'){ AIIV.checkRaf=null; return; }
+      var l=rmsLevel(); if(window.TLVI) TLVI.meter(l);
+      if(l>VAD_THRESH && !AIIV.micHeard){ AIIV.micHeard=true; aiivRerender(); }
+      AIIV.checkRaf=requestAnimationFrame(loop);
+    })();
+  }
+  window.aiivRecheckNetwork=function(){
+    var t=window.TLVI;
+    if(!t){ AIIV.net={state:'ok'}; return; }
+    AIIV.net={state:'wait'}; if(AIIV.phase==='camera') aiivRerender();
+    t.net.ping().then(function(ok){ AIIV.net=ok?{state:'ok', ms:t.net.lastMs}:{state:'fail'}; if(AIIV.phase==='camera') aiivRerender(); });
   };
   function stopCam(){ try{ if(AIIV.stream){ AIIV.stream.getTracks().forEach(function(t){ t.stop(); }); } }catch(e){} try{ if(AIIV.audioCtx&&AIIV.audioCtx.close) AIIV.audioCtx.close(); }catch(e){} AIIV.stream=null; AIIV.analyser=null; AIIV.audioCtx=null; AIIV.camState='off'; }
 
-  /* ---- speech-to-text (best effort) ---- */
-  function startSTT(){ try{ var SR=window.SpeechRecognition||window.webkitSpeechRecognition; if(!SR){ AIIV.rec=null; return; } var r=new SR(); r.lang='en-US'; r.continuous=true; r.interimResults=true;
+  /* ---- speech-to-text: live captions, never invented ----
+     The Web Speech API where the browser has it. Where it does not, the
+     screen says "Live captions aren't available in this browser - your
+     spoken answer is still recorded", and no caption is shown at all. */
+  function sttOk(){ return !!(window.SpeechRecognition||window.webkitSpeechRecognition); }
+  function startSTT(){ try{ var SR=window.SpeechRecognition||window.webkitSpeechRecognition; if(!SR || AIIV.micOff){ AIIV.rec=null; return; } var r=new SR(); r.lang='en-IN'; r.continuous=true; r.interimResults=true;
     r.onresult=function(e){ var interim=''; for(var i=e.resultIndex;i<e.results.length;i++){ var res=e.results[i]; if(res.isFinal){ AIIV.sttFinal+=res[0].transcript+' '; } else { interim+=res[0].transcript; } } AIIV.sttText=(AIIV.sttFinal+interim).trim(); if(AIIV.sttText){ AIIV.spoke=true; setTranscript(AIIV.sttText); } };
-    r.onerror=function(){}; r.onend=function(){ if(AIIV.listening){ try{ r.start(); }catch(e){} } };
+    r.onerror=function(ev){ if(ev && (ev.error==='not-allowed'||ev.error==='service-not-allowed')) AIIV.sttBlocked=true; };
+    r.onend=function(){ if(AIIV.listening && !AIIV.sttBlocked && !AIIV.micOff){ try{ r.start(); }catch(e){} } };
     AIIV.rec=r; try{ r.start(); }catch(e){} }catch(e){ AIIV.rec=null; } }
   function stopSTT(){ try{ if(AIIV.rec){ AIIV.rec.onend=null; AIIV.rec.stop(); } }catch(e){} AIIV.rec=null; }
 
   /* ---- in-place UI updates (no re-render while listening) ---- */
   function byId(id){ return document.getElementById(id); }
   function setCaption(t){ var e=byId('aiivCaption'); if(e) e.textContent=t; }
-  function setStatus(t){ var e=byId('aiivStatus'); if(e) e.textContent=t; }
-  function setTranscript(t){ var e=byId('aiivTranscript'); if(e) e.textContent=t||''; }
+  function setStatus(t, icon){ if(window.TLVI){ TLVI.status(t, icon); return; } var e=byId('aiivStatus'); if(e) e.textContent=t; }
+  function setTranscript(t){ if(window.TLVI){ TLVI.transcript.live(t||''); return; } var e=byId('aiivTranscript'); if(e) e.textContent=t||''; }
 
+  /* ANSWERING. The timer starts when the question has been spoken, the
+     last ten seconds turn the pill amber (no sound), and at zero the answer
+     is submitted for the candidate. The answer is recorded on camera from
+     here until it is submitted. After a dropped connection the words
+     already said are carried into the resumed answer (AIIV.carry). */
   function startListening(){
-    AIIV.listening=true; AIIV.voicedMs=0; AIIV.spoke=false; AIIV.sttText=''; AIIV.sttFinal=''; AIIV.timeLeft=ANSWER_SECS;
+    AIIV.listening=true; AIIV.spoke=!!AIIV.carry; AIIV.voicedMs=AIIV.carryVoiced||0;
+    AIIV.sttFinal=AIIV.carry?AIIV.carry+' ':''; AIIV.sttText=AIIV.carry||''; AIIV.carry=''; AIIV.carryVoiced=0;
+    AIIV.timeLeft=ANSWER_SECS;
+    if(window.TLVI){ TLVI.timer(AIIV.timeLeft, true); if(AIIV.sttText) TLVI.transcript.live(AIIV.sttText); TLVI.recorder.start(AIIV.stream); }
     startSTT();
     var last=performance.now();
-    (function loop(){ if(!AIIV.listening) return; var now=performance.now(); var dt=now-last; last=now; var lvl=rmsLevel(); if(lvl>VAD_THRESH){ AIIV.voicedMs+=dt; AIIV.spoke=true; } var lm=byId('aiivLevel'); if(lm) lm.style.width=Math.min(100,Math.round(lvl*320))+'%'; proctorSample(dt, lvl); AIIV.rafId=requestAnimationFrame(loop); })();
-    AIIV.timerId=setInterval(function(){ AIIV.timeLeft--; var t=byId('aiivTimer'); if(t) t.textContent=Math.max(0,AIIV.timeLeft)+'s'; if(AIIV.timeLeft<=0){ finishAnswer(true,false); } }, 1000);
+    (function loop(){ if(!AIIV.listening) return; var now=performance.now(); var dt=now-last; last=now; var lvl=rmsLevel(); if(lvl>VAD_THRESH){ AIIV.voicedMs+=dt; AIIV.spoke=true; } if(window.TLVI) TLVI.meter(lvl); proctorSample(dt, lvl); AIIV.rafId=requestAnimationFrame(loop); })();
+    AIIV.timerId=setInterval(function(){ AIIV.timeLeft--; if(window.TLVI) TLVI.timer(Math.max(0,AIIV.timeLeft), true); if(AIIV.timeLeft<=0){ finishAnswer(true,false); } }, 1000);
   }
   /* Between questions the answer loop is not running, and that is
      precisely when the room should be quiet. This keeps sampling. */
@@ -26076,7 +26124,7 @@ table.data td .tl-af b{white-space:normal}
   }
   function proctorIdleStop(){ if(AIIV.procRaf){ cancelAnimationFrame(AIIV.procRaf); AIIV.procRaf=null; } }
 
-  function stopListening(){ AIIV.listening=false; if(AIIV.rafId){ cancelAnimationFrame(AIIV.rafId); AIIV.rafId=null; } if(AIIV.timerId){ clearInterval(AIIV.timerId); AIIV.timerId=null; } stopSTT(); }
+  function stopListening(){ AIIV.listening=false; if(AIIV.rafId){ cancelAnimationFrame(AIIV.rafId); AIIV.rafId=null; } if(AIIV.timerId){ clearInterval(AIIV.timerId); AIIV.timerId=null; } stopSTT(); if(window.TLVI) TLVI.meter(0); }
   function vadAvailable(){ return !!AIIV.analyser; }
 
   /* ================================================================
@@ -26148,6 +26196,7 @@ table.data td .tl-af b{white-space:normal}
     proctorLog(kind, message);
     AIIV.integrity.ended = { kind: kind, message: message, at: new Date().toISOString() };
     stopListening(); stopSpeak();
+    try{ if(window.TLVI){ TLVI.recorder.stop(); TLVI.store.save(AIIV.appId, { stopped: kind }); } }catch(e){}
     AIIV.phase = 'stopped';
     try{ render(); }catch(e){}
   }
@@ -26257,45 +26306,213 @@ table.data td .tl-af b{white-space:normal}
   }
 
 
-  function askCurrent(){
-    var rec=recById(AIIV.appId); if(!rec) return; var qs=curQs(rec); var q=qs[AIIV.idx];
-    setStatus('🔊 The interviewer is speaking…'); setTranscript('');
-    speak(q.q, function(){ if(AIIV.phase!=='interview') return; setStatus(vadAvailable()?'🎙️ Listening — please answer aloud':'🎙️ Answer aloud, then tap “Finish answer” (voice detection unavailable in this browser)'); startListening(); });
+  /* ================================================================
+     ASKING AND ANSWERING
+
+     One question at a time, as the server planned it. Each answer is
+     saved on the server the moment it is submitted (not at the end), so a
+     dropped connection or a closed tab loses nothing that was said; the
+     server then says whether this answer gets its ONE follow-up. A
+     recording of the answer is uploaded alongside. Nothing here computes
+     or shows a score.
+     ================================================================ */
+  function aiSession(){ var s=window.TL&&window.TL.__aiivSession; return (s && s.appId===AIIV.appId)?s:null; }
+  function curQ(){ var rec=recById(AIIV.appId); var qs=curQs(rec); return qs[AIIV.idx]||null; }
+  function questionText(){ var q=curQ(); if(!q) return ''; return (AIIV.part==='followup'&&AIIV.followUp)?AIIV.followUp.text:q.q; }
+  function saveLocal(){
+    if(!window.TLVI) return; var s=aiSession();
+    TLVI.store.save(AIIV.appId, { interviewId:s?s.interviewId:null, idx:AIIV.idx, part:AIIV.part,
+      followUp:AIIV.followUp||null, lines:TLVI.transcript.all() });
   }
-  function renderAndAsk(){ render(); setTimeout(function(){ aiivAttach(); askCurrent(); }, 60); }
+
+  /* The question in a voice: the server's when one is configured
+     (INTERVIEW_TTS_PROVIDER), otherwise the browser's speechSynthesis.
+     Either way it is already on screen and in the transcript. */
+  function sayQuestion(text, cb){
+    var s=aiSession(), q=curQ();
+    if(s && s.speech && s.speech.tts==='server' && q && typeof window.Audio==='function'){
+      try{
+        var base=(window.TL&&window.TL.apiBase)||'/api';
+        var a=new Audio(base+'/ai-interviews/'+encodeURIComponent(s.interviewId)+'/speech?seq='+q.seq+'&part='+AIIV.part);
+        var done=false; var fin=function(){ if(done) return; done=true; AIIV.audio=null; cb&&cb(); };
+        a.onended=fin; a.onerror=function(){ if(!done) speak(text, fin); };
+        AIIV.audio=a; a.play().catch(function(){ if(!done) speak(text, fin); });
+        return;
+      }catch(e){ /* the browser's own voice below */ }
+    }
+    speak(text, cb);
+  }
+  function hushAudio(){ if(AIIV.audio){ try{ AIIV.audio.pause(); }catch(e){} AIIV.audio=null; } }
+
+  function askCurrent(){
+    var rec=recById(AIIV.appId); if(!rec) return; var q=curQ(); if(!q) return;
+    var text=questionText();
+    AIIV.speaking=true;
+    if(window.TLVI){ TLVI.transcript.add('AI', text); TLVI.timer(ANSWER_SECS, false); }
+    saveLocal();
+    setStatus('The interviewer is speaking…', 'speak');
+    sayQuestion(text, function(){
+      AIIV.speaking=false;
+      if(AIIV.phase!=='interview' || AIIV.paused || AIIV.saving || AIIV.listening) return;
+      setStatus(AIIV.micOff ? 'Your microphone is muted. Unmute to answer.'
+        : vadAvailable() ? 'Listening. Please answer aloud.' : 'Answer aloud, then press Submit answer.', 'mic');
+      startListening();
+    });
+  }
+  function renderAndAsk(){ AIIV.saving=false; render(); setTimeout(function(){ aiivAttach(); if(window.TLVI){ TLVI.transcript.paint(); TLVI.uploads.paint(); } askCurrent(); }, 60); }
 
   window.aiivFinish=function(){ finishAnswer(false,false); };
+  window.aiivSubmitAnswer=function(){ finishAnswer(false,false); };
   window.aiivSkip=function(){ finishAnswer(false,true); };
   function finishAnswer(timedOut, skipped){
     /* ONE ANSWER PER QUESTION, however this was reached.
-       The per-question timer and the "Finish answer" button both call
-       this, and when they landed together the last question finished
-       twice - which submitted the interview twice and said "Thank you.
-       Your interview is complete" twice over the top of itself. */
-    if(AIIV.finishing) return;
+       The per-question timer and the Submit button both call this, and the
+       answer is now saved before the interview moves on - so a second call
+       while that save is in flight is ignored rather than answering the
+       next question with nothing. */
+    if(AIIV.finishing || AIIV.saving) return;
+    if(AIIV.phase!=='interview') return;
     AIIV.finishing=true;
     setTimeout(function(){ AIIV.finishing=false; }, 0);
-    stopListening();
+    AIIV.saving=true;
+    stopListening(); stopSpeak(); hushAudio();
     /* WHAT COUNTS AS HAVING ANSWERED.
        A transcript is the strongest evidence there is: speech
-       recognition returned words, so the candidate spoke. It used to be
-       ignored, and the only thing that counted was 1.2 seconds of audio
-       above a fixed RMS threshold - so a candidate on a quiet headset,
-       or sitting slightly back from a laptop mic, answered every
-       question properly, had every one recorded as unanswered, and was
-       scored 0. That is where a real 10% interview came from.
-       Volume is still accepted as evidence on its own, for a browser
-       with no speech recognition; Skip is still an absolute no. */
+       recognition returned words, so the candidate spoke. Volume is still
+       accepted as evidence on its own, for a browser with no speech
+       recognition; Skip is still an absolute no. */
     var transcript=(AIIV.sttText||'').trim();
     var voiceHeard = vadAvailable() ? (AIIV.spoke && AIIV.voicedMs>=MIN_VOICE_MS) : true;
     var answered = skipped ? false : (!!transcript || voiceHeard);
-    AIIV.answers[AIIV.idx]={ answered:answered, transcript:transcript, voicedMs:Math.round(AIIV.voicedMs||0) };
-    var rec=recById(AIIV.appId); var qs=curQs(rec);
+    var rec=recById(AIIV.appId); var qs=curQs(rec); var q=qs[AIIV.idx]; var part=AIIV.part; var idx=AIIV.idx;
     /* Nothing left to answer - the interview is over, or its record
        has gone. Pressing Skip once more must do nothing, not throw. */
-    if(!rec || !qs.length){ aiivSubmit(); return; }
-    if(AIIV.idx>=qs.length-1){ aiivSubmit(); }
-    else { AIIV.idx++; renderAndAsk(); }
+    if(!rec || !q){ AIIV.saving=false; aiivSubmit(); return; }
+
+    // The browser's own copy is the candidate's words - never a score.
+    var prev=AIIV.answers[idx]||{ answered:false, transcript:'', voicedMs:0 };
+    AIIV.answers[idx] = part==='followup'
+      ? { answered: prev.answered||answered, transcript: (prev.transcript+' '+transcript).trim(), voicedMs:(prev.voicedMs||0)+Math.round(AIIV.voicedMs||0) }
+      : { answered: answered, transcript: transcript, voicedMs: Math.round(AIIV.voicedMs||0) };
+
+    if(window.TLVI){
+      TLVI.transcript.finish(transcript || (skipped ? '(Skipped)' : answered ? '(Spoken answer recorded — no live caption in this browser)' : '(No answer)'));
+      TLVI.timer(0, false);
+    }
+    var ses=aiSession();
+    var stopped = window.TLVI ? TLVI.recorder.stop() : Promise.resolve(null);
+    stopped.then(function(r){
+      if(r && ses && !skipped && window.TLVI) TLVI.uploads.add({ interviewId:ses.interviewId, seq:q.seq, part:part, blob:r.blob, durationMs:r.durationMs });
+    });
+    if(!ses || !window.TL || !window.TL.api || !window.TLVI){ advance(); return; }
+
+    setStatus('Saving your answer…', 'sync');
+    saveLocal();
+    var body={ seq:q.seq, part:part, transcript:transcript.slice(0,20000), answered:answered, voicedMs:Math.max(0,Math.round(AIIV.voicedMs||0)) };
+    TLVI.persist(function(){ return window.TL.api.post('/ai-interviews/'+encodeURIComponent(ses.interviewId)+'/answer', body); })
+      .then(function(res){
+        if(AIIV.phase!=='interview') return;
+        AIIV.paused=false;              // the server just answered: we are back
+        /* The ONE follow-up, when the server asks for it: same question
+           number, answered on its own timer, then on to the next. */
+        if(part==='main' && res && res.followUp && !skipped && !AIIV.ending){
+          AIIV.part='followup'; AIIV.followUp={ text:res.followUp, kind:res.followUpKind||null };
+          renderAndAsk(); return;
+        }
+        advance();
+      }, answerRefused);
+  }
+  function advance(){
+    var rec=recById(AIIV.appId); var qs=curQs(rec);
+    AIIV.part='main'; AIIV.followUp=null;
+    if(AIIV.ending || AIIV.idx>=qs.length-1){ AIIV.saving=false; aiivSubmit(); return; }
+    AIIV.idx++; renderAndAsk();
+  }
+  /* A refusal that retrying cannot fix: a suspended interview (the
+     integrity rule, decided by the server), or one past its deadline. */
+  function answerRefused(err){
+    AIIV.saving=false;
+    if(err && err.code==='INTERVIEW_SUSPENDED'){ proctorStop('integrity_violation', err.message||'This interview has been suspended.'); return; }
+    stopListening(); stopSpeak(); hushAudio(); proctorIdleStop();
+    AIIV.phase='halted'; AIIV.haltMsg=(err&&err.message)||'Your answer could not be saved.';
+    render();
+  }
+
+  /* ---- the controls ---- */
+  function micButton(){
+    var b=byId('tlviMute'); if(!b||!window.TLVI) return;
+    b.setAttribute('aria-pressed', AIIV.micOff?'true':'false');
+    b.setAttribute('aria-label', AIIV.micOff?'Unmute microphone':'Mute microphone');
+    b.innerHTML=(AIIV.micOff?TLVI.icons.micOff:TLVI.icons.mic)+'<span>'+(AIIV.micOff?'Unmute':'Mute mic')+'</span>';
+  }
+  window.aiivToggleMic=function(){
+    AIIV.micOff=!AIIV.micOff;
+    try{ (AIIV.stream?AIIV.stream.getAudioTracks():[]).forEach(function(t){ t.enabled=!AIIV.micOff; }); }catch(e){}
+    // The browser's recogniser listens on its own, so it is stopped too.
+    if(AIIV.listening){ if(AIIV.micOff) stopSTT(); else startSTT(); }
+    micButton();
+    if(AIIV.listening) setStatus(AIIV.micOff?'Your microphone is muted. Unmute to answer.':'Listening. Please answer aloud.', 'mic');
+  };
+  /* The camera can be turned off - and the existing integrity rule still
+     applies: off for five seconds ends the interview. The screen says so
+     the moment it is off, rather than letting it come as a surprise. */
+  function camDom(){
+    var v=byId('aiivVideo'); if(v) v.hidden=!!AIIV.camOff;
+    var off=byId('tlviCamOff'); if(off) off.hidden=!AIIV.camOff;
+    var badge=byId('tlviCamBadge'); if(badge){ badge.classList.toggle('is-off', !!AIIV.camOff); var sp=badge.querySelector('span:last-child'); if(sp) sp.textContent=AIIV.camOff?'Camera off':'Camera on'; }
+    var box=document.querySelector('.tlvi-cam'); var w=box&&box.querySelector('.tlvi-camwarn');
+    if(AIIV.camOff && box && !w){ w=document.createElement('div'); w.className='tlvi-camwarn'; w.setAttribute('role','alert'); w.textContent='Your camera is off. Please turn it back on now — the interview ends if the camera stays off for 5 seconds.'; box.appendChild(w); }
+    else if(!AIIV.camOff && w && w.parentNode) w.parentNode.removeChild(w);
+    var b=byId('tlviCam');
+    if(b && window.TLVI){ b.setAttribute('aria-pressed', AIIV.camOff?'true':'false'); b.setAttribute('aria-label', AIIV.camOff?'Turn on camera':'Turn off camera');
+      b.innerHTML=(AIIV.camOff?TLVI.icons.camOff:TLVI.icons.cam)+'<span>'+(AIIV.camOff?'Turn on camera':'Turn off camera')+'</span>'; }
+  }
+  window.aiivToggleCam=function(){
+    AIIV.camOff=!AIIV.camOff;
+    try{ (AIIV.stream?AIIV.stream.getVideoTracks():[]).forEach(function(t){ t.enabled=!AIIV.camOff; }); }catch(e){}
+    camDom();
+  };
+  window.aiivEndInterview=function(){
+    if(AIIV.phase!=='interview') return;
+    var t=window.TLVI;
+    var ask = t ? t.confirm({ title:'End the interview now?',
+        text:'Your answers so far will be submitted. Questions you have not answered yet will be recorded as unanswered, and the interview cannot be restarted.',
+        ok:'End interview', cancel:'Keep going' })
+      : Promise.resolve(window.confirm('End the interview now?'));
+    ask.then(function(yes){
+      if(!yes || AIIV.phase!=='interview') return;
+      AIIV.ending=true;
+      if(AIIV.saving) return;          // the save in flight will see `ending` and submit
+      finishAnswer(false,false);
+    });
+  };
+
+  /* ---- a dropped connection ----
+     The timer stops, the answer so far is kept (on screen, in memory and
+     in sessionStorage), "Reconnecting..." shows, and when the API answers
+     again the SAME question is asked again - the words already said are
+     carried into it. An answer that was being saved keeps retrying on its
+     own and the interview continues when it lands. */
+  function pauseForNetwork(){
+    if(AIIV.phase!=='interview' || AIIV.paused) return;
+    AIIV.paused=true;
+    if(AIIV.listening){ AIIV.carry=(AIIV.sttText||'').trim(); AIIV.carryVoiced=AIIV.voicedMs||0; stopListening(); if(window.TLVI) TLVI.recorder.pause(); }
+    stopSpeak(); hushAudio(); AIIV.speaking=false;
+    if(window.TLVI){ TLVI.timer(ANSWER_SECS, false); TLVI.status('Connection lost. Waiting to reconnect…', 'sync'); }
+    saveLocal();
+  }
+  function resumeAfterNetwork(){
+    if(AIIV.phase!=='interview' || !AIIV.paused) return;
+    AIIV.paused=false;
+    if(AIIV.saving || AIIV.listening || AIIV.speaking) return;   // the pending save carries on by itself
+    if(window.TLVI) TLVI.transcript.add('AI', 'We are back. Let’s continue with question '+(AIIV.idx+1)+'.');
+    renderAndAsk();
+  }
+  /* Bound on first use: this module runs before teamlink-ai-video-interview.js loads. */
+  function bindNet(){
+    if(!window.TLVI || window.__aiivNetBound) return;
+    window.__aiivNetBound=true;
+    TLVI.net.onChange(function(online){ if(online) resumeAfterNetwork(); else pauseForNetwork(); });
   }
 
   /* ---- interaction / phases ---- */
@@ -26309,84 +26526,100 @@ table.data td .tl-af b{white-space:normal}
   if(!window.__aiivHushBound){
     window.__aiivHushBound = true;
     addEventListener('hashchange', function(){
-      if(String(location.hash||'').indexOf('#/ai-interview/') !== 0) stopSpeak();
+      if(String(location.hash||'').indexOf('#/ai-interview/') !== 0){ stopSpeak(); hushAudio(); }
     });
   }
 
-  window.aiivStart=function(appId){ stopSpeak(); resetSpoken(); AIIV={ appId:appId, phase:'camera', idx:0, started:true, stream:AIIV.stream, camState:AIIV.camState||'off', answers:[], listening:false, timeLeft:0, timerId:null, rafId:null, voicedMs:0, spoke:false, audioCtx:AIIV.audioCtx, analyser:AIIV.analyser, rec:null, sttText:'', sttFinal:'', briefSpoken:false }; aiivRerender(); };
-  window.aiivBeginBriefing=function(){ AIIV.phase='briefing'; render(); setTimeout(function(){ aiivAttach(); if(!AIIV.briefSpoken){ AIIV.briefSpoken=true; speak('Welcome, and thank you for joining. Before we begin, a few conditions. '+BRIEF.join(' ')+' When you are ready, press start to begin the questions.'); } }, 60); };
-  window.aiivBeginQuestions=function(){ var rec=recById(AIIV.appId); if(rec){ rec.aiInterview.questions=generateQuestions(rec); try{persist();}catch(e){} } AIIV.phase='interview'; AIIV.idx=0;
+  window.aiivStart=function(appId){
+    stopSpeak(); resetSpoken();
+    var keep=AIIV;
+    AIIV={ appId:appId, phase:'camera', idx:0, part:'main', followUp:null, started:true, stream:keep.stream, camState:keep.camState||'off', camErr:keep.camErr||null,
+      answers:[], listening:false, timeLeft:0, timerId:null, rafId:null, voicedMs:0, spoke:false, audioCtx:keep.audioCtx, analyser:keep.analyser, rec:null,
+      sttText:'', sttFinal:'', briefSpoken:false, micHeard:false, micOff:false, camOff:false, net:{state:'wait'} };
+    if(AIIV.stream){ try{ AIIV.stream.getTracks().forEach(function(t){ t.enabled=true; }); }catch(e){} }
+    bindNet();
+    if(window.TLVI) TLVI.transcript.reset([]);
+    aiivRerender(); aiivRecheckNetwork(); if(AIIV.camState==='on') checkLoop();
+  };
+  function greetingText(rec){
+    var c=cand(rec.candidateId); var first=window.TLVI?TLVI.firstName(c&&c.name):'';
+    var s=aiSession(); var n=(s&&s.questions&&s.questions.length)||15;
+    var mins=Math.max(5, Math.round(n*(ANSWER_SECS+25)/60));
+    return 'Hello'+(first?' '+first:'')+', and welcome. This is your AI interview for the '+rec.jobTitle+' role. '
+      +'It has '+n+' questions about your background, the skills this role needs and how you work, and takes about '+mins+' minutes.';
+  }
+  window.aiivBeginBriefing=function(){
+    if(AIIV.camState!=='on') return;
+    AIIV.phase='briefing'; render();
+    setTimeout(function(){ aiivAttach(); if(!AIIV.briefSpoken){ AIIV.briefSpoken=true; var rec=recById(AIIV.appId);
+      speak((rec?greetingText(rec)+' ':'')+'Before we begin, a few conditions. '+BRIEF.join(' ')+' When you are ready, press start to begin the questions.'); } }, 60);
+  };
+  /* THE QUESTIONS ARE THE SERVER'S. The browser used to fall back to its
+     own shuffled templates when the plan could not be fetched, and then to
+     score itself. An interview now needs the server's session: without it
+     the screen says so and offers Try again. */
+  window.aiivBeginQuestions=function(){
+    var rec=recById(AIIV.appId); var qs=curQs(rec); var s=aiSession();
+    stopSpeak();
+    if(!rec || !qs.length || !s){ AIIV.phase='plan_failed'; render(); return; }
+    AIIV.idx=0; AIIV.part='main'; AIIV.followUp=null;
+    var at=s.resumeAt;
+    if(at){
+      for(var i=0;i<qs.length;i++){ if(qs[i].seq===at.seq){ AIIV.idx=i; break; } }
+      if(at.part==='followup' && at.followUp){ AIIV.part='followup'; AIIV.followUp={ text:at.followUp, kind:at.kind||null }; }
+    }
+    AIIV.phase='interview';
     proctorReset(); proctorWatch(); proctorIdleLoop();
-    renderAndAsk(); };
+    renderAndAsk();
+  };
+  window.aiivRetryPlan=function(){
+    if(AIIV.phase!=='plan_failed') return;
+    if(window.TL) window.TL.__aiivPlan=null;
+    AIIV.phase='briefing'; render();
+    window.aiivBeginQuestions();
+  };
   window.aiivSubmit=function(){
     /* SUBMITTED ONCE. It is a global, the last question calls it, and a
-       second call would write a second set of results and thank the
+       second call would finish the interview twice and thank the
        candidate again. */
     if(AIIV.submitted) return;
     AIIV.submitted=true;
     proctorIdleStop();
-    stopListening(); stopSpeak(); var rec=recById(AIIV.appId); if(!rec) return;
-    var qs=curQs(rec); var sc=aiScore(rec, qs, AIIV.answers);
-    var report={ candidate_id:rec.candidateId, job_id:rec.jobId, status:'COMPLETED',
-      technical_score:sc.technical, behavioral_score:sc.behavioral, communication_score:sc.communication,
-      overall_percentage:sc.overall, per_question:sc.per, flags:[], content_scored:sc.content_scored, visible_to:['candidate','recruiter','bde','client'],
-      transcript:qs.map(function(qq,i){ var a=AIIV.answers[i]; return 'Q'+(i+1)+' ['+qq.cat+']: '+qq.q+'\nA'+((a&&a.answered)?'':' (no response)')+': '+((a&&a.transcript)||'(spoken response — not transcribed)'); }).join('\n\n') };
-    rec.aiInterview.status='completed'; rec.aiInterview.completedAt=nowISO();
-    rec.aiInterview.score=sc.overall; rec.aiInterview.technical=sc.technical; rec.aiInterview.behavioral=sc.behavioral; rec.aiInterview.communication=sc.communication;
-    rec.aiInterview.answers=AIIV.answers.slice(); rec.aiInterview.report=report; rec.aiInterview.mode='voice';
-    rec.aiInterview.feedback= sc.overall>=80?'Strong, clear responses with good technical depth.':(sc.overall>0?'Reasonable responses; some areas could be deeper.':'No spoken responses were captured.');
-    rec.interviewScore=sc.overall; rec.stage='ai_interview_done';
-    var c=cand(rec.candidateId); if(c){ c.aiInterviewScore=sc.overall; c.stage=(c.stage==='applied'||!c.stage)?'ai_interview_done':c.stage; }
-    var app=(DATA.applications||[]).filter(function(a){return a.candidateId===rec.candidateId&&a.jobId===rec.jobId;}).pop();
-    if(app){ app.interviewScore=sc.overall; app.aiInterview=rec.aiInterview; if(app.stage==='applied') app.stage='ai_interview_done'; }
-    addTL(rec,'AI Interview Completed','Overall '+sc.overall+'/100 · '+sc.answered+'/'+qs.length+' answered — Simulated');
-    addComms(rec,'AI_INTERVIEW_COMPLETED','AI Interview completed — '+rec.jobTitle+' | '+rec.applicationId,
-      'Your voice AI Interview for '+rec.jobTitle+' is complete. Your application is now under TeamLink review.');
-    addNotif(rec,'STATUS','AI Interview completed — '+rec.jobTitle,'Overall '+sc.overall+'/100 (Simulated). Shared with recruiter, BDE and client.');
-    stopCam(); persist();
-    if(window.exportJobPortalState) try{ exportJobPortalState(); }catch(e){}
-    /* SAID ONCE PER INTERVIEW.
-
-       aiivSubmit() already refuses to run twice, and so does the
-       wrapper that sends the result - but the thank-you is the one
-       thing a candidate HEARS, so it gets a guard of its own rather
-       than relying on every caller above it staying correct. A
-       candidate hearing "thank you, your interview is complete" three
-       times has been told the software is confused, whatever the
-       cause. */
-    if(AIIV.thanked !== AIIV.appId){
-      AIIV.thanked = AIIV.appId;
-      speak('Thank you. Your interview is complete and your results have been submitted.');
-    }
-    render();
+    stopListening(); stopSpeak(); hushAudio();
+    var rec=recById(AIIV.appId); if(!rec) return;
+    var ses=aiSession(); var T=window.TLVI;
+    AIIV.phase='submitting'; render();
+    if(!ses || !window.TL || typeof window.TL.finishAiSession!=='function'){ AIIV.submitted=false; AIIV.phase='submit_failed'; render(); return; }
+    var run=function(){ return window.TL.finishAiSession(rec, ses); };
+    (T ? T.persist(run) : run()).then(function(saved){
+      if(!saved) throw new Error('The server did not confirm the interview.');
+      /* COMPLETED ONLY WHEN THE SERVER SAYS SO. The answers were saved one
+         by one as they were given; /finish graded them. The browser marks
+         nothing complete before that, and keeps no score of its own. */
+      var qs=curQs(rec); var answered=AIIV.answers.filter(function(a){ return a&&a.answered; }).length;
+      rec.aiInterview.status='completed'; rec.aiInterview.completedAt=nowISO();
+      rec.aiInterview.answers=AIIV.answers.slice(); rec.aiInterview.mode='video';
+      rec.stage='ai_interview_done';
+      var app=(DATA.applications||[]).filter(function(a){return a.candidateId===rec.candidateId&&a.jobId===rec.jobId;}).pop();
+      if(app){ app.aiInterview=rec.aiInterview; if(app.stage==='applied'||app.stage==='ai_screening') app.stage='ai_interview_done'; }
+      addTL(rec,'AI Interview Completed', answered+' of '+qs.length+' questions answered');
+      addComms(rec,'AI_INTERVIEW_COMPLETED','AI Interview completed — '+rec.jobTitle+' | '+rec.applicationId,
+        'Your AI interview for '+rec.jobTitle+' is complete. Your application is now under TeamLink review.');
+      addNotif(rec,'STATUS','AI Interview completed — '+rec.jobTitle,'Your answers were submitted to the TeamLink recruitment team.');
+      if(T) T.store.clear(AIIV.appId);
+      stopCam(); persist();
+      if(window.exportJobPortalState) try{ exportJobPortalState(); }catch(e){}
+      AIIV.phase='done';
+      /* SAID ONCE PER INTERVIEW - the one thing a candidate HEARS gets a
+         guard of its own. */
+      if(AIIV.thanked !== AIIV.appId){
+        AIIV.thanked = AIIV.appId;
+        speak('Thank you. Your interview is complete and your answers have been submitted. The recruitment team will review them and contact you about the next step.');
+      }
+      render();
+    }).catch(function(err){ AIIV.submitted=false; AIIV.phase='submit_failed'; AIIV.submitErr=(err&&err.message)||''; render(); });
   };
-
-  /**
-   * The candidate, on camera.
-   *
-   * `big` is the interview itself, where the video takes half the window
-   * and the question sits beside it. A 180px thumbnail in a sidebar is
-   * fine for the set-up screens and useless during the interview: the
-   * candidate cannot tell whether they are in frame, lit, or still being
-   * seen at all - and staying in frame is a rule that ENDS the interview
-   * when it is broken. Something the software will stop you for has to be
-   * something you can see.
-   *
-   * The frame keeps a 4:3 box and is capped against the viewport height
-   * so the question and the controls beside it are never pushed under
-   * the fold on a laptop screen.
-   */
-  function videoPanel(big){
-    var live=(AIIV.camState==='on'&&AIIV.stream);
-    var size=big
-      ? 'width:100%;aspect-ratio:4/3;max-height:60vh;'
-      : 'width:100%;height:180px;';
-    var box=live
-      ? '<video id="aiivVideo" autoplay playsinline muted style="'+size+'object-fit:cover;background:#0b1418;border-radius:10px"></video>'
-      : '<div style="'+size+'background:#0b1418;border-radius:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#7f8ea0;gap:6px"><div style="font-size:'+(big?'46px':'30px')+'">📷</div><div style="font-size:'+(big?'13px':'11.5px')+';text-align:center;padding:0 12px">'+(AIIV.camState==='denied'?'Camera permission denied':AIIV.camState==='unsupported'?'Live camera needs https/localhost':'Camera off')+'</div></div>';
-    var lbl=live?'<div style="text-align:center;font-size:'+(big?'12px':'11px')+';color:var(--ok-600);font-weight:700;margin-top:8px">● You are on camera</div>':'';
-    return '<div class="panel" style="padding:12px">'+box+lbl+'</div>';
-  }
+  window.aiivRetrySubmit=function(){ if(AIIV.phase==='submit_failed') window.aiivSubmit(); };
   /**
    * What is being watched, and what is not.
    *
@@ -26426,22 +26659,17 @@ table.data td .tl-af b{white-space:normal}
 
   function aiInterviewPage(rec){
     var c=cand(rec.candidateId), content;
+    var T=window.TLVI;
+    var crumb='Candidate · '+esc2(c?c.name:'');
+    /* THE CLOSE: thanks, and what happens next. No score, no ranking and
+       no decision is shown to the candidate here - the hiring team reads
+       those in the ATS. */
     if(rec.aiInterview.status==='completed'){
-      var ai=rec.aiInterview;
-      content='<div style="max-width:660px;margin:0 auto"><div class="panel"><div class="panel-body" style="text-align:center;padding:30px">'
-        +'<div style="width:56px;height:56px;border-radius:50%;background:var(--ok-100);color:var(--ok-600);display:flex;align-items:center;justify-content:center;font-size:26px;margin:0 auto 12px">✓</div>'
-        +'<h2 style="font-size:19px">AI Interview Completed</h2>'
-        +'<div class="kv" style="grid-template-columns:repeat(2,1fr);max-width:520px;margin:16px auto 0">'
-        +'<div class="item"><div class="k">AI Interview Score — Simulated</div><div class="v">'+ai.score+'%</div></div>'
-        +'<div class="item"><div class="k">Completed</div><div class="v" style="font-size:12px">'+fmtDT(ai.completedAt)+'</div></div></div>'
-        +'<div class="kv" style="grid-template-columns:repeat(3,1fr);max-width:520px;margin:10px auto 0">'
-        +'<div class="item"><div class="k">Technical</div><div class="v" style="font-size:15px">'+(ai.technical!=null?ai.technical:'—')+'%</div></div>'
-        +'<div class="item"><div class="k">Behavioral</div><div class="v" style="font-size:15px">'+(ai.behavioral!=null?ai.behavioral:'—')+'%</div></div>'
-        +'<div class="item"><div class="k">Communication</div><div class="v" style="font-size:15px">'+(ai.communication!=null?ai.communication:'—')+'%</div></div></div>'
-        +'<div class="req-note" style="margin-top:16px;background:var(--brand-100);color:var(--brand-700)">Thank you — your interview is submitted. Your score has been shared with the recruiter, BDE and client, and your application is now under TeamLink review.</div>'
-        +'<div style="margin-top:16px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap"><button class="btn btn-ghost" onclick="navigate(\'/candidate-app/'+rec.applicationId+'\')">View Application</button><button class="btn btn-primary" onclick="navigate(\'/candidate/applications\')">My Applications</button></div>'
-        +'</div></div></div>';
-      return shell('applications','AI Interview','Candidate · '+esc2(c?c.name:''),content);
+      content = T
+        ? T.completeHtml({ first:T.firstName(c&&c.name), job:rec.jobTitle, ref:rec.applicationId })
+        : '<div class="empty-note">Your AI interview is complete. The recruitment team will review it.</div>';
+      if(T) setTimeout(function(){ T.uploads.paint(); }, 0);
+      return shell('applications','AI Interview',crumb,content);
     }
     /* SUSPENDED, AND IT SAYS WHY.
        An interview that simply stops is indistinguishable from one that
@@ -26470,76 +26698,57 @@ table.data td .tl-af b{white-space:normal}
         +'</div></div></div>';
       return shell('applications','AI Interview','Candidate \u00b7 '+esc2(c?c.name:''),content);
     }
-    if(AIIV.started && AIIV.appId===rec.applicationId && AIIV.phase==='camera'){
-      var on=(AIIV.camState==='on');
-      content='<div style="max-width:1240px;margin:0 auto"><div class="panel" style="margin-bottom:12px"><div class="panel-head"><div><h2>🎙️ AI Voice Interview</h2><div class="desc">'+esc2(rec.jobTitle)+' · '+esc2(rec.company)+'</div></div></div></div>'
-        +'<div class="aiiv-split">'
-        +'<div>'+videoPanel(true)+proctorPanel()+'</div>'
-        +'<div class="panel"><div class="panel-body">'
-        +'<div style="font-weight:700;font-size:16px;margin-bottom:8px">Turn on your camera to begin</div>'
-        +'<div class="req-note">This interview is <b>voice-only</b>: the AI interviewer will <b>speak</b> each question aloud and you answer <b>out loud</b>. Only your video is shown — there is no AI avatar. Nothing is asked until your camera is on.</div>'
-        +'<div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">'
-        +(on?'<button class="btn btn-ai" onclick="aiivBeginBriefing()">Continue — hear briefing</button>':'<button class="btn btn-ai" onclick="aiivEnableCamera()">▶ Turn on camera &amp; mic</button>')
-        +'<button class="btn btn-ghost" onclick="navigate(\'/candidate-app/'+rec.applicationId+'\')">Cancel</button></div>'
-        +(!on&&AIIV.camState!=='off'?'<div style="font-size:12px;color:var(--warn-600);margin-top:10px">Your camera and microphone are unavailable here ('+esc2(AIIV.camState)+'). You can still take the interview — the questions, your answers and the score are the same — but nothing will be recorded on camera. Open this over https or localhost for the full check.</div>'+(AIIV.camState!=='off'?'<div style="margin-top:8px"><button class="btn btn-ghost btn-sm" onclick="aiivBeginBriefing()">Continue anyway</button></div>':''):'')
-        +'</div></div>'
-        +'</div></div>';
-      return shell('applications','AI Interview','Candidate · '+esc2(c?c.name:''),content);
-    }
-    if(AIIV.started && AIIV.appId===rec.applicationId && AIIV.phase==='briefing'){
-      content='<div style="max-width:1240px;margin:0 auto"><div class="panel" style="margin-bottom:12px"><div class="panel-head"><div><h2>🎙️ AI Voice Interview</h2><div class="desc">'+esc2(rec.jobTitle)+' · '+esc2(rec.company)+'</div></div></div></div>'
-        +'<div class="aiiv-split">'
-        +'<div>'+videoPanel(true)+proctorPanel()+'</div>'
-        +'<div class="panel"><div class="panel-body">'
-        +'<div style="font-size:12px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:var(--ai-600)">Opening briefing · spoken</div>'
-        +'<div style="font-weight:700;font-size:15px;margin:6px 0 10px">🔊 Please listen to the briefing</div>'
-        +'<ul style="margin:0 0 12px;padding-left:18px;font-size:12.5px;color:var(--text-soft)">'+BRIEF.map(function(b){return '<li>'+esc2(b)+'</li>';}).join('')+'</ul>'
-        +'<div class="req-note">15 questions will be spoken to you — 2 introduction, 5 from this job\'s requirements, 5 about your own résumé, and 3 about how you work. Answer each aloud. If you stay silent or skip, that question scores 0 and we move on.</div>'
-        +'<div style="margin-top:14px;display:flex;gap:10px"><button class="btn btn-ai" onclick="aiivBeginQuestions()">I am ready — start the questions</button></div>'
-        +'</div></div>'
-        +'</div></div>';
-      return shell('applications','AI Interview','Candidate · '+esc2(c?c.name:''),content);
-    }
-    if(AIIV.started && AIIV.appId===rec.applicationId && AIIV.phase==='interview'){
-      var qs=curQs(rec); var q=qs[AIIV.idx]; var last=AIIV.idx===qs.length-1;
-      var catLbl={intro:'Introduction',resume:'Résumé deep-dive',technical:'Technical',behavioral:'Behavioral'}[q.cat]||'';
-      /* HALF THE WINDOW IS THE CANDIDATE, HALF IS THE QUESTION.
-         It was a 1fr/320px split with the camera in the narrow column,
-         which put the one thing the candidate has to watch - themselves,
-         in frame - into a thumbnail beside a mostly-empty panel. Two
-         equal columns, video first, and they stack on a narrow screen
-         with the video still on top. */
-      content='<div style="max-width:1240px;margin:0 auto"><div class="panel" style="margin-bottom:12px"><div class="panel-head"><div><h2>🎙️ AI Voice Interview</h2><div class="desc">'+esc2(rec.jobTitle)+' · '+esc2(rec.company)+'</div></div><span class="badge badge-ai">Question '+(AIIV.idx+1)+' of '+qs.length+'</span></div></div>'
-        +'<div class="aiiv-split">'
-        +'<div>'+videoPanel(true)+proctorPanel()+'</div>'
-        +'<div class="panel"><div class="panel-body">'
-        +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><div style="font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:var(--ai-600)">'+catLbl+'</div><div style="font-size:12px;color:var(--text-soft)">⏳ <span id="aiivTimer">'+ANSWER_SECS+'s</span></div></div>'
-        +'<div style="font-size:11px;color:var(--text-soft);margin-bottom:2px">🔊 Spoken question (caption)</div>'
-        +'<div id="aiivCaption" style="font-weight:700;font-size:19px;line-height:1.4;margin:2px 0 14px">'+esc2(q.q)+'</div>'
-        +'<div id="aiivStatus" style="font-size:12.5px;color:var(--ai-600);font-weight:700;margin-bottom:8px">Preparing…</div>'
-        +'<div style="font-size:11px;color:var(--text-soft);margin-bottom:4px">Microphone level</div>'
-        +'<div style="height:8px;background:#e6ebf2;border-radius:5px;overflow:hidden;margin-bottom:10px"><div id="aiivLevel" style="height:100%;width:0;background:var(--ok-600);transition:width .08s"></div></div>'
-        +'<div style="font-size:11px;color:var(--text-soft);margin-bottom:2px">Live transcript</div>'
-        +'<div id="aiivTranscript" style="min-height:120px;border:1px dashed var(--line);border-radius:8px;padding:10px 12px;font-size:14px;line-height:1.5;color:#42505f;background:var(--bg-alt)"></div>'
-        +'<div style="display:flex;justify-content:space-between;margin-top:14px;gap:10px">'
-        +'<button class="btn btn-ghost" onclick="aiivSkip()">Skip (scores 0)</button>'
-        +(last?'<button class="btn btn-primary" onclick="aiivFinish()">Finish answer &amp; submit</button>':'<button class="btn btn-primary" onclick="aiivFinish()">Finish answer &amp; next</button>')
-        +'</div></div></div>'
-        +'</div>'
-        +'<div style="text-align:center;color:var(--text-soft);font-size:11.5px;margin-top:10px">Voice-only — typed answers are not accepted. Score is calculated automatically after the last question and shared with the recruiter, BDE and client.</div></div>';
-      return shell('applications','AI Interview','Candidate · '+esc2(c?c.name:''),content);
+    var mine = AIIV.started && AIIV.appId===rec.applicationId;
+    if(mine && T){
+      var name=c?c.name:'';
+      var integrity=proctorPanel();
+      if(AIIV.phase==='camera'){
+        content=T.deviceCheckHtml({ job:rec.jobTitle, company:rec.company, name:name, ref:rec.applicationId,
+          camState:AIIV.camState, camErr:AIIV.camErr, micHeard:!!AIIV.micHeard, net:AIIV.net, sttOk:sttOk(), integrity:integrity });
+      } else if(AIIV.phase==='briefing'){
+        content=T.briefingHtml({ job:rec.jobTitle, company:rec.company, name:name, live:(AIIV.camState==='on'&&!!AIIV.stream),
+          greeting:greetingText(rec), brief:BRIEF });
+      } else if(AIIV.phase==='interview'){
+        var qs=curQs(rec); var q=qs[AIIV.idx];
+        if(q){
+          content=T.interviewHtml({ round:T.roundLabel(q), n:AIIV.idx+1, total:qs.length, question:questionText(),
+            followUp:AIIV.part==='followup', name:name, live:(AIIV.camState==='on'&&!!AIIV.stream),
+            camOff:!!AIIV.camOff, micOff:!!AIIV.micOff, secs:ANSWER_SECS, sttOk:sttOk(), integrity:integrity });
+        }
+      } else if(AIIV.phase==='submitting'){
+        content=T.messageHtml({ phase:'submitting', title:'Submitting your interview…',
+          text:'Your answers are saved. Sending the interview to the recruitment team now — please keep this page open.' });
+      } else if(AIIV.phase==='submit_failed'){
+        content=T.messageHtml({ phase:'submit_failed', bad:true, title:'Your interview has not been submitted yet',
+          text:'Every answer you gave is saved. '+(AIIV.submitErr?AIIV.submitErr+' ':'')+'Please check your connection and try again.',
+          actions:'<button type="button" class="tlvi-btn primary" onclick="aiivRetrySubmit()">Try again</button>' });
+      } else if(AIIV.phase==='plan_failed'){
+        content=T.messageHtml({ phase:'plan_failed', bad:true, title:'We could not prepare your interview',
+          text:'Your questions are prepared by the TeamLink server, and it could not be reached. Check your connection and try again.',
+          actions:'<button type="button" class="tlvi-btn primary" onclick="aiivRetryPlan()">Try again</button>'
+            +'<button type="button" class="tlvi-btn" onclick="navigate(\'/candidate-app/'+rec.applicationId+'\')">Back to my application</button>' });
+      } else if(AIIV.phase==='halted'){
+        content=T.messageHtml({ phase:'halted', bad:true, title:'The interview cannot continue', text:AIIV.haltMsg||'',
+          actions:'<button type="button" class="tlvi-btn primary" onclick="navigate(\'/candidate-app/'+rec.applicationId+'\')">Back to my application</button>' });
+      }
+      if(content) return shell('applications','AI Interview',crumb,content);
     }
     var due=dueLabel(rec.aiInterview.deadline);
-    content='<div style="max-width:640px;margin:0 auto"><div class="panel"><div class="panel-head"><h2>AI Voice Interview</h2></div><div class="panel-body">'
+    content='<div style="max-width:640px;margin:0 auto"><div class="panel"><div class="panel-head"><h2>AI Video Interview</h2></div><div class="panel-body">'
       +'<div class="kv" style="grid-template-columns:1fr 1fr">'
       +'<div class="item"><div class="k">Job</div><div class="v" style="font-size:13px">'+esc2(rec.jobTitle)+'</div></div>'
       +'<div class="item"><div class="k">Company</div><div class="v" style="font-size:13px">'+esc2(rec.company)+'</div></div>'
       +'<div class="item"><div class="k">Application ID</div><div class="v mono">'+esc2(rec.applicationId)+'</div></div>'
       +'<div class="item"><div class="k">Deadline</div><div class="v" style="font-size:13px">'+fmtDate(rec.aiInterview.deadline)+' · <span style="color:var(--'+due.cls+'-600)">'+due.t+'</span></div></div></div>'
-      +'<div class="req-note" style="margin-top:14px">This is a <b>voice-only</b> interview:<ul style="margin:8px 0 0;padding-left:18px;font-size:12.5px"><li>Turn your camera on to begin — nothing is asked until then.</li><li>The AI interviewer speaks each question; you answer out loud (no typing).</li><li>15 questions; stay in a quiet room with headphones and your video on.</li><li>Silence or skip on a question scores 0 and moves on.</li><li>Your camera must stay on, and leaving this tab suspends the interview.</li></ul></div>'
-      +'<div style="margin-top:16px;display:flex;gap:10px"><button class="btn btn-ai" onclick="aiivStart(\''+rec.applicationId+'\')">Start Voice Interview</button><button class="btn btn-ghost" onclick="navigate(\'/candidate-app/'+rec.applicationId+'\')">Back to application</button></div>'
+      +'<div class="req-note" style="margin-top:14px">How the interview works:<ul style="margin:8px 0 0;padding-left:18px;font-size:12.5px">'
+      +'<li>A short device check first: camera, microphone and internet.</li>'
+      +'<li>The AI interviewer asks one question at a time, on screen and out loud; you answer out loud. Each answer is recorded on video.</li>'
+      +'<li>About 15 questions, each with '+ANSWER_SECS+' seconds to answer. You can submit an answer early.</li>'
+      +'<li>Use a quiet room and keep your camera on. Leaving this tab suspends the interview.</li>'
+      +'<li>If your connection drops, the interview carries on from the same question when it is back.</li></ul></div>'
+      +'<div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap"><button class="btn btn-ai" onclick="aiivStart(\''+rec.applicationId+'\')">Start AI Video Interview</button><button class="btn btn-ghost" onclick="navigate(\'/candidate-app/'+rec.applicationId+'\')">Back to application</button></div>'
       +'</div></div></div>';
-    return shell('applications','AI Interview','Candidate · '+esc2(c?c.name:''),content);
+    return shell('applications','AI Interview',crumb,content);
   }
   function commTable(rec){
     if(!rec.comms||!rec.comms.length) return '<div class="empty-note">No communications yet.</div>';
@@ -29858,6 +30067,10 @@ table.data td .tl-af b{white-space:normal}
 <!-- AI interview integrity: another person or another voice, two strikes.
      The server counts; this watches and reports. -->
 <script src="teamlink-interview-integrity.js"></script>
+<!-- The AI video interview screen (#/ai-interview/<ref>): the owner's layout,
+     live transcript, per-question recordings, reconnect. The interview
+     itself is still the AIIV module above. -->
+<script src="teamlink-ai-video-interview.js"></script>
 <!-- Bulk WhatsApp / Email / SMS from the candidate selection, and the
      Communication history on a candidate profile. -->
 <script src="teamlink-bulk-message.js"></script>
