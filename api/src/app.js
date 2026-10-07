@@ -45,6 +45,10 @@ import portalUpgradeRoutes, { mountPublicJobPage } from './routes/portal-upgrade
 import profileViewerRoutes from './routes/profile-viewers.js';
 import resumeScoreRoutes from './routes/resume-score.js';
 import voiceSearchRoutes from './routes/voice-search.js';
+/* The AI WhatsApp Agent: status, the page's chat, and Meta's webhook. */
+import whatsappAgentRoutes from './routes/whatsapp-agent.js';
+/* The AI Hiring Demo's real pipeline (resume parse -> match -> screening -> ranking -> interview). */
+import aiPipelineRoutes from './routes/ai-pipeline.js';
 import screeningRoutes from './routes/screening.js';
 import interviewPrepRoutes from './routes/interview-prep.js';
 import { startDeadlineSweep } from './notify/interview-deadline.js';
@@ -306,7 +310,11 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
     next();
   });
 
-  app.use(express.json({ limit: '1mb' }));
+  /* The WhatsApp webhook is signed over the exact bytes Meta sent, so its raw body is kept (and only its). */
+  app.use(express.json({
+    limit: '1mb',
+    verify: (req, _res, buf) => { if (req.originalUrl && req.originalUrl.startsWith('/api/whatsapp-agent/webhook')) req.rawBody = buf; },
+  }));
   app.use(express.urlencoded({ extended: false, limit: '1mb' }));
   app.use(cookieParser());
 
@@ -398,6 +406,8 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', profileViewerRoutes());
   app.use('/api', resumeScoreRoutes());
   app.use('/api', voiceSearchRoutes());
+  app.use('/api', whatsappAgentRoutes());
+  app.use('/api', aiPipelineRoutes());
   app.use('/api', sharedCandidateRoutes());
   app.use('/api', availabilityRoutes());
   app.use('/api', registrationRoutes());
