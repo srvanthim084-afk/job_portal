@@ -201,6 +201,78 @@ const ACTIONS = {
   'document.uploaded': 'Document Uploaded', 'document.updated': 'Document Updated', 'document.deleted': 'Document Deleted',
   'candidate.source_changed': 'Source Changed', 'candidate.source_seen': 'Source Noted',
   'staff.client_login_created': 'Client Login Created',
+  /* 0118: teams, logins and the contact cooldown */
+  RECRUITER_ASSIGNED: 'Recruiter Assigned to Team Lead', RECRUITER_REASSIGNED: 'Recruiter Reassigned',
+  RECRUITER_UNASSIGNED: 'Recruiter Removed from Team', RECRUITER_DEPARTMENT_CHANGED: 'Department Changed',
+  RECRUITER_EMAIL_CHANGED: 'Recruiter Email Changed', RECRUITER_STATUS_CHANGED: 'Recruiter Status Changed',
+  TL_ROLE_CHANGED: 'Team Lead Role Changed', CONTACT_COOLDOWN_OVERRIDDEN: 'Contact Cooldown Overridden',
+  CONTACT_COOLDOWN_CHANGED: 'Contact Cooldown Setting Changed', AUDIT_LOG_EXPORTED: 'Audit Log Exported',
+  /* 0091 / 0119: who was allowed or refused contact with a candidate */
+  'contact.contact_anyway': 'Contact Anyway', 'contact.blocked': 'Contact Blocked',
+  'contact.duplicate_blocked': 'Duplicate Submission Blocked', 'contact.message_holder': 'Messaged the Holder',
+  'contact.override_requested': 'Override Requested', 'contact.override_approved': 'Override Approved',
+  'contact.override_denied': 'Override Denied', 'contact.override_used': 'Override Used',
+};
+const ENTITIES = ['candidate', 'application', 'recruiter', 'setting', 'interview', 'document', 'job'];
+
+/* The filters of the audit page, as SQL over admin_audit_events (alias e) and users (alias u). */
+function auditFilters(q) {
+  const where = []; const vals = [];
+  const add = (sql, v) => { vals.push(v); where.push(sql.replace(/\$\$/g, `$${vals.length}`)); };
+  const action = String(q.action || '').trim();
+  if (action) add('e.action = $$', action);
+  const entity = String(q.entity || '').trim();
+  if (entity) add('e.entity = $$', entity);
+  const entityId = String(q.entityId || '').trim();
+  if (entityId) add('e.entity_id = $$', entityId);
+  const role = String(q.actorRole || '').trim();
+  if (role) add('e.actor_role = $$', role);
+  /* Dates are India dates, both ends inclusive. */
+  const day = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : '');
+  const from = day(q.from); const to = day(q.to);
+  if (from) add(`e.at >= ($$::date::timestamp at time zone 'Asia/Kolkata')`, from);
+  if (to) add(`e.at < (($$::date + 1)::timestamp at time zone 'Asia/Kolkata')`, to);
+  const text = String(q.q || '').trim().slice(0, 80);
+  if (text) {
+    vals.push(`%${text}%`);
+    const n = vals.length;
+    where.push(`(e.entity_id ilike $${n} or u.email ilike $${n} or e.action ilike $${n} or e.detail::text ilike $${n})`);
+  }
+  return { w: where.length ? 'where ' + where.join(' and ') : '', vals };
+}
+const AUDIT_FROM = `admin_audit_events e left join users u on u.id = e.actor_user_id`;
+
+/* Names for the ids a row mentions, so the page can say who and what rather than ids. */
+async function auditNames(c, rows) {
+  const want = { recruiter: new Set(), candidate: new Set(), job: new Set() };
+  const take = (kind, id) => { if (id && typeof id === 'string' && want[kind]) want[kind].add(id); };
+  for (const x of rows) {
+    take(x.entity, x.entity_id);
+    const d = x.detail || {};
+    ['recruiterId', 'oldTlId', 'newTlId', 'previousBy'].forEach((k) => take('recruiter', d[k]));
+    take('candidate', d.candidateId); take('job', d.jobId);
+  }
+  const names = {};
+  const grab = async (kind, sql) => {
+    const ids = [...want[kind]].slice(0, 400);
+    if (!ids.length) return;
+    for (const r of (await c.query(sql, [ids])).rows) names[`${kind}:${r.id}`] = r.name;
+  };
+  await grab('recruiter', `select id, name from recruiters where id = any($1)`);
+  await grab('candidate', `select id, name from candidates where id = any($1)`);
+  await grab('job', `select id, title as name from jobs where id = any($1)`);
+  /* the person who did it: a recruiter's or an admin's own name */
+  const uids = [...new Set(rows.map((x) => x.actor_user_id).filter(Boolean))];
+  if (uids.length) {
+    for (const r of (await c.query(
+      `select user_id as id, name from recruiters where user_id = any($1)
+       union all select user_id, name from admins where user_id = any($1)`, [uids])).rows) names[`user:${r.id}`] = r.name;
+  }
+  return names;
+}
+const csvCell = (v) => {
+  const t = v == null ? '' : String(v);
+  return /^[=+\-@\t\r]/.test(t) ? `"'${t.replace(/"/g, '""')}"` : (/[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t);
 };
 
 const pageOf = (q, max = 100) => {
@@ -581,32 +653,48 @@ export default function atsRecordRoutes() {
 
   r.get('/admin/audit-log', requireAuth(), requireRole('admin'), wrap(async (req, res) => {
     const { page, pageSize, offset } = pageOf(req.query, 100);
-    const where = []; const vals = [];
-    const action = String(req.query.action || '').trim();
-    if (action) { vals.push(action); where.push(`e.action = $${vals.length}`); }
-    const entity = String(req.query.entity || '').trim();
-    if (entity) { vals.push(entity); where.push(`e.entity = $${vals.length}`); }
-    const entityId = String(req.query.entityId || '').trim();
-    if (entityId) { vals.push(entityId); where.push(`e.entity_id = $${vals.length}`); }
-    const q = String(req.query.q || '').trim().slice(0, 80);
-    if (q) { vals.push(`%${q}%`); where.push(`(e.entity_id ilike $${vals.length} or u.email ilike $${vals.length})`); }
-    const w = where.length ? 'where ' + where.join(' and ') : '';
+    const { w, vals } = auditFilters(req.query);
     const out = await withUser(req.session, async (c) => {
-      const total = (await c.query(`select count(*)::int n from admin_audit_events e left join users u on u.id = e.actor_user_id ${w}`, vals)).rows[0].n;
+      const total = (await c.query(`select count(*)::int n from ${AUDIT_FROM} ${w}`, vals)).rows[0].n;
       const rows = (await c.query(
-        `select e.*, u.email actor_email from admin_audit_events e left join users u on u.id = e.actor_user_id ${w}
+        `select e.*, u.email actor_email from ${AUDIT_FROM} ${w}
           order by e.at desc, e.id desc limit ${pageSize} offset ${offset}`, vals)).rows;
-      return { total, rows };
+      return { total, rows, names: await auditNames(c, rows) };
     });
     res.json({
       total: out.total, page, pageSize,
       actions: Object.entries(ACTIONS).map(([id, label]) => ({ id, label })),
+      entities: ENTITIES,
+      names: out.names,
       rows: out.rows.map((x) => ({
         id: x.id, at: iso(x.at), user: x.actor_email || (x.actor_role === 'anon' ? 'Self-registration' : (x.actor_role || 'system')),
+        userName: out.names[`user:${x.actor_user_id}`] || null,
         role: x.actor_role || null, action: x.action, actionLabel: ACTIONS[x.action] || x.action,
-        entity: x.entity, entityId: x.entity_id, detail: x.detail || {},
+        entity: x.entity, entityId: x.entity_id,
+        entityName: out.names[`${x.entity}:${x.entity_id}`] || null, detail: x.detail || {},
       })),
     });
+  }));
+
+  /* The filtered log as a CSV (at most 5000 rows). The export is itself logged. */
+  r.get('/admin/audit-log/export', requireAuth(), requireRole('admin'), wrap(async (req, res) => {
+    const { w, vals } = auditFilters(req.query);
+    const rows = await withUser(req.session, async (c) => {
+      const got = (await c.query(
+        `select e.*, u.email actor_email from ${AUDIT_FROM} ${w} order by e.at desc, e.id desc limit 5000`, vals)).rows;
+      await c.query(`select audit_write('AUDIT_LOG_EXPORTED', 'setting', 'audit_log', $1::jsonb)`,
+        [JSON.stringify({ rows: got.length, filters: Object.fromEntries(['action', 'entity', 'entityId', 'actorRole', 'from', 'to', 'q']
+          .filter((k) => req.query[k]).map((k) => [k, String(req.query[k]).slice(0, 80)])) })]);
+      return got;
+    });
+    const head = ['When (UTC)', 'Who', 'Role', 'Action', 'Record type', 'Record', 'Details'];
+    const lines = [head.join(',')].concat(rows.map((x) => [
+      new Date(x.at).toISOString(), x.actor_email || x.actor_role || 'system', x.actor_role || '',
+      ACTIONS[x.action] || x.action, x.entity, x.entity_id, JSON.stringify(x.detail || {}),
+    ].map(csvCell).join(',')));
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="audit-log-${new Date().toISOString().slice(0, 10)}.csv"`);
+    res.send('\uFEFF' + lines.join('\r\n'));
   }));
 
   r.get('/admin/portal-analytics', requireAuth(), requireRole('admin'), wrap(async (req, res) => {

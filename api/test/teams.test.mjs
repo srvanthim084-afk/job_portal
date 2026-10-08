@@ -568,6 +568,78 @@ test('admin sees everything: all jobs, all applications, the history of every as
   assert.ok(list.body.unassigned.some((r) => r.id === P.r1.id));
 });
 
+test('Audit Log: every change above is in it, with who, what and the old and new values; filters, dates, export', async () => {
+  const log = await admin.get('/api/admin/audit-log?pageSize=100');
+  assert.equal(log.status, 200, JSON.stringify(log.body).slice(0, 200));
+  const acts = new Set(log.body.rows.map((r) => r.action));
+  for (const a of ['RECRUITER_ASSIGNED', 'RECRUITER_REASSIGNED', 'RECRUITER_UNASSIGNED', 'RECRUITER_DEPARTMENT_CHANGED',
+    'RECRUITER_EMAIL_CHANGED', 'RECRUITER_STATUS_CHANGED', 'TL_ROLE_CHANGED', 'CONTACT_COOLDOWN_OVERRIDDEN',
+    'CONTACT_COOLDOWN_CHANGED']) assert.ok(acts.has(a), `${a} is not in the audit log`);
+  assert.ok(log.body.actions.some((a) => a.id === 'RECRUITER_EMAIL_CHANGED' && a.label === 'Recruiter Email Changed'));
+
+  const em = (await admin.get('/api/admin/audit-log?action=RECRUITER_EMAIL_CHANGED')).body;
+  assert.equal(em.total, 1);
+  assert.equal(em.rows[0].detail.newEmail, P.r2.email);
+  assert.equal(em.rows[0].userName, 'Admin User');
+  assert.equal(em.rows[0].entityName, 'Recruiter 2');
+  assert.equal(em.rows[0].role, 'admin');
+
+  const ov = (await admin.get('/api/admin/audit-log?action=CONTACT_COOLDOWN_OVERRIDDEN')).body.rows[0];
+  assert.equal(ov.detail.reason, 'Candidate requested urgent follow-up.');
+
+  // search finds a record by id, a person's email, or a word in the details
+  assert.ok((await admin.get(`/api/admin/audit-log?q=${encodeURIComponent(P.r2.id)}`)).body.total >= 1);
+  assert.ok((await admin.get('/api/admin/audit-log?q=urgent%20follow-up')).body.total >= 1);
+  assert.equal((await admin.get('/api/admin/audit-log?q=zzz-no-such-thing')).body.total, 0);
+  assert.ok((await admin.get('/api/admin/audit-log?entity=recruiter&actorRole=admin')).body.total >= 5);
+
+  // dates are India dates, both ends inclusive
+  const ist = new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10);
+  assert.ok((await admin.get(`/api/admin/audit-log?from=${ist}&to=${ist}`)).body.total >= 5, 'today is empty');
+  assert.equal((await admin.get('/api/admin/audit-log?from=2020-01-01&to=2020-01-31')).body.total, 0);
+
+  // pages
+  const p1 = (await admin.get('/api/admin/audit-log?pageSize=5&page=1')).body;
+  const p2 = (await admin.get('/api/admin/audit-log?pageSize=5&page=2')).body;
+  assert.equal(p1.rows.length, 5);
+  assert.ok(!p1.rows.some((r) => p2.rows.some((q) => q.id === r.id)), 'a row on two pages');
+
+  // only an admin reads it, and it cannot be written through the API
+  for (const c of [P.r1.client, P.tlA.client, cand]) {
+    assert.equal((await c.get('/api/admin/audit-log')).status, 403);
+    assert.equal((await c.get('/api/admin/audit-log/export')).status, 403);
+  }
+  for (const m of ['post', 'put', 'patch', 'del']) {
+    const r = await admin[m]('/api/admin/audit-log', {});
+    assert.ok([404, 405].includes(r.status), `${m} on the audit log gave ${r.status}`);
+  }
+  /* append-only for the API's own database role, even as an administrator */
+  const { withUser } = await import('../src/db.js');
+  const adminRow = (await rows(`select id, user_id from admins limit 1`))[0];
+  const as = (sql) => withUser({ userId: adminRow.user_id, role: 'admin', profileId: adminRow.id }, (c) => c.query(sql));
+  const before = (await rows(`select count(*)::int n, md5(string_agg(action || id::text, ',' order by id)) h from audit_log`))[0];
+  /* the API's own database role cannot change the log: an update reaches no row
+     (no policy allows it), a delete and an insert are refused outright */
+  assert.equal((await as(`update audit_log set action = 'x'`)).rowCount, 0);
+  await assert.rejects(() => as(`delete from audit_log`), /permission denied|row-level security/i);
+  await assert.rejects(() => as(`insert into audit_log (action, entity, entity_id) values ('x','x','x')`),
+    /permission denied|row-level security/i);
+  assert.deepEqual((await rows(`select count(*)::int n, md5(string_agg(action || id::text, ',' order by id)) h from audit_log`))[0], before,
+    'the audit log changed');
+
+  // the contact refusals of 0091 are in the log too
+  assert.ok((await admin.get('/api/admin/audit-log?action=contact.blocked')).status === 200);
+
+  // export: a CSV of the filtered list, and the export is logged
+  const csvRes = await fetch(`${BASE}/api/admin/audit-log/export?action=RECRUITER_EMAIL_CHANGED`, {
+    headers: { cookie: [...admin.jar.entries()].map(([k, v]) => `${k}=${v}`).join('; ') } });
+  assert.equal(csvRes.status, 200);
+  assert.match(csvRes.headers.get('content-type'), /text\/csv/);
+  const csv = await csvRes.text();
+  assert.ok(csv.includes('Recruiter Email Changed') && csv.includes(P.r2.email));
+  assert.equal((await admin.get('/api/admin/audit-log?action=AUDIT_LOG_EXPORTED')).body.total, 1);
+});
+
 test('teardown', async () => {
   await new Promise((r) => server.close(r));
   const { closePool } = await import('../src/db.js');
