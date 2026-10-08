@@ -163,10 +163,10 @@ test('another company\'s recruiter cannot read the rules or change the questions
   const id = await job();
   const put = await recruiter2.put(`/api/jobs/${id}/screening-questions`, { questions: [] });
   assert.equal(put.status, 403);
+  /* 0118: a job that is not theirs is a 403 for staff, and nothing of it comes back. */
   const read = await recruiter2.get(`/api/jobs/${id}/screening-questions`);
-  assert.equal(read.status, 200);
-  assert.equal(read.body.questions.length, 0, 'no rules for a job that is not theirs');
-  assert.equal(read.body.editable, false);
+  assert.equal(read.status, 403);
+  assert.ok(!read.body.questions, 'no rules for a job that is not theirs');
   assert.equal((await qs(id)).length, 6, 'nothing changed');
 });
 
@@ -325,8 +325,8 @@ test('RLS: candidates, other recruiters and clients see only what they may', asy
   assert.equal(mine.body.answers.length, 6);
   assert.doesNotMatch(JSON.stringify(mine.body), /knocked|mustHave/i, 'the candidate never sees the flag');
 
-  // Another company's recruiter: nothing.
-  assert.equal((await recruiter2.get(`/api/screening/applications/${koApp}`)).status, 404);
+  // Another recruiter: nothing (403 since 0118: it exists, it is not theirs).
+  assert.equal((await recruiter2.get(`/api/screening/applications/${koApp}`)).status, 403);
   const { withUser } = await import('../src/db.js');
   const n = await withUser(sessions.r_sq2, async (c) =>
     (await c.query(`select count(*)::int n from application_screening_answers where application_id=$1`, [koApp])).rows[0].n);
@@ -471,8 +471,8 @@ test('re-open sends a fresh link and retires the old one; recruiter can answer o
   assert.match(after.answers[0].answeredBy, /^Answered on call by /);
 
   // Another company's recruiter cannot do either.
-  assert.equal((await recruiter2.post(`/api/screening/applications/${pendingApp}/reopen`, {})).status, 404);
-  assert.equal((await recruiter2.post(`/api/screening/applications/${pendingApp}/answers`, { answers })).status, 404);
+  assert.equal((await recruiter2.post(`/api/screening/applications/${pendingApp}/reopen`, {})).status, 403);
+  assert.equal((await recruiter2.post(`/api/screening/applications/${pendingApp}/answers`, { answers })).status, 403);
 });
 
 test('a candidate cannot change answers after submitting, even straight through SQL', async () => {

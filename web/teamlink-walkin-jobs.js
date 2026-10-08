@@ -1308,5 +1308,13 @@
     full: walkinFull,
     details: walkinLines,
     calendar: calendarFor,
+    /* The walk-in details a confirmation shows (date, venue, map,
+       calendar) - for the one-click confirmation too (0118). */
+    resultHtml: function (job, ref, already) {
+      if (!job || !isWalkin(job)) return '';
+      return already
+        ? walkinBlockHtml(job, { title: 'Your walk-in interview', calendar: walkinClosed(job) ? '' : calendarButtons(job, ref) })
+        : walkinBlockHtml(job, { title: 'Walk-in Interview Details', only: ['Date', 'Time', 'Venue', 'Address', 'Documents to carry', 'Contact', 'Instructions'], calendar: calendarButtons(job, ref) });
+    },
   };
 })();

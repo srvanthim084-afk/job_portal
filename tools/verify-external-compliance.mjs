@@ -238,13 +238,13 @@ for (const [t, k] of [['T2', 'naukri'], ['T3', 'shine'], ['T4', 'indeed']]) {
   });
 }
 
-await check('T1  a TeamLink job opens the TeamLink application form (unchanged), and an external job never does', async () => {
+await check('T1  a TeamLink job is applied to on TeamLink (one click, 0118), and an external job never is', async () => {
   await open(cand, '#/job/' + TLJOB);
   await wizardAway(cand);
   await cand.evaluate((id) => { setTimeout(() => window.applyToJob(id), 0); }, TLJOB);
-  await cand.waitForSelector('#tlafForm', { timeout: 15000 });
-  await cand.screenshot({ path: `${SHOTS}/T1-teamlink-form.png` });
-  await cand.evaluate(() => { const x = document.querySelector('[data-tlaf-close]'); if (x) x.click(); });
+  await cand.waitForSelector('#tl1cDone, #tl1cAlready', { timeout: 15000 });
+  await cand.screenshot({ path: `${SHOTS}/T1-teamlink-applied.png` });
+  await cand.evaluate(() => fcrCloseModal());
   await cand.waitForTimeout(500);
   const before = seenCand.length;
   const [popup] = await Promise.all([cctx.waitForEvent('page', { timeout: 10000 }),
@@ -255,7 +255,7 @@ await check('T1  a TeamLink job opens the TeamLink application form (unchanged),
      stored URL when the server answers. */
   await popup.waitForURL(X.naukri.originalJobUrl, { timeout: 10000 }).catch(() => {});
   await cand.waitForTimeout(400);
-  must(!(await cand.locator('#tlafForm').count()), 'the TeamLink form opened for an external job');
+  must(!(await cand.locator('#tlafForm, #tl1cDone, #tl1cAlready').count()), 'TeamLink applied to an external job');
   must(popup.url() === X.naukri.originalJobUrl, 'applyToJob(external) opened ' + popup.url());
   must(seenCand.length === before + 1, 'one employer page');
   await popup.close();

@@ -860,6 +860,21 @@
     if (/reset-password|forgot-password/.test(h)) return;
     if (location.pathname === '/reset-password') return;
 
+    /* A candidate looking at a job is there to apply (0118: Apply Now is one
+       click and asks nothing), so the prompt does not cover the job page. It
+       is asked again on the next page that is not a job. */
+    if (/^#\/job\//.test(h)) {
+      /* The "OK / Later" box (not the wizard, which holds typing) may already
+         be up from the page before; take it down without answering it. */
+      if (S.mode === 'modal') { S.mode = null; S.askedThisVisit = false; paint(); }
+      return;
+    }
+
+    /* An application being submitted, or its confirmation on screen
+       (teamlink-one-click-apply.js): ask after, not on top of it. */
+    if (window.TLOneClickApply && typeof TLOneClickApply.holding === 'function'
+        && TLOneClickApply.holding()) return;
+
     var later = Number(c.onboardingLaterCount || 0);
 
     if (later < LATER_LIMIT) {
@@ -875,6 +890,9 @@
   /* ------------------------------------------------------------------ *
    * wiring
    * ------------------------------------------------------------------ */
+  /** Whether the profile counts as built (the prompt stops then). */
+  window.tlpoBuilt = function () { return built(me()); };
+
   window.tlpoStartAt = function (fieldKey) {
     var k = String(fieldKey || '');
     var step = k === 'resumeFile' ? 0

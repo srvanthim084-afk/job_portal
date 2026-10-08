@@ -6,6 +6,11 @@
  * field is still empty (the profile prefills the rest), attaches a small
  * PDF when there is no resume on file, submits, and returns
  * { state: 'done' | 'duplicate' | 'error' | 'none', ref, message }.
+ *
+ * Since 0118 Apply Now is one click for a signed-in candidate
+ * (web/teamlink-one-click-apply.js): no form, the confirmation at once.
+ * That confirmation counts as 'done', "You have already applied" as
+ * 'duplicate'. The form is still handled for anything that opens it.
  */
 export const TINY_PDF = Buffer.from('%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\ntrailer << /Root 1 0 R >>\n%%EOF\n');
 
@@ -13,8 +18,21 @@ export async function applyFormOpen(page, timeout = 6000) {
   return page.waitForSelector('#tlafForm, #tlafDup', { timeout }).then(() => true, () => false);
 }
 
+/** The one-click result: 'done' | 'duplicate' | null when not on screen. */
+export async function oneClickResult(page) {
+  return page.evaluate(() => (document.getElementById('tl1cDone')
+    ? { state: 'done', ref: (document.getElementById('tl1cRef') || {}).textContent || '' }
+    : document.getElementById('tl1cAlready')
+      ? { state: 'duplicate', ref: (document.querySelector('#tl1cAlready .ref') || {}).textContent || '' }
+      : null));
+}
+
 export async function completeApplyForm(page, opts = {}) {
-  if (!(await applyFormOpen(page, opts.timeout || 6000))) return { state: 'none' };
+  const seen = await page.waitForSelector('#tlafForm, #tlafDup, #tl1cDone, #tl1cAlready', { timeout: opts.timeout || 6000 })
+    .then(() => true, () => false);
+  if (!seen) return { state: 'none' };
+  const quick = await oneClickResult(page);
+  if (quick) return quick;
   if (await page.$('#tlafDup')) return { state: 'duplicate', ref: await page.evaluate(() => (document.querySelector('#tlafDup .ref') || {}).textContent || '') };
   await page.evaluate(() => { const b = document.getElementById('tlafEditAll'); if (b) b.click(); });
   const fill = async (sel, v) => {

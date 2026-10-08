@@ -22,6 +22,7 @@ import { holdSeconds, scheduleHold } from '../notify/apply-hold.js';
 import { matchCandidate } from '../ai/match.js';
 import { screenApplication } from '../ai/screening.js';
 import { applyScreeningAnswers, storeApplyScreening } from '../screening/apply.js';
+import { hiddenError } from '../scope.js';
 
 const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
 
@@ -327,8 +328,8 @@ export default function applicationRoutes() {
         const upd = await c.query(
           `update applications set stage=$1 where id=$2 returning *`, [stage, req.params.id]);
         if (!upd.rowCount) {
-          const seen = await c.query(`select 1 from applications where id=$1`, [req.params.id]);
-          throw seen.rowCount
+          const seen = await c.query(`select app_row_exists('application',$1) as e`, [req.params.id]);
+          throw seen.rows[0].e
             ? forbidden('You do not have access to this application.')
             : notFound('That application no longer exists.');
         }
@@ -427,7 +428,7 @@ export default function applicationRoutes() {
       // for it as the caller is what enforces that.
       const mine = await withUser(req.session, async (c) => (await c.query(
         `select id from applications where id=$1`, [req.params.id])).rows[0]);
-      if (!mine) throw notFound('That application does not exist.');
+      if (!mine) throw await hiddenError(req.session, 'application', req.params.id, notFound('That application does not exist.'));
 
       const out = await screenApplication(req.params.id,
         { actor: req.session.userId || 'recruiter', force: true });
@@ -448,7 +449,7 @@ export default function applicationRoutes() {
       return { summary: s.rows[0], rows: rows.rows };
     });
 
-    if (!out) throw notFound('That application could not be found.');
+    if (!out) throw await hiddenError(req.session, 'application', req.params.id, notFound('That application could not be found.'));
 
     const sum = out.summary;
     res.json({
@@ -483,6 +484,11 @@ export default function applicationRoutes() {
           where h.application_id=$1 order by h.id`, [req.params.id]);
       return rows;
     });
+    if (!rows.length) {
+      /* Nothing came back: either no history, or not theirs to read (0118). */
+      const denied = await hiddenError(req.session, 'application', req.params.id, null);
+      if (denied) throw denied;
+    }
     res.json({ history: rows });
   }));
 

@@ -6,10 +6,10 @@
  *   3  the card carries the server's AI Match, once, top right, and a gap
  *      line in words under the buttons ("⚠ SQL") with no percentage
  *   4  Share -> WhatsApp opens wa.me with the job, the company its card shows, and its link
- *   5  Apply -> the application form (0106) with only what is missing; submit
- *      applies; the one-click API stays idempotent
+ *   5  Apply -> applied at once (0118): the confirmation, no form; the
+ *      one-click API stays idempotent
  *   6  urgent + "3 days left" badges on the card
- *   7  an incomplete profile: the form asks for what is missing, and submitting applies
+ *   7  an incomplete profile applies at once too - nothing is asked first
  *   8  the urgent alert is in the candidate's bell, with its match
  *   9  the job page: full breakdown; the recruiter sees "Shared N times · M applies"
  *  10  a job past its last date: "Applications closed", and the server refuses
@@ -251,17 +251,16 @@ await check('4. Share -> WhatsApp opens wa.me with the job, the company its card
 
 const apps = (id) => cp.evaluate((j) => TL.api.get('/applications').then((r) => r.applications.filter((a) => a.jobId === j).length), id);
 
-await check('5. Apply opens the application form with only what is missing; submit applies; one-click stays idempotent', async () => {
+await check('5. Apply applies at once: the confirmation, no form; one-click stays idempotent', async () => {
   await cp.click(`${cardFor(senior.id)} .rj-btn.pri`, { trial: true, timeout: 4000 }).catch(async (e) => {
     await shot(cp, '05-blocked');
     throw new Error('the Apply button cannot be tapped: ' + String(e.message).split(String.fromCharCode(10)).slice(0, 6).join(' | '));
   });
   await cp.click(`${cardFor(senior.id)} .rj-btn.pri`);
-  await cp.waitForSelector('#tlafForm', { timeout: 8000 });
-  must(await cp.$('#tlafSummary'), 'a complete profile is not summarised');
-  await shot(cp, '05-apply-form');
-  const r = await completeApplyForm(cp);
-  must(r.state === 'done', 'form: ' + JSON.stringify(r));
+  const r = await completeApplyForm(cp, { timeout: 15000 });
+  await shot(cp, '05-applied');
+  must(r.state === 'done' && /^TL-APP-/.test(r.ref), 'apply: ' + JSON.stringify(r));
+  must(!(await cp.$('#tlafForm')), 'the application form opened');
   must(await apps(senior.id) === 1, 'not applied');
   must(/#\/candidate\/search/.test(await cp.evaluate(() => location.hash)), 'applying left the page');
   await closeApplyForm(cp);
@@ -270,10 +269,10 @@ await check('5. Apply opens the application form with only what is missing; subm
   must(await apps(senior.id) === 1, 'duplicate application');
 });
 
-await check('5b. the home page Easy Apply opens the same form, and Submit applies', async () => {
+await check('5b. the home page Easy Apply applies the same way, at once', async () => {
   await cp.evaluate((id) => { window.cpEasyApply(id); }, fresher.id);
-  const r = await completeApplyForm(cp);
-  must(r.state === 'done', 'form: ' + JSON.stringify(r));
+  const r = await completeApplyForm(cp, { timeout: 15000 });
+  must(r.state === 'done' && !(await cp.$('#tlafForm')), 'apply: ' + JSON.stringify(r));
   await closeApplyForm(cp);
   must(await apps(fresher.id) === 1, 'Submit did not apply');
 });
@@ -317,7 +316,7 @@ await check('10. past its last date: "Applications closed" on the page, and the 
 await cctx.close();
 
 /* ---------------- 7. the incomplete profile ---------------- */
-await check('7. an incomplete profile: the form asks for what is missing, and submitting applies', async () => {
+await check('7. an incomplete profile applies at once: nothing is asked, Complete Profile is offered', async () => {
   const ctx = await browser.newContext(PHONE);
   const p = await open(ctx, '#/');
   await asCand(p, partial.email, partial.pw);
@@ -328,14 +327,13 @@ await check('7. an incomplete profile: the form asks for what is missing, and su
     if (!b) return false; b.click(); return true;
   });
   must(clicked, 'no Apply button');
-  await p.waitForSelector('#tlafForm', { timeout: 6000 });
-  const asked = await p.evaluate(() => Array.from(document.querySelectorAll('#tlafForm [data-row]')).filter((r) => r.offsetParent && /^tlaf(Resume|Exp|Qual|Loc|Notice|Name|Mobile|Email)$/.test(r.getAttribute('data-row'))).map((r) => r.getAttribute('data-row')));
-  must(asked.includes('tlafResume'), 'the missing resume is not asked for: ' + asked.join(','));
-  await shot(p, '07-missing-fields-form');
-  const r = await completeApplyForm(p);
-  must(r.state === 'done', 'form: ' + JSON.stringify(r));
+  const r = await completeApplyForm(p, { timeout: 15000 });
+  await shot(p, '07-incomplete-profile-applied');
+  must(r.state === 'done', 'apply: ' + JSON.stringify(r));
+  must(!(await p.$('#tlafForm')), 'the application form opened for the missing fields');
+  must(await p.$('#tl1cDone ~ .fcr-jd-actions [data-tl1c-go="profile"], [data-tl1c-go="profile"]'), 'no Complete Profile');
   const n = await p.evaluate((id) => TL.api.get('/applications').then((x) => x.applications.filter((a) => a.jobId === id).length), fresher.id);
-  must(n === 1, 'not applied after the form');
+  must(n === 1, 'not applied');
   await ctx.close();
 });
 

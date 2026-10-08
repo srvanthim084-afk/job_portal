@@ -28,7 +28,9 @@ Candidates answer a few questions when they apply. Recruiters see the answers ne
 
 ## Applying
 
-1. The candidate taps **Apply Now** (or Easy Apply). A screen titled "A few quick questions" opens: one screen, pre-filled from the candidate's saved answers or their profile, with a progress line such as "3 of 5 answered". **Back** keeps the answers. A **Use these answers for my next applications** checkbox saves them to `candidate_screening_defaults`, only when ticked.
+> **0118:** Apply Now is one click and no longer shows these questions before applying (`docs/ONE-CLICK-APPLY.md`). Its application arrives without answers, starts as `pending`, and gets the no-password link below. The questions still appear in the application form, which `TLWalkinJobs.open(jobId)` opens.
+
+1. The candidate taps **Apply Now** (or Easy Apply). Before 0118: a screen titled "A few quick questions" opens: one screen, pre-filled from the candidate's saved answers or their profile, with a progress line such as "3 of 5 answered". **Back** keeps the answers. A **Use these answers for my next applications** checkbox saves them to `candidate_screening_defaults`, only when ticked.
 2. `POST /api/applications` takes `answers: [{questionId, answer}]` and `saveScreeningDefaults`. The server checks every answer against its question's type and options before anything is written, so a refused submission leaves no application. The application and its answers are created in **one transaction**.
 3. **Must-haves never reject anybody and are never shown to the candidate.** A failed must-have sets `screening_status = 'knocked_out'`, and the candidate sees the normal "Application submitted". The recruiter decides. The optional per-job **Auto-reject must-have failures** setting is off by default. When it is on, the existing polite rejection message goes out after 24 hours, never instantly. The stage-history note that goes with it, which the candidate can read, says only "Closed after screening review".
 

@@ -147,14 +147,14 @@ async function candidateApplies(name, relocate, mobile) {
   await p.evaluate((id) => { location.hash = '#/job/' + id; }, job.id);
   await p.waitForTimeout(1500);
   await wizardAway(p);
-  const clicked = await p.evaluate(() => {
-    const b = Array.from(document.querySelectorAll('#app button')).find((x) => /Apply Now|Easy Apply/.test(x.textContent) && x.offsetParent);
-    if (!b) return false; b.click(); return true;
-  });
-  must(clicked, 'no Apply button');
+  must(await p.evaluate(() => Array.from(document.querySelectorAll('#app button')).some((x) => /Apply Now|Easy Apply/.test(x.textContent) && x.offsetParent)),
+    'no Apply button');
   /* Since 0106 the questions are a section of the one application form
      (teamlink-walkin-jobs.js, "A few quick questions"), with the same
-     answer form and checks. */
+     answer form and checks. Since 0118 Apply Now is one click and asks
+     nothing; the form is kept and opened directly here, to check the
+     questions themselves. */
+  await p.evaluate((id) => window.TLWalkinJobs.open(id), job.id);
   await p.waitForSelector('#tlafQs .tlsq-q', { timeout: 15000 });
   const prog = await p.textContent('#tlafQs .tlsq-progtext');
   must(/of 6 answered/.test(prog), 'no progress line: ' + prog);

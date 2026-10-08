@@ -14,6 +14,9 @@
  * This walks the whole path with a real file and checks the database, not
  * the page's own memory.
  *
+ * Since 0118 Easy Apply is one click: no review step, no question - the
+ * application is submitted at once and the resume on file goes with it.
+ *
  *   node tools/verify-easy-apply.mjs      (needs npm run dev on :4323)
  */
 import { chromium } from 'playwright';
@@ -134,29 +137,18 @@ await check('Easy Apply does NOT ask for a resume', async () => {
   const expected = await withResume.page.evaluate(() =>
     window.TL.api.get('/auth/me').then((r) => r.profile.resumeFile));
 
-  const seen = await withResume.page.evaluate(([id, name]) => {
-    window.__expectResume = name;
+  must(expected, 'the candidate has no resume on file');
+  const seen = await withResume.page.evaluate((id) => {
     if (typeof window.cpEasyApply === 'function') window.cpEasyApply(id);
     return new Promise((r) => setTimeout(() => r({
       askedForResume: document.body.innerText.includes('You have no resume on file'),
-      review: document.body.innerText.includes('Resume on file'),
-      resumeShown: document.body.innerText.includes(window.__expectResume || ''),
-      canSubmit: [...document.querySelectorAll('button')].some((b) => /submit application/i.test(b.textContent)),
-    }), 1500));
-  }, [jobId, expected]);
+      submitted: !!document.getElementById('tl1cDone'),
+    }), 3000));
+  }, jobId);
 
   must(!seen.askedForResume, 'the "Resume required" modal appeared for a candidate who has one');
-  must(seen.review, 'no review step appeared before submitting');
-  must(seen.resumeShown, `the review does not name the resume on file (${expected})`);
-  must(seen.canSubmit, 'the review has no Submit application button');
-});
-
-await check('confirming the review submits the application', async () => {
-  await withResume.page.evaluate(() => {
-    const b = [...document.querySelectorAll('button')].find((x) => /submit application/i.test(x.textContent));
-    if (b) b.click();
-  });
-  await withResume.page.waitForTimeout(3000);
+  must(seen.submitted, 'Easy Apply did not submit at once (0118: one click)');
+  await withResume.page.evaluate(() => fcrCloseModal());
 });
 
 await check('the application is saved with the candidate, the job and the resume', async () => {
@@ -261,12 +253,14 @@ await check('the next Easy Apply uses the updated resume', async () => {
 
   await withResume.page.evaluate((id) => { location.hash = '#/job/' + id; }, nextJob);
   await withResume.page.waitForTimeout(1200);
-  const shown = await withResume.page.evaluate(([id, name]) => {
-    window.__expect = name;
+  const shown = await withResume.page.evaluate((id) => {
     if (typeof window.cpEasyApply === 'function') window.cpEasyApply(id);
-    return new Promise((r) => setTimeout(() => r(document.body.innerText.includes(window.__expect)), 1500));
-  }, [nextJob, current]);
-  must(shown, `the review does not show the updated resume (${current})`);
+    return new Promise((r) => setTimeout(() => r(!!document.getElementById('tl1cDone')), 3000));
+  }, nextJob);
+  must(shown, 'the next Easy Apply did not submit at once');
+  await withResume.page.evaluate(() => fcrCloseModal());
+  const used = await withResume.page.evaluate(() => window.TL.api.get('/auth/me').then((r) => r.profile.resumeFile));
+  must(used === current, `the profile's resume changed by applying (${used})`);
 });
 
 await check('a browser refresh keeps the resume and the applications', async () => {
@@ -288,7 +282,7 @@ await check('a browser refresh keeps the resume and the applications', async () 
 /* ------------------------------------------------------------------ *
  * without one
  * ------------------------------------------------------------------ */
-await check('a candidate with NO resume is still asked for one', async () => {
+await check('a candidate with NO resume still applies at once (0118: nothing is required to apply)', async () => {
   const s = await session();
   try {
     const id = await registerWithResume(s.page, `noresume.${Date.now()}@example.test`, null);
@@ -303,10 +297,10 @@ await check('a candidate with NO resume is still asked for one', async () => {
     const shown = await s.page.evaluate((j) => {
       if (typeof window.cpEasyApply === 'function') window.cpEasyApply(j);
       return new Promise((r) => setTimeout(() => {
-        r(document.body.innerText.includes('You have no resume on file'));
-      }, 1500));
+        r(!!document.getElementById('tl1cDone') && !document.body.innerText.includes('You have no resume on file'));
+      }, 3000));
     }, job);
-    must(shown, 'a candidate with no resume was not prompted to upload one');
+    must(shown, 'a candidate with no resume could not apply at once');
   } finally { await s.ctx.close(); }
 });
 

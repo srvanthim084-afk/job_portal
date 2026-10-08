@@ -39,6 +39,7 @@ import {
 import { connectorFor } from '../publishing/connectors.js';
 import { SECRET_FIELDS, sealSecrets, openSecrets, hintFor, secretKeyConfigured, SecretKeyMissing, safeEqual, hmacHex, scrub } from '../publishing/secrets.js';
 import { feedRows, jsonFeed, rssFeed, partnerXmlFeed, publicJob, jobPostingJsonLd, publicBase } from '../publishing/feed.js';
+import { hiddenError } from '../scope.js';
 
 const DEST_RE = /^[A-Z][A-Z0-9_]{1,39}$/;
 const destParam = (v) => {
@@ -61,7 +62,7 @@ function afterJson(res, fn) {
 async function assertMayPublish(session, jobId) {
   const row = await withUser(session, async (c) =>
     (await c.query(`select id, recruiter_id from jobs where id=$1`, [jobId])).rows[0]);
-  if (!row) throw notFound('That job no longer exists.');
+  if (!row) throw await hiddenError(session, 'job', jobId, notFound('That job no longer exists.'));
   if (session.role === 'admin') return row;
   if (session.role === 'recruiter' && row.recruiter_id && row.recruiter_id === session.profileId) return row;
   throw forbidden('You can publish only your own jobs.');

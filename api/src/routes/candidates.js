@@ -24,6 +24,7 @@ import { appearanceToken } from '../profile-viewers/appearances.js';
 /* 0091 / 0092: shared candidates, the hold rules, and availability. */
 import { canEngageMany, recordContact, audit, editableSet, forViewer } from '../candidates/engagement.js';
 import { availabilityOf } from './availability.js';
+import { beginContact, finishContact, canOverride } from '../contact/service.js';
 
 const STAFF_ROLES = ['recruiter', 'bde', 'admin'];
 
@@ -64,6 +65,8 @@ export default function candidateRoutes() {
       // The filtering still happens in SQL — the browser never receives the
       // whole table — and `total` below reports the true match count so the
       // UI can say when a result set was capped.
+      let forJobId = '';        // 0118: the job chosen on the screen
+      let forJobSet = null;     //       ... and who of this page applied to it
       const limit  = Math.min(parseInt(q.limit, 10) || 25, 500);
       const offset = Math.max(parseInt(q.offset, 10) || 0, 0);
 
@@ -367,6 +370,29 @@ export default function candidateRoutes() {
           }
         }
 
+        /*
+         * 0118: THE JOB CHOSEN ON THE SCREEN. The candidate list itself is
+         * not narrowed by it (candidates are shared); what changes is that
+         * every row says whether this candidate applied to THAT job, and
+         * appliedForJob=yes|no narrows the list to those who did / did not.
+         * The job must be one the caller may use: another team's job is a 403,
+         * whatever id the browser sends.
+         */
+        forJobId = q.forJob ? String(q.forJob).slice(0, 64) : '';
+        if (forJobId) {
+          const ok = (await c.query(`select app_job_in_scope($1) as ok`, [forJobId])).rows[0].ok;
+          if (!ok) {
+            const seen = (await c.query(`select app_row_exists('job',$1) as e`, [forJobId])).rows[0].e;
+            throw seen ? forbidden('That job is not one of yours.') : notFound('That job could not be found.');
+          }
+          const af = String(q.appliedForJob || '').trim().toLowerCase();
+          if (af === 'yes' || af === 'no') {
+            params.push(forJobId);
+            push(`${af === 'no' ? 'not ' : ''}exists (select 1 from applications a
+                   where a.candidate_id = candidates.id and a.job_id = $${params.length})`);
+          }
+        }
+
         // Everyone linked to one requirement, however far along they are.
         if (q.jobId) {
           params.push(String(q.jobId));
@@ -472,6 +498,11 @@ export default function candidateRoutes() {
         const apps = ids.length
           ? await c.query(`select * from applications where candidate_id = any($1)`, [ids])
           : { rows: [] };
+        if (forJobId) {
+          forJobSet = new Set(ids.length ? (await c.query(
+            `select candidate_id from applications where job_id = $1 and candidate_id = any($2)`,
+            [forJobId, ids])).rows.map((x) => x.candidate_id) : []);
+        }
 
         return { total: total.rows[0].n, rows: rows.rows, apps: apps.rows };
       });
@@ -484,7 +515,9 @@ export default function candidateRoutes() {
       const staffView = STAFF_ROLES.includes(req.session.role);
       const cands = out.rows.map((x) => {
         const c = toCandidate(x, { staff: true });
-        return staffView ? { ...forViewer(c, !!x._editable), availabilityStatus: availabilityOf(x) } : c;
+        const shaped = staffView ? { ...forViewer(c, !!x._editable), availabilityStatus: availabilityOf(x) } : c;
+        if (forJobSet) shaped.appliedForJob = forJobSet.has(x.id);
+        return shaped;
       });
       const extra = attachPrimary(cands, out.apps.map(toApplication));
 
@@ -1263,8 +1296,20 @@ export default function candidateRoutes() {
            always is. */
         includeWarned: z.boolean().optional(),
         includeNotLooking: z.boolean().optional(),
+        /* 0118: an admin or a team lead sending to people another recruiter
+           contacted inside the cooldown, with a reason. Everybody else's
+           held candidates are skipped, never sent. */
+        override: z.boolean().optional(),
+        overrideReason: z.string().trim().max(500).optional(),
       }), req.body);
 
+      if (b.override && !canOverride(req.session)) {
+        throw forbidden('Only an administrator or a team lead may override the contact cooldown.');
+      }
+      if (b.override && String(b.overrideReason || '').trim().length < 5) {
+        throw badRequest('A reason is required to override the cooldown.',
+          { overrideReason: 'Say why these candidates are being contacted again.' });
+      }
       if (b.channel === 'email' && !String(b.subject || '').trim()) {
         throw badRequest('Please check the highlighted fields and try again.',
           { subject: 'An email needs a subject.' });
@@ -1304,6 +1349,8 @@ export default function candidateRoutes() {
       const queued = [];
       const skipped = [];
       const blocked = [];
+      const cooldown = [];    // 0118: skipped - another recruiter contacted them inside the cooldown
+      const channelOf = b.channel;
 
       for (const cand of rows) {
         /* "Stop contacting me" is honoured here as it is everywhere
@@ -1336,6 +1383,24 @@ export default function candidateRoutes() {
           continue;
         }
 
+        /* 0118: the cooldown, checked and logged in one step for this
+           candidate. Held -> skipped (never fails the batch). */
+        let began;
+        try {
+          began = await beginContact(req.session, {
+            candidateId: cand.id, channel: channelOf, jobId: b.jobId || null, source: 'bulk_message',
+            override: b.override === true, reason: b.overrideReason || null,
+          });
+        } catch (err) {
+          if (err instanceof ApiError && err.code === 'CONTACT_COOLDOWN') {
+            const hd = err.details && err.details.holder;
+            cooldown.push({ id: cand.id, name: cand.name, heldBy: hd && hd.name, contactedAt: hd && hd.contactedAt,
+                            channel: hd && hd.channel, reason: 'already contacted' });
+            continue;
+          }
+          throw err;
+        }
+
         const vars = varsFor(cand, {
           jobTitle: job ? job.title : undefined,
           recruiterName: me ? me.name : '',
@@ -1352,14 +1417,13 @@ export default function candidateRoutes() {
 
         if (row.status === 'skipped_no_contact') {
           skipped.push({ id: cand.id, name: cand.name });
+          await finishContact(req.session, began.id, 'failed');
         } else {
           queued.push({ id: cand.id, name: cand.name });
-          /* 0091: every message is a contact, recorded for the role it is
-             about; one warned past is logged as "contact anyway". */
-          await recordContact(req.session, {
-            candidateId: cand.id, jobId: b.jobId || null, channel: b.channel,
-            source: 'bulk_message', outcome: 'queued', ref: String(row.id),
-          });
+          /* 0091/0118: every message is a contact, recorded for the role it
+             is about (the row contact_begin wrote, now tied to the message);
+             one warned past is logged as "contact anyway". */
+          await finishContact(req.session, began.id, 'queued', String(row.id));
           if (v.decision === 'warn') {
             await audit(req.session, { candidateId: cand.id, roleKey: v.roleKey, jobId: b.jobId || null,
               action: 'contact_anyway', detail: { action: 'bulk_message', batchId,
@@ -1376,6 +1440,10 @@ export default function candidateRoutes() {
         skipped: skipped.length,
         blocked: blocked.length,
         unreachable: unreachable.length,
+        /* 0118: who was left out because somebody else contacted them
+           inside the cooldown, and who. */
+        cooldownSkipped: cooldown.length,
+        cooldownCandidates: cooldown.slice(0, 500),
         /* 0091 / 0092: who was left out, and why. */
         held: held.length,
         warned: warned.length,

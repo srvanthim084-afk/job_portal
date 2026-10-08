@@ -183,6 +183,7 @@ export default function bootstrapRoutes() {
       session: session
         ? {
             role: session.role, id: session.profileId, userId: session.userId,
+            isTeamLead: session.isTeamLead === true,
             mustChangePassword: !!(temp && temp.must_change_password),
           }
         : null,

@@ -25,6 +25,8 @@ import {
 } from '../ai/call/runtime.js';
 import { plan } from '../ai/call/agent.js';
 import { toCandidate, toJob } from '../shapes.js';
+import { beginContact, finishContact } from '../contact/service.js';
+import { canEngage } from '../candidates/engagement.js';
 
 const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 const ENGINE = { userId: '', role: 'admin', profileId: null };
@@ -114,6 +116,10 @@ export default function aiCallingRoutes() {
         objective: z.string().trim().max(200).optional(),
         language: z.enum(['auto', 'en', 'hi', 'te']).optional(),
         campaignId: z.string().trim().max(64).optional(),
+        /* 0118: an admin or a team lead calling somebody another recruiter
+           contacted inside the cooldown, with a reason. */
+        override: z.boolean().optional(),
+        overrideReason: z.string().trim().max(500).optional(),
       }), req.body);
 
       // Read through the CALLER's session, so a recruiter cannot start a
@@ -137,6 +143,20 @@ export default function aiCallingRoutes() {
 
       const recruiterId = req.session.role === 'recruiter' ? req.session.profileId : null;
 
+      /* 0091: a role hold says so first, in its own words (409 ENGAGEMENT_BLOCKED). */
+      const hold = await canEngage(req.session, b.candidateId, { jobId: b.jobId });
+      if (hold.decision === 'blocked') {
+        throw new ApiError(409, 'ENGAGEMENT_BLOCKED', hold.message || 'Another recruiter holds this candidate.',
+          { engagement: hold });
+      }
+
+      /* 0118: the cooldown - checked and logged before anything is queued.
+         Somebody else's contact inside it is a 409 CONTACT_COOLDOWN. */
+      const contact = await beginContact(req.session, {
+        candidateId: b.candidateId, channel: 'ai_call', jobId: b.jobId || null, source: 'ai_call',
+        override: b.override === true, reason: b.overrideReason || null,
+      });
+
       let sessionId;
       try {
         sessionId = await queueCall(req.session, {
@@ -149,6 +169,8 @@ export default function aiCallingRoutes() {
           language: b.language && b.language !== 'auto' ? b.language : null,
         });
       } catch (err) {
+        /* Nothing was queued: the contact row must not hold anybody back. */
+        await finishContact(req.session, contact.id, 'failed').catch(() => {});
         // The database enforces the three rules that must never be
         // bypassed; surface them as the conflicts they are.
         if (/already in progress/.test(err.message)) {
@@ -321,6 +343,8 @@ export default function aiCallingRoutes() {
         languageMode: z.enum(['auto', 'en', 'hi', 'te']).optional().default('auto'),
         maxCalls: z.number().int().min(1).max(500).optional(),
         scheduledAt: z.string().datetime().optional(),
+        override: z.boolean().optional(),
+        overrideReason: z.string().trim().max(500).optional(),
       }), req.body);
 
       const job = await withUser(req.session, async (c) =>
@@ -359,6 +383,23 @@ export default function aiCallingRoutes() {
         if (!c.phone) { skipped.push({ candidateId: c.id, reason: 'no phone number' }); continue; }
         if (c.busy) { skipped.push({ candidateId: c.id, reason: 'a call is already running' }); continue; }
 
+        /* 0118: judged on its own; a candidate under the cooldown is
+           skipped and never stops the rest. */
+        let contact = null;
+        try {
+          contact = await beginContact(req.session, {
+            candidateId: c.id, channel: 'ai_call', jobId: b.jobId, source: 'ai_call',
+            override: b.override === true, reason: b.overrideReason || null,
+          });
+        } catch (err) {
+          if (err instanceof ApiError && err.code === 'CONTACT_COOLDOWN') {
+            const hd = err.details && err.details.holder;
+            skipped.push({ candidateId: c.id, reason: 'already contacted', heldBy: hd && hd.name,
+                           contactedAt: hd && hd.contactedAt, channel: hd && hd.channel });
+            continue;
+          }
+          throw err;
+        }
         try {
           const id = await queueCall(req.session, {
             candidateId: c.id, jobId: b.jobId, applicationId: c.application_id,
@@ -367,6 +408,7 @@ export default function aiCallingRoutes() {
           });
           queued.push({ candidateId: c.id, callId: id });
         } catch (err) {
+          await finishContact(req.session, contact.id, 'failed').catch(() => {});
           skipped.push({ candidateId: c.id, reason: err.message });
         }
       }

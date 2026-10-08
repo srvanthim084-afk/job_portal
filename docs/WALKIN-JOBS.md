@@ -135,8 +135,13 @@ columns above by these exact names.
   `🚶 Walk-in Interview` badge (`badge badge-brand`) and Date / Time / Venue
   lines; Closed / Registrations full disable Apply. Regular cards unchanged.
 - **Job page**: a Walk-in Interview panel with every detail and View on Map.
-- **Apply Now** on any TeamLink job (`applyToJob`, `easyApply`, `capApply`,
-  `cpEasyApply`) opens **one** form in the portal's modal (`fcrModal`):
+- **Apply Now is one click since 0118** (`docs/ONE-CLICK-APPLY.md`): the
+  application is made at once and the confirmation carries the Application
+  ID and, for a walk-in, the details, View on Map and Add to Calendar. The
+  form below is kept; `TLWalkinJobs.open(jobId)` opens it.
+- **The application form** (before 0118 this was Apply Now on any TeamLink
+  job: `applyToJob`, `easyApply`, `capApply`, `cpEasyApply`) is **one** form
+  in the portal's modal (`fcrModal`):
   company, job title, ID and type read-only; the walk-in block for walk-ins;
   prefilled from the profile — when the profile already has everything, a
   summary and only the missing fields (one-click), with "Edit my details";
