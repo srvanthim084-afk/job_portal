@@ -146,9 +146,14 @@ await check('Apply Now creates the application', async () => {
   await page.waitForTimeout(3000);
 
   const said = await toasts(page);
-  must(said.some((t) => /submitted/i.test(t)),
+  /* Since 0118 the confirmation is the one-click "Application Submitted
+     Successfully" with its Application ID, not a toast. */
+  const confirmed = await page.evaluate(() =>
+    /Application Submitted Successfully/.test((document.getElementById('fcrModalHost') || {}).textContent || ''));
+  must(confirmed || said.some((t) => /submitted/i.test(t)),
     `no success confirmation was shown — toasts: ${JSON.stringify(said)}`);
   must(!said.some((t) => /offline/i.test(t)), `offline message on apply: ${JSON.stringify(said)}`);
+  await page.evaluate(() => { if (typeof fcrCloseModal === 'function') fcrCloseModal(); });
 
   const mine = await page.evaluate((c) => DATA.applications.filter((a) => a.candidateId === c).length, candidateId);
   must(mine === 1, `expected 1 application in the cache, found ${mine}`);

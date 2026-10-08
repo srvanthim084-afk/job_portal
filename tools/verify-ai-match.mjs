@@ -28,7 +28,7 @@
  */
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
-import { completeApplyForm, closeApplyForm, applyFormOpen } from './lib/apply-form.mjs';
+import { completeApplyForm, closeApplyForm } from './lib/apply-form.mjs';
 
 const BASE = (process.env.TL_URL || 'http://127.0.0.1:4429/').replace(/\/?$/, '/');
 const SHOTS = process.env.SHOTS || '';
@@ -322,12 +322,10 @@ for (const V of VIEWS.filter((v) => !process.env.VIEW || process.env.VIEW.split(
     await p.click(`${card(applyOn)} .rj-btn.pri`);
     const hint = await p.waitForSelector('#tlrsApplyAnyway', { timeout: 2500 }).catch(() => null);
     if (hint) { await hint.click(); await p.waitForTimeout(400); }
-    must(await applyFormOpen(p, 8000), 'Apply Now did not open the application form');
-    if (V.name === 'desktop') {
-      /* one real application, in this throwaway instance */
-      const r = await completeApplyForm(p);
-      must(r.state === 'done', 'apply: ' + JSON.stringify(r));
-    }
+    /* 0118: Apply Now applies at once (one real application per viewport,
+       in this throwaway instance) and shows the confirmation. */
+    const r = await completeApplyForm(p, { timeout: 15000 });
+    must(r.state === 'done' || r.state === 'duplicate', 'Apply Now did not apply: ' + JSON.stringify(r));
     await closeApplyForm(p);
     await p.waitForTimeout(800);
     if (V.name === 'desktop') {

@@ -1,11 +1,13 @@
 /**
  * Apply Now while signed out, in a real browser.
  *
- *   1  signed out, Apply Now      -> registration form, "You're applying for: <job>"
+ *   1  signed out, Apply Now      -> "Apply to <job>": Email / Mobile Number
+ *                                    (0118); a new address -> registration
+ *                                    form, "You're applying for: <job>"
  *   2  refresh on that form       -> still applying for the same job
  *   3  registration refused       -> still on the form, same job
  *   4  registration succeeds      -> the application is submitted for that job
- *   5  signed in, Apply Now       -> the application form (0106), then applied
+ *   5  signed in, Apply Now       -> applied at once (one click, 0118)
  *   6  apply again                -> still one application
  *   7  Log in instead (one wrong password first) -> applied for the same job
  *   8  Cancel                     -> back on the job, nothing remembered
@@ -53,6 +55,18 @@ const clickApply = (page) => page.evaluate(() => {
   if (!b) return false;
   b.click(); return true;
 });
+/* Signed out since 0118: Apply Now asks for Email / Mobile Number first
+   (teamlink-one-click-apply.js); an address with no account goes on to
+   registration with the job remembered, as before. */
+const throughBox = async (page, email) => {
+  await page.waitForSelector('#tl1cId', { timeout: 8000 });
+  const box = ((await page.textContent('#fcrModalHost')) || '').replace(/\s+/g, ' ');
+  await page.fill('#tl1cId', email);
+  await page.click('#tl1cGo');
+  await page.waitForFunction(() => /^#\/register\/candidate/.test(location.hash), null, { timeout: 10000 }).catch(() => {});
+  await page.waitForTimeout(600);
+  return box;
+};
 /* What a candidate meets on the way since the later features: the resume
    score hint under 60 ("Apply anyway"), and one-click apply's "fill these
    first" sheet ("Apply without them"). Both are optional; answered the way
@@ -125,9 +139,10 @@ console.log(`\napply now while signed out  (${BASE})`);
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
 const p = await open(ctx, '#/job/' + J1.id);
 
-await check('1. signed out, Apply Now opens registration for that job', async () => {
+await check('1. signed out, Apply Now asks Email / Mobile, then opens registration for that job', async () => {
   must(await clickApply(p), 'no Apply button on the job page: ' + await p.evaluate(() => location.hash + ' ' + ((document.querySelector('#app') || {}).innerText || '').slice(0, 200).split(String.fromCharCode(10)).join(' / ')));
-  await p.waitForTimeout(800);
+  const box = await throughBox(p, `apply.first.${stamp}@tl-verify.test`);
+  must(/Apply to/.test(box) && box.includes(J1.title) && /Email \/ Mobile Number/.test(box), 'box: ' + box);
   must(/^#\/register\/candidate/.test(await p.evaluate(() => location.hash)), 'not on the registration page');
   const b = await bannerText(p);
   must(b.includes("You're applying for") && b.includes(J1.title), `banner: ${b}`);
@@ -215,7 +230,7 @@ await check('4. registration succeeds and the application continues for that job
   must(await p.evaluate(() => TLApplyAuth.intent()) === null, 'the job is still remembered');
 });
 
-await check('5. signed in, Apply Now opens the application form and applies', async () => {
+await check('5. signed in, Apply Now applies at once (one click, 0118)', async () => {
   await p.evaluate((id) => { location.hash = '#/job/' + id; }, J2.id);
   await p.waitForTimeout(1200);
   await wizardAway(p);
@@ -248,7 +263,7 @@ await check('7. Log in instead: a wrong password keeps the job, the right one ap
   const c = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const q = await open(c, '#/job/' + J3.id);
   must(await clickApply(q), 'no Apply button');
-  await q.waitForTimeout(800);
+  await throughBox(q, `apply.login.${stamp}@tl-verify.test`);
   await q.click('.tl-apply-intent a[href="#/login/candidate"]');
   await q.waitForTimeout(800);
   let b = await q.evaluate(() => (document.querySelector('.auth-form .tl-apply-intent') || {}).innerText || '');
@@ -279,7 +294,7 @@ await check('8. Cancel goes back to the job and forgets it', async () => {
   const c = await browser.newContext();
   const q = await open(c, '#/job/' + J1.id);
   must(await clickApply(q), 'no Apply button');
-  await q.waitForTimeout(800);
+  await throughBox(q, `apply.cancel.${stamp}@tl-verify.test`);
   await q.click('.tl-apply-intent button');
   await q.waitForTimeout(800);
   must(await q.evaluate(() => location.hash) === '#/job/' + J1.id, 'not back on the job');

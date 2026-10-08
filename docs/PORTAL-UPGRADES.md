@@ -138,14 +138,18 @@ WhatsApp (wa.me), Copy link, Email and LinkedIn.
 
 ## 4. One-click apply
 
-A signed-in candidate with a name, mobile, location, experience, skills and
-a resume on file applies to **any** open job in one tap (not only
+> **0118:** no profile field is required any more, and Apply Now shows the
+> confirmation at once. The "Fill N things" sheet and the 422 below are
+> gone. See `docs/ONE-CLICK-APPLY.md`.
+
+A signed-in candidate applies to **any** open job in one tap (not only
 `easy_apply` ones — that flag is now only "the recruiter wants quick
 applies"). The Apply buttons on cards, on the Search Jobs cards and on the
 job page all go this way.
 
-- `POST /api/applications/one-click {jobId, answers?}`: refused (422) with
-  `details.missing` when the profile is incomplete; **idempotent** — an
+- `POST /api/applications/one-click {jobId, answers?}`: never refused for
+  an incomplete profile (0118); the missing fields come back as
+  `profileMissing`. **Idempotent** — an
   existing application is returned (200, `existing: true`), and two taps
   racing each other also get the one application. The application itself is
   made by the ordinary `POST /api/applications` (the request is handed on),
@@ -190,20 +194,18 @@ job page all go this way.
     from any refresh that was already in flight when Undo was pressed.
     Applying returns sooner now that no message is sent inline, and such a
     late refresh used to put "✓ Applied" back on the card.
-- Incomplete profile: a sheet "Fill 2 things to apply" with only the missing
-  fields (resume as a file); "Save & apply" saves them to the profile and
-  continues the apply. "Apply without them" makes the ordinary application,
-  as Apply Now always did.
+- Incomplete profile (0118): applies the same way. The confirmation offers
+  **Complete Profile**; the "Fill N things to apply" sheet is no longer shown
+  before applying.
 - Screening questions: if `window.TLScreening.beforeApply(jobId)` exists it is
   awaited first; `{answers}` is sent with the application, `null` means no
   questions, `{cancelled:true}` or a rejection stops the apply.
 - Limit: 30 applications an hour per candidate, for every way of applying
   (`APPLY_RATE_PER_HOUR`), 429 `RATE_LIMITED`.
-- Unchanged: signed out, Apply Now still goes to registration and the
-  application continues after sign-in (`teamlink-apply-auth.js`); that
-  continuation uses the ordinary apply, not the sheet. External (`xjob_`)
-  jobs keep their own flow. The home page "⚡ Easy Apply" keeps its review
-  step (it has the cover note); its Submit is a one-click apply.
+- Signed out (0118): a one-field "Email / Mobile Number" box, then sign in
+  or register; the application continues after sign-in
+  (`teamlink-apply-auth.js`). External (`xjob_`) jobs keep their own flow.
+  The home page "⚡ Easy Apply" is one click too.
 
 ## 5. Last date + urgent hiring
 

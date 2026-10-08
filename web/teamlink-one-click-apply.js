@@ -60,6 +60,10 @@
   }
   function refOf(a) { return a ? (a.reference || a.applicationId || a.id || '') : ''; }
   function modal(inner) {
+    /* The "Build your profile" prompt (teamlink-profile-onboarding.js)
+       may already be up from an earlier render; it would cover this.
+       Only the prompt - never the builder itself, which holds typing. */
+    if (document.querySelector('#tlpoHost .tlpo-modal') && typeof window.tlpoClose === 'function') window.tlpoClose();
     if (typeof window.fcrModal === 'function') { window.fcrModal(inner); return; }
     say('Application update: please open My Applications');
   }
@@ -72,6 +76,7 @@
       + '.tl1c .tick{width:52px;height:52px;border-radius:50%;margin:0 auto 10px;display:flex;align-items:center;justify-content:center;font-size:26px;background:var(--ok-100,#e8f6ee);color:var(--ok-600,#1d6b3f)}'
       + '.tl1c .tick.info{background:#eef4ff;color:#2f5bd3}'
       + '.tl1c h3{margin:0 0 6px;font-size:19px}'
+      + '.tl1c .tlwk-box{text-align:left;margin:12px 0 8px}'
       + '.tl1c p{margin:4px 0;color:var(--text-soft,#5b6e84);font-size:13.5px}'
       + '.tl1c .ref{display:inline-block;font-family:var(--font-mono,monospace);font-weight:800;font-size:17px;background:#f2f4f7;border-radius:8px;padding:6px 12px;margin:4px 0 8px;color:#16202c}'
       + '.tl1c-form{padding:18px 22px 4px;text-align:left}'
@@ -85,12 +90,19 @@
   /* ------------------------------------------------------------------ *
    * signed in: apply now
    * ------------------------------------------------------------------ */
+  /* A walk-in's date, venue, map and calendar (teamlink-walkin-jobs.js). */
+  function walkin(job, app, already) {
+    try { return (window.TLWalkinJobs && TLWalkinJobs.resultHtml) ? TLWalkinJobs.resultHtml(job, refOf(app), already) : ''; }
+    catch (e) { return ''; }
+  }
+
   function showSubmitted(job, app) {
     css();
     modal('<div class="tl1c" id="tl1cDone" role="status" aria-live="polite"><div class="tick">✓</div>'
       + '<h3>Application Submitted Successfully</h3>'
       + (job ? '<p><b style="color:#16202c">' + h(job.title) + '</b></p>' : '')
       + '<p style="margin-top:10px">Application ID:</p><div class="ref" id="tl1cRef">' + h(refOf(app)) + '</div>'
+      + walkin(job, app, false)
       + '<p>You can complete or update your profile anytime.</p></div>'
       + '<div class="fcr-jd-actions" style="justify-content:center;flex-wrap:wrap">'
       + '<button type="button" class="btn btn-primary" data-tl1c-go="/candidate/applications">View Application</button>'
@@ -103,6 +115,7 @@
       + '<h3>Applied</h3><p>You have already applied for this job.</p>'
       + (job ? '<p><b style="color:#16202c">' + h(job.title) + '</b></p>' : '')
       + (app && refOf(app) ? '<p style="margin-top:10px">Application ID:</p><div class="ref">' + h(refOf(app)) + '</div>' : '')
+      + walkin(job, app, true)
       + '</div><div class="fcr-jd-actions" style="justify-content:center;flex-wrap:wrap">'
       + '<button type="button" class="btn btn-primary" data-tl1c-go="/candidate/applications">View Application</button>'
       + '<button type="button" class="btn btn-ghost" onclick="fcrCloseModal()">Close</button></div>');
@@ -263,9 +276,14 @@
     var to = b.getAttribute('data-tl1c-go');
     if (to === 'profile') {
       go('/candidate/profile');
-      /* The profile's own "Complete profile": the first missing section,
-         its editor open. */
-      setTimeout(function () { if (typeof window.tlpsCompleteNext === 'function') window.tlpsCompleteNext(); }, 400);
+      /* The existing ways to complete a profile, nothing new: a profile
+         not built yet gets the "Build your profile" steps (CV first);
+         otherwise the profile's own "Complete profile" - the first
+         missing section, its editor open. */
+      setTimeout(function () {
+        if (typeof window.tlpoBuilt === 'function' && !window.tlpoBuilt() && typeof window.tlpoStart === 'function') window.tlpoStart(0);
+        else if (typeof window.tlpsCompleteNext === 'function') window.tlpsCompleteNext();
+      }, 400);
       return;
     }
     go(to);
@@ -280,5 +298,14 @@
   if (document.readyState === 'complete') setTimeout(start, 0);
   else window.addEventListener('load', function () { setTimeout(start, 0); });
 
-  window.TLOneClickApply = { apply: applyNow, signIn: signInBox, prefillKey: PREFILL_KEY };
+  /* True while an apply is in flight, about to resume after sign-in, or
+     its result is on screen. Prompts that open on render (the profile
+     builder) wait for it, so nothing covers the confirmation. */
+  function holding() {
+    if (Object.keys(applying).length) return true;
+    if (document.querySelector('#tl1cDone, #tl1cAlready, #tl1cForm')) return true;
+    try { return !!sessionStorage.getItem(INTENT_KEY); } catch (e) { return false; }
+  }
+
+  window.TLOneClickApply = { apply: applyNow, signIn: signInBox, prefillKey: PREFILL_KEY, holding: holding };
 })();

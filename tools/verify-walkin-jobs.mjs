@@ -1,5 +1,5 @@
 /**
- * Walk-in is a job type, and Apply Now is one application form - in a real
+ * Walk-in is a job type, and Apply Now is one click (0118) - in a real
  * browser (specs/Walkin-Job-Type-Task.md §21; the API side is in
  * api/test/walkin-jobs.test.mjs).
  *
@@ -7,21 +7,23 @@
  *   2  a walk-in job's card has the badge and Date / Time / Venue; there is
  *      no separate walk-in page (#/walkins is the home page)
  *   3  the walk-in job page shows the date, time, venue and address
- *   4  Apply Now opens the application form (company, job title / ID / type
- *      read-only, the walk-in block)
- *   9  signed in: the form is prefilled from the profile, resume on file
- *      with Replace, and only the missing fields are asked for
+ *   4  Apply Now applies at once (0118): the confirmation carries the
+ *      Application ID and the walk-in details, View on Map, Add to Calendar
+ *   9  the application form, kept and opened directly (TLWalkinJobs.open):
+ *      company, job title / ID / type read-only, the walk-in block,
+ *      prefilled from the profile, resume on file with Replace, only the
+ *      missing fields asked for
  *  18  refresh mid-form: the draft comes back; it is gone after submit
  *   5  submit: the success screen with the Application ID (TL-APP-...)
  *  20  walk-in success: View on Map + Add to Calendar (.ics and Google);
  *      a regular job's success shows neither
- *   7  apply again: "You have already applied for this position." + the ID
- *   8  a regular job's form has no walk-in section
+ *   7  apply again: "You have already applied for this job." + the ID
+ *   8  a regular job: no walk-in section in the form or the confirmation
  *  16  invalid mobile / email: inline errors, nothing saved
  *  17  double-click Submit: one application
  *  19  capacity reached between opening and submitting: "Registrations full"
  *  13  a walk-in whose date has passed: Closed, Apply disabled, not listed
- *  10  signed out: register, then the same job's form opens
+ *  10  signed out: Email / Mobile, register, and the job is applied to
  *  11  the ordinary search finds the walk-in
  *  12  no "Walk-in Drives" / "Walk-ins" in the public header, the candidate
  *      header, the recruiter or the admin sidebar
@@ -117,6 +119,7 @@ const made = await rp.evaluate(async ({ s, d5, dPast }) => {
     await mk('wk', wk(`Walkin Engineer ${s}`));
     await mk('wkcap', wk(`Walkin Capacity ${s}`, { walkinCapacity: 1 }));
     await mk('wkauth', wk(`Walkin Signup ${s}`));
+    await mk('wk1c', wk(`Walkin One Click ${s}`));
     /* A walk-in whose date has passed: saved as a draft (a clone may
        carry an old date) and published - it reads as Closed at once. */
     await mk('wkpast', wk(`Walkin Past ${s}`, { status: 'draft', walkinDate: dPast }));
@@ -227,9 +230,28 @@ await check('12b. candidate header: Jobs, Internships, Walk-in Jobs, Companies, 
   await shot(ap, '04-candidate-search');
 });
 
-await check('4 / 9. Apply Now opens the form: prefilled, read-only job fields, company, walk-in block, only the missing fields', async () => {
-  await go(ap, '#/job/' + J.wk.id);
+const openForm = (page, id) => page.evaluate((j) => window.TLWalkinJobs.open(j), id);
+
+await check('4 / 20. Apply Now applies at once: Application ID, walk-in details, View on Map, Add to Calendar; no form', async () => {
+  await go(ap, '#/job/' + J.wk1c.id);
   must(await clickApplyOnPage(ap), 'no Apply button');
+  await ap.waitForSelector('#tl1cDone', { timeout: 20000 });
+  must(!(await ap.$('#tlafForm')), 'the application form opened');
+  const t = await text(ap, '#tl1cDone');
+  const ref = await ap.evaluate(() => document.getElementById('tl1cRef').textContent.trim());
+  must(/Application Submitted Successfully/.test(t) && /^TL-APP-\d{4}-\d{5}$/.test(ref), 'confirmation: ' + t);
+  must(/Walk-in Interview Details/.test(t) && t.includes('TeamLink Office'), 'no walk-in details on the confirmation');
+  must(await ap.$('#tl1cDone a[href^="https://maps.google.com"]'), 'no View on Map');
+  must(await ap.$('#tl1cDone [data-tlwk-ics]') && await ap.$('#tl1cDone a[data-tlwk-gcal][href^="https://calendar.google.com/"]'), 'no Add to Calendar');
+  const apps = await myApps(ap, J.wk1c.id);
+  must(apps.length === 1 && apps[0].reference === ref, 'the server holds ' + JSON.stringify(apps));
+  await shot(ap, '05a-one-click-walkin');
+  await ap.evaluate(() => fcrCloseModal());
+});
+
+await check('9. the application form, kept (opened directly): prefilled, read-only job fields, company, walk-in block, only the missing fields', async () => {
+  await go(ap, '#/job/' + J.wk.id);
+  await openForm(ap, J.wk.id);
   await ap.waitForSelector('#tlafForm', { timeout: 8000 });
   const f = await ap.evaluate(() => ({
     title: document.getElementById('tlafJobTitle').value, id: document.getElementById('tlafJobId').value,
@@ -261,14 +283,14 @@ await check('18. refresh mid-form: the draft is restored', async () => {
   await ap.selectOption('#tlafNotice', '30 days');
   await ap.waitForTimeout(700);
   await ap.reload(); await ready(ap); await ap.waitForTimeout(1500); await wizardAway(ap);
-  must(await clickApplyOnPage(ap), 'no Apply button after the refresh');
+  await openForm(ap, J.wk.id);
   await ap.waitForSelector('#tlafForm', { timeout: 8000 });
   const v = await ap.evaluate(() => [document.getElementById('tlafExp').value, document.getElementById('tlafQual').value, document.getElementById('tlafNotice').value]);
   must(v[0] === '3' && v[1] === 'B.Tech/B.E' && v[2] === '30 days', 'draft not restored: ' + v.join(','));
 });
 
 let REF = '';
-await check('5 / 20. submit: Application ID, walk-in details, View on Map and Add to Calendar; draft cleared', async () => {
+await check('5 / 20. the form\'s submit: Application ID, walk-in details, View on Map and Add to Calendar; draft cleared', async () => {
   await ap.click('#tlafSubmit');
   await ap.waitForSelector('#tlafDone, #tlafMsg:not(:empty)', { timeout: 30000 });
   if (!(await ap.$('#tlafDone'))) {
@@ -291,12 +313,12 @@ await check('5 / 20. submit: Application ID, walk-in details, View on Map and Ad
   await shot(ap, '06-success-walkin');
 });
 
-await check('7. applying again: "You have already applied for this position." with the existing ID', async () => {
+await check('7. applying again: "You have already applied for this job." with the existing ID', async () => {
   await ap.evaluate(() => fcrCloseModal());
   await ap.evaluate((id) => { window.applyToJob(id); }, J.wk.id);
-  await ap.waitForSelector('#tlafDup', { timeout: 8000 });
-  const t = await text(ap, '#tlafDup');
-  must(/You have already applied for this position\./.test(t) && t.includes(REF), 'duplicate screen: ' + t);
+  await ap.waitForSelector('#tl1cAlready', { timeout: 8000 });
+  const t = await text(ap, '#tl1cAlready');
+  must(/You have already applied for this job\./.test(t) && t.includes(REF), 'duplicate screen: ' + t);
   must(/Venue/.test(t), 'no walk-in details on the duplicate screen');
   const direct = await ap.evaluate((b) => TL.api.post('/applications/form', b).then(() => 'created', (e) => e.code + ':' + (e.details && e.details.applicationId)),
     { jobId: J.wk.id, name: A.name, mobile: A.phone, email: A.email, currentLocation: 'Hyderabad', qualification: 'B.Tech/B.E', experienceYears: 3, noticePeriod: '30 days' });
@@ -305,22 +327,25 @@ await check('7. applying again: "You have already applied for this position." wi
   await ap.evaluate(() => fcrCloseModal());
 });
 
-await check('8 / 20. a regular job: the same form, no walk-in section, no calendar on success', async () => {
+await check('8 / 20. a regular job: no walk-in section in the form, none and no calendar on the confirmation', async () => {
   await go(ap, '#/job/' + J.reg.id);
   must(!(await ap.$('.tlwk-jp')), 'a walk-in panel on a regular job');
-  must(await clickApplyOnPage(ap), 'no Apply button');
+  await openForm(ap, J.reg.id);
   await ap.waitForSelector('#tlafForm', { timeout: 8000 });
   must(await ap.evaluate(() => document.getElementById('tlafJobType').value) === 'Regular', 'job type');
   must(!(await ap.$('#tlafForm .tlwk-box:not(.tlaf-summary)')), 'a walk-in block on a regular job');
   await shot(ap, '08-form-regular');
-  const r = await completeApplyForm(ap);
+  await ap.evaluate(() => fcrCloseModal());
+  must(await clickApplyOnPage(ap), 'no Apply button');
+  const r = await completeApplyForm(ap, { timeout: 20000 });
   must(r.state === 'done', 'regular apply: ' + JSON.stringify(r));
-  must(!(await ap.$('#tlafDone [data-tlwk-ics]')) && !(await ap.$('#tlafDone a[href^="https://maps"]')), 'calendar / map on a regular job');
+  must(!(await ap.$('#tl1cDone .tlwk-box')) && !(await ap.$('#tl1cDone [data-tlwk-ics]')) && !(await ap.$('#tl1cDone a[href^="https://maps"]')),
+    'walk-in details / calendar / map on a regular job');
   await ap.evaluate(() => fcrCloseModal());
 });
 
 await check('16. invalid mobile and email: inline errors, nothing saved', async () => {
-  await ap.evaluate((id) => { window.applyToJob(id); }, J.reg2.id);
+  await openForm(ap, J.reg2.id);
   await ap.waitForSelector('#tlafForm', { timeout: 8000 });
   await ap.click('#tlafEditAll');
   await ap.fill('#tlafMobile', '12345');
@@ -342,7 +367,7 @@ await check('16. invalid mobile and email: inline errors, nothing saved', async 
 });
 
 await check('17. double-click Submit: one application', async () => {
-  await ap.evaluate((id) => { window.applyToJob(id); }, J.reg3.id);
+  await openForm(ap, J.reg3.id);
   await ap.waitForSelector('#tlafForm', { timeout: 8000 });
   await ap.evaluate(() => { const b = document.getElementById('tlafSubmit'); b.click(); b.click(); document.getElementById('tlafForm').requestSubmit(); });
   await ap.waitForSelector('#tlafDone', { timeout: 30000 });
@@ -353,7 +378,7 @@ await check('17. double-click Submit: one application', async () => {
 await check('19. the last seat taken while the form is open: "Registrations full", nothing saved', async () => {
   const B = await newCandidate('Bala');
   await signIn(B.page, B.email, B.password, 'candidate', '#/');
-  await ap.evaluate((id) => { window.applyToJob(id); }, J.wkcap.id);
+  await openForm(ap, J.wkcap.id);
   await ap.waitForSelector('#tlafForm', { timeout: 8000 });
   const took = await B.page.evaluate((b) => TL.api.post('/applications/form', b).then((r) => r.application.reference, (e) => e.message),
     { jobId: J.wkcap.id, name: B.name, mobile: B.phone, email: B.email, currentLocation: 'Hyderabad', qualification: 'B.Com', experienceYears: 1, noticePeriod: 'Immediate' });
@@ -384,25 +409,28 @@ await check('13. a walk-in whose date has passed: Closed, Apply disabled, not in
   await shot(ap, '11-closed-walkin');
 });
 
-await check('10. signed out: register, then the same job\'s form opens', async () => {
+await check('10. signed out: Email / Mobile, register, and the job is applied to', async () => {
   const c = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const p = await open(c, '#/job/' + J.wkauth.id);
   must(await clickApplyOnPage(p), 'no Apply button');
-  await p.waitForTimeout(900);
+  /* 0118: one field first; a new address goes on to registration. */
+  const newEmail = `wk.signup.${stamp}@tl-verify.test`;
+  await p.waitForSelector('#tl1cId', { timeout: 8000 });
+  await p.fill('#tl1cId', newEmail);
+  await p.click('#tl1cGo');
+  await p.waitForTimeout(1500);
   must(/^#\/register\/candidate/.test(await p.evaluate(() => location.hash)), 'not on registration');
   /* 0109: the registration is seven steps now; tools/lib/registration-form.mjs
      fills each field on its own step (the ids are the same as before). */
   await registerThroughForm(p, {
-    name: 'Signup Verify', phone: phone(), email: `wk.signup.${stamp}@tl-verify.test`,
+    name: 'Signup Verify', phone: phone(), email: newEmail,
     password: `Signup${stamp}7`, skills: 'Excel, Communication', prefLocation: 'Hyderabad', expSalary: '4',
   });
   await p.waitForTimeout(3000);
-  await wizardAway(p);
-  await p.waitForSelector('#tlafForm', { timeout: 15000 });
-  must(await p.evaluate(() => document.getElementById('tlafJobId').value) === J.wkauth.id, 'the form is for another job');
-  await shot(p, '12-after-signup-form');
-  const r = await completeApplyForm(p);
+  const r = await completeApplyForm(p, { timeout: 20000 });
+  await shot(p, '12-after-signup-applied');
   must(r.state === 'done', 'apply after sign-up: ' + JSON.stringify(r));
+  must((await myApps(p, J.wkauth.id)).length === 1, 'not applied to the job after registering');
   await c.close();
 });
 
@@ -410,7 +438,7 @@ await check('23. phone width: the form fits, no sideways scroll', async () => {
   const m = await browser.newContext({ viewport: { width: 375, height: 812 }, isMobile: true, hasTouch: true });
   const mp = await open(m, '#/');
   await signIn(mp, A.email, A.password, 'candidate', '#/job/' + J.wkauth.id);
-  await mp.evaluate((id) => { window.applyToJob(id); }, J.wkauth.id);
+  await openForm(mp, J.wkauth.id);
   await mp.waitForSelector('#tlafForm', { timeout: 8000 });
   const over = await mp.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   must(over <= 2, 'sideways scroll by ' + over + 'px');

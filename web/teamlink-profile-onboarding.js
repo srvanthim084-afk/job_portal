@@ -860,6 +860,11 @@
     if (/reset-password|forgot-password/.test(h)) return;
     if (location.pathname === '/reset-password') return;
 
+    /* An application being submitted, or its confirmation on screen
+       (teamlink-one-click-apply.js): ask after, not on top of it. */
+    if (window.TLOneClickApply && typeof TLOneClickApply.holding === 'function'
+        && TLOneClickApply.holding()) return;
+
     var later = Number(c.onboardingLaterCount || 0);
 
     if (later < LATER_LIMIT) {
@@ -875,6 +880,9 @@
   /* ------------------------------------------------------------------ *
    * wiring
    * ------------------------------------------------------------------ */
+  /** Whether the profile counts as built (the prompt stops then). */
+  window.tlpoBuilt = function () { return built(me()); };
+
   window.tlpoStartAt = function (fieldKey) {
     var k = String(fieldKey || '');
     var step = k === 'resumeFile' ? 0

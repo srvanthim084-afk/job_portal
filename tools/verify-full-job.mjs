@@ -256,7 +256,7 @@ for (const [label, vp, mobile] of [['desktop', { width: 1366, height: 820 }, fal
     const t = await appText(p);
     must(!t.includes(B.responsibilities[0]) && !t.includes(B.education), 'another job\'s details are on the page');
   });
-  await check(`${label} 9. Apply Now opens the existing application form, and applies to THIS job`, async () => {
+  await check(`${label} 9. Apply Now applies to THIS job (one click, 0118)`, async () => {
     await p.locator('#app .tljd-act button.btn-primary:visible').first().click();
     const f = await completeApplyForm(p, { timeout: 8000 });
     must(f.state === 'done', 'application form: ' + JSON.stringify(f));

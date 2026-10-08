@@ -18,6 +18,7 @@
  *   E  the application is in the pipeline with its job, recruiter, source
  *   F  "Complete Profile" opens the profile, separately
  *   G  the application was screened (AI match) as every application is
+ *      ... and at phone width (390px) the box and the confirmation fit
  */
 import { chromium } from 'playwright';
 import { writeFileSync, mkdirSync } from 'node:fs';
@@ -114,9 +115,13 @@ check(twice.ok && twice.r.existing === true, 'D: the server returns the same app
 /* ---- F: Complete Profile, separately ------------------------------------- */
 await page.evaluate((id) => window.applyToJob(id), J2.id);
 await page.waitForSelector('#tl1cDone', { timeout: 20000 }).catch(() => {});
-await page.click('[data-tl1c-go="profile"]').catch(() => {});
+/* A real click: it fails if anything (the profile prompt) covers the confirmation. */
+const clicked = await page.click('[data-tl1c-go="profile"]', { timeout: 8000 }).then(() => true, () => false);
+check(clicked, 'F: nothing covers the confirmation - Complete Profile is clickable');
 await page.waitForTimeout(1500);
 check(/^#\/candidate\/profile/.test(await page.evaluate(() => location.hash)), 'F: Complete Profile opens the profile');
+check(await page.evaluate(() => !!document.querySelector('#tlpoHost .tlpo-card, .cap-edit, .tlps-ov, #fcrModalHost .modal')),
+  'F: ...with the existing profile builder open');
 check(page.errors.length === 0, `no page errors (${page.errors.join(' | ')})`);
 
 /* ---- E + G: the pipeline, as the admin sees it ---------------------------- */
@@ -184,6 +189,27 @@ check(/Application Submitted Successfully/.test(await nw.textContent('#fcrModalH
   'B2: registered, and the application was submitted automatically');
 const nApps = await api(nw, 'get', '/applications');
 check(nApps.ok && (nApps.r.applications || nApps.r || []).some((a) => a.jobId === J2.id), 'B2: the application is on the new account');
+
+/* ---- phone width: the box and the confirmation fit ---------------------- */
+const J4 = jobs[3] || J3;
+const ph = await open('#/job/' + J4.id, { width: 390, height: 844 });
+await ph.evaluate((id) => window.applyToJob(id), J4.id);
+await ph.waitForSelector('#tl1cForm', { timeout: 10000 }).catch(() => {});
+check(await ph.evaluate(() => document.documentElement.scrollWidth - window.innerWidth <= 2 && !!document.getElementById('tl1cId')),
+  'phone: the Email / Mobile box fits, no sideways scroll');
+await ph.evaluate(() => fcrCloseModal());
+const lg = await api(ph, 'post', '/auth/login', { email: me.email, password: me.password, role: 'candidate' });
+await ph.evaluate(() => TL.refresh());
+await ph.waitForTimeout(800);
+await ph.evaluate((id) => window.applyToJob(id), J4.id);
+await ph.waitForSelector('#tl1cDone', { timeout: 20000 }).catch(() => {});
+const fits = await ph.evaluate(() => {
+  const b = document.querySelector('[data-tl1c-go="profile"]');
+  const r = b ? b.getBoundingClientRect() : null;
+  return { over: document.documentElement.scrollWidth - window.innerWidth, btn: !!r && r.right <= window.innerWidth && r.left >= 0 };
+});
+check(lg.ok && fits.over <= 2 && fits.btn, `phone: the confirmation fits (${JSON.stringify(fits)})`);
+await ph.screenshot({ path: resolve(DIR, `one-click-phone-${stamp}.png`) });
 
 await browser.close();
 console.log(fail.length ? `\n${fail.length} FAILED` : '\nall passed');
