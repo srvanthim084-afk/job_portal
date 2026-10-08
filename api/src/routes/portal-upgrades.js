@@ -333,10 +333,13 @@ export default function portalUpgradeRoutes() {
   /**
    * POST /api/applications/one-click { jobId, answers?, ref? }
    *
-   * Apply in one tap, on any open job, with the profile and resume on
-   * file. Refused with the list of what is missing when the profile is
-   * not complete. IDEMPOTENT: an application that already exists is
-   * returned as it is (200, existing:true), never duplicated or refused.
+   * Apply in one tap, on any open job, with whatever the profile and
+   * resume already hold. NOTHING on the profile is required to apply
+   * (0118): applying and completing the profile are two separate
+   * actions, so a profile with gaps still applies, and the answer lists
+   * what is missing (`profileMissing`) for the "complete your profile"
+   * hint. IDEMPOTENT: an application that already exists is returned as
+   * it is (200, existing:true), never duplicated or refused.
    *
    * The application itself is made by the ordinary POST /applications -
    * the request is handed on to it, so screening, notifications and the
@@ -364,11 +367,8 @@ export default function portalUpgradeRoutes() {
       res.json({ application: toApplication(had), existing: true });
       return;
     }
+    /* 0118: reported, never required. */
     const missing = missingForOneClick(pre.cand);
-    if (missing.length) {
-      throw new ApiError(422, CODES.VALIDATION_FAILED,
-        `Fill ${missing.length} thing${missing.length === 1 ? '' : 's'} to apply.`, { missing });
-    }
     await applyGuards(req, body.jobId);
     afterJson(res, (out) => creditShare(req, body.jobId, out));
 
@@ -377,6 +377,7 @@ export default function portalUpgradeRoutes() {
        on a one-click apply. */
     const json = res.json.bind(res);
     res.json = (out) => {
+      if (res.statusCode === 201 && out && out.application) out = { ...out, profileMissing: missing };
       if (res.statusCode === 409 && out && out.error && out.error.code === CODES.DUPLICATE_APPLICATION) {
         existing().then((row) => {
           if (!row) return json(out);

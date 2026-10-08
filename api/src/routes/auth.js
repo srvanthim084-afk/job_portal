@@ -23,6 +23,8 @@ import {
   registrationSettings, windowCounter, originOf, validIndianMobile,
 } from '../registration/settings.js';
 import { queueWelcome } from '../notify/registration-messages.js';
+/* 0117: resume-first registration - the draft the resume was read into. */
+import { draftForRegistration, finishDraft } from './registration-draft.js';
 
 /*
  * AN ADDRESS OR A MOBILE NUMBER.
@@ -104,6 +106,12 @@ const registerSchema = z.object({
   availability: z.enum(['actively_looking', 'open_to_offers', 'not_looking']).optional(),
   /* 0102: the language TeamLink talks to them in. English when not said. */
   preferredLanguage: z.enum(['en', 'te', 'hi']).optional(),
+  /* 0117: the resume-first flow. The draft the resume was read into, its
+     token, and the candidate's current location (asked beside the four
+     preferences, because a resume's address is not where someone lives). */
+  draftId: z.string().trim().regex(/^rd_[a-f0-9]{18}$/).optional(),
+  draftToken: z.string().trim().max(64).optional(),
+  currentLocation: z.string().trim().max(160).optional(),
 });
 
 const parse = (schema, body) => {
@@ -293,9 +301,14 @@ export default function authRoutes() {
     const { name, email, password, phone,
             preferredLocation, expectedCtc, noticePeriod,
             preferredWorkModes, availability, preferredLanguage,
-            confirmPassword, consent, website } = parse(registerSchema, req.body);
+            confirmPassword, consent, website,
+            draftId, draftToken, currentLocation } = parse(registerSchema, req.body);
 
     if (website) throw badRequest('Please check the highlighted fields and try again.');
+
+    /* 0117: from a resume draft, the email must have answered its code
+       before an account is made for it. Checked before anything is written. */
+    const draft = draftId ? await draftForRegistration({ draftId, draftToken, email }) : null;
 
     /* 0109: the checks the form makes, made again here. */
     const problems = {};
@@ -368,6 +381,26 @@ export default function authRoutes() {
         [candidateId, reg.consentVersion, reg.privacyPolicyUrl || null,
          !!consent.terms, !!consent.communication, !!consent.resumeProcessing]));
     }
+    /* 0117: the current location they gave, and then the draft becomes the
+       profile: the resume, what was read from it, where each value came
+       from, and how complete the profile now is. */
+    if (currentLocation) {
+      await withUser(session, (c) => c.query(
+        `update candidates set location = $1 where id = app_candidate_id()`, [currentLocation]));
+    }
+    let completeness = null;
+    let profileWarning = null;
+    if (draft) {
+      try {
+        completeness = await finishDraft({
+          draftId, draftToken, draft, candidateId, session,
+          provided: { name, email, phone },
+        });
+      } catch (err) {
+        console.error('[register] draft conversion failed:', err.message);
+        profileWarning = 'Your account was created, but your resume could not be attached. Please upload it from your profile.';
+      }
+    }
     /* The Candidate ID the trigger gave them, read as themselves. */
     const candidateCode = await withUser(session, async (c) => {
       const { rows } = await c.query(`select candidate_code from candidates where id = $1`, [candidateId]);
@@ -384,6 +417,7 @@ export default function authRoutes() {
       session: { role: session.role, id: session.profileId, email: session.email },
       candidateId,
       candidateCode,
+      ...(draft ? { completeness, profileWarning } : {}),
     });
   }
 

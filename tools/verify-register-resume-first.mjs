@@ -30,6 +30,7 @@ page.on('pageerror', (e) => errors.push(String(e.message)));
 await page.goto(`${BASE}/`, { waitUntil: 'load' });
 await page.waitForFunction(() => window.TL && window.TL.ready === true, { timeout: 25000 });
 await page.evaluate(() => { location.hash = '#/register/candidate'; });
+await page.evaluate(() => { if (window.TLResumeFirst) window.TLResumeFirst.manual(); }); /* 0117: the seven-step form is the manual path */
 await page.waitForTimeout(1200);
 
 /* ---- the steps, and the resume at the very top of the first ------- *

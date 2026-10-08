@@ -26,6 +26,9 @@
 export const TEST_RESUME = process.env.TL_TEST_RESUME || 'var/test-resumes/Resume - Sravanthi.pdf';
 
 export async function fillRegistration(page, opts = {}) {
+  /* 0117: registration opens resume-first; this helper fills the seven-step
+     form, which is the "Enter my details manually" path. */
+  await page.evaluate(() => { if (window.TLResumeFirst) window.TLResumeFirst.manual(); });
   await page.waitForFunction(() => window.TLRegistration && document.getElementById('regName'), null, { timeout: 15000 });
   const skip = new Set(opts.skip || []);
   const reveal = (id) => page.evaluate((i) => window.TLRegistration.reveal(i), id);

@@ -542,6 +542,81 @@ function findQualification(text, sections) {
   return m ? clean(m[0]) : null;
 }
 
+/*
+ * EVERY EDUCATION RECORD, NOT ONLY THE HIGHEST (0117).
+ *
+ * `education` keeps the section as one line and `qualification` the top
+ * degree; a resume listing B.Tech, Intermediate and SSC filled one field
+ * and dropped the other two. Each line naming a level starts a record;
+ * the lines under it until the next level add the institution, the year
+ * and the score. Nothing is guessed: a value not on those lines is null.
+ */
+const EDU_LEVELS = [
+  ['Doctorate', /\b(?:Ph\.?\s?D|Doctorate)\b/i],
+  ['Post Graduation', /\b(?:M\.?\s?Tech|M\.E\b|MBA|MCA|M\.?\s?Sc|M\.?\s?Com|M\.A\b|M\.?\s?Pharm|PGDM|Post[\s-]*Graduat\w*|Master(?:'s|s)?\s+(?:of|in)\b)/i],
+  ['Graduation', /\b(?:B\.?\s?Tech|B\.E\b|B\.?\s?Sc|BCA|BBA|B\.?\s?Com|B\.A\b|B\.?\s?Pharm|MBBS|BDS|Bachelor(?:'s|s)?\s+(?:of|in)\b|Graduation)/i],
+  ['Diploma', /\b(?:Diploma|Polytechnic|ITI)\b/i],
+  ['12th', /\b(?:12th|XII|Intermediate|Inter\b|HSC|Senior\s+Secondary|Higher\s+Secondary|PUC|\+2)\b/i],
+  ['10th', /\b(?:10th|SSC|S\.S\.C|Matriculation|Secondary\s+School|High\s+School|CBSE\s+X\b|X\s+Standard)\b/i],
+];
+const EDU_INSTITUTION = /\b(?:University|College|Institute|Institution|School|Vidyalaya|Academy|IIT|NIT|IIIT|Polytechnic|Board)\b/i;
+
+function levelOf(line) {
+  for (const [level, re] of EDU_LEVELS) {
+    const m = re.exec(line);
+    if (m) return { level, degree: clean(m[0]) };
+  }
+  return null;
+}
+
+export function findEducationRecords(section) {
+  const lines = String(section || '').split('\n')
+    .map((l) => clean(l.replace(/^[\s•●▪*\-–—>]+/, '')))
+    .filter((l) => l.length >= 2 && l.length <= 240);
+  const records = [];
+  let cur = null;
+
+  const take = (rec, line) => {
+    const years = line.match(/\b(19[6-9]\d|20[0-4]\d)\b/g);
+    if (years && years.length) rec.passingYear = years[years.length - 1];
+    const pct = /(\d{2}(?:\.\d{1,2})?)\s*%/.exec(line);
+    const gpa = /\b(?:CGPA|GPA|CPI|SGPA)\s*[:\-–]?\s*(\d{1,2}(?:\.\d{1,2})?)(?:\s*\/\s*(?:10|4))?/i.exec(line)
+      || /\b(\d\.\d{1,2})\s*\/\s*10\b/.exec(line)
+      || /\b(\d{1,2}(?:\.\d{1,2})?)\s*(?:CGPA|GPA|CPI)\b/i.exec(line);
+    if (!rec.score && pct) rec.score = pct[1] + '%';
+    else if (!rec.score && gpa) rec.score = gpa[1] + ' CGPA';
+    if (!rec.institution) {
+      const parts = line.split(/\s*[|,;–—]\s*|\s+-\s+/).map((p) => clean(p)).filter(Boolean);
+      const isDegreePart = (p, i) => i === 0 && !!levelOf(p) && levelOf(p).degree === rec.qualification;
+      const leftover = parts.filter((p, i) => !isDegreePart(p, i)
+        && !/^(?:\(?\s*(?:19|20)\d\d\s*\)?|[\d.]+\s*%|(?:CGPA|GPA|CPI)?\s*[:\-]?\s*\d{1,2}(?:\.\d{1,2})?(?:\s*\/\s*10)?(?:\s*CGPA)?)$/i.test(p)
+        && /[A-Za-z]{3,}/.test(p));
+      const part = leftover.find((p) => EDU_INSTITUTION.test(p))
+        || (isLevelLine ? leftover.find((p) => !levelOf(p) || EDU_INSTITUTION.test(p)) : null);
+      if (part) rec.institution = clean(part.replace(/\(?\b(19|20)\d\d\b.*$/, '')).slice(0, 160) || null;
+    }
+  };
+  let isLevelLine = false;
+
+  for (const line of lines) {
+    const lv = levelOf(line);
+    if (lv && records.length < 8) {
+      cur = { level: lv.level, qualification: lv.degree, specialization: null,
+              institution: null, passingYear: null, score: null };
+      const spec = /\(([^)]{3,60})\)/.exec(line)
+        || new RegExp(lv.degree.replace(/[.+*?^$()[\]{}|\\]/g, '\\$&') + '\\s*(?:in|-|–|:)\\s*([A-Za-z&. ]{3,60})', 'i').exec(line);
+      if (spec && !/\d/.test(spec[1]) && !EDU_INSTITUTION.test(spec[1])) cur.specialization = clean(spec[1]);
+      isLevelLine = true;
+      take(cur, line.replace(/\([^)]*\)/, ''));
+      records.push(cur);
+    } else if (cur) {
+      isLevelLine = false;
+      take(cur, line);
+    }
+  }
+  return records.map((r) => ({ ...r, educationType: r.level }));
+}
+
 /** Employment history: "Company — Title (2021 - Present)" and variants. */
 function findEmployment(sections) {
   const src = sections.experience || '';
@@ -1115,7 +1190,9 @@ export function extractFields(text) {
   const email = findEmail(personal);
   /* Read once: the name and, when there is none, the guess. */
   const nameRead = nameFrom(personal, email);
-  const phones = findPhones(personal);
+  /* 0117: digits inside an email address ("rahul.9876543210@...") are not
+     a phone number. */
+  const phones = findPhones(personal.replace(/[^\s@<>()]+@[^\s@<>()]+\.[a-z]{2,}/gi, ' '));
   const links = findLinks(t);
 
   const employment = findEmployment(sections);
@@ -1147,6 +1224,9 @@ export function extractFields(text) {
     .map((l) => l.replace(/^[\s\u2022\u25cf\u25aa\u2023\u2043*\-–—>]+/, '').replace(/^\d+[.)]\s+/, '').trim())
     .filter((l) => l.length >= 4 && l.length <= 300)
     .slice(0, max);
+  /* 0117: a project is usually one line - "Name - what it did" - and longer
+     than a skill. When the list reader keeps none, the lines are the list. */
+  if (!projects.length) projects.push(...lineItems(sections.projects, 12));
   const internships = lineItems(sections.internships, 10);
   const achievements = lineItems(sections.achievements, 12);
   const languages = findList(sections.languages, { max: 10, minLen: 3 });
@@ -1210,6 +1290,7 @@ export function extractFields(text) {
     expectedSalary: findSalary(t, 'expected'),
     qualification: findQualification(t, sections),
     education: sections.education ? clean(sections.education).slice(0, 600) : null,
+    educationRecords: findEducationRecords(sections.education),
     summary: sections.summary ? clean(sections.summary).slice(0, 1200) : null,
     skills,
     certifications,

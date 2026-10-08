@@ -44,6 +44,9 @@
    * 1. the twelve sections and the score
    * ------------------------------------------------------------------ */
 
+  /* 0117: the server works out the same twelve sections, with the same
+     rules, in api/src/profile/completeness.js (GET /api/me/profile-completeness,
+     and the registration's "Profile Completeness"). Change a rule in both. */
   var SECTIONS = [
     ['basic', 'Basic details', function (c) { return nonEmpty(c.name) && nonEmpty(c.email) && nonEmpty(c.phone) && nonEmpty(c.location); }, 'Basic details'],
     ['summary', 'Profile summary', function (c) { return String(c.summary || '').trim().length >= 20; }, 'Profile summary'],

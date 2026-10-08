@@ -86,6 +86,7 @@ console.log(`\npreferred language  (${BASE})`);
 
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
 const page = await open(ctx, '#/register/candidate');
+await page.evaluate(() => { if (window.TLResumeFirst) window.TLResumeFirst.manual(); }); /* 0117: the seven-step form is the manual path */
 const cand = { email: `language.${stamp}@tl-verify.test`, password: `Lang${stamp}9` };
 let candId;
 

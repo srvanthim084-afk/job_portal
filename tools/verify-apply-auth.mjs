@@ -152,6 +152,7 @@ const RESUME = process.env.TL_TEST_RESUME || 'var/test-resumes/Resume - Sravanth
 const reveal = (id) => p.evaluate((i) => window.TLRegistration.reveal(i), id);
 const put = async (id, v) => { await reveal(id); await p.fill('#' + id, v); };
 async function fillForm(email) {
+  await p.evaluate(() => { if (window.TLResumeFirst) window.TLResumeFirst.manual(); }); /* 0117: the seven-step form is the manual path */
   await put('regName', 'Apply Flow ' + stamp);
   await put('regMobile', phone());
   await put('regLocation', 'Hyderabad');
