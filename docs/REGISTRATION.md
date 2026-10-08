@@ -83,6 +83,67 @@ changed by an update.
 shim so it never reaches `/api/prefs`): text and ticks only, never a password or a file,
 14-day expiry, cleared on success or "Start over". A draft never creates an account.
 
+## Resume-first (0117)
+
+`#/register/candidate` now opens on the resume (`web/teamlink-resume-first.js`). The seven-step
+form below is unchanged and is the **"Enter my details manually"** path (no resume, or one that
+cannot be read); the choice is remembered for the tab.
+
+1. **Upload** (PDF, DOC, DOCX, TXT, 5 MB). `POST /api/registration/drafts` stores the file
+   (magic bytes checked), creates a `registration_drafts` row and reads the resume at once:
+   the deterministic parser and, when `AI_API_KEY` is set, the model (prompt-injection guarded,
+   every value checked against the resume text). The page holds only the draft id + token
+   (`sessionStorage`); a refresh reloads the draft from the server.
+2. **What was found** is shown as a summary; nothing the resume said is asked again.
+3. **Please check** appears only for fields read with confidence below
+   `REGISTRATION_CONFIDENCE_MIN` (0.7), and for name / mobile when the resume did not give them.
+   Confidence is evidence-based (`api/src/resume/confidence.js`): both readers agree 0.95, a
+   pattern that cannot misfire (email, URL, phone) 0.9-0.95, one reader per field, readers
+   disagree 0.5, a name guessed from the email 0.4, scanned (AI OCR) text x0.85. An unconfirmed
+   low-confidence value is **not** written to the profile.
+4. **The candidate types only**: Current Location, Preferred Location (several), Notice Period,
+   Work Mode (Office / Hybrid / Remote; "Any" = all three), Expected Salary (LPA), Password +
+   Confirm, and the consents.
+5. **Email code**: `POST /registration/drafts/:id/email-code` (6 digits, 10 minutes, 5 tries,
+   5 codes per hour). A server without mail shows the code on screen as a development code;
+   production says email is unavailable instead. An address that is already an account is
+   refused here ("Please Login").
+6. **Create account**: the same `POST /auth/register`, with `draftId` + `draftToken` +
+   `currentLocation`. The server refuses it unless the draft's email answered its code, then
+   creates the account (duplicate email / mobile refused as before), and converts the draft:
+   the stored resume attached, the fields it was sure of (and those confirmed) written into
+   EMPTY columns only (`applyExtractedFields`), every education record as its own
+   `candidate_education` row, employment as `candidate_experience` rows,
+   `email_verified = true`, and `profile_field_sources` (EXTRACTED / USER_PROVIDED per field).
+7. **"Your profile has been created from your resume."** with Profile Completeness and only
+   the sections still missing (or "Your profile is complete.").
+
+**Failure**: an unreadable resume or a reading past `REGISTRATION_EXTRACT_TIMEOUT_MS` says
+"We couldn't extract your resume automatically. Please review or enter the missing information
+manually.", keeps the file, and offers **Try reading it again** (`POST .../retry`), another file,
+or the manual form. Nothing is created.
+
+**Completeness** (`api/src/profile/completeness.js`, `GET /api/me/profile-completeness`): the
+profile page's twelve sections (`web/teamlink-profile-sections.js`), same rules, same arithmetic
+(never 100% while one is missing), plus a status per field.
+
+**Drafts**: no table grants; every read and write goes through token-checked SECURITY DEFINER
+functions; 7-day expiry, purged with their files. The resume text never goes back to the page.
+
+| Setting | Default |
+|---|---|
+| `REGISTRATION_CONFIDENCE_MIN` | 0.7 |
+| `REGISTRATION_EMAIL_VERIFY` | true |
+| `REGISTRATION_EXTRACT_TIMEOUT_MS` / `REGISTRATION_AI_TIMEOUT_MS` | 60000 / 30000 |
+| `REGISTRATION_DRAFT_MAX` (uploads per connection per hour) | 20 in production |
+
+Tests: `api/test/registration-draft.test.mjs` (the realistic resume end to end, low confidence,
+no email, duplicate email / mobile, unreadable, timeout + retry, draft token, plain register
+unchanged); `tools/verify-register-resume-flow.mjs` (browser, desktop + 390px). The seven-step
+scripts open the manual path with `TLResumeFirst.manual()`.
+
+Not done: phone OTP (needs a DLT-approved SMS template; `mobile_verified` stays false).
+
 ## Tests
 `api/test/registration.test.mjs` (22), `tools/verify-registration.mjs` (28, desktop +
 390px). `verify-apply-auth`, `verify-register-form`, `verify-register-resume-first`,

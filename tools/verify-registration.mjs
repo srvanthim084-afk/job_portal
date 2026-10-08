@@ -121,6 +121,7 @@ let code = '', candidateId = '';
 
 await check('Register button opens the registration form, in 7 steps with progress', async () => {
   await p.click('header a[href="#/register/candidate"], a.btn-primary[href="#/register/candidate"]');
+  await p.evaluate(() => { if (window.TLResumeFirst) window.TLResumeFirst.manual(); }); /* 0117: the seven-step form is the manual path */
   await p.waitForTimeout(800);
   must(/^#\/register\/candidate/.test(await p.evaluate(() => location.hash)), 'not on the registration page');
   const s = await p.evaluate(() => ({
@@ -525,6 +526,7 @@ await check('recruiters see the Candidate ID beside the internal id', async () =
 console.log('\nregistration, phone width 390px, keyboard');
 const m = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
 const mp = await open(m, '#/register/candidate');
+await mp.evaluate(() => { if (window.TLResumeFirst) window.TLResumeFirst.manual(); }); /* 0117: the seven-step form is the manual path */
 const XSS = 'Ravi <img src=x onerror="window.__xss=1"> Kumar';
 const overflow = () => mp.evaluate(() => document.documentElement.scrollWidth);
 

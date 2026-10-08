@@ -75,6 +75,7 @@ import { startAvailabilitySweep } from './notify/availability-checks.js';
 import { startOutboundHoldSweep } from './notify/apply-hold.js';
 /* 0109: multi-step registration, documents, privacy; welcome + reminder. */
 import registrationRoutes from './routes/registration.js';
+import registrationDraftRoutes from './routes/registration-draft.js';
 import { startRegistrationSweep } from './notify/registration-messages.js';
 /* 0107: the walk-in ATS (stages, check-in, notes, ratings, resumes, No Show, reminders). */
 import walkinAtsRoutes, { walkinAtsKick } from './routes/walkin-ats.js';
@@ -247,7 +248,7 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
     // twenty-four. Its absence here made those routes unreachable from
     // a browser while answering perfectly to curl.
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['content-type', 'x-csrf-token'],
+    allowedHeaders: ['content-type', 'x-csrf-token', 'x-draft-token'],
   }));
 
   /*
@@ -411,6 +412,7 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', sharedCandidateRoutes());
   app.use('/api', availabilityRoutes());
   app.use('/api', registrationRoutes());
+  app.use('/api', registrationDraftRoutes());
   app.use('/api', walkinAtsRoutes());
   app.use('/api', candidateRoutes());
   app.use('/api', applicationRoutes());

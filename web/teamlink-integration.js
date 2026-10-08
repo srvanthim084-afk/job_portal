@@ -353,6 +353,11 @@
     // echoed in a header a cross-site page cannot set.
     var token = cookie('tl_csrf');
     if (token) headers['x-csrf-token'] = token;
+    /* 0117: the resume-first registration's draft token. Only this one
+       extra header is passed through; nothing else can set headers. */
+    if (opts && opts.headers && opts.headers['x-draft-token']) {
+      headers['x-draft-token'] = String(opts.headers['x-draft-token']);
+    }
 
     // `credentials: same-origin` is what carries the httpOnly session
     // cookie. The session lives in that cookie, not in localStorage, so

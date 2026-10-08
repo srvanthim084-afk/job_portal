@@ -51,6 +51,9 @@ export async function applyExtractedFields(c, candidateId, fields) {
     ['internships', 'internships', 'jsonb', (line) => ({ role: line })],
     ['achievements', 'achievements', 'jsonb', (line) => ({ title: line })],
     ['expYears', 'exp_years', 'number'],
+    /* 0117: what the reading already had and nothing kept. */
+    ['relevantExpYears', 'relevant_exp_years', 'number'],
+    ['altPhone', 'alt_phone', 'text'],
     ['phone', 'phone', 'text'],
     // Resumes write salary as "28 LPA" or "12,00,000"; the columns are
     // numeric, so the words have to become rupees or nothing is stored.

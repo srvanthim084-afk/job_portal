@@ -42,6 +42,7 @@ await page.evaluate((l) => window.TL.api.post('/auth/login', l), {
 await page.evaluate(() => window.TL.refresh());
 await page.waitForTimeout(2000);
 await page.evaluate(() => { location.hash = '#/register/candidate'; });
+await page.evaluate(() => { if (window.TLResumeFirst) window.TLResumeFirst.manual(); }); /* 0117: the seven-step form is the manual path */
 await page.waitForTimeout(1600);
 
 /* ---- the condition that makes this test mean anything -------------- */

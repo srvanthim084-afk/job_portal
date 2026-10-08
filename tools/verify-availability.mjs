@@ -68,6 +68,7 @@ await rec.reload(); await ready(rec);
 const name = `Avail Check ${stamp}`;
 const cc = await browser.newContext({ viewport: { width: 1280, height: 900 } });
 const cand = await open(cc, '#/register/candidate');
+await cand.evaluate(() => { if (window.TLResumeFirst) window.TLResumeFirst.manual(); }); /* 0117: the seven-step form is the manual path */
 
 console.log(`\navailability status  (${BASE})`);
 

@@ -210,6 +210,7 @@ console.log('\nthe first look at the page');
 await check('the resume is the FIRST thing the registration form asks for', async () => {
   const p = (await open()).page;
   await p.evaluate(() => { location.hash = '#/register/candidate'; });
+  await p.evaluate(() => { if (window.TLResumeFirst) window.TLResumeFirst.manual(); }); /* 0117: the seven-step form is the manual path */
   await p.waitForTimeout(1300);
 
   /* 0109: seven steps now (teamlink-registration.js). The resume upload
@@ -261,6 +262,7 @@ await check('no header offers Home twice', async () => {
   must(homes.length <= 1, `the public header shows Home ${homes.length} times`);
 
   await p.evaluate(() => { location.hash = '#/register/candidate'; });
+  await p.evaluate(() => { if (window.TLResumeFirst) window.TLResumeFirst.manual(); }); /* 0117: the seven-step form is the manual path */
   await p.waitForTimeout(1200);
   homes = await visibleHomes();
   must(homes.length <= 1, `the register header shows Home ${homes.length} times`);
