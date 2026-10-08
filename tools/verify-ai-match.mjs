@@ -331,7 +331,7 @@ for (const V of VIEWS.filter((v) => !process.env.VIEW || process.env.VIEW.split(
     if (V.name === 'desktop') {
       await go(p, '#/candidate/search');
       await p.waitForSelector(card(full.id), { timeout: 8000 });
-      must(/✓ Applied/.test(await p.$eval(card(full.id), (e) => e.innerText)), 'the card does not say Applied');
+      must(/Applied ✓/.test(await p.$eval(card(full.id), (e) => e.innerText)), 'the card does not say Applied');
     }
 
     await p.click(`${card(gap.id)} .rj-foot button[onclick^="navigate('/job/"]`);

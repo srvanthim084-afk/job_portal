@@ -775,8 +775,8 @@
    * ------------------------------------------------------------------ */
   var APP_TABS = [
     ['all', 'All'],
-    ['clicked', 'Apply Clicked'],
-    ['applied_unconfirmed', 'Applied'],
+    ['clicked', 'Applied (External)'],
+    ['applied_unconfirmed', 'Confirmed by you'],
     ['not_applied', 'Not Applied'],
   ];
 
@@ -990,7 +990,7 @@
   function labelFor(status) {
     var map = {
       ready: 'Ready', applying: 'Applying', applied: 'Applied',
-      clicked: 'Apply Clicked', dismissed: 'Dismissed', not_applied: 'Not Applied',
+      clicked: 'Applied (External)', dismissed: 'Dismissed', not_applied: 'Not Applied',
       /* Says where it was applied, on its face. A bare "Applied" reads as
          something this system established, and it is not. */
       applied_unconfirmed: 'Applied on External Site (your own report)',

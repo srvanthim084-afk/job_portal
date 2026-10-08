@@ -146,10 +146,10 @@ await check('Apply Now creates the application', async () => {
   await page.waitForTimeout(3000);
 
   const said = await toasts(page);
-  /* Since 0118 the confirmation is the one-click "Application Submitted
-     Successfully" with its Application ID, not a toast. */
+  /* Since 0118 the confirmation is the one-click toast "Applied successfully
+     to <job> at <company>". */
   const confirmed = await page.evaluate(() =>
-    /Application Submitted Successfully/.test((document.getElementById('fcrModalHost') || {}).textContent || ''));
+    /Applied successfully to/.test((document.getElementById('tl1cDone') || {}).textContent || ''));
   must(confirmed || said.some((t) => /submitted/i.test(t)),
     `no success confirmation was shown — toasts: ${JSON.stringify(said)}`);
   must(!said.some((t) => /offline/i.test(t)), `offline message on apply: ${JSON.stringify(said)}`);

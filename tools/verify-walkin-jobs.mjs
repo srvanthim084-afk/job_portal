@@ -232,17 +232,16 @@ await check('12b. candidate header: Jobs, Internships, Walk-in Jobs, Companies, 
 
 const openForm = (page, id) => page.evaluate((j) => window.TLWalkinJobs.open(j), id);
 
-await check('4 / 20. Apply Now applies at once: Application ID, walk-in details, View on Map, Add to Calendar; no form', async () => {
+await check('4 / 20. Apply Now applies at once: a toast with the Application ID, the walk-in line and Add to Calendar; no form', async () => {
   await go(ap, '#/job/' + J.wk1c.id);
   must(await clickApplyOnPage(ap), 'no Apply button');
   await ap.waitForSelector('#tl1cDone', { timeout: 20000 });
   must(!(await ap.$('#tlafForm')), 'the application form opened');
   const t = await text(ap, '#tl1cDone');
   const ref = await ap.evaluate(() => document.getElementById('tl1cRef').textContent.trim());
-  must(/Application Submitted Successfully/.test(t) && /^TL-APP-\d{4}-\d{5}$/.test(ref), 'confirmation: ' + t);
-  must(/Walk-in Interview Details/.test(t) && t.includes('TeamLink Office'), 'no walk-in details on the confirmation');
-  must(await ap.$('#tl1cDone a[href^="https://maps.google.com"]'), 'no View on Map');
-  must(await ap.$('#tl1cDone [data-tlwk-ics]') && await ap.$('#tl1cDone a[data-tlwk-gcal][href^="https://calendar.google.com/"]'), 'no Add to Calendar');
+  must(/Applied successfully to/.test(t) && /^TL-APP-\d{4}-\d{5}$/.test(ref), 'confirmation: ' + t);
+  must(/Walk-in:/.test(t) && t.includes('TeamLink Office'), 'no walk-in line on the confirmation');
+  must(await ap.$('#tl1cCal'), 'no Add to Calendar');
   const apps = await myApps(ap, J.wk1c.id);
   must(apps.length === 1 && apps[0].reference === ref, 'the server holds ' + JSON.stringify(apps));
   await shot(ap, '05a-one-click-walkin');
@@ -319,7 +318,6 @@ await check('7. applying again: "You have already applied for this job." with th
   await ap.waitForSelector('#tl1cAlready', { timeout: 8000 });
   const t = await text(ap, '#tl1cAlready');
   must(/You have already applied for this job\./.test(t) && t.includes(REF), 'duplicate screen: ' + t);
-  must(/Venue/.test(t), 'no walk-in details on the duplicate screen');
   const direct = await ap.evaluate((b) => TL.api.post('/applications/form', b).then(() => 'created', (e) => e.code + ':' + (e.details && e.details.applicationId)),
     { jobId: J.wk.id, name: A.name, mobile: A.phone, email: A.email, currentLocation: 'Hyderabad', qualification: 'B.Tech/B.E', experienceYears: 3, noticePeriod: '30 days' });
   must(direct === 'DUPLICATE_APPLICATION:' + REF, 'server: ' + direct);
@@ -339,7 +337,7 @@ await check('8 / 20. a regular job: no walk-in section in the form, none and no 
   must(await clickApplyOnPage(ap), 'no Apply button');
   const r = await completeApplyForm(ap, { timeout: 20000 });
   must(r.state === 'done', 'regular apply: ' + JSON.stringify(r));
-  must(!(await ap.$('#tl1cDone .tlwk-box')) && !(await ap.$('#tl1cDone [data-tlwk-ics]')) && !(await ap.$('#tl1cDone a[href^="https://maps"]')),
+  must(!(await ap.$('#tl1cDone .tlwk-box')) && !(await ap.$('#tl1cCal')) && !(await ap.$('#tl1cDone a[href^="https://maps"]')),
     'walk-in details / calendar / map on a regular job');
   await ap.evaluate(() => fcrCloseModal());
 });

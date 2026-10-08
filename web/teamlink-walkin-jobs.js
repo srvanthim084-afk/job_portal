@@ -919,12 +919,20 @@
      one-click apply and the resume-score hint (their scripts load first and
      install first), so this one is outermost: a candidate's Apply Now on a
      TeamLink job opens the form, and the form is the whole apply step. */
+  /* 0118: Apply Now is one click (teamlink-one-click-apply.js). Whichever of
+     the two wrappers ends up outermost, a candidate's Apply Now applies; the
+     form below is opened only when this module is asked for it directly
+     (TLWalkinJobs.open) or when the one-click module is not there. */
+  function applyOrForm(jobId) {
+    if (window.TLOneClickApply && typeof window.TLOneClickApply.apply === 'function') return window.TLOneClickApply.apply(String(jobId));
+    return openForm(String(jobId));
+  }
   function installApply() {
     var prev = window.applyToJob;
     if (typeof prev !== 'function' || prev.__tlwk) return;
     var next = function (jobId) {
       if (!jobId || isExternal(jobId) || !isCandidate()) return prev.apply(this, arguments);
-      openForm(String(jobId));
+      applyOrForm(jobId);
       return undefined;
     };
     next.__tlwk = true;
@@ -934,7 +942,7 @@
       if (typeof p !== 'function' || p.__tlwk) return;
       var w = function (jobId) {
         if (!jobId || isExternal(jobId) || !isCandidate()) return p.apply(this, arguments);
-        openForm(String(jobId));
+        applyOrForm(jobId);
         return undefined;
       };
       w.__tlwk = true;

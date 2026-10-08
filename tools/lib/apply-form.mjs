@@ -8,9 +8,12 @@
  * { state: 'done' | 'duplicate' | 'error' | 'none', ref, message }.
  *
  * Since 0118 Apply Now is one click for a signed-in candidate
- * (web/teamlink-one-click-apply.js): no form, the confirmation at once.
- * That confirmation counts as 'done', "You have already applied" as
- * 'duplicate'. The form is still handled for anything that opens it.
+ * (web/teamlink-one-click-apply.js): no form; a toast "Applied successfully
+ * to <job>" (#tl1cDone) counts as 'done', "You have already applied"
+ * (#tl1cAlready) as 'duplicate'. A candidate with no resume gets the
+ * "Please complete your profile to apply" prompt (#tl1cProfile): this helper
+ * puts a resume on file and applies again, so callers still get an
+ * application. The form is still handled for anything that opens it.
  */
 export const TINY_PDF = Buffer.from('%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\ntrailer << /Root 1 0 R >>\n%%EOF\n');
 
@@ -23,14 +26,25 @@ export async function oneClickResult(page) {
   return page.evaluate(() => (document.getElementById('tl1cDone')
     ? { state: 'done', ref: (document.getElementById('tl1cRef') || {}).textContent || '' }
     : document.getElementById('tl1cAlready')
-      ? { state: 'duplicate', ref: (document.querySelector('#tl1cAlready .ref') || {}).textContent || '' }
+      ? { state: 'duplicate', ref: (document.querySelector('#tl1cAlready small') || {}).textContent || '' }
       : null));
 }
 
 export async function completeApplyForm(page, opts = {}) {
-  const seen = await page.waitForSelector('#tlafForm, #tlafDup, #tl1cDone, #tl1cAlready', { timeout: opts.timeout || 6000 })
+  const seen = await page.waitForSelector('#tlafForm, #tlafDup, #tl1cDone, #tl1cAlready, #tl1cProfile, #tl1cFail', { timeout: opts.timeout || 6000 })
     .then(() => true, () => false);
   if (!seen) return { state: 'none' };
+  if (await page.$('#tl1cFail')) return { state: 'error', message: await page.evaluate(() => (document.getElementById('tl1cMsg') || {}).textContent || '') };
+  if (await page.$('#tl1cProfile')) {
+    const jobId = await page.evaluate(() => (document.getElementById('tl1cProfile') || {}).dataset.job);
+    await page.evaluate(() => { const c = document.getElementById('tl1cPpCancel'); if (c) c.click(); });
+    await page.evaluate(async () => {
+      const f = new File([new Uint8Array([37, 80, 68, 70, 45, 49, 46, 52, 10, 37, 37, 69, 79, 70, 10])], 'resume.pdf', { type: 'application/pdf' });
+      await TL.uploadResume(f); await TL.refresh();
+    });
+    await page.evaluate((id) => window.applyToJob(id), jobId);
+    await page.waitForSelector('#tl1cDone, #tl1cAlready, #tl1cFail', { timeout: opts.submitTimeout || 30000 }).catch(() => {});
+  }
   const quick = await oneClickResult(page);
   if (quick) return quick;
   if (await page.$('#tlafDup')) return { state: 'duplicate', ref: await page.evaluate(() => (document.querySelector('#tlafDup .ref') || {}).textContent || '') };
@@ -73,7 +87,10 @@ export async function completeApplyForm(page, opts = {}) {
   return { state: 'error', message: await page.evaluate(() => (document.getElementById('tlafMsg') || {}).innerText || '') };
 }
 
-/** Close the result screen (or the form). */
+/** Close the result (the toast, or the form / prompt). */
 export async function closeApplyForm(page) {
-  await page.evaluate(() => { if (typeof window.fcrCloseModal === 'function') window.fcrCloseModal(); });
+  await page.evaluate(() => {
+    const h = document.getElementById('tl1cToastHost'); if (h) h.innerHTML = '';
+    if (typeof window.fcrCloseModal === 'function') window.fcrCloseModal();
+  });
 }
