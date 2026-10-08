@@ -11,6 +11,8 @@
  *      has no My Team
  *   C  Find Candidates: the job chosen on the screen, "Applied for this
  *      job" on the card, and the Yes / No filter
+ *   E  Admin -> Audit Log: the page, its filters and search, a row's details,
+ *      the CSV export, and no Audit Log for a recruiter
  *   D  The cooldown: "Already contacted" badge with who / when / channel,
  *      the message a recruiter gets, the override box a team lead gets
  *      (reason required), and the bulk summary "N to send, M skipped"
@@ -381,6 +383,60 @@ await check('D4. Bulk: a selection with one held candidate reports "to send / sk
   await p2.waitForTimeout(1500);
   const toast = await text(p2, '#toastHost');
   must(/1 to send, 1 skipped \(already contacted\)/.test(toast) || /skipped/.test(toast), 'toast: ' + toast);
+});
+
+/* ================================================================== *
+ * E. Admin -> Audit Log
+ * ================================================================== */
+await check('E1. Audit Log is in the admin menu and lists what was just done, with who and the old / new values', async () => {
+  await go(admin, '#/admin/audit-log', 1800);
+  await admin.waitForSelector('#tlalBody table', { timeout: 15000 });
+  must(/Audit Log/.test(await text(admin, '.sidebar')), 'no Audit Log in the menu');
+  const t = await text(admin, '#tlalBody');
+  must(/Recruiter Email Changed/.test(t) && /Recruiter Reassigned|Recruiter Assigned/.test(t), 'what we just did is not listed: ' + t.slice(0, 200));
+  must(t.includes(R1.email) || t.includes(`rec1.new.${stamp}`), 'the new email is not in the details');
+  must(/Admin User/.test(t), 'who did it is not shown');
+  await shot(admin, 'e1-audit-log');
+});
+
+await check('E2. Filter by action, search, and a date range narrow the list; Clear brings it back', async () => {
+  await admin.selectOption('.tlal-bar select >> nth=0', 'RECRUITER_EMAIL_CHANGED');
+  await admin.waitForTimeout(1200);
+  const only = await admin.$$eval('#tlalBody tbody tr .tlal-act', (e) => e.map((x) => x.textContent));
+  must(only.length >= 1 && only.every((x) => x === 'Recruiter Email Changed'), 'action filter: ' + only.slice(0, 3));
+  await admin.fill('#tlalQ', `nobody-${stamp}`);
+  await admin.waitForTimeout(1200);
+  must(/Nothing in the log matches/.test(await text(admin, '#tlalBody')), 'a search with no match still listed rows');
+  await admin.click('button:has-text("Clear")');
+  await admin.waitForTimeout(1300);
+  const all = await admin.$$eval('#tlalBody tbody tr .tlal-act', (e) => new Set(e.map((x) => x.textContent)).size);
+  must(all > 1, 'Clear did not bring the other actions back');
+  await admin.fill('input[aria-label="From"]', '2020-01-01');
+  await admin.fill('input[aria-label="To"]', '2020-01-31');
+  await admin.waitForTimeout(1300);
+  must(/Nothing in the log matches/.test(await text(admin, '#tlalBody')), 'an old date range should be empty');
+  await admin.click('button:has-text("Clear")');
+  await admin.waitForTimeout(1200);
+});
+
+await check('E3. A row opens to every recorded value; paging works; the export link downloads a CSV', async () => {
+  await admin.click('#tlalBody .tlal-more >> nth=0');
+  must(await admin.$('#tlalBody .tlal-kv'), 'the details did not open');
+  await admin.selectOption('.tlal-pg select', '25');
+  const total = Number((/of (\d+)/.exec(await text(admin, '.tlal-pg')) || [])[1]);
+  must(total > 5, 'total: ' + total);
+  if (total > 25) {
+    await admin.click('.tlal-pg button:has-text("Next")');
+    await admin.waitForTimeout(1000);
+    must(/Page 2/.test(await text(admin, '.tlal-pg')), 'did not reach page 2');
+  }
+  const dl = await admin.evaluate(() => fetch('/api/admin/audit-log/export?action=RECRUITER_EMAIL_CHANGED').then((r) => r.text().then((t) => [r.status, r.headers.get('content-type'), t.slice(0, 400)])));
+  must(dl[0] === 200 && /csv/.test(dl[1]) && /Recruiter Email Changed/.test(dl[2]), 'export: ' + JSON.stringify(dl));
+});
+
+await check('E4. A recruiter has no Audit Log', async () => {
+  must(!/Audit Log/.test(await text(p2, '.sidebar')), 'a recruiter\'s menu has Audit Log');
+  must((await api(p2, 'get', '/admin/audit-log')).status === 403, 'a recruiter read the audit log');
 });
 
 await check('no page errors on any screen', async () => {
