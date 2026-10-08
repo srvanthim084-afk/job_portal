@@ -4,8 +4,8 @@
  *   1  recruiter A adds a candidate and logs a call (Medical Coder)
  *   2  recruiter B finds them in the Talent Pool: ORANGE badge
  *      "Contacted today · Senior Medical Coder · <A>"
- *   3  B opens the profile: TeamLink activity lists A; WhatsApp asks
- *      "Contact anyway?" (warn)
+ *   3  B opens the profile: TeamLink activity lists A; WhatsApp is stopped
+ *      by the contact cooldown (0118): who, when, channel
  *   4  A adds them to the job and moves them to Interview
  *   5  B sees the RED badge "In process", and on the profile the Call /
  *      WhatsApp / Log call buttons are disabled with the hold message
@@ -142,13 +142,16 @@ await check('3. B opens the profile: TeamLink activity, and WhatsApp warns first
   must(panel.includes(RA.name) && /Interested/.test(panel), `panel: ${panel.slice(0, 200)}`);
   must(!/15 days notice/.test(panel), 'the private note leaked into the panel');
   await shot(B, '3a-activity-panel');
+  /* 0118: A's call is also a contact inside the 7-day cooldown, so B is
+     stopped with who / when / channel (no "contact anyway"; only an admin or a
+     team lead may override, with a reason). */
   await B.click('#tlscWa');
-  await B.waitForSelector('#tlscAnyway', { timeout: 8000 });
+  await B.waitForFunction(() => /Already contacted/.test((document.getElementById('fcrModalHost') || {}).innerText || ''), null, { timeout: 8000 });
   const m = await B.$eval('#fcrModalHost', (e) => e.innerText);
-  must(new RegExp(`${RA.name} contacted this candidate for Senior Medical Coder`).test(m), `warn: ${m.slice(0, 200)}`);
-  must(/Contact anyway/.test(m) && /Message/.test(m), 'warn buttons missing');
-  await shot(B, '3b-warn-popup');
-  await B.evaluate(() => TLEngagement._cancel());
+  must(m.includes(RA.name) && /Channel:/.test(m) && /Date:/.test(m), `cooldown: ${m.slice(0, 200)}`);
+  must(!(await B.$('#tlscAnyway')) && !(await B.$('#tlscWhy')), 'a recruiter was offered to go ahead');
+  await shot(B, '3b-cooldown-popup');
+  await B.evaluate(() => fcrCloseModal());
 });
 
 await check('4. A adds them to the job and moves them to Interview', async () => {
