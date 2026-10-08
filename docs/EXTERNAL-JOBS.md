@@ -4,7 +4,7 @@
 through the existing flow, unchanged. An external job's **Apply Now opens the
 original job URL in a new tab** (`noopener`). The TeamLink application form is
 never shown for an external job, and the two flows never mix. A click is
-recorded as **"Apply Clicked"** — never as "Applied", never as a TeamLink or ATS
+recorded as **"Apply Clicked"** (the API; the candidate's screens say **"Applied (External)"**, 0118) — never as a TeamLink "Applied" or an ATS
 application.
 
 ## Which sources can feed jobs today

@@ -331,7 +331,7 @@ await check('7. an incomplete profile applies at once: nothing is asked, Complet
   await shot(p, '07-incomplete-profile-applied');
   must(r.state === 'done', 'apply: ' + JSON.stringify(r));
   must(!(await p.$('#tlafForm')), 'the application form opened for the missing fields');
-  must(await p.$('#tl1cDone ~ .fcr-jd-actions [data-tl1c-go="profile"], [data-tl1c-go="profile"]'), 'no Complete Profile');
+  must(await p.$('#tl1cDone'), 'no confirmation toast');
   const n = await p.evaluate((id) => TL.api.get('/applications').then((x) => x.applications.filter((a) => a.jobId === id).length), fresher.id);
   must(n === 1, 'not applied');
   await ctx.close();

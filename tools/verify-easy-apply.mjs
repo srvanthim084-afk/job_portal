@@ -282,7 +282,7 @@ await check('a browser refresh keeps the resume and the applications', async () 
 /* ------------------------------------------------------------------ *
  * without one
  * ------------------------------------------------------------------ */
-await check('a candidate with NO resume still applies at once (0118: nothing is required to apply)', async () => {
+await check('a candidate with NO resume is asked to complete the profile - no form (0118)', async () => {
   const s = await session();
   try {
     const id = await registerWithResume(s.page, `noresume.${Date.now()}@example.test`, null);
@@ -297,10 +297,10 @@ await check('a candidate with NO resume still applies at once (0118: nothing is 
     const shown = await s.page.evaluate((j) => {
       if (typeof window.cpEasyApply === 'function') window.cpEasyApply(j);
       return new Promise((r) => setTimeout(() => {
-        r(!!document.getElementById('tl1cDone') && !document.body.innerText.includes('You have no resume on file'));
+        r(!!document.getElementById('tl1cProfile') && !document.getElementById('tlafForm') && /Please complete your profile to apply/.test(document.body.innerText));
       }, 3000));
     }, job);
-    must(shown, 'a candidate with no resume could not apply at once');
+    must(shown, 'a candidate with no resume was not asked to complete the profile');
   } finally { await s.ctx.close(); }
 });
 
