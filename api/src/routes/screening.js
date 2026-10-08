@@ -39,6 +39,7 @@ import {
   ENGINE, jobQuestionsInternal, prepareAnswers, storeAnswers, rescreen, sendLink, resolveLink,
   summarise, loadScreeningSettings,
 } from '../screening/service.js';
+import { hiddenError } from '../scope.js';
 
 const STAFF = ['recruiter', 'admin', 'bde'];
 const newId = () => `sq_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -89,7 +90,7 @@ export default function screeningRoutes() {
         const st = (await c.query(`select auto_reject_knockouts from job_screening_settings where job_id=$1`, [jobId])).rows[0];
         return { rows, editable, autoRejectKnockouts: !!(st && st.auto_reject_knockouts) };
       });
-      if (!out) throw notFound('That job could not be found.');
+      if (!out) throw await hiddenError(s, 'job', jobId, notFound('That job could not be found.'));
       return res.json({
         questions: out.rows.map(fromRow), editable: !!out.editable,
         autoRejectKnockouts: out.autoRejectKnockouts, max: MAX_QUESTIONS,
@@ -293,7 +294,7 @@ export default function screeningRoutes() {
           where application_id=$1 order by created_at desc limit 30`, [id])).rows;
       return { app, ans, qs, dl };
     });
-    if (!out) throw notFound('That application could not be found.');
+    if (!out) throw await hiddenError(req.session, 'application', id, notFound('That application could not be found.'));
     res.json({
       summary: summarise(out.app, out.ans),
       answers: out.ans.map((x) => ({
@@ -314,7 +315,7 @@ export default function screeningRoutes() {
       const a = (await c.query(`select id, job_id from applications where id=$1`, [id])).rows[0];
       return a ? { a, name: await staffName(c, req.session) } : null;
     });
-    if (!seen) throw notFound('That application could not be found.');
+    if (!seen) throw await hiddenError(req.session, 'application', id, notFound('That application could not be found.'));
     const set = await jobQuestionsInternal(seen.a.job_id);
     if (!set.questions.length) throw badRequest('This job has no screening questions.');
     let prepared;
@@ -332,7 +333,7 @@ export default function screeningRoutes() {
     const id = String(req.params.id).slice(0, 80);
     const seen = await withUser(req.session, async (c) => (await c.query(
       `select id from applications where id=$1`, [id])).rows[0]);
-    if (!seen) throw notFound('That application could not be found.');
+    if (!seen) throw await hiddenError(req.session, 'application', id, notFound('That application could not be found.'));
     const out = await sendLink(id);
     if (out.skipped) throw badRequest(`Could not send: ${out.skipped}.`);
     res.json({ ok: true, delivery_status: out.delivery_status });

@@ -76,14 +76,18 @@
       + '.tlt-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 12px}'
       + '.tlt-bar input,.tlt-bar select,.tlt-in{border:1px solid #cfd6e0;border-radius:6px;height:34px;padding:0 10px;font-size:13px;background:#fff;color:#33465c;box-sizing:border-box}'
       + '.tlt-bar input[type=search],.tlt-bar input.q{min-width:220px}'
-      + '.tlt-in{width:100%;min-width:150px;height:30px;font-size:12.5px}'
-      + '.tlt-inline{display:flex;gap:6px;align-items:center}'
+      + '.tlt-in{width:100%;min-width:90px;height:30px;font-size:12.5px;flex:1 1 130px;max-width:230px}'
+      + '.tlt-inline{display:flex;gap:6px;align-items:center;flex-wrap:wrap}'
       + '.tlt-tl td{background:#f5f8fb;font-weight:600}'
       + '.tlt-mem td:first-child{padding-left:30px}'
       + '.tlt-x{border:0;background:none;cursor:pointer;font-size:13px;padding:0 6px 0 0;color:#42546b}'
       + '.tlt-sub{padding:10px 14px 14px 30px;background:#fbfcfd}'
       + '.tlt-sub h4{margin:12px 0 6px;font-size:13px}'
       + '.tlt-sub table{width:100%}'
+      + '.tlt-sub table.data td:first-child,.tlt-sub table.data th:first-child{position:static!important}'
+      + '.tlt-cell{display:flex;flex-direction:column;gap:3px;font-size:12.5px;line-height:1.35}'
+      + '.tlt-act{display:flex;flex-direction:column;gap:5px;align-items:stretch;min-width:170px}'
+      + '.tlt-t th,.tlt-t td{padding:9px 10px;vertical-align:middle}'
       + '.tlt-chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:0 0 12px}'
       + '.tlt-chip{border:1px solid #cfd6e0;background:#fff;border-radius:999px;padding:5px 13px;font-size:12.5px;cursor:pointer;color:#33465c}'
       + '.tlt-chip.on{background:var(--brand-500,#1490b3);border-color:var(--brand-500,#1490b3);color:#fff}'
@@ -138,18 +142,19 @@
 
   function recruiterRow(m, tls, cls, assignedTl) {
     var tlOpts = tls.filter(function (t) { return t.status === 'active' || t.id === assignedTl; });
+    var id = h(m.id);
     return '<tr class="' + cls + '"><td>' + h(m.name) + '</td>'
-      + '<td><div class="tlt-inline"><input class="tlt-in" id="tltE_' + h(m.id) + '" type="email" value="' + h(m.email) + '" aria-label="Login email">'
-      + '<button class="btn btn-ghost btn-sm" onclick="TLTeams.saveEmail(\'' + h(m.id) + '\')">Save</button></div></td>'
+      + '<td><div class="tlt-inline"><input class="tlt-in" id="tltE_' + id + '" type="email" value="' + h(m.email) + '" aria-label="Login email">'
+      + '<button class="btn btn-ghost btn-sm" onclick="TLTeams.saveEmail(\'' + id + '\')">Save</button></div></td>'
       + '<td>' + tel(m.phone) + '</td>'
-      + '<td><div class="tlt-inline"><input class="tlt-in" id="tltD_' + h(m.id) + '" value="' + h(m.department || '') + '" aria-label="Department" style="min-width:110px">'
-      + '<button class="btn btn-ghost btn-sm" onclick="TLTeams.saveDept(\'' + h(m.id) + '\')">Save</button></div></td>'
-      + '<td>' + badge(m.status) + ' <button class="btn btn-ghost btn-sm" onclick="TLTeams.setStatus(\'' + h(m.id) + '\',' + (m.status === 'active' ? 'false' : 'true') + ')">'
-      + (m.status === 'active' ? 'Deactivate' : 'Activate') + '</button></td>'
-      + '<td><select class="tlt-in" aria-label="Team lead" onchange="TLTeams.assign(\'' + h(m.id) + '\',this.value)">'
-      + opts(tlOpts, assignedTl || '', assignedTl ? 'Change team lead…' : 'Assign to a team lead…') + '</select></td>'
-      + '<td>' + (assignedTl ? '<button class="btn btn-ghost btn-sm" onclick="TLTeams.unassign(\'' + h(m.id) + '\')">Remove from team</button> ' : '<button class="btn btn-ghost btn-sm" onclick="TLTeams.makeTl(\'' + h(m.id) + '\',true)">Make team lead</button> ')
-      + '<button class="btn btn-ghost btn-sm" onclick="TLTeams.history(\'' + h(m.id) + '\')">History</button></td></tr>';
+      + '<td><div class="tlt-inline"><input class="tlt-in" id="tltD_' + id + '" value="' + h(m.department || '') + '" aria-label="Department">'
+      + '<button class="btn btn-ghost btn-sm" onclick="TLTeams.saveDept(\'' + id + '\')">Save</button></div></td>'
+      + '<td>' + badge(m.status) + '<div style="margin-top:4px"><button class="btn btn-ghost btn-sm" onclick="TLTeams.setStatus(\'' + id + '\',' + (m.status === 'active' ? 'false' : 'true') + ')">'
+      + (m.status === 'active' ? 'Deactivate' : 'Activate') + '</button></div></td>'
+      + '<td><div class="tlt-act"><select class="tlt-in" aria-label="Team lead" onchange="TLTeams.assign(\'' + id + '\',this.value)">'
+      + opts(tlOpts, assignedTl || '', assignedTl ? 'Change team lead…' : 'Assign to a team lead…') + '</select>'
+      + (assignedTl ? '<button class="btn btn-ghost btn-sm" onclick="TLTeams.unassign(\'' + id + '\')">Remove from team</button>' : '<button class="btn btn-ghost btn-sm" onclick="TLTeams.makeTl(\'' + id + '\',true)">Make team lead</button>')
+      + '<button class="btn btn-ghost btn-sm" onclick="TLTeams.history(\'' + id + '\')">Assignment history</button></div></td></tr>';
   }
 
   function adminPaintBody() {
@@ -168,22 +173,23 @@
       rows += '<tr class="tlt-tl"><td><button class="tlt-x" aria-expanded="' + open + '" onclick="TLTeams.toggle(\'' + h(t.id) + '\')">' + (open ? '▼' : '▶') + '</button>'
         + h(t.name) + ' <span class="badge badge-brand">TL</span></td>'
         + '<td>' + mail(t.email) + '</td><td>' + tel(t.phone) + '</td><td>' + h(t.department || '—') + '</td>'
-        + '<td>' + badge(t.status) + '</td><td>' + t.recruiterCount + ' recruiter' + (t.recruiterCount === 1 ? '' : 's') + '</td>'
-        + '<td><button class="btn btn-ghost btn-sm" onclick="TLTeams.makeTl(\'' + h(t.id) + '\',false)">Stop being team lead</button></td></tr>';
+        + '<td>' + badge(t.status) + '</td>'
+        + '<td><div class="tlt-act"><span>' + t.recruiterCount + ' recruiter' + (t.recruiterCount === 1 ? '' : 's') + '</span>'
+        + '<button class="btn btn-ghost btn-sm" onclick="TLTeams.makeTl(\'' + h(t.id) + '\',false)">Stop being team lead</button></div></td></tr>';
       if (open) {
-        if (!t.recruiters.length) rows += '<tr class="tlt-mem"><td colspan="7" class="tlt-muted">No recruiters assigned yet.</td></tr>';
+        if (!t.recruiters.length) rows += '<tr class="tlt-mem"><td colspan="6" class="tlt-muted">No recruiters assigned yet.</td></tr>';
         t.recruiters.forEach(function (m) { rows += recruiterRow(m, d.allTeamLeads, 'tlt-mem', t.id); });
       }
     });
-    if (!d.teamLeads.length) rows += '<tr><td colspan="7" class="empty-note">No team leads match. Make a recruiter a team lead from the list below.</td></tr>';
+    if (!d.teamLeads.length) rows += '<tr><td colspan="6" class="empty-note">No team leads match. Make a recruiter a team lead from the list below.</td></tr>';
 
     var un = '';
     d.unassigned.forEach(function (m) { un += recruiterRow(m, d.allTeamLeads, 'tlt-un', ''); });
 
-    var head = '<thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Department</th><th>Status</th><th>Team lead</th><th>Actions</th></tr></thead>';
-    b.innerHTML = '<div class="tbl-wrap"><table class="data">' + head + '<tbody>' + rows + '</tbody></table></div>'
+    var head = '<thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Department</th><th>Status</th><th>Team lead / actions</th></tr></thead>';
+    b.innerHTML = '<div class="tbl-wrap"><table class="data tlt-t">' + head + '<tbody>' + rows + '</tbody></table></div>'
       + '<h3 style="margin:18px 0 8px;font-size:14px">Recruiters not on a team (' + d.unassigned.length + ')</h3>'
-      + (d.unassigned.length ? '<div class="tbl-wrap"><table class="data">' + head + '<tbody>' + un + '</tbody></table></div>'
+      + (d.unassigned.length ? '<div class="tbl-wrap"><table class="data tlt-t">' + head + '<tbody>' + un + '</tbody></table></div>'
         : '<div class="tlt-muted">Every recruiter shown is on a team.</div>');
   }
 
@@ -228,16 +234,16 @@
     d.recruiters.forEach(function (r) {
       var open = !!S.team.open[r.id];
       rows += '<tr><td><button class="tlt-x" aria-expanded="' + open + '" onclick="TLTeams.openRec(\'' + h(r.id) + '\')">' + (open ? '▼' : '▶') + '</button><b>' + h(r.name) + '</b></td>'
-        + '<td>' + mail(r.email) + '</td><td>' + tel(r.phone) + '</td><td>' + h(r.department || '—') + '</td><td>' + badge(r.status) + '</td>'
+        + '<td><div class="tlt-cell">' + mail(r.email) + tel(r.phone) + '</div></td><td>' + h(r.department || '—') + '</td><td>' + badge(r.status) + '</td>'
         + '<td>' + r.jobsPosted + '</td><td>' + r.candidatesContacted + '</td><td>' + r.totalApplied + '</td><td>' + h(when(r.lastContacted)) + '</td></tr>';
-      if (open) rows += '<tr><td colspan="9" class="tlt-sub" id="tltRec_' + h(r.id) + '">Loading…</td></tr>';
+      if (open) rows += '<tr><td colspan="8" class="tlt-sub" id="tltRec_' + h(r.id) + '">Loading…</td></tr>';
     });
-    if (!d.recruiters.length) rows = '<tr><td colspan="9" class="empty-note">No recruiters are assigned to you yet. An administrator assigns recruiters to a team lead.</td></tr>';
+    if (!d.recruiters.length) rows = '<tr><td colspan="8" class="empty-note">No recruiters are assigned to you yet. An administrator assigns recruiters to a team lead.</td></tr>';
     host.innerHTML = chips()
       + '<div class="stat-row">' + card('Total Recruiters', d.cards.totalRecruiters) + card('Total Jobs', d.cards.totalJobs)
       + card('Total Applied', d.cards.totalApplied) + card('Candidates Contacted', d.cards.totalCandidatesContacted) + '</div>'
       + '<div class="panel"><div class="panel-head"><div><h2>My Recruiters</h2><div class="desc">Jobs, applied and contacted are for the period chosen above.</div></div></div>'
-      + '<div class="panel-body pad0"><div class="tbl-wrap"><table class="data"><thead><tr><th>Recruiter</th><th>Email</th><th>Phone</th><th>Department</th><th>Status</th>'
+      + '<div class="panel-body pad0"><div class="tbl-wrap"><table class="data tlt-t"><thead><tr><th>Recruiter</th><th>Email / Phone</th><th>Department</th><th>Status</th>'
       + '<th>Jobs Posted</th><th>Candidates Contacted</th><th>Total Applied</th><th>Last Contacted</th></tr></thead><tbody>' + rows + '</tbody></table></div></div></div>';
     Object.keys(S.team.open).forEach(function (id) { if (S.team.open[id]) paintRec(id); });
   }
@@ -395,9 +401,20 @@
       };
       wRender.__tlt = true; window.render = wRender;
     }
+    /* A page opened by URL is drawn before these wrappers exist; draw it
+       again once, so a bookmarked #/admin/teams or #/recruiter/team shows. */
+    if (!install.drawn && /^#\/(admin\/teams|recruiter\/team)/.test(location.hash || '')
+        && window.STATE && STATE.session && typeof window.render === 'function') {
+      install.drawn = true;
+      window.render();
+    }
     return true;
   }
 
+  /* Other modules wrap these same page functions and rebuild the menu as
+     they load, in no fixed order, so a wrapper installed once can end up
+     underneath one that does not know about it. Check again for the first
+     half-minute (install is idempotent: it only acts when ours is not on top). */
   var tries = 0;
-  var t = setInterval(function () { if (install() || ++tries > 100) clearInterval(t); }, 400);
+  var t = setInterval(function () { install(); if (++tries > 60) clearInterval(t); }, 500);
 })();

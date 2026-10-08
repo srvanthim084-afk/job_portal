@@ -132,6 +132,16 @@ language sql stable security definer set search_path = public as $$
                   where j.id = p_job_id and app_recruiter_in_scope(j.recruiter_id))
 $$;
 
+/* The sign-in status of a recruiter in the caller's scope. users is not
+   readable by a team lead (and should not be), but "Active / Inactive" is
+   on their My Recruiters list; this answers that and nothing else. */
+create or replace function app_recruiter_status(p_recruiter_id text) returns text
+language sql stable security definer set search_path = public as $$
+  select case when u.status = 'active' then 'active' else 'inactive' end
+    from recruiters r join users u on u.id = r.user_id
+   where r.id = p_recruiter_id and app_recruiter_in_scope(r.id)
+$$;
+
 /* Does the row exist at all, whoever may read it? The API uses this to
    answer 403 (it exists, it is not yours) instead of 404 for staff. It
    returns a yes or a no, never the row. */
@@ -675,6 +685,7 @@ declare
   v_reason text := nullif(btrim(coalesce(p_reason, '')), '');
   v_id     bigint;
   v_rk     text;
+  v_has    boolean;
 begin
   if app_role() not in ('recruiter', 'bde', 'admin') then
     raise exception 'staff only' using errcode = '42501';
@@ -696,7 +707,8 @@ begin
   end if;
 
   select * into v_h from contact_holder(p_candidate_id);
-  if found then
+  v_has := found;
+  if v_has then
     if p_override then
       if not (app_is_admin() or app_is_tl()) then
         raise exception 'only an administrator or a team lead may override the cooldown'
@@ -711,6 +723,23 @@ begin
         'cooldownDays', contact_cooldown_days(),
         'holder', jsonb_build_object('name', v_h.holder_name, 'channel', v_h.channel,
                                      'contactedAt', v_h.contacted_at, 'expiresAt', v_h.expires_at));
+    end if;
+  end if;
+
+  /* An AI call is checked here and then queued a moment later by the route
+     that owns it; the session trigger links the row written here instead
+     of writing a second one. So a retry inside two minutes is the same
+     contact, not a new one. */
+  if not v_has and v_chan = 'ai_call' then
+    select h.id into v_id
+      from candidate_contact_history h
+     where h.candidate_id = p_candidate_id and h.channel = 'ai_call'
+       and h.ref_id is null and h.outcome = 'queued'
+       and h.contacted_by is not distinct from app_user_id_safe()
+       and h.created_at > now() - interval '2 minutes'
+     order by h.created_at desc limit 1;
+    if v_id is not null then
+      return jsonb_build_object('ok', true, 'id', v_id, 'overridden', false);
     end if;
   end if;
 
@@ -825,7 +854,7 @@ begin
   if exists (select 1 from pg_roles where rolname = 'app_api') then
     grant execute on function
       app_is_tl(), app_team_recruiter_ids(), app_recruiter_in_scope(text),
-      app_job_in_scope(text), app_row_exists(text, text), staff_actor_name(),
+      app_job_in_scope(text), app_recruiter_status(text), app_row_exists(text, text), staff_actor_name(),
       staff_set_team_lead(text, boolean), staff_assign_recruiter(text, text, text),
       staff_unassign_recruiter(text), staff_recruiter_set_department(text, text),
       staff_recruiter_email_change(text, text), staff_recruiter_status(text, boolean),

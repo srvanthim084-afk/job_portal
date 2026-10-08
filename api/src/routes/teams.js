@@ -240,7 +240,7 @@ export default function teamRoutes() {
 
   /* One recruiter's figures in the range, for a list of recruiter ids. */
   const figures = (c, ids, range) => c.query(
-    `select r.id, r.name, r.email, r.mobile, r.department, u.status as user_status,
+    `select r.id, r.name, r.email, r.mobile, r.department, app_recruiter_status(r.id) as user_status,
             (select count(*) from jobs j
               where j.recruiter_id = r.id
                 and coalesce(j.published_at, j.created_at) >= $2 and coalesce(j.published_at, j.created_at) < $3
@@ -257,7 +257,6 @@ export default function teamRoutes() {
               where h.recruiter_id = r.id and h.direction = 'out' and cch_is_contact(h.source)
                 and coalesce(h.outcome, '') <> 'failed') as last_contacted
        from recruiters r
-       left join users u on u.id = r.user_id
       where r.id = any($1)
       order by r.name`, [ids, range.from, range.to]);
 

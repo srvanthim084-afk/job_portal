@@ -172,12 +172,19 @@ export async function finishPasswordReset({ token, password }) {
 export async function resolveSession(token) {
   if (!token) return null;
   const hash = sha256(token);
-  return withUser(null, async (c) => {
+  const s = await withUser(null, async (c) => {
     const { rows } = await c.query(`select * from auth_resolve_session($1)`, [hash]);
     if (!rows.length) return null;
     const r = rows[0];
     return { userId: r.user_id, role: r.role, profileId: r.profile_id, tokenHash: hash };
   });
+  /* 0118: a team lead is a recruiter with the flag. Read as that person, so
+     it is the database's answer (app_is_tl), not a claim. */
+  if (s && s.role === 'recruiter') {
+    s.isTeamLead = await withUser(s, async (c) =>
+      (await c.query(`select app_is_tl() as t`)).rows[0].t === true);
+  }
+  return s;
 }
 
 export async function logout(token) {

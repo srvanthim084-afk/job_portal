@@ -62,6 +62,19 @@
     try { return new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }); }
     catch (e) { return String(iso).slice(0, 10); }
   }
+  function timeText(iso) {
+    if (!iso) return '';
+    try { return new Date(iso).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }); }
+    catch (e) { return ''; }
+  }
+  function dmy(iso) {
+    if (!iso) return '';
+    try { return new Date(iso).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-'); }
+    catch (e) { return String(iso).slice(0, 10); }
+  }
+  /* 0118: an admin or a team lead may go past the cooldown, with a reason. */
+  var canOverride = function () { var s = session(); return !!(s && (s.role === 'admin' || s.isTeamLead === true)); };
+  var CONTACT_ACTIONS = { call: 'phone', whatsapp: 'whatsapp', sms: 'sms', email: 'email', ai_call: 'ai_call' };
   var OUTCOME = { interested: 'Interested', not_interested: 'Not interested', no_answer: 'No answer',
     call_back: 'Call back', wrong_number: 'Wrong number', sent: 'Sent', queued: 'Queued', opened: 'Opened' };
   var CHANNEL = { phone: 'Call', whatsapp: 'WhatsApp', sms: 'SMS', email: 'Email', ai_call: 'AI call',
@@ -71,6 +84,7 @@
    * badges: one request per screenful, cached for a minute
    * ------------------------------------------------------------------ */
   var CACHE = {};
+  var LAST = {};          // 'action|candidateId' -> the contact row the server wrote for it (0118)
   var TTL = 60000;
   var key = function (id, jobId) { return (jobId || '') + '|' + id; };
 
@@ -107,7 +121,21 @@
     else Object.keys(PROFILE).forEach(function (k) { delete PROFILE[k]; });
   }
 
+  /* 0118: "Already contacted" - by whom, when, on which channel. */
+  function coolTitle(c) {
+    return 'Contacted by: ' + c.name + '\nDate: ' + dmy(c.contactedAt) + '\nTime: ' + timeText(c.contactedAt)
+      + '\nChannel: ' + (CHANNEL[c.channel] || c.channel) + '\nOpen to another recruiter after ' + dmy(c.expiresAt);
+  }
+  function coolHtml(b) {
+    var c = b && b.cooldown;
+    if (!c) return '';
+    return '<span class="tlsc-b tlsc-orange" title="' + h(coolTitle(c)) + '">Already contacted</span>';
+  }
   function badgeHtml(id, b) {
+    if (!b) return '';
+    return kindBadgeHtml(id, b) + coolHtml(b);
+  }
+  function kindBadgeHtml(id, b) {
     if (!b || !b.kind) return '';
     var who = b.recruiterName ? ' · ' + h(b.recruiterName) : '';
     var role = ' · ' + h(roleText(b));
@@ -161,10 +189,14 @@
       if ((location.hash || '').indexOf('#/recruiter/talent-pool') === 0 || (location.hash || '').indexOf('#/recruiter/candidates') === 0) {
         return (window.STATE && STATE.talentPool && STATE.talentPool.jobId) || null;
       }
+      if ((location.hash || '').indexOf('#/recruiter/find-candidates') === 0) return fcrJob();
       var m = /[?&]jobId=([^&]+)/.exec(location.hash || '');
       return m ? decodeURIComponent(m[1]) : null;
     } catch (e) { return null; }
   }
+
+  /* The job chosen on Find Candidates (0118). */
+  function fcrJob() { return (window.STATE && STATE.fcr && STATE.fcr.forJob) || null; }
 
   function rowsOnScreen() {
     var out = [];
@@ -202,6 +234,10 @@
         var b = map[r.id];
         if (b && b.others) LAST_OTHERS[r.id] = b.others;
         var html = badgeHtml(r.id, b);
+        if (fcrJob() && /fcr-card-top/.test(r.host.className || '')) {
+          var cd = window.DATA && DATA.candidateById ? DATA.candidateById(r.id) : null;
+          if (cd && cd.appliedForJob === true) html += '<span class="tlsc-b tlsc-green">Applied for this job</span>';
+        }
         if (!html) return;
         var span = document.createElement('span');
         span.className = 'tlsc-slot';
@@ -229,6 +265,45 @@
       + (hold.recruiterId ? '<button class="btn btn-primary" onclick="TLEngagement.messageHolder(\'' + js(ctx.candidateId) + '\',\'' + js(hold.recruiterId) + '\',\'' + js(hold.name || '') + '\',\'' + js(ctx.jobId || '') + '\')">Message ' + h(hold.name || 'holder') + '</button>' : '')
       + (isRecruiter() ? '<button class="btn btn-ghost" onclick="TLEngagement.requestOverride(\'' + js(ctx.candidateId) + '\',\'' + js(ctx.jobId || '') + '\',\'' + js(v.roleKey || '') + '\',\'' + js(v.reason === 'joined' || v.reason === 'placed_other_role' ? 'placed' : 'hold') + '\')">Request admin override</button>' : '')
       + '<button class="btn btn-ghost" onclick="fcrCloseModal()">Close</button></div>');
+  }
+
+  /* 0118: somebody else contacted them inside the cooldown. */
+  function holderLines(c) {
+    return '<div class="tlsc-banner tlsc-banner-orange"><b>Already contacted</b><br>'
+      + 'Contacted by: ' + h(c.name) + '<br>Date: ' + h(dmy(c.contactedAt)) + '<br>Time: ' + h(timeText(c.contactedAt))
+      + '<br>Channel: ' + h(CHANNEL[c.channel] || c.channel) + '</div>';
+  }
+  function showCooldown(cd, ctx, proceed) {
+    var c = cd.holder || {};
+    var days = cd.days ? ' (' + cd.days + '-day cooldown)' : '';
+    if (!cd.canOverride) {
+      modal('<div class="fcr-jd-head"><h3>Already contacted</h3><button class="fcr-jd-x" onclick="fcrCloseModal()">✕</button></div>'
+        + '<div class="fcr-jd-body">' + holderLines(c)
+        + '<p class="tlsc-small">This candidate was already contacted by ' + h(c.name) + ' on ' + h(dmy(c.contactedAt))
+        + '. Nothing was sent' + h(days) + '. They can be contacted again after ' + h(dmy(c.expiresAt)) + ', or an administrator or team lead can override.</p></div>'
+        + '<div class="fcr-jd-actions"><button class="btn btn-ghost" onclick="fcrCloseModal()">Close</button></div>');
+      return;
+    }
+    PENDING = proceed;
+    modal('<div class="fcr-jd-head"><h3>Already contacted</h3><button class="fcr-jd-x" onclick="TLEngagement._cancel()">✕</button></div>'
+      + '<div class="fcr-jd-body">' + holderLines(c)
+      + '<p class="tlsc-small">You can override the cooldown. A reason is required and is recorded with your name.</p>'
+      + '<label class="tlsc-small" for="tlscWhy" style="display:block;margin:10px 0 4px;font-weight:700">Reason for overriding</label>'
+      + '<textarea id="tlscWhy" rows="3" style="width:100%;box-sizing:border-box;border:1px solid #cfd6e0;border-radius:6px;padding:8px;font:inherit" placeholder="For example: candidate requested urgent follow-up."></textarea>'
+      + '<div class="tlsc-small" id="tlscWhyErr" style="color:#b3261e;min-height:16px"></div></div>'
+      + '<div class="fcr-jd-actions"><button class="btn btn-primary" onclick="TLEngagement._override()">Override and contact</button>'
+      + '<button class="btn btn-ghost" onclick="TLEngagement._cancel()">Cancel</button></div>');
+  }
+  function overrideGo() {
+    var el = document.getElementById('tlscWhy');
+    var why = el ? el.value.trim() : '';
+    if (why.length < 5) {
+      var e = document.getElementById('tlscWhyErr');
+      if (e) e.textContent = 'Please say why (at least a few words).';
+      return;
+    }
+    var p = PENDING; PENDING = null;
+    if (p) p(true, why);
   }
 
   var PENDING = null;   // the continuation of the action the warning interrupted
@@ -274,31 +349,52 @@
       }
       if (v.decision === 'blocked') { showBlocked(v, ctx); return false; }
 
-      var commit = function (ack) {
-        if (!ack && !ctx.record) return Promise.resolve(true);
-        return a.post('/engagement/check', Object.assign({ acknowledge: !!ack, record: !!ctx.record }, body))
-          .then(function () { invalidate(ctx.candidateId); return true; })
+      /* 0118: WhatsApp, SMS and email are checked AND logged in one server
+         step before anything leaves; a call is checked now and logged by
+         Log call; an AI call is checked and logged by the call route itself. */
+      var logsHere = ctx.action === 'whatsapp' || ctx.action === 'sms' || ctx.action === 'email';
+      var commit = function (ack, why) {
+        var over = !!why;
+        if (!ack && !ctx.record && !logsHere && !over) return Promise.resolve(true);
+        return a.post('/engagement/check', Object.assign({
+          acknowledge: !!ack, record: !!ctx.record || logsHere,
+          override: over || undefined, overrideReason: over ? why : undefined,
+        }, body))
+          .then(function (out) { invalidate(ctx.candidateId); if (out && out.contactId) LAST[ctx.action + '|' + ctx.candidateId] = out.contactId; return true; })
           .catch(function (e) {
             if (e && e.code === 'ENGAGEMENT_BLOCKED') {
               showBlocked((e.details && e.details.engagement) || { message: e.message }, ctx);
+            } else if (e && e.code === 'CONTACT_COOLDOWN') {
+              var d = (e.details || {});
+              showCooldown({ holder: d.holder, days: d.cooldownDays, canOverride: !!d.canOverride }, ctx, null);
             } else say((e && e.message) || 'That could not be checked', '⚠️');
             return false;
           });
       };
-      var afterAvailability = function (ack) {
+      var afterAvailability = function (ack, why) {
         if (av && av.status === 'not_looking' && ctx.action !== 'add_to_job') {
           return new Promise(function (resolve) {
-            showNotLooking(av, function (go) { if (!go) return resolve(false); closeModal(); resolve(commit(ack)); });
+            showNotLooking(av, function (go) { if (!go) return resolve(false); closeModal(); resolve(commit(ack, why)); });
           });
         }
-        return commit(ack);
+        return commit(ack, why);
       };
-      if (v.decision === 'warn') {
+      var afterWarn = function (why) {
+        if (v.decision === 'warn') {
+          return new Promise(function (resolve) {
+            showWarn(v, ctx, function (go) { if (!go) return resolve(false); closeModal(); resolve(afterAvailability(true, why)); });
+          });
+        }
+        return afterAvailability(false, why);
+      };
+      if (r.cooldown && CONTACT_ACTIONS[ctx.action]) {
+        var cd = r.cooldown;
+        if (!cd.canOverride) { showCooldown(cd, ctx, null); return false; }
         return new Promise(function (resolve) {
-          showWarn(v, ctx, function (go) { if (!go) return resolve(false); closeModal(); resolve(afterAvailability(true)); });
+          showCooldown(cd, ctx, function (go, why) { if (!go) return resolve(false); closeModal(); resolve(afterWarn(why)); });
         });
       }
-      return afterAvailability(false);
+      return afterWarn(undefined);
     }).catch(function (e) {
       say((e && e.message) || 'Could not check who is working with this candidate', '⚠️');
       return false;
@@ -682,21 +778,35 @@
     var ids = fcrSelected();
     if (!ids.length || !isStaff()) return prev.apply(self, args);
     return badges(ids, null).then(function (map) {
-      var held = [], placed = [], warned = [], nl = [];
+      var held = [], placed = [], warned = [], nl = [], cool = [];
       ids.forEach(function (id) {
         var b = map[id] || {};
         var av = b.availability || {};
         if (av.status === 'placed') placed.push(id);
         else if (b.kind === 'in_process' || b.kind === 'joined') held.push(id);
+        else if (b.cooldown) cool.push(id);
         else if (av.status === 'not_looking') nl.push(id);
         else if (b.kind === 'contacted') warned.push(id);
       });
-      if (!held.length && !placed.length && !warned.length && !nl.length) return prev.apply(self, args);
+      SEL = { channel: channel, prev: prev, self: self, args: args, held: held, placed: placed, warned: warned, nl: nl, cool: cool, map: map };
+      /* Nothing to say: go straight to the step that checks and logs each one. */
+      if (!held.length && !placed.length && !warned.length && !nl.length && !cool.length) return selGo();
       var name = function (id) { var c = window.DATA && DATA.candidateById ? DATA.candidateById(id) : null; return (c && c.name) || id; };
       var list = function (a) { return a.slice(0, 5).map(function (id) { return h(name(id)); }).join(', ') + (a.length > 5 ? ' and ' + (a.length - 5) + ' more' : ''); };
-      SEL = { channel: channel, prev: prev, self: self, args: args, held: held, placed: placed, warned: warned, nl: nl };
+      var coolTable = function () {
+        return '<table class="data" style="width:100%;margin-top:6px;font-size:12px"><thead><tr><th>Candidate</th><th>Contacted by</th><th>Date</th><th>Time</th><th>Channel</th></tr></thead><tbody>'
+          + cool.slice(0, 50).map(function (id) {
+            var c = (map[id] || {}).cooldown || {};
+            return '<tr><td>' + h(name(id)) + '</td><td>' + h(c.name) + '</td><td>' + h(dmy(c.contactedAt)) + '</td><td>' + h(timeText(c.contactedAt))
+              + '</td><td>' + h(CHANNEL[c.channel] || c.channel) + '</td></tr>';
+          }).join('') + '</tbody></table>';
+      };
       modal('<div class="fcr-jd-head"><h3>Before you message ' + ids.length + ' candidate' + (ids.length === 1 ? '' : 's') + '</h3>'
         + '<button class="fcr-jd-x" onclick="fcrCloseModal()">✕</button></div><div class="fcr-jd-body">'
+        + (cool.length ? '<div class="tlsc-banner tlsc-banner-orange"><b>' + cool.length + ' already contacted</b> by another recruiter - skipped:' + coolTable()
+          + (canOverride() ? '<label class="tlsc-check"><input type="checkbox" id="tlscSelOv"> Override and include them</label>'
+            + '<textarea id="tlscSelWhy" rows="2" placeholder="Reason for overriding (required)" style="width:100%;box-sizing:border-box;margin-top:6px;border:1px solid #cfd6e0;border-radius:6px;padding:6px;font:inherit"></textarea>' : '')
+          + '</div>' : '')
         + (held.length ? '<div class="tlsc-banner tlsc-banner-red">' + held.length + ' being processed by another recruiter - left out: ' + list(held) + '</div>' : '')
         + (placed.length ? '<div class="tlsc-banner tlsc-banner-red">' + placed.length + ' placed through TeamLink (replacement period) - left out: ' + list(placed) + '</div>' : '')
         + (warned.length ? '<div class="tlsc-banner tlsc-banner-orange">' + warned.length + ' contacted recently by another recruiter: ' + list(warned)
@@ -707,21 +817,47 @@
         + '<button class="btn btn-ghost" onclick="fcrCloseModal()">Cancel</button></div>');
     });
   }
+  /* Every message that is going is checked and logged here, one by one, by
+     the server (so a race with another recruiter is refused there, not
+     here). One held candidate never stops the others: "18 sent, 7 skipped". */
   function selGo() {
-    var s = SEL; SEL = null;
+    var s = SEL;
     if (!s) return;
     var incW = !!((document.getElementById('tlscSelWarn') || {}).checked);
     var incN = !!((document.getElementById('tlscSelNL') || {}).checked);
-    var drop = s.held.concat(s.placed, incW ? [] : s.warned, incN ? [] : s.nl);
+    var incO = !!((document.getElementById('tlscSelOv') || {}).checked);
+    var why = ((document.getElementById('tlscSelWhy') || {}).value || '').trim();
+    if (incO && why.length < 5) { say('Say why you are overriding the cooldown.', '⚠️'); return; }
+    SEL = null;
+    var drop = s.held.concat(s.placed, incW ? [] : s.warned, incN ? [] : s.nl, incO ? [] : s.cool);
     drop.forEach(function (id) { if (STATE.fcr && STATE.fcr.selection) delete STATE.fcr.selection[id]; });
-    var acks = incW ? s.warned : [];
+    var skippedCool = s.cool.filter(function (id) { return !incO; }).length;
     closeModal();
-    Promise.all(acks.map(function (id) {
-      return api().post('/engagement/check', { candidateId: id, action: s.channel, acknowledge: true })
-        .catch(function () { if (STATE.fcr && STATE.fcr.selection) delete STATE.fcr.selection[id]; });
-    })).then(function () {
-      if (drop.length) say(drop.length + ' left out of this message', 'ℹ️');
-      if (!fcrSelected().length) { say('Nobody left to message', 'ℹ️'); return; }
+    var go = fcrSelected();
+    var lostRace = 0;
+    return go.reduce(function (chain, id) {
+      return chain.then(function () {
+        var over = incO && s.cool.indexOf(id) >= 0;
+        return api().post('/engagement/check', {
+          candidateId: id, action: s.channel, record: true,
+          acknowledge: s.warned.indexOf(id) >= 0 && incW ? true : undefined,
+          override: over || undefined, overrideReason: over ? why : undefined,
+        }).then(function (out) {
+          if (out && out.contactId) LAST[s.channel + '|' + id] = out.contactId;
+        }, function (e) {
+          if (STATE.fcr && STATE.fcr.selection) delete STATE.fcr.selection[id];
+          if (e && e.code === 'CONTACT_COOLDOWN') lostRace += 1;
+        });
+      });
+    }, Promise.resolve()).then(function () {
+      var left = fcrSelected().length;
+      var skipped = skippedCool + lostRace;
+      var other = drop.length - skippedCool;
+      if (skipped || other) {
+        say(left + ' to send, ' + skipped + ' skipped (already contacted)' + (other > 0 ? ', ' + other + ' left out for other reasons' : ''), 'ℹ️');
+      }
+      invalidate();
+      if (!left) { say('Nobody left to message', 'ℹ️'); return; }
       s.prev.apply(s.self, s.args);
     });
   }
@@ -734,7 +870,10 @@
       var k = channel + '|' + id + '|' + outcome;
       if (!outcome || RECORDED[k]) return;
       RECORDED[k] = 1;
-      api().post('/engagement/record', { candidateId: id, channel: channel, outcome: outcome })
+      /* The row written when this send was checked is the record; only how
+         it went is added (0118). */
+      var row = LAST[channel + '|' + id];
+      api().post('/engagement/record', { candidateId: id, channel: channel, outcome: outcome, contactId: row || undefined })
         .then(function () { invalidate(id); }, function () { /* the server refused a held one */ });
     });
   }
@@ -867,6 +1006,45 @@
   /* ------------------------------------------------------------------ *
    * after every paint
    * ------------------------------------------------------------------ */
+  /* 0118 - Find Candidates: the job chosen for the search, and "Applied for
+     this job" Any / Yes / No. The job list is the caller's own (the server
+     sends no other), and the server checks the id again. */
+  function fcrJobBar() {
+    if ((location.hash || '').indexOf('#/recruiter/find-candidates') !== 0) return;
+    var host = document.getElementById('fcrResults');
+    if (!host || !window.STATE || !STATE.fcr) return;
+    var cur = STATE.fcr.forJob || '';
+    var applied = STATE.fcr.appliedFilter || '';
+    var old = document.getElementById('tlscJobBar');
+    if (old && old.getAttribute('data-job') === cur && old.getAttribute('data-ap') === applied && host.contains(old)) return;
+    if (old) old.remove();
+    var jobs = ((window.DATA && DATA.jobs) || []).filter(function (j) { return !/^xjob_/.test(j.id) && j.status !== 'draft'; });
+    var opt = function (j) {
+      return '<option value="' + h(j.id) + '"' + (j.id === cur ? ' selected' : '') + '>' + h(j.title)
+        + (j.status && j.status !== 'open' ? ' (' + h(j.status) + ')' : '') + '</option>';
+    };
+    var bar = document.createElement('div');
+    bar.id = 'tlscJobBar';
+    bar.setAttribute('data-job', cur);
+    bar.setAttribute('data-ap', applied);
+    bar.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:0 0 10px;padding:8px 12px;background:#f5f8fb;border:1px solid #e1e8f0;border-radius:8px';
+    bar.innerHTML = '<label for="tlscJobSel" style="font-weight:700;font-size:12.5px">Selected job</label>'
+      + '<select id="tlscJobSel" onchange="TLEngagement._forJob(this.value)" style="max-width:320px;border:1px solid #cfd6e0;border-radius:6px;height:32px;padding:0 8px;background:#fff">'
+      + '<option value="">No job selected</option>' + jobs.map(opt).join('') + '</select>'
+      + (cur ? '<label for="tlscApSel" style="font-weight:700;font-size:12.5px">Applied for this job</label>'
+        + '<select id="tlscApSel" onchange="TLEngagement._applied(this.value)" style="border:1px solid #cfd6e0;border-radius:6px;height:32px;padding:0 8px;background:#fff">'
+        + '<option value=""' + (applied === '' ? ' selected' : '') + '>Any</option>'
+        + '<option value="yes"' + (applied === 'yes' ? ' selected' : '') + '>Yes</option>'
+        + '<option value="no"' + (applied === 'no' ? ' selected' : '') + '>No</option></select>' : '');
+    host.insertBefore(bar, host.firstChild);
+  }
+  function fcrRefetch() {
+    if (STATE.fcr) STATE.fcr.page = 1;
+    if (window.TL && TL.fcrFetch) {
+      TL.fcrFetch(true).then(function () { if (typeof window.fcrRepaint === 'function') window.fcrRepaint(); });
+    }
+  }
+
   var scheduled = false;
   function afterPaint() {
     if (scheduled) return;
@@ -875,6 +1053,7 @@
       scheduled = false;
       try { installWrappers(); } catch (e) { /* retried next paint */ }
       if (!isStaff()) return;
+      try { fcrJobBar(); } catch (e) { /* cosmetic */ }
       try { decorateLists(); } catch (e) { /* cosmetic */ }
       try { repaintProfile(false); } catch (e) { /* cosmetic */ }
       if ((location.hash || '').indexOf('#/admin/shared-candidates') === 0) {
@@ -915,6 +1094,9 @@
     _sendMessage: sendMessage,
     _sendOverride: sendOverride,
     _sendCall: sendCall,
+    _override: overrideGo,
+    _forJob: function (v) { STATE.fcr.forJob = v || ''; if (!v) STATE.fcr.appliedFilter = ''; fcrRefetch(); },
+    _applied: function (v) { STATE.fcr.appliedFilter = v || ''; fcrRefetch(); },
     _anyway: function () { var p = PENDING; PENDING = null; if (p) p(true); },
     _cancel: function () { var p = PENDING; PENDING = null; closeModal(); if (p) p(false); },
     _call: callFromProfile,

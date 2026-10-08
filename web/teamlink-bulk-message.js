@@ -189,16 +189,17 @@
     var ids = M.rows.map(function (c) { return c.id; });
     window.TLEngagement.badges(ids, null).then(function (map) {
       if (!M) return;
-      var held = [], warned = [], notLooking = [], placed = [];
+      var held = [], warned = [], notLooking = [], placed = [], cool = [];
       M.rows.forEach(function (c) {
         var b = map[c.id] || {};
         var av = b.availability || {};
         if (av.status === 'placed') { placed.push(c); return; }
         if (av.status === 'not_looking') { notLooking.push(c); return; }
         if (b.kind === 'in_process' || b.kind === 'joined') held.push(c);
+        else if (b.cooldown) cool.push(c);
         else if (b.kind === 'contacted') warned.push(c);
       });
-      M.holds = { held: held, warned: warned, notLooking: notLooking, placed: placed };
+      M.holds = { held: held, warned: warned, notLooking: notLooking, placed: placed, cool: cool, map: map };
       var names = function (list) {
         return esc(list.slice(0, 4).map(function (c) { return c.name; }).join(', '))
           + (list.length > 4 ? ' and ' + (list.length - 4) + ' more' : '');
@@ -210,6 +211,11 @@
           + ' - always skipped: ' + names(held) + '.</div>' : '')
         + (placed.length ? '<div class="tlbm-warn">' + placed.length + ' placed through TeamLink (replacement period)'
           + ' - always skipped: ' + names(placed) + '.</div>' : '')
+        + (cool.length ? '<div class="tlbm-warn tlbm-hold"><b>' + cool.length + ' already contacted</b> by another recruiter'
+          + ' - skipped:' + coolRows(cool, map)
+          + (canOverride() ? '<label class="tlbm-inc"><input type="checkbox" id="tlbmIncOv" onchange="tlBulkCount()"> Override and include them</label>'
+            + '<textarea id="tlbmOvWhy" rows="2" placeholder="Reason for overriding (required)" style="width:100%;box-sizing:border-box;margin-top:6px"></textarea>' : '')
+          + '</div>' : '')
         + (warned.length ? '<div class="tlbm-warn">' + warned.length + ' contacted recently by another recruiter'
           + ' - skipped unless you include them: ' + names(warned) + '.'
           + '<label class="tlbm-inc"><input type="checkbox" id="tlbmIncWarn" onchange="tlBulkCount()"> Include them'
@@ -221,19 +227,42 @@
     });
   }
 
+  function canOverride() {
+    var s = window.STATE && STATE.session;
+    return !!(s && (s.role === 'admin' || s.isTeamLead === true));
+  }
+  function dmy(iso) {
+    try { return new Date(iso).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-'); } catch (e) { return ''; }
+  }
+  function hm(iso) {
+    try { return new Date(iso).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }); } catch (e) { return ''; }
+  }
+  var CH_NAME = { phone: 'Call', whatsapp: 'WhatsApp', sms: 'SMS', email: 'Email', ai_call: 'AI Call', bulk_message: 'Message' };
+  /* Candidate / Contacted by / Date / Time / Channel */
+  function coolRows(list, map) {
+    return '<table class="data" style="width:100%;margin-top:6px;font-size:12px"><thead><tr><th>Candidate</th><th>Contacted by</th><th>Date</th><th>Time</th><th>Channel</th></tr></thead><tbody>'
+      + list.slice(0, 50).map(function (c) {
+        var k = (map[c.id] || {}).cooldown || {};
+        return '<tr><td>' + esc(c.name) + '</td><td>' + esc(k.name) + '</td><td>' + esc(dmy(k.contactedAt)) + '</td><td>' + esc(hm(k.contactedAt))
+          + '</td><td>' + esc(CH_NAME[k.channel] || k.channel) + '</td></tr>';
+      }).join('') + '</tbody></table>';
+  }
+
   /** The Send button's count, after the skips above. */
   window.tlBulkCount = function () {
     if (!M) return;
     var btn = document.getElementById('tlbmSend');
     if (!btn || M.sending || M.batchId) return;
     var ch = CHANNEL[M.channel];
-    var hold = M.holds || { held: [], warned: [], notLooking: [], placed: [] };
+    var hold = M.holds || { held: [], warned: [], notLooking: [], placed: [], cool: [] };
+    var incO = !!(document.getElementById('tlbmIncOv') || {}).checked;
     var incW = !!(document.getElementById('tlbmIncWarn') || {}).checked;
     var incN = !!(document.getElementById('tlbmIncNL') || {}).checked;
     var out = {};
     hold.held.concat(hold.placed).forEach(function (c) { out[c.id] = 1; });
     if (!incW) hold.warned.forEach(function (c) { out[c.id] = 1; });
     if (!incN) hold.notLooking.forEach(function (c) { out[c.id] = 1; });
+    if (!incO) (hold.cool || []).forEach(function (c) { out[c.id] = 1; });
     var n = M.rows.filter(function (c) {
       return !out[c.id] && !c.doNotContact && String(c[ch.field] || '').trim();
     }).length;
@@ -343,6 +372,9 @@
 
     if (!body.trim()) { toast('Write a message first', '⚠️'); return; }
     if (M.channel === 'email' && !subj.trim()) { toast('An email needs a subject', '⚠️'); return; }
+    var over = !!(document.getElementById('tlbmIncOv') || {}).checked;
+    var why = ((document.getElementById('tlbmOvWhy') || {}).value || '').trim();
+    if (over && why.length < 5) { toast('Say why you are overriding the cooldown', '⚠️'); return; }
 
     M.sending = true;
     if (btn) { btn.disabled = true; btn.textContent = 'Queueing…'; }
@@ -355,6 +387,8 @@
       body: body,
       includeWarned: !!(document.getElementById('tlbmIncWarn') || {}).checked,
       includeNotLooking: !!(document.getElementById('tlbmIncNL') || {}).checked,
+      override: over || undefined,
+      overrideReason: over ? why : undefined,
     }).then(function (r) {
       M.batchId = r.batchId;
       if (btn) btn.textContent = 'Sending…';
@@ -415,7 +449,15 @@
         + (queued.warned ? tile('Contacted by others', queued.warned, 'not included') : '')
         + (queued.notLooking ? tile('Not looking', queued.notLooking, 'not included') : '')
         + (queued.placed ? tile('Placed', queued.placed, 'replacement period') : '')
+        + (queued.cooldownSkipped ? tile('Already contacted', queued.cooldownSkipped, 'skipped') : '')
         + '</div>'
+        + (queued.cooldownSkipped
+          ? '<div class="tlbm-res-n"><b>' + queued.queued + ' sent, ' + queued.cooldownSkipped + ' skipped (already contacted)</b>'
+            + '<table class="data" style="width:100%;margin-top:6px;font-size:12px"><thead><tr><th>Candidate</th><th>Contacted by</th><th>Date</th><th>Time</th><th>Channel</th></tr></thead><tbody>'
+            + queued.cooldownCandidates.slice(0, 100).map(function (c) {
+              return '<tr><td>' + esc(c.name) + '</td><td>' + esc(c.heldBy) + '</td><td>' + esc(dmy(c.contactedAt)) + '</td><td>' + esc(hm(c.contactedAt))
+                + '</td><td>' + esc(CH_NAME[c.channel] || c.channel) + '</td></tr>';
+            }).join('') + '</tbody></table></div>' : '')
         + '<div class="tlbm-res-n">' + esc(queued.note) + '</div></div>';
       return;
     }

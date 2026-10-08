@@ -31,6 +31,7 @@ import {
   canEngage, requireEngage, recordContact, audit, toVerdict, verdictMessage,
 } from '../candidates/engagement.js';
 import { availabilityOf } from './availability.js';
+import { beginContact, finishContact, cooldownBadges, cooldownDays, canOverride } from '../contact/service.js';
 
 const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 const iso = (v) => (v ? new Date(v).toISOString() : null);
@@ -53,6 +54,9 @@ export const CALL_OUTCOMES = {
 };
 
 /* The action a screen is about to take -> the contact-history source. */
+/* The action a screen is about to take -> the channel the cooldown is on (0118). */
+const CHANNEL_OF = { call: 'phone', whatsapp: 'whatsapp', sms: 'sms', email: 'email', ai_call: 'ai_call' };
+
 const ACTION_SOURCE = {
   call: 'phone', whatsapp: 'whatsapp', sms: 'sms', email: 'email',
   ai_call: 'ai_call', add_to_job: null, submission: null, contact: null,
@@ -175,6 +179,8 @@ export default function sharedCandidateRoutes() {
          from engagement_badges($1::text[], $2) b
          join candidates c on c.id = b.candidate_id`, [ids, b.jobId || null])).rows);
     const badges = {};
+    /* 0118: who contacted them inside the cooldown (any channel, any job). */
+    const cool = await cooldownBadges(req.session, ids);
     for (const x of rows) {
       badges[x.candidate_id] = {
         kind: x.kind || null,
@@ -186,9 +192,13 @@ export default function sharedCandidateRoutes() {
         holdExpiresAt: iso(x.hold_expires_at),
         others: Array.isArray(x.others) ? x.others.slice(0, 20) : [],
         availability: availabilityOf(x),
+        cooldown: cool[x.candidate_id] || null,
       };
     }
-    res.json({ badges });
+    for (const id of Object.keys(cool)) {
+      if (!badges[id]) badges[id] = { kind: null, others: [], cooldown: cool[id] };
+    }
+    res.json({ badges, canOverride: canOverride(req.session), cooldownDays: await cooldownDays(req.session) });
   }));
 
   /* ------------------------------------------------------------------ *
@@ -207,6 +217,9 @@ export default function sharedCandidateRoutes() {
       /* A contact that leaves the system from the browser (wa.me): record
          it now, because nothing else will. */
       record: z.boolean().optional(),
+      /* 0118: an admin or a team lead going past the cooldown, with a reason. */
+      override: z.boolean().optional(),
+      overrideReason: z.string().trim().max(500).optional(),
     }), req.body);
 
     const seen = await withUser(req.session, async (c) => (await c.query(
@@ -217,9 +230,14 @@ export default function sharedCandidateRoutes() {
     if (!seen) throw notFound('That candidate could not be found.');
     const availability = availabilityOf(seen);
 
+    const channel = CHANNEL_OF[b.action] || null;
     if (b.dryRun) {
       const v = await canEngage(req.session, b.candidateId, { jobId: b.jobId, roleKey: b.roleKey });
-      return res.json({ verdict: v, availability, doNotContact: !!seen.do_not_contact });
+      const hold = channel ? (await cooldownBadges(req.session, [b.candidateId]))[b.candidateId] || null : null;
+      return res.json({
+        verdict: v, availability, doNotContact: !!seen.do_not_contact,
+        cooldown: hold ? { holder: hold, days: await cooldownDays(req.session), canOverride: canOverride(req.session) } : null,
+      });
     }
 
     if (seen.do_not_contact && b.action !== 'add_to_job') {
@@ -229,9 +247,23 @@ export default function sharedCandidateRoutes() {
       jobId: b.jobId, roleKey: b.roleKey, action: b.action, acknowledge: b.acknowledge === true,
     });
 
+    /* 0118: the cooldown. Recording (or an override) is the gate and the log
+       row in one transaction; merely asking is a read, refused the same way. */
     let contactId = null;
     const source = ACTION_SOURCE[b.action];
-    if (b.record && source) {
+    if (channel && (b.record || b.override)) {
+      const began = await beginContact(req.session, {
+        candidateId: b.candidateId, channel, jobId: b.jobId || null, source: channel,
+        override: b.override === true, reason: b.overrideReason || null,
+      });
+      contactId = began.id;
+    } else if (channel) {
+      const hold = (await cooldownBadges(req.session, [b.candidateId]))[b.candidateId];
+      if (hold) {
+        throw new ApiError(409, 'CONTACT_COOLDOWN', `${hold.name} already contacted this candidate.`,
+          { holder: hold, cooldownDays: await cooldownDays(req.session), canOverride: canOverride(req.session) });
+      }
+    } else if (b.record && source) {
       contactId = await recordContact(req.session, {
         candidateId: b.candidateId, jobId: b.jobId, roleKey: b.roleKey,
         channel: source, source, outcome: 'opened',
@@ -252,7 +284,13 @@ export default function sharedCandidateRoutes() {
       jobId: z.string().trim().max(64).optional(),
       channel: z.enum(['whatsapp', 'sms', 'email', 'phone']),
       outcome: z.enum(['sent', 'opened', 'failed']).default('sent'),
+      /* 0118: the row the check wrote for this very send. */
+      contactId: z.number().int().positive().optional(),
     }), req.body);
+    if (b.contactId) {
+      await finishContact(req.session, b.contactId, b.outcome);
+      return res.status(200).json({ contactId: b.contactId });
+    }
     const v = await canEngage(req.session, b.candidateId, { jobId: b.jobId });
     if (v.decision === 'blocked') {
       await audit(req.session, { candidateId: b.candidateId, roleKey: v.roleKey, jobId: b.jobId || null,
@@ -260,10 +298,13 @@ export default function sharedCandidateRoutes() {
       throw new ApiError(409, 'ENGAGEMENT_BLOCKED', v.message || 'Another recruiter holds this candidate.',
         { engagement: v });
     }
-    const id = await recordContact(req.session, {
-      candidateId: b.candidateId, jobId: b.jobId, channel: b.channel, source: b.channel, outcome: b.outcome,
+    /* No row from a check: this is a contact being written down now, so it
+       goes through the cooldown like any other. */
+    const began = await beginContact(req.session, {
+      candidateId: b.candidateId, channel: b.channel, jobId: b.jobId || null, source: b.channel,
     });
-    res.status(201).json({ contactId: id != null ? Number(id) : null });
+    await finishContact(req.session, began.id, b.outcome);
+    res.status(201).json({ contactId: began.id });
   }));
 
   /* ------------------------------------------------------------------ *

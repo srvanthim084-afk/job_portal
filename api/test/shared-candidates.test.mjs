@@ -126,7 +126,7 @@ test('B reads the candidate A added, read-only, without A\'s notes; private stay
   assert.equal((await B.get(`/api/candidates/${ids.cPriv}`)).status, 404);
 });
 
-test('A logs a call -> B gets the orange badge and a warning, and may contact anyway (logged)', async () => {
+test('A logs a call -> B gets the orange badge and a warning; the 7-day cooldown (0118) then holds B on every channel and job', async () => {
   const log = await A.post(`/api/candidates/${ids.c1}/call-log`,
     { outcome: 'interested', jobId: 'jA', note: 'Wants 4 LPA, can join in 15 days' });
   assert.equal(log.status, 201, JSON.stringify(log.body));
@@ -151,14 +151,24 @@ test('A logs a call -> B gets the orange badge and a warning, and may contact an
   const warn = await B.post('/api/engagement/check', { candidateId: ids.c1, jobId: 'jB', action: 'whatsapp' });
   assert.equal(warn.status, 409);
   assert.equal(warn.body.error.code, 'ENGAGEMENT_WARN');
+  /* 0118: "contact anyway" acknowledges the role warning; it does not lift the
+     cooldown, which only an admin or a team lead may, with a reason. */
   const anyway = await B.post('/api/engagement/check',
     { candidateId: ids.c1, jobId: 'jB', action: 'whatsapp', acknowledge: true, record: true });
-  assert.equal(anyway.status, 200, JSON.stringify(anyway.body));
-  assert.ok(anyway.body.contactId, 'the WhatsApp contact was not recorded');
+  assert.equal(anyway.status, 409, JSON.stringify(anyway.body));
+  assert.equal(anyway.body.error.code, 'CONTACT_COOLDOWN');
+  assert.equal(anyway.body.error.details.holder.name, 'Ravi');
   assert.ok((await auditOf(ids.c1)).includes('contact_anyway'));
 
+  /* The cooldown is on the candidate: another job does not free them. */
   const other = await B.post('/api/engagement/check', { candidateId: ids.c1, jobId: 'jBr', action: 'call' });
-  assert.equal(other.status, 200, 'a different role must not be restricted');
+  assert.equal(other.status, 409);
+  assert.equal(other.body.error.code, 'CONTACT_COOLDOWN');
+
+  /* A's own follow-up is always allowed, and is logged. */
+  const own = await A.post('/api/engagement/check', { candidateId: ids.c1, jobId: 'jA', action: 'whatsapp', record: true });
+  assert.equal(own.status, 200, JSON.stringify(own.body));
+  assert.ok(own.body.contactId, 'the WhatsApp contact was not recorded');
 });
 
 test('A moves them into process -> B is blocked on the server, for this role only', async () => {
@@ -215,10 +225,12 @@ test('bulk message: BLOCK always skipped, WARN skipped unless ticked', async () 
   assert.equal(first.body.warned, 1);
   assert.equal(first.body.heldCandidates[0].id, ids.c1);
 
+  /* Ticking "include" clears the role warning, not the cooldown (0118). */
   const second = await send({ includeWarned: true, candidateIds: [ids.c1, ids.cWarn] });
-  assert.equal(second.body.queued, 1, 'a warned candidate was not included when ticked');
+  assert.equal(second.body.queued, 0, 'a candidate under the cooldown was messaged');
+  assert.equal(second.body.cooldownSkipped, 1);
+  assert.equal(second.body.cooldownCandidates[0].heldBy, 'Ravi');
   assert.equal(second.body.held, 1, 'a blocked candidate was messaged');
-  assert.ok((await auditOf(ids.cWarn)).includes('contact_anyway'));
 
   const rows = (await raw(`select source, recruiter_id, role_key from candidate_contact_history
                             where candidate_id = $1 and source = 'bulk_message'`, [ids.cFree])).rows;

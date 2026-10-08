@@ -81,6 +81,9 @@ export function fromPgError(err) {
       String(err.message || 'Another recruiter holds this candidate for this role.'), details);
   }
 
+  /* 0118: an override without a reason. */
+  if (c === 'TLC02') return badRequest(String(err.message), { overrideReason: String(err.message) });
+
   /* 0107: the walk-in ATS stage machine, refused by the database. */
   if (typeof c === 'string' && /^TLW0\d$/.test(c)) {
     const map = {

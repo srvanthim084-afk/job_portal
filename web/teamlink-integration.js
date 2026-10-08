@@ -805,6 +805,8 @@
       STATE.session = {
         role: payload.session.role,
         id: payload.session.id,
+        /* 0118: a recruiter who leads a team (the server's answer). */
+        isTeamLead: payload.session.isTeamLead === true,
         /* Whether they are still on a password somebody else generated.
            Carried on the session so the gate survives a refresh. */
         mustChangePassword: !!payload.session.mustChangePassword,
@@ -2970,6 +2972,11 @@
     if (f.hidePrivate)    add('hidePrivate', 'true');
     if (f.hideNoComments) add('hasComments', 'true');
     add('commentTag', f.commentTag);
+    /* 0118: the job chosen on the screen, and whether to show only the
+       candidates who did / did not apply to it. The server checks the
+       job is one the caller may use. */
+    add('forJob', f.forJob);
+    if (f.forJob && (f.appliedFilter === 'yes' || f.appliedFilter === 'no')) add('appliedForJob', f.appliedFilter);
     if (f.duration && f.duration !== 'all') add('activeWithinDays', f.duration);
     add('sort', f.sortBy);
     add('limit', TL.fcr.window);

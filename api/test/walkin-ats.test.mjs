@@ -190,17 +190,17 @@ test('23.20 #2 a walk-in application appears at once with stage Registered (set 
 });
 
 test('23.20 #3 recruiter B cannot open recruiter A\'s applicants, details, notes, ratings, exports or history - by direct ID', async () => {
-  assert.equal((await RB.get(`/api/jobs/${WALK}/applicants`)).status, 404);
-  assert.equal((await RB.get(`/api/jobs/${WALK}/ats-summary`)).status, 404);
-  assert.equal((await RB.get(`/api/ats/applications/${aW1.id}`)).status, 404);
-  assert.equal((await RB.get(`/api/ats/applications/${aW1.id}/notes`)).status, 404);
-  assert.equal((await RB.post(`/api/ats/applications/${aW1.id}/notes`, { note: 'sneaky' })).status, 404);
-  assert.equal((await RB.put(`/api/ats/applications/${aW1.id}/rating`, { rating: 1 })).status, 404);
-  assert.equal((await RB.post(`/api/ats/applications/${aW1.id}/stage`, { stage: 'attended' })).status, 404);
-  assert.equal((await RB.post(`/api/ats/applications/${aW1.id}/check-in`, { action: 'both' })).status, 404);
-  assert.equal((await RB.post(`/api/jobs/${WALK}/applicants/export`, { format: 'csv' })).status, 404);
-  assert.equal((await RB.get(`/api/jobs/${WALK}/update-history`)).status, 404);
-  assert.equal((await RB.get(`/api/jobs/${WALK}/check-in?q=Asha`)).status, 404);
+  assert.equal((await RB.get(`/api/jobs/${WALK}/applicants`)).status, 403);
+  assert.equal((await RB.get(`/api/jobs/${WALK}/ats-summary`)).status, 403);
+  assert.equal((await RB.get(`/api/ats/applications/${aW1.id}`)).status, 403);
+  assert.equal((await RB.get(`/api/ats/applications/${aW1.id}/notes`)).status, 403);
+  assert.equal((await RB.post(`/api/ats/applications/${aW1.id}/notes`, { note: 'sneaky' })).status, 403);
+  assert.equal((await RB.put(`/api/ats/applications/${aW1.id}/rating`, { rating: 1 })).status, 403);
+  assert.equal((await RB.post(`/api/ats/applications/${aW1.id}/stage`, { stage: 'attended' })).status, 403);
+  assert.equal((await RB.post(`/api/ats/applications/${aW1.id}/check-in`, { action: 'both' })).status, 403);
+  assert.equal((await RB.post(`/api/jobs/${WALK}/applicants/export`, { format: 'csv' })).status, 403);
+  assert.equal((await RB.get(`/api/jobs/${WALK}/update-history`)).status, 403);
+  assert.equal((await RB.get(`/api/jobs/${WALK}/check-in?q=Asha`)).status, 403);
   const list = await RB.get(`/api/ats/applicants?q=Asha`);
   assert.equal(list.body.total, 0, 'the cross-job list never shows another recruiter\'s applicants');
   const bulk = await RB.post('/api/ats/applications/bulk-stage', { items: [{ id: aW1.id }], stage: 'attended' });
@@ -706,7 +706,7 @@ test('23.20 #23 export: the 23.19 columns, notes only when asked, role scope', a
   const x = await RA.post(`/api/jobs/${WALK}/applicants/export`, { format: 'xlsx' });
   assert.equal(x.status, 200);
   assert.match(x.headers.get('content-type'), /spreadsheetml/);
-  assert.equal((await RB.post(`/api/jobs/${WALK}/applicants/export`, { format: 'csv' })).status, 404);
+  assert.equal((await RB.post(`/api/jobs/${WALK}/applicants/export`, { format: 'csv' })).status, 403);
   const audit = (await raw(`select kind, scope, candidate_count, filters from export_audit order by id desc limit 1`)).rows[0];
   assert.equal(audit.kind, 'list_xlsx');
   assert.equal(audit.filters.jobId, WALK);
@@ -749,7 +749,7 @@ test('the existing interview scheduling does not break on a walk-in application'
 test('per-job alert mode and admin settings', async () => {
   assert.equal((await RA.get(`/api/jobs/${REG}/ats-settings`)).body.newApplicationAlerts, 'auto');
   assert.equal((await RA.put(`/api/jobs/${REG}/ats-settings`, { newApplicationAlerts: 'digest' })).status, 200);
-  assert.equal((await RB.put(`/api/jobs/${REG}/ats-settings`, { newApplicationAlerts: 'off' })).status, 404);
+  assert.equal((await RB.put(`/api/jobs/${REG}/ats-settings`, { newApplicationAlerts: 'off' })).status, 403);
   assert.equal((await RA.get('/api/admin/walkin-ats/settings')).status, 403);
   const s = await ADMIN.get('/api/admin/walkin-ats/settings');
   assert.equal(s.body.noShowGraceMinutes, 60);

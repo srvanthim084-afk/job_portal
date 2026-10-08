@@ -113,6 +113,7 @@ import {
   buildJobDescription, buildStructuredJd, buildWalkinPack, buildInternshipPack,
   suggestSkills, isKnownStub,
 } from '../ai/jd.js';
+import { hiddenError } from '../scope.js';
 
 const COLS = {
   title: 'title', companyId: 'company_id', location: 'location', mode: 'mode',
@@ -206,7 +207,11 @@ export default function jobRoutes() {
     });
     // RLS hides an unpublished job from the public, which surfaces here as
     // "not found" — the same answer requirement 24 calls "Job unavailable".
-    if (!row) throw new ApiError(404, CODES.JOB_UNAVAILABLE, 'This role is no longer available.');
+    // For staff, a job that exists but is another recruiter's is a 403 (0118).
+    if (!row) {
+      throw await hiddenError(req.session, 'job', req.params.id,
+        new ApiError(404, CODES.JOB_UNAVAILABLE, 'This role is no longer available.'));
+    }
     res.json({ job: toJob(row) });
   }));
 
@@ -377,9 +382,9 @@ export default function jobRoutes() {
         `update jobs set ${sets.join(',')} where id=$${vals.length} returning id`, vals);
       // Zero rows means RLS refused it — another company's job.
       if (!upd.rowCount) {
-        const seen = await c.query(`select 1 from jobs where id=$1`, [id]);
-        throw seen.rowCount ? forbidden('You cannot edit a job belonging to another company.')
-                            : notFound('That job no longer exists.');
+        const seen = await c.query(`select app_row_exists('job',$1) as e`, [id]);
+        throw seen.rows[0].e ? forbidden('You cannot edit a job that is not yours.')
+                             : notFound('That job no longer exists.');
       }
       const { rows } = await c.query(`select * from jobs_with_counts where id=$1`, [id]);
       return rows[0];
@@ -403,9 +408,9 @@ export default function jobRoutes() {
           where id = $2 returning id`,
         [publish ? 'open' : 'draft', req.params.id]);
       if (!upd.rowCount) {
-        const seen = await c.query(`select 1 from jobs where id=$1`, [req.params.id]);
-        throw seen.rowCount ? forbidden('You cannot publish a job belonging to another company.')
-                            : notFound('That job no longer exists.');
+        const seen = await c.query(`select app_row_exists('job',$1) as e`, [req.params.id]);
+        throw seen.rows[0].e ? forbidden('You cannot publish a job that is not yours.')
+                             : notFound('That job no longer exists.');
       }
       const { rows } = await c.query(`select * from jobs_with_counts where id=$1`, [req.params.id]);
       return rows[0];
