@@ -18,6 +18,7 @@
  *   E  the application is in the pipeline with its job, recruiter, source
  *   F  "Complete Profile" opens the profile, separately
  *   G  the application was screened (AI match) as every application is
+ *   H  an unbuilt profile whose "Build your profile" box is up applies in one click
  *      ... and at phone width (390px) the box and the confirmation fit
  */
 import { chromium } from 'playwright';
@@ -189,6 +190,24 @@ check(/Application Submitted Successfully/.test(await nw.textContent('#fcrModalH
   'B2: registered, and the application was submitted automatically');
 const nApps = await api(nw, 'get', '/applications');
 check(nApps.ok && (nApps.r.applications || nApps.r || []).some((a) => a.jobId === J2.id), 'B2: the application is on the new account');
+
+/* ---- H: an unbuilt profile, arriving the usual way: the "Build your profile"
+        box is up on the home page, and must not stand between the candidate
+        and Apply Now on a job page ------------------------------------------ */
+const hp = await open('#/');
+const hMe = await freshCandidate(hp, 'h');
+await hp.reload();
+await hp.waitForFunction(() => window.TL && TL.ready === true && window.STATE && STATE.session, null, { timeout: 30000 });
+await hp.waitForTimeout(1500);
+const upOnHome = await hp.evaluate(() => !!document.querySelector('#tlpoHost .tlpo-ov'));
+await hp.evaluate((id) => { location.hash = '#/job/' + id; }, J3.id);
+await hp.waitForTimeout(1800);
+check(!(await hp.evaluate(() => !!document.querySelector('#tlpoHost .tlpo-ov'))),
+  `H: the profile prompt does not cover the job page (it was ${upOnHome ? 'up' : 'not up'} on the home page)`);
+await hp.locator('#app button.btn-primary.btn-block:has-text("Apply")').first().click({ timeout: 10000 }).catch(() => {});
+await hp.waitForSelector('#tl1cDone', { timeout: 20000 }).catch(() => {});
+check(await hp.evaluate(() => !!document.getElementById('tl1cDone') && !document.getElementById('tlafForm')),
+  'H: one click on Apply Now submits the application - no form, no questions');
 
 /* ---- phone width: the box and the confirmation fit ---------------------- */
 const J4 = jobs[3] || J3;
