@@ -360,7 +360,11 @@
   function seedInputs(d) {
     var I = S.input;
     if (I.loc === undefined && d.fields && d.fields.location) I.loc = d.fields.location;
-    if (I.email === undefined) I.email = d.email || '';
+    if (I.email === undefined) {
+      var typed = '';
+      try { typed = sessionStorage.getItem('tl_apply_contact_v1') || ''; } catch (e) { typed = ''; }
+      I.email = d.email || typed || '';
+    }
   }
 
   function upload(file) {
@@ -510,7 +514,20 @@
       S.busy = false; S.phase = 'done'; S.done = res; S.pw = S.pw2 = null;
       S.draft = null; S.token = null; remember();
       var after = (window.TL && typeof TL.refresh === 'function') ? TL.refresh() : Promise.resolve();
-      return Promise.resolve(after).catch(function () {}).then(function () { paint(); });
+      return Promise.resolve(after).catch(function () {}).then(function () {
+        /* 0118: they came from Apply Now - the application is submitted now,
+           without another click (teamlink-apply-auth.js resumes it on the
+           way to the dashboard; Apply Now is one-click). */
+        var pendingJob = null;
+        try { pendingJob = JSON.parse(sessionStorage.getItem('tl_apply_intent_v1') || 'null'); } catch (e) { pendingJob = null; }
+        try { sessionStorage.removeItem('tl_apply_contact_v1'); } catch (e) { /* nothing */ }
+        if (pendingJob && pendingJob.jobId && typeof window.navigate === 'function') {
+          S.phase = 'upload'; S.done = null;
+          window.navigate('/candidate/home');
+          return;
+        }
+        paint();
+      });
     }).catch(function (er) {
       S.busy = false;
       var dt = details(er);

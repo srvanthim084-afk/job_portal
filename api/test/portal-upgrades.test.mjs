@@ -244,20 +244,18 @@ test('explain is the AI Match - JD skills matched / required, nothing else - wit
  * 4. one-click apply + Undo
  * ------------------------------------------------------------------ */
 
-test('one-click: refused with the missing fields, idempotent, Undo within 10 s by the owner only', async () => {
+test('one-click: an incomplete profile still applies (missing listed, never required), idempotent, Undo within 10 s by the owner only', async () => {
   const j = await job({ title: 'One Click Role' });
   const c = await candidate('One Clicker', { resume_file: null, skills: [] });
   const other = await candidate('Someone Else');
 
   const check = await c.get('/api/applications/one-click/check');
   assert.deepEqual(check.body, { ready: false, missing: ['skills', 'resume'] });
-  const refused = await c.post('/api/applications/one-click', { jobId: j });
-  assert.equal(refused.status, 422);
-  assert.deepEqual(refused.body.error.details.missing, ['skills', 'resume']);
-  assert.match(refused.body.error.message, /Fill 2 things to apply/);
-
-  await setProfile(c.id, {});
+  /* 0118: applying never waits for the profile. */
   const first = await c.post('/api/applications/one-click', { jobId: j });
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  assert.deepEqual(first.body.profileMissing, ['skills', 'resume']);
+  assert.ok(first.body.application.reference, 'an Application ID to show');
   assert.equal(first.status, 201, JSON.stringify(first.body));
   const again = await c.post('/api/applications/one-click', { jobId: j });
   assert.equal(again.status, 200);
