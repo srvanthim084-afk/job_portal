@@ -5502,8 +5502,8 @@ function pageRecruiterDash(section, params){
     content = `
     <div class="panel"><div class="panel-head"><div><h2>All applications</h2><div class="desc">${apps.length} applications across ${myJobs.length} open roles</div></div></div>
     <div class="panel-body pad0"><div class="tbl-wrap tl-apps-wrap"><table class="data">
-      <thead><tr><th>Candidate<span class="th-sub">Location · Experience · Ref ID</span></th><th>Applied for<span class="th-sub">Job · Client</span></th><th>Applied on<span class="th-sub">Date · Source</span></th><th>AI Match<span class="th-sub">Match · Interview score</span></th><th>Stage</th><th>Actions</th></tr></thead>
-      <tbody>${(typeof window.sortAppsNewestFirst==='function'?sortAppsNewestFirst(apps):apps).map(a=>{ const c=DATA.candidateById(a.candidateId), j=DATA.jobById(a.jobId);
+      <thead><tr><th>Candidate<span class="th-sub">Location · Experience · Ref ID</span></th><th>Applied for<span class="th-sub">Job · Client</span></th>${typeof window.tlAppSortHead==='function'?tlAppSortHead():'<th>Applied on<span class="th-sub">Date · Source</span></th>'}<th>AI Match<span class="th-sub">Match · Interview score</span></th><th>Stage</th><th>Actions</th></tr></thead>
+      <tbody>${(typeof window.tlAppSortRows==='function'?tlAppSortRows(apps):typeof window.sortAppsNewestFirst==='function'?sortAppsNewestFirst(apps):apps).map(a=>{ const c=DATA.candidateById(a.candidateId), j=DATA.jobById(a.jobId);
         return `<tr data-app-id="${esc(a.id)}"><td class="clickable" onclick="navigate('/recruiter/candidate-profile?id=${c.id}')">${personCell(c)}</td><td>${esc(j.title)}${(typeof window.tlCoTag==='function')?tlCoTag(j):''}</td><td style="font-size:12px;white-space:nowrap">${typeof window.appliedOnHtml==='function'?appliedOnHtml(a,c):esc(a.appliedAt||'—')}</td><td><span class="score ${scoreClass(a.matchScore)}">${a.matchScore}%</span>${typeof window.tlInterviewTag==='function'?tlInterviewTag(a,typeof c!=='undefined'?c:null):''}</td><td>${stageBadge(a.stage)}</td>
         <td class="row-actions">${(typeof window.tlNeedsScreening==='function'?tlNeedsScreening(a):(a.stage==='applied'||a.stage==='ai_screening')) ? `<button class="btn btn-ai btn-sm" onclick="runAIScreeningForApp('${a.id}')">Run AI Screening</button>` : (typeof window.tlScreenedTag==='function'?tlScreenedTag(a):'')}${(()=>{
             /* THE HANDOVER. A recruiter at Recruiter Review is not
@@ -11119,7 +11119,7 @@ mark.fcr-hl{background:#fff3a3;color:inherit;border-radius:3px;padding:0 1px}
     allApplicationsForCompany(rec.companyId).forEach(a=>{
       const c=DATA.candidateById(a.candidateId), j=DATA.jobById(a.jobId);
       if(!c||!j) return;
-      items.push({id:'app_'+a.id, icon:'👥', msg:`${c.name} applied for '${j.title||'Untitled'}'`+(a.appliedAt?` · ${a.appliedAt}`:''), go:'/recruiter/manage-jobs'});
+      items.push({id:'app_'+a.id, icon:'👥', msg:`${c.name} applied for '${j.title||'Untitled'}'`+(window.TLAppliedOn&&TLAppliedOn.appliedIso(a)?` · Applied on ${TLAppliedOn.dateTime(TLAppliedOn.appliedIso(a))}`:(a.appliedAt?` · ${a.appliedAt}`:'')), go:'/recruiter/manage-jobs'});
     });
     /* Open reported issues / support requests tied to their company (existing feedback store) */
     try{
@@ -13608,7 +13608,11 @@ a.rec-nav-link{text-decoration:none}
     const cid=a.candidateId||(c&&c.id), jid=a.jobId;
     return RJ()[String(cid)+'|'+String(jid)]||null;
   }
+  /* 0130: the server's applied_at (an ISO moment) is the truth whenever the
+     row has one; the stored and derived values below are for older rows. */
+  const serverTs=a=>(a&&/^\d{4}-\d{2}-\d{2}T/.test(String(a.appliedAt||'')))?String(a.appliedAt):null;
   window.appliedTsOf=function(a,c){
+    if(serverTs(a)) return serverTs(a);
     const v=storedFor(a,c);
     if(v&&String(v).length>10) return String(v);                 /* precise timestamp */
     if(a&&a.appliedTs) return String(a.appliedTs);
@@ -13618,6 +13622,7 @@ a.rec-nav-link{text-decoration:none}
     if(!a) return null;
     const cid=a.candidateId||(c&&c.id), jid=a.jobId;
     const key=String(cid)+'|'+String(jid);
+    if(serverTs(a)) return new Date(Date.parse(serverTs(a))+330*60000).toISOString().slice(0,10);   /* its India day */
     const store=RJ();
     if(store[key]) return String(store[key]).slice(0,10);
     if(a.appliedTs){ store[key]=String(a.appliedTs); WJ(store); return String(a.appliedTs).slice(0,10); }
@@ -13632,8 +13637,8 @@ a.rec-nav-link{text-decoration:none}
     store[key]=d; WJ(store);
     return d;
   };
-  function pretty(d){
-    try{ return new Date(d+'T12:00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}); }catch(e){ return d; }
+  function pretty(d){   /* DD MMM YYYY, an India day */
+    try{ return new Date(d+'T12:00:00+05:30').toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric',timeZone:'Asia/Kolkata'}); }catch(e){ return d; }
   }
   /* exact moment known → real relative time (Just now / 5 minutes ago).
      only a date known → calendar-day difference, never a misleading hour count. */
@@ -13658,7 +13663,7 @@ a.rec-nav-link{text-decoration:none}
   function timeOf(a,c){
     const ts=appliedTsOf(a,c);
     if(!ts) return '';
-    try{ return new Date(ts).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}); }catch(e){ return ''; }
+    try{ return new Date(ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true,timeZone:'Asia/Kolkata'}); }catch(e){ return ''; }
   }
   window.appliedOnLabel=function(a,c){
     const d=appliedOnOf(a,c);
@@ -13750,7 +13755,7 @@ a.rec-nav-link{text-decoration:none}
    * It goes in the date cell rather than in a new column, so no table
    * changes shape.
    */
-  const TL_SOURCE_LABEL={naukri:'Naukri',shine:'Shine',portal:'Portal',
+  const TL_SOURCE_LABEL={naukri:'Naukri',shine:'Shine',portal:'TeamLink Portal',teamlink:'TeamLink Portal',
     referral:'Referral',walkin:'Walk-in',rediscovery:'Rediscovery',external:'External'};
   window.tlSourceTag=function(a){
     const raw=String((a&&a.source)||'').trim();
@@ -13767,7 +13772,8 @@ a.rec-nav-link{text-decoration:none}
     if(!d) return esc(String((a&&a.appliedAt)||'—'));
     const t=timeOf(a,c);
     const src=(typeof window.tlSourceTag==='function')?tlSourceTag(a):'';
-    return `<span title="Applied on ${esc(pretty(d))}${t?' at '+esc(t):''}"><b style="font-weight:700;color:var(--text)">${esc(pretty(d))}${t?`<span style="font-weight:400;color:var(--text-soft)">, ${esc(t)}</span>`:''}</b><br><span style="color:var(--text-soft)">${esc(relOf(a,c))}</span>${src?'<br>'+src:''}</span>`;
+    /* 0130: DD MMM YYYY, the time on hover (IST). */
+    return `<span class="tl-applied-on" data-applied-day="${esc(d)}" title="Applied on ${esc(pretty(d))}${t?', '+esc(t)+' IST':''}"><b style="font-weight:700;color:var(--text)">${esc(pretty(d))}</b><br><span style="color:var(--text-soft)">${esc(relOf(a,c))}</span>${src?'<br>'+src:''}</span>`;
   };
   /* stamp the exact moment on every new application */
   const prevApply2=window.applyToJob;
@@ -15228,8 +15234,8 @@ a.rec-nav-link{text-decoration:none}
             <div style="flex:1;min-width:200px">
               <div style="font-size:15.5px;font-weight:800;color:#16202c">${esc(j.title)}</div>
               <div style="font-size:12.5px;color:#7b8794">${esc(co.name||'')} · ${esc(j.location||'')}</div>
-              <div style="font-size:11.5px;color:#8a94a6;margin-top:4px">Applied: ${esc(appliedOnTxt(a,c))}</div>
-              <div class="cp-track">${typeof window.tlStageTrack==='function'
+              <div style="font-size:11.5px;color:#8a94a6;margin-top:4px">${window.TLAppliedOn?TLAppliedOn.cardLine(a):'Applied: '+esc(appliedOnTxt(a,c))}</div>
+              <div class="cp-track">${window.TLAppliedOn&&a.postingType!=='walkin'&&!(window.TLWalkinJobs&&TLWalkinJobs.isWalkin(j))?TLAppliedOn.timeline(a):typeof window.tlStageTrack==='function'
                 ? tlStageTrack({...a, stage:tlCandidateStage(a)}, { only:tlCandidateStages(),
                     audience:'candidate',
                     hint:'Updated as your application moves. You are emailed at every stage.' })
@@ -20591,8 +20597,9 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
     return createNotification({
       type:TYPES.APPLICATION_SUBMITTED, recipientId:app.candidateId, recipientRole:'candidate',
       jobId:j.id, applicationId:app.id, system:true,
-      title:'Application Submitted',
-      message:'Your application for '+j.title+' at '+co(j).name+' has been submitted successfully.',
+      title:'You applied for '+j.title,
+      message:'Your application for '+j.title+' at '+co(j).name+' has been submitted successfully.'
+        +(window.TLAppliedOn?' Applied on '+TLAppliedOn.dateTime(app.appliedAt||app.appliedTs||new Date().toISOString())+'.':''),
       metadata:{jobTitle:j.title,company:co(j).name}
     });
   }
@@ -27800,7 +27807,9 @@ table.data td .tl-af b{white-space:normal}
    ===================================================================== */
 (function(){
   var KEY='tl.appFilters.v1';
-  var EMPTY={q:'',role:'',stage:'',source:'',match:'',iv:'',exp:'',notice:'',loc:'',when:'',cv:''};
+  /* 0130: from / to are the "Applied Date" calendar (India days, YYYY-MM-DD);
+     dp is the preset it came from, kept only to light it up again. */
+  var EMPTY={q:'',role:'',stage:'',source:'',match:'',iv:'',exp:'',notice:'',loc:'',when:'',cv:'',from:'',to:'',dp:''};
 
   function cfg(){
     try{
@@ -27813,7 +27822,7 @@ table.data td .tl-af b{white-space:normal}
     }catch(e){ return Object.assign({},EMPTY); }
   }
   function save(c){ try{ sessionStorage.setItem(KEY,JSON.stringify(c)); }catch(e){} }
-  function active(c){ return Object.keys(EMPTY).some(function(k){ return c[k]; }); }
+  function active(c){ return Object.keys(EMPTY).some(function(k){ return k!=='dp'&&c[k]; }); }
 
   /* ---- reading a row ------------------------------------------------ */
 
@@ -27933,8 +27942,58 @@ table.data td .tl-af b{white-space:normal}
       if(f.cv==='yes'&&!has) return false;
       if(f.cv==='no'&&has) return false;
     }
+
+    /* 0130: Applied Date - the application's own applied_at, as an India day. */
+    if(skip!=='date'&&(f.from||f.to)){
+      var day=appliedDay(a);
+      if(!day) return false;
+      if(f.from&&day<f.from) return false;
+      if(f.to&&day>f.to) return false;
+    }
     return true;
   }
+
+  function appliedDay(a){
+    try{
+      if(window.TLAppliedOn){ var iso=TLAppliedOn.appliedIso(a); return iso?TLAppliedOn.istDay(iso):''; }
+    }catch(e){}
+    return String((a&&a.appliedOn)||'').slice(0,10);
+  }
+
+  /* ---- Applied On: newest first unless the recruiter turns it ------- */
+  var SORT_KEY='tl.appSort.v1';
+  function sortDir(){ try{ return sessionStorage.getItem(SORT_KEY)==='asc'?'asc':'desc'; }catch(e){ return 'desc'; } }
+  window.tlAppSortDir=sortDir;
+  window.tlAppSortToggle=function(){
+    try{ sessionStorage.setItem(SORT_KEY,sortDir()==='asc'?'desc':'asc'); }catch(e){}
+    if(typeof render==='function') render();
+  };
+  window.tlAppSortRows=function(list){
+    var out=(typeof window.sortAppsNewestFirst==='function')?sortAppsNewestFirst(list):(list||[]).slice();
+    return sortDir()==='asc'?out.reverse():out;
+  };
+  window.tlAppSortHead=function(){
+    var asc=sortDir()==='asc';
+    return '<th class="tl-sortable" aria-sort="'+(asc?'ascending':'descending')+'" tabindex="0" '+
+      'title="Sorted by Applied On, '+(asc?'oldest':'newest')+' first. Click to reverse." '+
+      'onclick="tlAppSortToggle()" onkeydown="if(event.key===&quot;Enter&quot;){event.preventDefault();tlAppSortToggle()}">'+
+      'Applied On <span class="tl-sort-ar" aria-hidden="true">'+(asc?'▲':'▼')+'</span><span class="th-sub">Date · Source</span></th>';
+  };
+
+  /* ---- the rows on screen, for the export ("only the filtered ones") --
+     The table is the filtered list (company scope, every filter, never
+     paged), so the export takes exactly the applications it shows. */
+  window.tlAppFilteredRows=function(){
+    var byId={};
+    (DATA.applications||[]).forEach(function(a){ byId[a.id]=a; });
+    return [].slice.call(document.querySelectorAll('.tl-apps-wrap tbody tr[data-app-id]')).map(function(tr){
+      var id=tr.getAttribute('data-app-id');
+      if(byId[id]) return byId[id];
+      var m=/^primary__(.+)$/.exec(id||'');
+      return m?{id:id,candidateId:m[1]}:null;
+    }).filter(Boolean);
+  };
+  window.tlAppFilterState=function(){ var f=cfg(); delete f.dp; return f; };
 
   /* ---- the list the page renders ------------------------------------ */
 
@@ -28013,6 +28072,14 @@ table.data td .tl-af b{white-space:normal}
     if(typeof render==='function') render();
   };
 
+  window.tlAppFilterDate=function(sel){
+    var c=cfg(); sel=sel||{};
+    c.from=String(sel.from||''); c.to=String(sel.to||sel.from||''); c.dp=c.from?String(sel.preset||''):'';
+    if(!c.from) c.to='';
+    save(c);
+    if(typeof render==='function') render();
+  };
+
   window.tlAppFilterHtml=function(companyId){
     var f=cfg();
     var rows=allRows(companyId).map(function(a){
@@ -28058,7 +28125,7 @@ table.data td .tl-af b{white-space:normal}
     var open=openExtra||extraOn>0;   /* never hide a filter that is doing something */
 
     var html='<div class="tlaf"><div class="hd"><b>Filter these applications</b>'+
-      '<span class="n">showing '+shown+' of '+rows.length+'</span>'+
+      '<span class="n tlaf-count" aria-live="polite"><b>'+shown+' application'+(shown===1?'':'s')+'</b> · showing '+shown+' of '+rows.length+'</span>'+
       '<button type="button" class="clr" onclick="tlAppFilterClear()"'+
         (active(f)?'':' disabled')+'>Clear filters</button></div>'+
       '<div class="row">'+
@@ -28069,7 +28136,7 @@ table.data td .tl-af b{white-space:normal}
     html+=sel('role','Applied for',roles,rows,f,function(r){ return (r.j&&r.j.title)||null; });
     html+=sel('stage','Stage',stages,rows,f,function(r){ return String((r.a&&r.a.stage)||'applied'); });
     html+=sel('source','Came from',[
-      ['naukri','Naukri'],['shine','Shine'],['teamlink','Applied on the portal'],
+      ['naukri','Naukri'],['shine','Shine'],['teamlink','TeamLink Portal'],
       ['mail','Mailbox'],['referral','Referral'],
     ],rows,f,function(r){ return String((r.a&&r.a.source)||'teamlink'); });
     html+=sel('match','AI match',[
@@ -28078,6 +28145,11 @@ table.data td .tl-af b{white-space:normal}
     ],rows,f,function(r){
       var m=num(r.a&&r.a.matchScore); return m==null?'none':band(m,MATCH);
     });
+    /* 0130: Applied Date, a calendar, next to the others (AND with them). */
+    if(window.TLDateRange){
+      html+='<div class="fld tlaf-date"><i>Applied Date</i>'+TLDateRange.field('appDate',{
+        from:f.from,to:f.to,preset:f.dp,title:'Applied Date',placeholder:'Any date',onChange:tlAppFilterDate})+'</div>';
+    }
 
     html+='<button type="button" class="more'+(open?' on':'')+'" '+
       'onclick="tlAppFilterMore()" aria-expanded="'+(open?'true':'false')+'">'+
@@ -28121,6 +28193,32 @@ table.data td .tl-af b{white-space:normal}
         'placeholder="e.g. Hyderabad" autocomplete="off" '+
         'oninput="tlAppFilterSet(\'loc\',this.value)"></div>';
       html+='</div>';
+    }
+    /* 0130: what is switched on, one removable chip each, and Clear all. */
+    if(active(f)){
+      var stageName=function(id){ var r=(DATA.stages||[]).filter(function(x){ return x.id===id; })[0]; return (r&&r.label)||id; };
+      var SRC={naukri:'Naukri',shine:'Shine',teamlink:'TeamLink Portal',mail:'Mailbox',referral:'Referral'};
+      var LBL={match:{'75':'75% and above','50':'50 – 74%','25':'25 – 49%','0':'Under 25%','none':'Not screened yet'},
+        iv:{done:'Completed',pending:'Not taken yet','75':'Scored 75% +','50':'Scored 50 – 74%',low:'Scored under 50%'},
+        exp:{'10':'10 years +','5':'5 – 9 years','2':'2 – 4 years','0':'Under 2 years',none:'Not stated'},
+        notice:{now:'Immediate or 15 days',serving:'Serving notice','1m':'1 month','2m':'2 months +',none:'Not stated'},
+        when:{'1':'Today or yesterday','7':'Last 7 days','30':'Last 30 days',old:'Older'},cv:{yes:'Resume on file',no:'No resume'}};
+      var chips=[];
+      var chip=function(text,js){ chips.push('<span class="tlaf-chip" role="listitem">'+E(text)+'<button type="button" aria-label="Remove '+E(text)+'" onclick="'+js+'">✕</button></span>'); };
+      if(f.q) chip('Search: '+f.q,"tlAppFilterSearch('')");
+      if(f.role) chip('Applied for: '+f.role,"tlAppFilterSet('role','')");
+      if(f.stage) chip('Stage: '+stageName(f.stage),"tlAppFilterSet('stage','')");
+      if(f.source) chip('Came from: '+(SRC[f.source]||f.source),"tlAppFilterSet('source','')");
+      if(f.match) chip('AI match: '+(LBL.match[f.match]||f.match),"tlAppFilterSet('match','')");
+      if(f.from) chip('Applied Date: '+(window.TLDateRange?TLDateRange.label({from:f.from,to:f.to}):f.from+' - '+f.to),"tlAppFilterDate(null)");
+      if(f.iv) chip('AI interview: '+(LBL.iv[f.iv]||f.iv),"tlAppFilterSet('iv','')");
+      if(f.exp) chip('Experience: '+(LBL.exp[f.exp]||f.exp),"tlAppFilterSet('exp','')");
+      if(f.notice) chip('Notice: '+(LBL.notice[f.notice]||f.notice),"tlAppFilterSet('notice','')");
+      if(f.when) chip('Applied: '+(LBL.when[f.when]||f.when),"tlAppFilterSet('when','')");
+      if(f.cv) chip(LBL.cv[f.cv]||f.cv,"tlAppFilterSet('cv','')");
+      if(f.loc) chip('Place: '+f.loc,"tlAppFilterSet('loc','')");
+      html+='<div class="tlaf-chips" role="list" aria-label="Filters in use">'+chips.join('')+
+        '<button type="button" class="tlaf-clearall" onclick="tlAppFilterClear()">Clear all</button></div>';
     }
     if(active(f)&&!shown){
       html+='<div class="none">No application matches these filters. '+
@@ -29138,7 +29236,8 @@ table.data td .tl-af b{white-space:normal}
 
   window.tpClear = function(){
     var s = st();
-    ['q','skills','location','noticePeriod','exp','status','jobId','contacted','applied','stage']
+    ['q','skills','location','noticePeriod','exp','status','jobId','contacted','applied','stage',
+     'addedFrom','addedTo','appliedFrom','appliedTo']
       .forEach(function(k){ s[k]=''; });
     if(typeof tlLocState==='function'){ var tl=tlLocState('tpLoc'); tl.tags=[]; tl.km=''; tl.q=''; }
     s.offset = 0; s.picked = {};
@@ -29155,7 +29254,36 @@ table.data td .tl-af b{white-space:normal}
   function anyFilter(){
     var s = st();
     return !!(s.q||s.skills||s.location||s.noticePeriod||s.exp||s.status||s.jobId||s.contacted
-      ||s.applied||s.stage);
+      ||s.applied||s.stage||s.addedFrom||s.appliedFrom);
+  }
+
+  /* 0130: "Added on" and "Applied on" - the shared calendar, India days. */
+  window.tpSetDates = function(which, sel){
+    var s = st(); sel = sel || {};
+    s[which+'From'] = sel.from || '';
+    s[which+'To'] = sel.from ? (sel.to || sel.from) : '';
+    s[which+'Preset'] = sel.from ? (sel.preset || '') : '';
+    s.offset = 0;
+    tpLoad();
+  };
+  function dateFld(which, title){
+    var s = st();
+    if(!window.TLDateRange) return '';
+    return '<div class="tp-f tp-date'+(s[which+'From']?' on':'')+'"><i>'+E(title)+'</i>'+TLDateRange.field('tp_'+which, {
+      from:s[which+'From'], to:s[which+'To'], preset:s[which+'Preset'], title:title, placeholder:'Any date',
+      onChange:function(sel){ tpSetDates(which, sel); } })+'</div>';
+  }
+  function dateChips(){
+    var s = st();
+    if(!window.TLDateRange || !(s.addedFrom || s.appliedFrom)) return '';
+    var chip = function(text, which){
+      return '<span class="tlaf-chip" role="listitem">'+E(text)+'<button type="button" aria-label="Remove '+E(text)+'" '
+        + 'onclick="tpSetDates(\''+which+'\',null)">✕</button></span>';
+    };
+    return '<div class="tlaf-chips tp-date-chips" role="list" aria-label="Date filters in use">'
+      + (s.addedFrom ? chip('Added on: '+TLDateRange.label({from:s.addedFrom,to:s.addedTo}), 'added') : '')
+      + (s.appliedFrom ? chip('Applied on: '+TLDateRange.label({from:s.appliedFrom,to:s.appliedTo}), 'applied') : '')
+      + '<button type="button" class="tlaf-clearall" onclick="tpClear()">Clear all</button></div>';
   }
 
   window.tpLoad = function(){
@@ -29191,6 +29319,8 @@ table.data td .tl-af b{white-space:normal}
     if(s.applied) p.push('applied='+encodeURIComponent(s.applied));
     if(s.stage) p.push('stage='+encodeURIComponent(s.stage));
     if(s.jobId) p.push('jobId='+encodeURIComponent(s.jobId));
+    if(s.addedFrom) p.push('addedFrom='+s.addedFrom, 'addedTo='+(s.addedTo||s.addedFrom));
+    if(s.appliedFrom) p.push('appliedFrom='+s.appliedFrom, 'appliedTo='+(s.appliedTo||s.appliedFrom));
     if(s.contacted === 'never') p.push('neverContacted=true');
     else if(s.contacted === '7' || s.contacted === '30') p.push('contactedWithinDays='+s.contacted);
     else if(s.contacted === 'cold30') p.push('notContactedForDays=30');
@@ -29535,7 +29665,9 @@ table.data td .tl-af b{white-space:normal}
       + fld('contacted','Last contacted','', sel('contacted', s.contacted,
           [['','Any'],['never','Never contacted'],['7','In the last 7 days'],
            ['30','In the last 30 days'],['cold30','Not for 30 days'],['cold90','Not for 90 days']]))
-      + '</div></div>';
+      + dateFld('added','Added on')
+      + dateFld('applied','Applied on')
+      + '</div>' + dateChips() + '</div>';
 
     var selbar = picked.length
       ? '<div class="tp-sel"><b>'+picked.length+' selected</b>'
@@ -30273,6 +30405,8 @@ table.data td .tl-af b{white-space:normal}
     }
     if(s.status) p.push('poolStatus=' + encodeURIComponent(s.status));
     if(s.jobId) p.push('jobId=' + encodeURIComponent(s.jobId));
+    if(s.addedFrom) p.push('addedFrom='+s.addedFrom, 'addedTo='+(s.addedTo||s.addedFrom));
+    if(s.appliedFrom) p.push('appliedFrom='+s.appliedFrom, 'appliedTo='+(s.appliedTo||s.appliedFrom));
     if(s.contacted === 'never') p.push('neverContacted=true');
     else if(s.contacted === '7' || s.contacted === '30') p.push('contactedWithinDays=' + s.contacted);
     else if(s.contacted === 'cold30') p.push('notContactedForDays=30');
@@ -30422,6 +30556,9 @@ table.data td .tl-af b{white-space:normal}
 <script src="teamlink-job-source-guard.js"></script>
 <!-- One-click Apply Now (0118): signed in, the application is created at once ("Application Submitted Successfully", the Application ID); signed out, Email / Mobile -> sign in or register -> submitted automatically. No questionnaire on the way. The outermost Apply wrapper. -->
 <script src="teamlink-one-click-apply.js"></script>
+<!-- 0130: the "Applied Date" calendar (one component: recruiter Applications, Talent Pool, candidate Applications) and the applied date everywhere (IST). -->
+<script src="teamlink-date-range.js"></script>
+<script src="teamlink-applied-on.js"></script>
 <!-- 0118: Teams (admin) and My Team (team lead) -->
 <script src="teamlink-teams.js"></script>
 <!-- 0119: Admin -> Audit Log -->

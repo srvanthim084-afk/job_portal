@@ -23,6 +23,7 @@ import { matchCandidate } from '../ai/match.js';
 import { screenApplication } from '../ai/screening.js';
 import { applyScreeningAnswers, storeApplyScreening } from '../screening/apply.js';
 import { hiddenError } from '../scope.js';
+import { istDateTime, appliedRangeSql, sourceLabel } from '../applied-date.js';
 
 const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
 
@@ -66,18 +67,22 @@ export default function applicationRoutes() {
     const limit  = Math.min(parseInt(req.query.limit, 10) || 200, 500);
     const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
     const { jobId, candidateId, stage } = req.query;
+    // 0130: "Applied Date" - India days, both ends inclusive - and the order.
+    const order = req.query.sort === 'applied_asc' ? 'applied_at asc, id' : 'applied_at desc, id desc';
 
     const out = await withUser(req.session, async (c) => {
       const where = [], params = [];
       if (jobId)       { params.push(jobId);       where.push(`job_id=$${params.length}`); }
       if (candidateId) { params.push(candidateId); where.push(`candidate_id=$${params.length}`); }
       if (stage)       { params.push(stage);       where.push(`stage=$${params.length}`); }
+      where.push(...appliedRangeSql('applied_at', req.query.from, req.query.to,
+        (v) => { params.push(v); return `$${params.length}`; }));
       const clause = where.length ? `where ${where.join(' and ')}` : '';
       const total = await c.query(`select count(*)::int n from applications ${clause}`, params);
       params.push(limit, offset);
       const rows = await c.query(
         `select * from applications ${clause}
-         order by applied_at desc limit $${params.length - 1} offset $${params.length}`, params);
+         order by ${order} limit $${params.length - 1} offset $${params.length}`, params);
       return { total: total.rows[0].n, rows: rows.rows };
     });
 
@@ -120,7 +125,7 @@ export default function applicationRoutes() {
 
     const out = await withUser(req.session, async (c) => {
       const job = await c.query(
-        `select id, title, company_id, employment_type, posting_kind, status, paused, archived, source_type
+        `select id, title, company_id, employment_type, posting_kind, status, paused, archived, source_type, recruiter_id
            from jobs where id=$1`, [body.jobId]);
       if (!job.rowCount) throw new ApiError(404, CODES.JOB_UNAVAILABLE, 'This role is no longer available.');
       const j = job.rows[0];
@@ -171,8 +176,10 @@ export default function applicationRoutes() {
        * which is what candidates and the alerts see.
        */
       let matchScore = null;
+      let candName = '';
       try {
         const cand = (await c.query(`select * from candidates where id=$1`, [candidateId])).rows[0];
+        candName = (cand && cand.name) || '';
         if (cand) matchScore = matchCandidate(toJob(j), toCandidate(cand)).score;
       } catch (err) {
         console.error('[applications] could not score the match:', err.message);
@@ -204,13 +211,35 @@ export default function applicationRoutes() {
       // Same transaction — see the header note.
       const company = await c.query(`select name from companies where id=$1`, [j.company_id]);
       const coName = company.rows[0]?.name || 'the company';
+      // 0130: both notices carry the applied date and time (IST), from
+      // the row's own applied_at - the one value every screen shows.
+      const appliedAt = ins.rows[0].applied_at;
+      const appliedText = istDateTime(appliedAt);
       const notif = await c.query(
         `select notify_create($1,$2,'candidate','APPLICATION_SUBMITTED',$3,$4,$5,$6,$7,null,$8) as id`,
         [newId('ntf'), candidateId,
-         'Application Submitted',
-         `Your application for ${j.title} at ${coName} has been submitted successfully.`,
+         `You applied for ${j.title}`,
+         `Your application for ${j.title} at ${coName} has been submitted successfully. Applied on ${appliedText}.`,
          j.id, id, candidateId,
-         JSON.stringify({ jobTitle: j.title, company: coName })]);
+         JSON.stringify({ jobTitle: j.title, company: coName, appliedAt: new Date(appliedAt).toISOString() })]);
+
+      // The recruiter who owns the job (or the application's own
+      // recruiter) hears about it at once: "<candidate> applied for <job>".
+      // Same transaction, so an Undo takes it away with the application.
+      const owner = ins.rows[0].recruiter_id || j.recruiter_id;
+      if (owner) {
+        const src = sourceLabel(ins.rows[0].source);
+        await c.query(
+          `select notify_create($1,$2,'recruiter','APPLICATION_RECEIVED',$3,$4,$5,$6,$7,$2,$8)`,
+          [newId('ntf'), owner,
+           `${candName || 'A candidate'} applied for ${j.title}`,
+           `${candName || 'A candidate'} applied for ${j.title}. Applied on ${appliedText}. `
+             + `Came from: ${src}.` + (matchScore != null ? ` AI Match ${Math.round(matchScore)}%.` : ''),
+           j.id, id, candidateId,
+           JSON.stringify({ jobTitle: j.title, candidateName: candName, source: src,
+             matchScore, reference: ins.rows[0].reference || null,
+             appliedAt: new Date(appliedAt).toISOString() })]);
+      }
 
       let notification = null;
       if (notif.rows[0]?.id) {

@@ -270,15 +270,49 @@
   /* ================================================================== *
    * MY APPLICATIONS: history (search + pages) on the existing cards
    * ================================================================== */
-  var HIST = { q: '', phase: '', page: 1, pageSize: 10 };
+  /* 0130: from / to (the "Applied Date" calendar, India days) and the
+     order - latest applied first unless the candidate asks for the oldest. */
+  var HIST = { q: '', phase: '', page: 1, pageSize: 10, from: '', to: '', preset: '', sort: 'latest' };
   function histPath() {
     return '/candidate/applications/history?page=' + HIST.page + '&pageSize=' + HIST.pageSize
-      + (HIST.q ? '&q=' + encodeURIComponent(HIST.q) : '') + (HIST.phase ? '&phase=' + encodeURIComponent(HIST.phase) : '');
+      + (HIST.q ? '&q=' + encodeURIComponent(HIST.q) : '') + (HIST.phase ? '&phase=' + encodeURIComponent(HIST.phase) : '')
+      + (HIST.from ? '&from=' + HIST.from : '') + (HIST.to ? '&to=' + HIST.to : '')
+      + (HIST.sort === 'oldest' ? '&sort=oldest' : '');
   }
   var histSearch = debounce(function (v) { HIST.q = String(v || '').trim(); HIST.page = 1; paintApplications(); }, 300);
   window.tlY2HistQ = function (v) { histSearch(v); };
   window.tlY2HistPhase = function (v) { HIST.phase = v; HIST.page = 1; paintApplications(); };
   window.tlY2HistPage = function (d) { HIST.page = Math.max(1, HIST.page + d); paintApplications(); };
+  window.tlY2HistSort = function (v) { HIST.sort = v === 'oldest' ? 'oldest' : 'latest'; HIST.page = 1; paintApplications(); };
+  window.tlY2HistDate = function (sel) {
+    sel = sel || {};
+    HIST.from = sel.from || ''; HIST.to = HIST.from ? (sel.to || sel.from) : ''; HIST.preset = HIST.from ? (sel.preset || '') : '';
+    HIST.page = 1;
+    var old = document.getElementById('tlY2AppTools'); if (old) old.remove();   // redrawn with the new field
+    paintApplications();
+  };
+  /* One chip off, or all of them. */
+  window.tlY2HistClear = function (k) {
+    if (!k || k === 'q') HIST.q = '';
+    if (!k || k === 'phase') HIST.phase = '';
+    if (!k || k === 'date') { HIST.from = ''; HIST.to = ''; HIST.preset = ''; }
+    HIST.page = 1;
+    var old = document.getElementById('tlY2AppTools'); if (old) old.remove();
+    paintApplications();
+  };
+  var PHASES = [['applied', 'Applied'], ['under_review', 'Under Review'], ['shortlisted', 'Shortlisted'], ['interview', 'Interview'], ['offer', 'Offer'],
+    ['hired', 'Hired'], ['rejected', 'Rejected'], ['hold', 'On Hold']];
+  function histChips() {
+    var chips = [];
+    var chip = function (text, k) {
+      chips.push('<span class="tlao-chip" role="listitem">' + h(text) + '<button type="button" aria-label="Remove ' + h(text) + '" onclick="tlY2HistClear(\'' + k + '\')">✕</button></span>');
+    };
+    if (HIST.q) chip('Search: ' + HIST.q, 'q');
+    if (HIST.phase) chip('Status: ' + ((PHASES.filter(function (p) { return p[0] === HIST.phase; })[0] || [])[1] || HIST.phase), 'phase');
+    if (HIST.from && window.TLDateRange) chip('Applied Date: ' + TLDateRange.label({ from: HIST.from, to: HIST.to }), 'date');
+    return chips.length ? '<div class="tlao-chips" id="tlY2AppChips" role="list" aria-label="Filters in use">' + chips.join('')
+      + '<button type="button" class="tlao-clearall" onclick="tlY2HistClear(\'\')">Clear all</button></div>' : '';
+  }
 
   function paintApplications() {
     var wrap = document.querySelector('.cp-wrap');
@@ -290,21 +324,37 @@
     });
     var tools = document.getElementById('tlY2AppTools');
     if (!tools) {
-      var sub = Array.prototype.filter.call(wrap.children, function (el) { return /applications? · newest first/.test(el.textContent || ''); })[0];
+      var sub = Array.prototype.filter.call(wrap.children, function (el) { return /applications? · (newest|oldest) first/.test(el.textContent || ''); })[0];
       var html = '<div id="tlY2AppTools" class="tly2-tools">'
         + '<input type="search" id="tlY2HistQ" placeholder="Search by job, company or Application ID" aria-label="Search your applications" value="' + h(HIST.q) + '" oninput="tlY2HistQ(this.value)">'
         + '<select id="tlY2HistPhase" aria-label="Filter by status" onchange="tlY2HistPhase(this.value)">'
         + '<option value="">All statuses</option>'
-        + [['applied', 'Applied'], ['under_review', 'Under Review'], ['shortlisted', 'Shortlisted'], ['interview', 'Interview'], ['offer', 'Offer'],
-          ['hired', 'Hired'], ['rejected', 'Rejected'], ['hold', 'On Hold']].map(function (p) {
+        + PHASES.map(function (p) {
           return '<option value="' + p[0] + '"' + (HIST.phase === p[0] ? ' selected' : '') + '>' + p[1] + '</option>';
         }).join('')
-        + '</select><span id="tlY2HistInfo" class="tly2-info" aria-live="polite"></span>'
+        + '</select>'
+        + (window.TLDateRange ? '<span class="tly2-date" id="tlY2HistDate"><span class="tly2-dl">Applied Date</span>'
+          + TLDateRange.field('candAppDate', { from: HIST.from, to: HIST.to, preset: HIST.preset, title: 'Applied Date', placeholder: 'Any date', onChange: window.tlY2HistDate }) + '</span>' : '')
+        + '<select id="tlY2HistSort" aria-label="Sort applications" onchange="tlY2HistSort(this.value)">'
+        + '<option value="latest"' + (HIST.sort !== 'oldest' ? ' selected' : '') + '>Latest applied first</option>'
+        + '<option value="oldest"' + (HIST.sort === 'oldest' ? ' selected' : '') + '>Oldest first</option></select>'
+        + '<span id="tlY2HistInfo" class="tly2-info" aria-live="polite"></span>'
         + '<span class="tly2-pager"><button class="cp-btn" id="tlY2Prev" onclick="tlY2HistPage(-1)">‹ Prev</button><button class="cp-btn" id="tlY2Next" onclick="tlY2HistPage(1)">Next ›</button></span></div>';
       if (sub) sub.insertAdjacentHTML('afterend', html);
       else if (cards[0]) cards[0].insertAdjacentHTML('beforebegin', html);
       else return;
       tools = document.getElementById('tlY2AppTools');
+    }
+    /* the chips follow the filters, typing included */
+    var chipsHtml = histChips();
+    var chipsEl = document.getElementById('tlY2AppChips');
+    if (!chipsHtml) { if (chipsEl) chipsEl.remove(); }
+    else if (!chipsEl) tools.insertAdjacentHTML('afterend', chipsHtml);
+    else if (chipsEl.outerHTML !== chipsHtml) chipsEl.outerHTML = chipsHtml;
+    var sub2 = Array.prototype.filter.call(wrap.children, function (el) { return /applications? · (newest|oldest) first/.test(el.textContent || ''); })[0];
+    if (sub2) {
+      var want = HIST.sort === 'oldest' ? 'oldest first' : 'newest first';
+      if (sub2.textContent.indexOf(want) < 0) sub2.textContent = sub2.textContent.replace(/(newest|oldest) first/, want);
     }
     if (!d) return;
     var byJob = {};
@@ -329,9 +379,25 @@
         host.insertAdjacentHTML('beforeend', html);
       }
     });
+    /* 0130: the cards in the order asked for (latest or oldest applied first). */
+    var order = (d.rows || []).map(function (r) { return r.jobId; });
+    var shown = cards.filter(function (c) { return c.style.display !== 'none'; });
+    var jobOfCard = function (c) { var m = /navigate\('\/job\/([^']+)'\)/.exec(c.innerHTML); return m ? m[1] : ''; };
+    var now = shown.map(jobOfCard);
+    var want = order.filter(function (j) { return now.indexOf(j) >= 0; });
+    if (want.join('|') !== now.join('|') && shown.length) {
+      var at = shown[0].previousElementSibling;
+      want.forEach(function (j) {
+        var card = shown.filter(function (c) { return jobOfCard(c) === j; })[0];
+        if (!card) return;
+        if (at) at.insertAdjacentElement('afterend', card); else wrap.insertAdjacentElement('afterbegin', card);
+        at = card;
+      });
+    }
     var info = document.getElementById('tlY2HistInfo');
     var pages = Math.max(1, Math.ceil((d.total || 0) / d.pageSize));
-    if (info) info.textContent = d.total ? ('Showing ' + ((d.page - 1) * d.pageSize + 1) + '–' + Math.min(d.total, d.page * d.pageSize) + ' of ' + d.total) : 'No applications match.';
+    if (info) info.textContent = d.total ? (d.total + ' application' + (d.total === 1 ? '' : 's')
+      + ' · showing ' + ((d.page - 1) * d.pageSize + 1) + '–' + Math.min(d.total, d.page * d.pageSize) + ' of ' + d.total) : 'No applications match.';
     var prev = document.getElementById('tlY2Prev'), next = document.getElementById('tlY2Next');
     if (prev) prev.disabled = d.page <= 1;
     if (next) next.disabled = d.page >= pages;
@@ -445,6 +511,9 @@
     var shown = tl.slice(0, REC.tl);
     var timeline = '<div class="panel" id="tlY2Timeline" style="margin-bottom:16px"><div class="panel-head"><div><h2>Candidate timeline</h2><div class="desc">Registered → profile and resume → applications → interviews → offer → hired, from what actually happened.</div></div></div>'
       + '<div class="panel-body"><ol class="tly2-tl">' + (shown.length ? shown.map(function (ev) {
+        /* 0130: "Applied for <job> on <date>" says it whole. */
+        if (ev.text) return '<li class="k-' + h(ev.kind) + '"><span class="t">' + h(fmtWhen(ev.at)) + '</span><b>' + h(ev.text) + '</b>'
+          + (ev.detail ? '<div class="d">' + h(ev.detail) + '</div>' : '') + '</li>';
         return '<li class="k-' + h(ev.kind) + '"><span class="t">' + h(fmtWhen(ev.at)) + '</span><b>' + h(ev.label) + '</b>'
           + (ev.job ? ' <span class="j">· ' + h(ev.job) + '</span>' : '') + (ev.detail ? '<div class="d">' + h(ev.detail) + '</div>' : '') + '</li>';
       }).join('') : '<li>Nothing recorded yet.</li>') + '</ol>'
@@ -708,6 +777,11 @@
     + '.tly2-tools input,.tly2-tools select{border:1px solid #dde4ec;border-radius:8px;padding:8px 10px;font:inherit;font-size:12.5px;background:#fff;min-width:0}'
     + '.tly2-tools input{flex:1 1 220px}'
     + '.tly2-info{font-size:12px;color:#7b8794}.tly2-pager{display:flex;gap:6px;margin-left:auto}'
+    /* 0130: the Applied Date field and the sort */
+    + '.tly2-date{display:inline-flex;align-items:center;gap:6px;min-width:0}.tly2-dl{font-size:12px;font-weight:700;color:#42505f;white-space:nowrap}'
+    + '.tly2-tools .tldr-btn{font-size:12.5px;min-height:35px}#tlY2AppChips{margin:-4px 0 12px}'
+    + '.tly2-info{font-weight:700;color:#42505f}'
+    + '@media (max-width:640px){.tly2-date{flex:1 1 100%}.tly2-date .tldr-field{flex:1}.tly2-tools select{flex:1 1 45%}}'
     + '.tly2-hist{display:flex;gap:6px 14px;flex-wrap:wrap;font-size:12px;color:#26313f;margin-top:9px;padding-top:8px;border-top:1px dashed #e6ebf2}'
     + '.tly2-hist .k{color:#8a94a6;font-weight:700}.tly2-open{color:var(--cap-blue,#1d6ff2);font-weight:700;cursor:pointer}'
     + '.tly2-kv{grid-template-columns:repeat(4,minmax(0,1fr))}'

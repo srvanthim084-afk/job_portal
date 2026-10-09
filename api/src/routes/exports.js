@@ -48,6 +48,7 @@ import { requireAuth, requireRole } from '../auth.js';
 import { writeSheet, makeZip } from '../xlsx.js';
 import { getStorage } from '../storage.js';
 import { SCREENING_COLUMNS, presentScreening } from '../screening/export.js';
+import { istDateTime } from '../applied-date.js';
 
 /* ------------------------------------------------------------------ *
  * what a column is
@@ -62,7 +63,8 @@ const COLUMNS = {
   email:             { label: 'Email',              col: 'c.email' },
   phone:             { label: 'Phone',              col: 'c.phone' },
   appliedFor:        { label: 'Applied For',        col: 'ap.job_title' },
-  appliedOn:         { label: 'Applied On',         col: 'ap.applied_on' },
+  /* 0130: the application's own timestamp, written out in IST. */
+  appliedOn:         { label: 'Applied On',         col: 'ap.applied_at' },
   stage:             { label: 'Stage',              col: 'ap.stage' },
   matchPercent:      { label: 'AI Match %',         col: 'ap.match_score' },
   cameFrom:          { label: 'Came From',          col: 'c.source' },
@@ -134,6 +136,10 @@ const jobSchema = selectionSchema.extend({
 
 const listSchema = selectionSchema.extend({
   format: z.enum(['csv', 'xlsx']).default('csv'),
+  /* 0130: the Applications screen exports the applications it is
+     showing - one row each, exactly the filtered ones - rather than each
+     candidate's latest. Optional: every other caller is unchanged. */
+  applicationIds: z.array(z.string().max(80)).min(1).max(5000).optional(),
   columns: z.array(z.string().max(40)).min(1).max(40).optional(),
 });
 
@@ -165,7 +171,7 @@ function present(key, row) {
   if (Array.isArray(v)) return v.join(', ');
   if (key === 'expectedSalary') return `${v} LPA`;
   if (key === 'matchPercent') return `${v}%`;
-  if (key === 'appliedOn') return String(v).slice(0, 10);
+  if (key === 'appliedOn') return istDateTime(v) || String(v).slice(0, 10);
   if (key === 'resumeLink') {
     /* The FILE NAME, and whether there is one. Not a URL: a link in a
        spreadsheet that anybody who opens the file can follow is a way
@@ -191,7 +197,7 @@ const keyToAlias = (k) => `x_${k}`;
  * a talent-pool candidate who has never applied is still exportable and
  * those three cells are simply empty for them.
  */
-async function readRows(session, ids, columns) {
+async function readRows(session, ids, columns, applicationIds) {
   const select = columns
     /* Quoted: an unquoted alias is folded to lower case by Postgres, so
        x_appliedFor came back as x_appliedfor and every camelCase column
@@ -200,10 +206,32 @@ async function readRows(session, ids, columns) {
     .join(',\n           ');
 
   return withUser(session, async (c) => {
+    if (applicationIds && applicationIds.length) {
+      /* RLS on applications decides which of these this person may see. */
+      const { rows } = await c.query(
+        `with ap as (
+           select a.candidate_id, a.stage, a.match_score, a.applied_on, a.applied_at, a.id as app_id,
+                  j.title as job_title
+             from applications a
+             left join jobs j on j.id = a.job_id
+            where a.id = any($1::text[])
+         )
+         select c.id as x_id,
+                c.resume_storage_path as x_path,
+                c.resume_file as x_file,
+                c.resume_mime as x_mime,
+                c.name as x_name,
+                ${select}
+           from ap
+           join candidates c on c.id = ap.candidate_id
+          order by ap.applied_at desc, ap.app_id`,
+        [applicationIds]);
+      return rows;
+    }
     const { rows } = await c.query(
       `with latest as (
          select distinct on (a.candidate_id)
-                a.candidate_id, a.stage, a.match_score, a.applied_on, a.id as app_id,
+                a.candidate_id, a.stage, a.match_score, a.applied_on, a.applied_at, a.id as app_id,
                 j.title as job_title
            from applications a
            left join jobs j on j.id = a.job_id
@@ -390,7 +418,7 @@ export default function exportRoutes() {
     const columns = (body.columns || DEFAULT_COLUMNS).filter((k) => COLUMNS[k]);
     if (!columns.length) throw badRequest('Choose at least one column to export.');
 
-    const rows = await readRows(req.session, body.ids, columns);
+    const rows = await readRows(req.session, body.ids, columns, body.applicationIds);
 
     await audit(req, {
       kind: body.format === 'xlsx' ? 'list_xlsx' : 'list_csv',

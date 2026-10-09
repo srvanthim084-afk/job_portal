@@ -95,6 +95,7 @@
       + '.tl1c-toast .ic{flex:0 0 auto;width:22px;height:22px;border-radius:50%;background:#19b394;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800}'
       + '.tl1c-toast.bad .ic{background:#e0594f}'
       + '.tl1c-toast .tx{flex:1;min-width:0}.tl1c-toast .tx small{display:block;opacity:.72;font-size:11.5px;margin-top:2px}'
+      + '.tl1c-toast .tx small#tl1cSoft{opacity:.92;margin-top:5px}.tl1c-toast .tl1c-soft-go{color:#7fe3cd;font-weight:800;text-decoration:underline;cursor:pointer}'
       + '.tl1c-toast button{flex:0 0 auto;min-height:34px;padding:0 12px;border-radius:8px;border:0;background:#fff;color:#0b1220;font-weight:800;cursor:pointer;font-family:inherit;font-size:12.5px}'
       + '.tl1c-toast button.x{background:transparent;color:#fff;opacity:.7;padding:0 6px;font-size:15px}'
       /* the buttons themselves */
@@ -170,11 +171,33 @@
     var co = companyName(job);
     return 'Applied successfully to <b>' + h(job ? job.title : 'this job') + '</b>' + (co ? ' at <b>' + h(co) + '</b>' : '');
   }
+  /* 0130: an incomplete profile never stops an application; it is
+     mentioned afterwards, softly, with the way to finish it. */
+  function softProfileLine() {
+    try {
+      var c = meRow();
+      if (!c || typeof window.capCompletion !== 'function') return '';
+      var pct = window.capCompletion(c);
+      if (pct >= 100) return '';
+      return '<small id="tl1cSoft">Complete your profile to improve your chances (' + h(pct) + '% done) · '
+        + '<a href="#/candidate/profile" class="tl1c-soft-go" id="tl1cSoftGo">Complete profile</a></small>';
+    } catch (e) { return ''; }
+  }
+  function wireSoftProfile() {
+    var go1 = document.getElementById('tl1cSoftGo');
+    if (go1) go1.onclick = function (e) {
+      e.preventDefault();
+      dismissToast();
+      if (typeof window.tlpsCompleteNext === 'function') window.tlpsCompleteNext();
+      else location.hash = '#/candidate/profile';
+    };
+  }
   function showSubmitted(job, app) {
     var UNDO_MS = 5000;
     var el = showToast('tl1cDone', 'ok',
       '<span id="tl1cMsg">' + appliedMessage(job) + '</span>'
-      + (refOf(app) ? '<small>Application ID: <span id="tl1cRef">' + h(refOf(app)) + '</span></small>' : '') + walkinLine(job),
+      + (refOf(app) ? '<small>Application ID: <span id="tl1cRef">' + h(refOf(app)) + '</span></small>' : '') + walkinLine(job)
+      + softProfileLine(),
       (isWalkinJob(job) ? [{ label: '📅 Add to Calendar', id: 'tl1cCal', fn: function () {
         if (typeof window.tlwkDownloadIcs === 'function') tlwkDownloadIcs(job.id, refOf(app));
       } }] : []).concat([{ label: 'Undo', id: 'tl1cUndo', fn: function () {
@@ -183,6 +206,7 @@
           TLPortalUpgrades.undo(app).then(function () { paintButtons(app.jobId); });
         }
       } }]), isWalkinJob(job) ? 10000 : 7000);
+    wireSoftProfile();
     /* Undo is offered for five seconds, then goes (the server holds the
        application's messages for the same window and a little more). */
     setTimeout(function () { var u = document.getElementById('tl1cUndo'); if (u && el.contains(u)) u.remove(); }, UNDO_MS);

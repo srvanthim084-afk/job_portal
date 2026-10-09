@@ -1290,6 +1290,17 @@
     });
   };
 
+  /* 0130: Apply Now on an external job (teamlink-portal-external.js opens
+     the original page itself, from the click) still ends in "Did you
+     apply?" when the candidate comes back - the same return listeners,
+     queue and once-only rule as the External Jobs page's own button. */
+  window.xjArmAsk = function (out) {
+    if (!out) return;
+    if (out.applicationId) rememberPending(out.applicationId);
+    armReturnListeners();
+    if (out.application) queueAsk(out.application);
+  };
+
   /* Whatever is still unanswered, asked for on arrival - so closing the
      tab, signing out or moving to another device does not lose it. */
   window.xjAskPending = function (minutes) {
