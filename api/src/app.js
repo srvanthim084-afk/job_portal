@@ -87,6 +87,8 @@ import savedJobAlertRoutes from './routes/saved-job-alerts.js';
 import atsRecordRoutes from './routes/ats-record.js';
 import { startSavedJobAlerts } from './notify/saved-job-alerts.js';
 import jobPublishingRoutes, { publishingJobHooks, publishingPublicRoutes } from './routes/job-publishing.js';
+import integrationChannelRoutes from './routes/integration-channels.js';
+import { loadChannelOverlay } from './notify/channel-config.js';
 import { startPublishingSweep } from './publishing/service.js';
 
 /*
@@ -392,6 +394,9 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', applyFormRoutes());
   app.use('/api', portalUpgradeRoutes());
   app.use('/api', jobPublishingRoutes());
+  app.use('/api', integrationChannelRoutes());
+  /* what the administrator connected (SMTP, SMS, WhatsApp) takes over from the environment */
+  setImmediate(() => { loadChannelOverlay().catch(() => {}); });
   app.use('/api', jobRoutes());
   // Before candidateRoutes: /candidates/export must not be read as
   // /candidates/:id, which answers "that candidate could not be found".

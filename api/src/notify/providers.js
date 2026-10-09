@@ -21,6 +21,7 @@
  */
 import { config } from '../config.js';
 import { channelSettings } from './channel-settings.js';
+import { sendViaGateway } from './sms-gateways.js';
 
 const NOT_CONFIGURED = (provider, hint) => ({
   status: 'not_configured', provider, error: hint,
@@ -58,6 +59,8 @@ async function postJson(url, { headers = {}, body, timeoutMs = 8000 }) {
  * message is slow and some hosts rate-limit it.
  */
 let smtpTransport = null;
+/** The administrator changed the SMTP settings: the next send builds a new connection. */
+export function resetSmtp() { smtpTransport = null; }
 async function getSmtp() {
   if (smtpTransport) return smtpTransport;
   const { default: nodemailer } = await import('nodemailer');
@@ -65,6 +68,9 @@ async function getSmtp() {
     host: config.smtpHost,
     port: config.smtpPort,
     secure: config.smtpSecure,
+    /* Encryption chosen in Administration -> Integrations: SSL (secure), STARTTLS (required upgrade) or None */
+    requireTLS: config.smtpEncryption === 'STARTTLS',
+    ignoreTLS: config.smtpEncryption === 'None',
     auth: config.smtpUser ? { user: config.smtpUser, pass: config.smtpPass } : undefined,
     // A hung mail server must not hold a request open.
     connectionTimeout: 15_000,
@@ -374,8 +380,10 @@ export function smsBody(to, text, cfg = {}) {
 
 export const smsProvider = {
   channel: 'sms',
-  configured: () => !!(config.smsApiKey && config.smsApiUrl),
-  async send({ to, text }) {
+  /* Configured either by the environment (a generic HTTP gateway) or by the administrator
+     (Administration -> Integrations: MSG91, Fast2SMS or Twilio). */
+  configured: () => !!(config.smsApiKey && (config.smsApiUrl || config.smsGateway)),
+  async send({ to, text, purpose, vars }) {
     if (!this.configured()) {
       return NOT_CONFIGURED('sms', 'SMS_API_KEY / SMS_API_URL are not set');
     }
@@ -397,6 +405,12 @@ export const smsProvider = {
      * does not use DLT is not handed keys it will reject.
      */
     const cfg = await channelSettings('sms');
+
+    if (config.smsGateway) {
+      /* the administrator's provider (MSG91 / Fast2SMS / Twilio), with its DLT template for what this is */
+      return sendViaGateway({ provider: config.smsGateway, apiKey: config.smsApiKey, senderId: config.smsSenderId,
+        twilioSid: config.smsGatewaySid, templates: config.smsTemplates, purpose, to, text, vars });
+    }
 
     try {
       const res = await postJson(config.smsApiUrl, {
@@ -507,7 +521,7 @@ export function whatsappBody(text, cfg = {}) {
 export const whatsappProvider = {
   channel: 'whatsapp',
   configured: () => !!(config.whatsappApiKey && config.whatsappPhoneId),
-  async send({ to, text }) {
+  async send({ to, text, purpose, vars }) {
     if (!this.configured()) {
       return NOT_CONFIGURED('whatsapp', 'WHATSAPP_API_KEY / WHATSAPP_PHONE_ID are not set');
     }
@@ -529,7 +543,14 @@ export const whatsappProvider = {
      * template name configured this still sends text, because inside the
      * window that is correct and it is what a reply needs.
      */
-    const cfg = await channelSettings('whatsapp');
+    let cfg = await channelSettings('whatsapp');
+    /* The administrator's approved templates (Administration -> Integrations), by purpose. A recruiter's
+       own template name on the channels screen still wins. */
+    const purposeKey = ['agreement', 'otp'].includes(purpose) ? purpose : 'bulk';
+    const adminTemplate = config.waTemplates && config.waTemplates[purposeKey];
+    if (!cfg.templateName && adminTemplate) {
+      cfg = { ...cfg, templateName: adminTemplate, templateLanguage: config.waLanguage || cfg.templateLanguage || 'en' };
+    }
 
     try {
       // WhatsApp Cloud API shape.
@@ -539,7 +560,11 @@ export const whatsappProvider = {
         body: {
           messaging_product: 'whatsapp',
           to: String(to).replace(/[^\d+]/g, ''),
-          ...whatsappBody(text, cfg),
+          ...(cfg.templateName && purposeKey !== 'bulk' && Array.isArray(vars) && vars.length
+            /* agreement / OTP templates carry their own variables ({{1}} name, {{2}} number, {{3}} link / {{1}} code) */
+            ? { type: 'template', template: { name: cfg.templateName, language: { code: cfg.templateLanguage || 'en' },
+                components: [{ type: 'body', parameters: vars.map((v) => ({ type: 'text', text: String(v) })) }] } }
+            : whatsappBody(text, cfg)),
         },
       });
       if (!res.ok) {
