@@ -26808,7 +26808,9 @@ table.data td .tl-af b{white-space:normal}
     if(!AIIV.started) return;
     stopCam();
     AIIV.block = { reason: info.reason || null, retakeAt: info.retakeAt || null };
-    AIIV.phase = info.code==='INTERVIEW_RETAKE_WAIT' ? 'retake_wait' : 'under_review';
+    AIIV.block.message = info.message || null;
+    AIIV.phase = info.code==='INTERVIEW_RETAKE_WAIT' ? 'retake_wait'
+      : (info.code==='INTERVIEW_ALREADY_COMPLETED' || info.code==='INTERVIEW_EXPIRED') ? 'closed' : 'under_review';
     try{ render(); }catch(e){}
   };
   var stopTick=null;
@@ -26927,6 +26929,16 @@ table.data td .tl-af b{white-space:normal}
        the time the retake opens; otherwise the interview is with a
        recruiter. Nothing here says "rejected" or "failed", and nothing
        about thresholds or detectors. */
+    /* Already completed / past its deadline: said plainly - never a fresh "Thanks for joining" from Question 1. */
+    if(AIIV.started && AIIV.appId===rec.applicationId && AIIV.phase==='closed'){
+      var cm = (AIIV.block && AIIV.block.message) || 'This interview is closed.';
+      content='<div style="max-width:640px;margin:0 auto"><div class="panel"><div class="panel-body" style="text-align:center;padding:30px 26px">'
+        +'<h2 style="font-size:19px">Interview closed</h2>'
+        +'<p style="color:var(--text-soft);margin:10px auto 0;max-width:460px;line-height:1.5">'+esc2(cm)+'</p>'
+        +'<div style="margin-top:18px"><button class="btn btn-primary" onclick="aiivLeaveStopped(\''+rec.applicationId+'\')">Back to my application</button></div>'
+        +'</div></div></div>';
+      return shell('applications','AI Interview','Candidate \u00b7 '+esc2(c?c.name:''),content);
+    }
     if(AIIV.started && AIIV.appId===rec.applicationId && (AIIV.phase==='stopped' || AIIV.phase==='retake_wait' || AIIV.phase==='under_review')){
       var stop, retakeAt = null;
       if(AIIV.phase==='stopped'){

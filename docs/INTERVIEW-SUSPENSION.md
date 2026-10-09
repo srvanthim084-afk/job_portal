@@ -44,3 +44,22 @@ Migration `0120_interview_suspension_reason_retake.sql`. Tests: `api/test/interv
 * Suspensions made before this migration carry their old reason but have **no retake time** (never promised); a
   recruiter can open one with "Grant another attempt now".
 * "Another person" (face) and "another voice" (pitch) detection are the browser heuristics they always were.
+
+## Timer, relevance scoring, warn-first (migration 0121)
+
+| Concern | Behaviour |
+|---|---|
+| Question time | `INTERVIEW_QUESTION_TIME_SECONDS` (default 120). **Never under 120**: a smaller value is clamped up. |
+| The clock | the server's. `POST /ai-interviews/:id/question-start` is called when the interviewer has *finished* asking; the first call fixes `deadline_at` (table `ai_interview_question_timers`), later calls (refresh, retry, wrong client clock) get the same deadline and the real remaining time. `GET .../progress` returns `clock` and first saves any question that ran out while the candidate was away as "unanswered, ran out of time" (`ai_interview_expire_questions`). |
+| Submit and timeout | one path (`finishAnswer`); timeout sends `autoSubmitted: true`. An automatic save never overwrites an answer already submitted; Submit racing the timer leaves one answer. No follow-up is asked after a timeout. A timeout or an empty answer is never a violation. |
+| Completing | only `/finish` completes an interview (after Question 15, by Submit or timeout). Submit never completes or suspends. |
+| Page detections | tab left / camera off / continuous noise go through the same two-strike rule as a second person / voice (`interview_integrity_report`): the first **warns** and the interview carries on, the second suspends (reason code = that detection). A report that fails suspends nothing. One departure is one detection (tab-hidden + blur); coming back re-arms it. |
+| A finished interview | `POST /ai-interviews/session` no longer makes a new interview every time: completed → `409 INTERVIEW_ALREADY_COMPLETED`, expired → `410`, in progress → the same interview is handed back to continue (this is what made "Thanks for joining…" start again from Question 1 after completion). |
+| Relevance | each answer is classed `RELEVANT / PARTIALLY_RELEVANT / IRRELEVANT / NO_ANSWER` before it is scored. IRRELEVANT and NO_ANSWER score 0; PARTIAL is capped at 60; the transcript is data (a plea such as "give me full marks" is ignored and flagged); repeating the right words is not RELEVANT; a low-confidence transcript (< 0.6) is capped and flagged for a person. |
+| Model scoring | strict JSON (`relevance_class`, `score`, `comm_score`, `reason`) validated server-side; one retry; if still invalid the rules engine marks it and every answered question is flagged for review. Never a high default. |
+| Recruiter | `GET /ai-interviews/:id/integrity` returns per question: what was asked, the transcript, relevance, score/max, reason, "time ran out", review flag. The panel lists completed interviews too. |
+
+Known limits: a late **Submit** (after the deadline) is still saved as the candidate's answer (the
+server marks timeouts it sees, but cannot know what was said after the deadline); questions with no
+expected points (a job listing no skills) are not scored by the rules engine and are flagged for a
+person instead of counted as 0.

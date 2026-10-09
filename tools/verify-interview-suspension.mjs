@@ -189,7 +189,7 @@ await check('leaving the tab WARNS first, the interview carries on; a second lea
   must(/You can retake this interview after .*IST/.test(t), 'no retake time in IST');
   must(!/reject|failed|disqualif/i.test(t), 'the screen uses a forbidden word');
   must(!/What was observed|confidence|threshold|rms/i.test(t), 'internal detail shown');
-  const row = await p.evaluate(async (id) => await TL.api.get(`/ai-interviews/${id}/suspension`), ivId);
+  const row = await p.evaluate(async (id) => { try { return await TL.api.get(`/ai-interviews/${id}/suspension`); } catch (e) { return { err: `${e.status} ${e.code} ${e.message}` }; } }, ivId);
   must(row.suspended === true && row.message && row.retakeAvailableAt, JSON.stringify(row));
   must(t.includes(row.message), 'the screen and the stored message differ');
 });
@@ -215,7 +215,7 @@ await check('the recruiter sees the reason, the question, the attempt and the re
   await rp.evaluate((i) => window.tlIntegrityOpen(i), id);
   await rp.waitForFunction(() => /Suspended — under recruiter review/i.test(document.body.innerText), null, { timeout: 8000 });
   const t = await bodyText(rp);
-  must(/Question \d+ · Suspended/.test(t) && /Detections: 1/.test(t) && /Attempt 1/.test(t), 'reason details missing: ' + t.slice(0, 400));
+  must(/Question \d+ · Suspended/.test(t) && /Detections: 2/.test(t) && /Attempt 1/.test(t), 'reason details missing: ' + t.slice(0, 400));
   must(/Retake: Opens/.test(t), 'no retake status');
   must(/Block retake/.test(t) && /Grant another attempt now/.test(t), 'no retake controls');
   must(/Current score: none yet/.test(t), 'the score line');

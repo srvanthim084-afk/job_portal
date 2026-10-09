@@ -444,6 +444,15 @@ await dctx.addInitScript(STUBS, SECS);
 const d = await dctx.newPage();
 watch(d, 'denied');
 
+await check('a completed interview is not started again: no new session, no "Thanks for joining" from Question 1', async () => {
+  const r = await p.evaluate(async (j) => {
+    const a = DATA.applications.find((x) => x.jobId === j && x.candidateId === STATE.session.id);
+    try { await TL.api.post('/ai-interviews/session', { applicationId: a.id }); return { ok: true }; }
+    catch (e) { return { ok: false, code: e.code, status: e.status }; }
+  }, jobId);
+  must(r.ok === false && r.status === 409 && r.code === 'INTERVIEW_ALREADY_COMPLETED', JSON.stringify(r));
+});
+
 await check('permission denied: help with steps and Retry; Retry works once allowed; reduced motion respected', async () => {
   await d.goto(BASE + '#/');
   await ready(d);

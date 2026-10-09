@@ -268,14 +268,67 @@ export default function aiInterviewRoutes() {
        * attempts belong to the application.
        */
       const policy = retakePolicy();
+      await c.query(`select ai_interview_expire_overdue()`);
       const attempts = (await c.query(
         `select id, status, attempt_number, suspended_at, suspension_message, retake_available_at, retake_blocked,
+                started_at, expires_at,
                 (retake_available_at is not null and now() >= retake_available_at) as retake_open
            from ai_interviews
           where application_id=$1 and candidate_id=$2
           order by attempt_number desc`,
         [app.id, req.session.profileId])).rows;
       const last = attempts[0];
+
+      /*
+       * AN INTERVIEW THAT IS DONE IS NOT STARTED AGAIN.
+       *
+       * This route used to make a brand-new interview every time it was called,
+       * whatever state the last one was in: a candidate who had COMPLETED the
+       * interview could open it again and be welcomed afresh ("Thanks for
+       * joining...") from Question 1, and one in progress got a duplicate. Now:
+       *   completed / being marked   -> refused, with a plain message
+       *   expired                    -> refused (only a recruiter reopens it)
+       *   in progress                -> the SAME interview is handed back to carry on from
+       * Only a suspended interview whose retake is open (below), or a first
+       * interview, creates a new attempt.
+       */
+      if (last && ['completed', 'evaluating', 'evaluated'].includes(last.status)) {
+        throw new ApiError(409, 'INTERVIEW_ALREADY_COMPLETED',
+          'You have already completed this interview. Thank you — the recruitment team will review it and contact you about the next step.',
+          { attemptNumber: last.attempt_number });
+      }
+      if (last && last.status === 'expired') {
+        throw new ApiError(410, 'INTERVIEW_EXPIRED',
+          'This interview has passed its deadline and can no longer be started. Please contact the recruiter if you need it reopened.');
+      }
+      if (last && (last.status === 'in_progress' || last.status === 'warning_issued')) {
+        const rows = (await c.query(
+          `select seq, category, section, question, justification from ai_interview_answers
+            where ai_interview_id=$1 order by seq`, [last.id])).rows;
+        const parts = (await c.query(
+          `select seq, part, question, kind, submitted_at from ai_interview_answer_parts where interview_id=$1`,
+          [last.id])).rows;
+        const questions = rows.map((r) => {
+          const meta = metaOf(r);
+          return { seq: r.seq, category: r.category, section: r.section || undefined, question: r.question,
+            expects: meta.expects, source: meta.source };
+        });
+        const pend = questions.find((q) => {
+          const main = parts.find((p) => p.seq === q.seq && p.part === 'main' && p.submitted_at);
+          const fu = parts.find((p) => p.seq === q.seq && p.part === 'followup');
+          return !main || (fu && !fu.submitted_at);
+        });
+        let resumeAt = null;
+        if (pend) {
+          const main = parts.find((p) => p.seq === pend.seq && p.part === 'main' && p.submitted_at);
+          const fu = parts.find((p) => p.seq === pend.seq && p.part === 'followup');
+          resumeAt = { seq: pend.seq, part: main ? 'followup' : 'main',
+            followUp: main && fu ? fu.question : null, kind: main && fu ? fu.kind : null };
+        }
+        const job = (await c.query(`select * from jobs where id=$1`, [app.job_id])).rows[0];
+        return { resumed: { id: last.id, app, job, questions, resumeAt, row: { started_at: last.started_at, expires_at: last.expires_at } } };
+      }
+
       if (last && last.status === 'suspended') {
         const suspendedCount = attempts.filter((a) => a.status === 'suspended').length;
         const allowed = policy.maxAttempts + Number(app.extra_interview_attempts || 0);
@@ -329,6 +382,18 @@ export default function aiInterviewRoutes() {
         `select expires_at, started_at from ai_interviews where id=$1`, [id])).rows[0];
       return { id, app, job, questions, row };
     });
+
+    if (out.resumed) {
+      const x = out.resumed;
+      return res.status(200).json({
+        interviewId: x.id, applicationId: x.app.id, jobId: x.app.job_id, jobTitle: x.job ? x.job.title : '',
+        engine: interviewEngine(),
+        startedAt: x.row.started_at, expiresAt: x.row.expires_at, deadlineHours: DEADLINE_HOURS,
+        questionSeconds: questionSeconds(), speech: speechModes(),
+        blueprint: { intro: 2, jd: 5, resume: 5, behavioral: 3, total: x.questions.length },
+        questions: x.questions, resumed: true, resumeAt: x.resumeAt,
+      });
+    }
 
     res.status(201).json({
       interviewId: out.id,
@@ -1144,6 +1209,26 @@ export default function aiInterviewRoutes() {
       message: out.message,
       interviewStatus: out.interview_status,
       retakeAvailableAt: out.retake_at ? new Date(out.retake_at).toISOString() : null,
+    });
+  }));
+
+  /**
+   * GET /api/ai-interviews/:id/suspension
+   *
+   * What the candidate's screen shows after a suspension: the one stored
+   * sentence and when the retake opens. Their own interview only.
+   */
+  r.get('/ai-interviews/:id/suspension', requireAuth(), wrap(async (req, res) => {
+    if (req.session.role !== 'candidate') throw forbidden('Only the candidate sitting an interview can read this.');
+    const row = await withUser(req.session, async (c) => (await c.query(
+      `select status, suspension_message, retake_available_at, retake_blocked, attempt_number
+         from ai_interviews where id=$1 and candidate_id=$2`, [req.params.id, req.session.profileId])).rows[0]);
+    if (!row) throw notFound('That interview could not be found.');
+    res.json({
+      suspended: row.status === 'suspended',
+      message: row.suspension_message || null,
+      retakeAvailableAt: row.retake_available_at && !row.retake_blocked ? new Date(row.retake_available_at).toISOString() : null,
+      attemptNumber: row.attempt_number,
     });
   }));
 

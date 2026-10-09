@@ -196,12 +196,21 @@ try {
       check(panel.camera, '  and the camera check');
       check(panel.admits, '  and names what it does NOT check');
 
-      /* Now leave the tab. */
-      await page.evaluate(() => {
-        Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+      /* Now leave the tab: the FIRST time is a warning and the interview carries on. */
+      const hide = (v) => page.evaluate((v) => {
+        Object.defineProperty(document, 'hidden', { configurable: true, get: () => v });
         document.dispatchEvent(new Event('visibilitychange'));
-      });
-      await page.waitForTimeout(900);
+      }, v);
+      await hide(true);
+      await page.waitForTimeout(1200);
+      const warned = await page.evaluate(() => ({ banner: !!document.querySelector('.tlig-warn'),
+        still: /Spoken question|Microphone level|Live transcript/i.test(document.body.textContent || ''),
+        suspended: /Interview suspended/i.test(document.body.innerText || '') }));
+      check(warned.banner && warned.still && !warned.suspended, 'leaving the tab the first time WARNS and the interview carries on ' + JSON.stringify(warned));
+      await hide(false);
+      await page.waitForTimeout(400);
+      await hide(true);
+      await page.waitForTimeout(1500);
 
       const suspended = await page.evaluate(() => {
         const t = document.body.textContent || '';
@@ -210,7 +219,7 @@ try {
                  why: /The interview window was not in front/i.test(t),
                  kept: /answers up to this point were saved/i.test(t) };
       });
-      check(suspended.heading, 'leaving the tab SUSPENDS the interview');
+      check(suspended.heading, 'leaving the tab a second time SUSPENDS the interview');
       check(suspended.why, '  and the screen says what happened');
       check(suspended.kept, '  and what it means for their answers');
     }

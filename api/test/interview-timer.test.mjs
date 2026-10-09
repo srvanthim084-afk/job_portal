@@ -183,6 +183,11 @@ test('only /finish completes the interview, never an answer, however many are su
   assert.equal(f.status, 200, JSON.stringify(f.body));
   const row = await iv(sA.interviewId);
   assert.equal(row.status, 'completed');
+  // A completed interview is never started again ("Thanks for joining..." from Question 1 once more)
+  const again = await candA.post('/api/ai-interviews/session', { applicationId: appA });
+  assert.equal(again.status, 409, JSON.stringify(again.body));
+  assert.equal(again.body.error.code, 'INTERVIEW_ALREADY_COMPLETED');
+  assert.equal((await raw(`select count(*)::int n from ai_interviews where application_id=$1`, [appA])).rows[0].n, 1, 'no second interview was made');
   // the zero-scored (unanswered) questions are in the total across all 15
   const per = (await raw(`select seq, score, relevance_class from ai_interview_answers where ai_interview_id=$1 order by seq`, [sA.interviewId])).rows;
   assert.equal(per.length, 15);
@@ -206,6 +211,13 @@ test('page detections warn first and suspend on the second; a lost connection su
   let row = await iv(sB.interviewId);
   assert.equal(row.status, 'warning_issued');
   assert.equal(row.suspended_at, null);
+  // calling start again hands back the SAME interview to carry on from, not a duplicate
+  const same = await candB.post('/api/ai-interviews/session', { applicationId: appB });
+  assert.equal(same.status, 200, JSON.stringify(same.body));
+  assert.equal(same.body.interviewId, sB.interviewId);
+  assert.equal(same.body.resumed, true);
+  assert.deepEqual(same.body.resumeAt && { seq: same.body.resumeAt.seq, part: same.body.resumeAt.part }, { seq: 2, part: 'main' });
+  assert.equal((await raw(`select count(*)::int n from ai_interviews where application_id=$1`, [appB])).rows[0].n, 1);
   // the interview carries on: the next answer is accepted
   assert.equal((await answer(candB, sB.interviewId, { seq: 2, transcript: 'I screen CVs against the job description every day.', answered: true })).status, 200);
 
@@ -217,6 +229,11 @@ test('page detections warn first and suspend on the second; a lost connection su
   assert.equal(row.suspension_code, 'camera_off');
   assert.equal(row.suspension_question_no, 3);
   assert.equal(row.detection_count, 2);
+  const sus = await candB.get(`/api/ai-interviews/${sB.interviewId}/suspension`);
+  assert.equal(sus.status, 200, JSON.stringify(sus.body));
+  assert.equal(sus.body.message, 'Your camera was off for too long during Question 3.');
+  assert.equal(sus.body.suspended, true);
+  assert.equal((await candA.get(`/api/ai-interviews/${sB.interviewId}/suspension`)).status, 404, 'not another candidates interview');
 });
 
 test('shutdown', async () => {
