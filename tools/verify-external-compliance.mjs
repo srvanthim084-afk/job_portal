@@ -344,21 +344,19 @@ await check('admin: the list (title | company | source | original URL | status |
   await admin.screenshot({ path: `${SHOTS}/admin-list.png`, fullPage: true });
 });
 
-await check('recruiter: the external jobs list, with no configuration', async () => {
+await check('recruiter: no External Jobs in the recruiter portal, and no way to change a licence', async () => {
   const rctx = await browser.newContext({ viewport: { width: 1320, height: 900 } });
   const rp = await newPage(rctx, 'recruiter');
   r = await api(rp, 'post', '/auth/login', { email: 'recruiter@teamlink.com', password: 'TeamLink@2026', role: 'recruiter' });
   must(r.ok, 'recruiter login');
+  await open(rp, '#/recruiter/jobs');
+  const nav = (await rp.locator('main, body').first().innerText());
+  must(!/External Jobs/.test(await rp.locator('.sidebar, nav, aside').first().innerText().catch(() => nav)), 'the recruiter menu still lists External Jobs');
   await open(rp, '#/recruiter/external-jobs');
-  await rp.waitForSelector('#jsJobsHost table', { timeout: 20000 });
-  const txt = await rp.locator('main, body').first().innerText();
-  must(/Verify Naukri Accountant/.test(txt), 'the list');
-  must(!/Licence|Allowed apply domains|Sync now|Disable|Providers and how/.test(txt), 'technical configuration is visible to a recruiter');
-  must(await rp.locator('#jsJobsHost .js-bulk').count() === 0, 'bulk actions offered to a recruiter');
+  must(await rp.locator('#jsJobsHost').count() === 0, 'the recruiter can still open the external jobs list');
   r = await api(rp, 'put', `/external/sources/${SRC.naukri}/licence`, { collectionMethod: 'partner_feed', licenceStatus: 'active',
     consentStatus: 'granted', dataUsageAllowed: true, applicationRedirectAllowed: true });
   must(!r.ok && r.code === 'FORBIDDEN', 'a recruiter changed a licence');
-  await rp.screenshot({ path: `${SHOTS}/recruiter-list.png` });
   await rctx.close();
   delete pages.recruiter;
 });

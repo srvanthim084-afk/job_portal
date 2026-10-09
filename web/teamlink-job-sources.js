@@ -677,29 +677,9 @@
         }
       } catch (e) { /* the screen is still reachable by URL */ }
 
-      /* Recruiters: the list of external jobs only - no sources, no
-         licences, no configuration (all of that is the admin screen). */
-      try {
-        var rnav = (typeof NAV_CONFIG !== 'undefined' && NAV_CONFIG.recruiter) || null;
-        if (rnav && !rnav.some(function (n) { return n[0] === 'external-jobs'; })) {
-          rnav.push(['external-jobs', 'External Jobs', '🌐']);
-        }
-      } catch (e) { /* reachable by URL */ }
-      var prevR = window.pageRecruiterDash;
-      if (typeof prevR === 'function' && !prevR.__js) {
-        var r2 = function (section) {
-          if (section !== 'external-jobs') return prevR.apply(this, arguments);
-          setTimeout(function () { S.jobFilter.status = 'open'; loadJobs(); }, 0);
-          var body = '<section class="panel" aria-labelledby="jsJobsHostH"><div class="panel-head"><div>'
-            + '<h2 id="jsJobsHostH">External jobs</h2><div class="desc">Jobs collected from other job sites and shown in '
-            + 'the portal. Candidates apply on the original website; nothing here is a TeamLink application.</div>'
-            + '</div></div><div class="panel-body"><div id="jsJobsHost"><div class="js-empty" role="status">Loading…</div></div></div></section>';
-          return (typeof window.dashShell === 'function')
-            ? window.dashShell('recruiter', 'external-jobs', 'External Jobs', 'Recruiter · External jobs', body) : body;
-        };
-        r2.__js = true;
-        window.pageRecruiterDash = r2;
-      }
+      /* RECRUITERS HAVE NO EXTERNAL JOBS. The recruiter portal is TeamLink's own jobs and applicants; external
+         vacancies are for candidates, and the sources are an administrator's screen (Job Sources, above). The
+         recruiter "External Jobs" entry and page were removed; the endpoints are untouched. */
 
       var prev = window.pageAdminDash;
       window.pageAdminDash = function (section) {

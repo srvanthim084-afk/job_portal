@@ -955,6 +955,34 @@
    * ================================================================ */
   var PENDING = null;          // walk-in fields waiting for the job they belong to
 
+  /* THE ADDRESS ARRIVED AFTER THE JOB WAS SAVED, SO THE SAVE WAS REFUSED.
+     A new job is pushed onto DATA.jobs, and that push is what writes it to the server (the page
+     mirrors DATA.jobs into storage, and the storage layer sends it). fcrRegisterPosting - where the
+     walk-in details used to be attached - runs only AFTER the push. The server requires a full address
+     for a walk-in, so the first save always went without one and was refused ("Full address is required
+     for a walk-in job"), while the page still said "Walk-in job published". The walk-in details are now
+     attached on the push itself, before anything is saved or sent. */
+  function takePending(job) {
+    if (PENDING && job && job.id && !job.__tlwkDone && (!PENDING.title || PENDING.title === job.title)) {
+      Object.assign(job, PENDING.fields);
+      job.__tlwkDone = true;
+      PENDING = null;
+    }
+  }
+  function ensureJobsPush() {
+    try {
+      var list = window.DATA && DATA.jobs;
+      if (!list || list.push.__tlwk) return;
+      var prev = list.push;
+      var next = function () {
+        for (var i = 0; i < arguments.length; i++) takePending(arguments[i]);
+        return prev.apply(this, arguments);
+      };
+      next.__tlwk = true;
+      list.push = next;
+    } catch (e) { /* the later attachment in fcrRegisterPosting still runs */ }
+  }
+
   function wkFieldsHtml(prefix, w, isEdit) {
     w = w || {};
     var g = function (label, id, input, req, full) {
@@ -1086,11 +1114,7 @@
     var prev = window.fcrRegisterPosting;
     if (typeof prev !== 'function' || prev.__tlwk) return;
     var next = function (job) {
-      if (PENDING && job && job.id && !job.__tlwkDone && (!PENDING.title || PENDING.title === job.title)) {
-        Object.assign(job, PENDING.fields);
-        job.__tlwkDone = true;
-        PENDING = null;
-      }
+      takePending(job);
       return prev.apply(this, arguments);
     };
     next.__tlwk = true;
@@ -1107,6 +1131,7 @@
         var bad = checkWk('tlwkN', f, null, status === 'open');
         if (bad.length) { say('Please complete the walk-in details', '⚠️'); return; }
         PENDING = { title: STATE.jobDraft && STATE.jobDraft.title, fields: asJobFields(f) };
+        ensureJobsPush();
         try { return prev.apply(this, arguments); }
         finally {
           PENDING = null;
@@ -1174,6 +1199,7 @@
           var bad = twCheck(f, val('twStatus') !== 'closed');
           if (bad.length) { say('Still needed: ' + bad.join(', '), '⚠️'); return; }
           PENDING = { title: val('twTitle'), fields: asJobFields(f) };
+          ensureJobsPush();
           setTimeout(function () { if (PENDING && PENDING.title === f.title) PENDING = null; }, 60000);
         }
         return prevSubmit.apply(this, arguments);
