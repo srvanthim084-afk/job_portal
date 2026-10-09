@@ -322,6 +322,8 @@ export function toCandidate(r, opts = {}) {
        when they last did. On the record rather than in the browser, so
        saying "later" on a phone is still "later" on a borrowed laptop. */
     onboardingLaterCount: Number(r.profile_onboarding_later_count || 0),
+    onboardingStatus: r.onboarding_status || 'not_started',
+    onboardingStep: Number(r.onboarding_step || 0),
     onboardingDismissedAt: r.profile_onboarding_dismissed_at
       ? new Date(r.profile_onboarding_dismissed_at).toISOString() : undefined,
     preferredLanguage: nz(r.preferred_language),

@@ -121,3 +121,19 @@ test('reading the same resume twice gives the same answer (nothing accumulates)'
   const text = resume([...HEAD, 'PROJECTS', 'Student Management System', '• Built the attendance module.', '', 'SKILLS', 'Java, SQL']);
   assert.deepEqual(extractFields(text), extractFields(text));
 });
+
+test('responsibilities under a job belong to that job; a bullet is never a job of its own', () => {
+  const { fields } = extractFields(resume([...HEAD, 'WORK EXPERIENCE',
+    'ABC Technologies Pvt Ltd - Senior Software Engineer (Jun 2022 - Present)',
+    '• Built payment microservices in Java and Spring Boot.',
+    '• Developed REST APIs, SQL reporting and dashboards.',
+    '• Mentored 3 junior engineers.',
+    'XYZ Solutions - Software Engineer (Jul 2020 - May 2022)',
+    '- Worked on SQL reporting, Excel automation',
+    '- Wrote unit tests with JUnit.',
+    '', 'SKILLS', 'Java, SQL']));
+  assert.equal(fields.employmentHistory.length, 2, JSON.stringify(fields.employmentHistory));
+  assert.match(fields.employmentHistory[0].details, /payment microservices.*REST APIs.*Mentored/);
+  assert.match(fields.employmentHistory[1].details, /SQL reporting.*unit tests/);
+  assert.doesNotMatch(fields.employmentHistory[0].details, /unit tests/, 'the next job\'s lines are not this job\'s');
+});

@@ -552,10 +552,10 @@
            the next render lets them through without another round trip. */
         if (window.STATE && STATE.session) STATE.session.mustChangePassword = false;
         toast('Password set. Welcome to TeamLink.', '✅');
-        /* Onto their own profile, which is where the remaining details
-           and the resume are filled in. */
+        /* Onto Candidate Home, where "Build your profile" (teamlink-profile-onboarding.js) offers to walk
+           them through the resume and the remaining details. */
         var role = (STATE.session && STATE.session.role) || 'candidate';
-        window.navigate(role === 'candidate' ? '/candidate/profile' : '/' + role + '/home');
+        window.navigate('/' + role + '/home');
       })
       .catch(function (err) {
         S.busy = false;

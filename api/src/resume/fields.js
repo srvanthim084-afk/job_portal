@@ -626,9 +626,15 @@ function findEmployment(sections) {
   const rows = [];
   const re = /^[\s•*-]*([A-Z][\w&.,'()\- ]{2,60}?)\s*(?:[—–|,-]{1,2}|\bat\b)\s*([\w&.,'()\/\- ]{2,60}?)\s*(?:\(([^)]{4,40})\))?\s*$/gm;
   let m;
+  /* What each job says it did: the lines between its heading and the next one. A bullet that describes work
+     ("Developed REST APIs, SQL reporting") has the same shape as "Company, Title" and is never a job of its own. */
+  const spans = [];
   while ((m = re.exec(src)) && rows.length < 12) {
     const a = clean(m[1]); const b = clean(m[2]); const period = clean(m[3] || '');
     if (!a || !b) continue;
+    const isBullet = /^\s*[•*\u2022\u25aa\u25cf-]\s*\S/.test(m[0]);
+    if (isBullet && !period && ACTION_START.test(a)) continue;
+    if (ACTION_START.test(a) && !period) continue;
     if (/^(responsibilit|achievement|project|skill)/i.test(a)) continue;
     // A two-column table row ("Current Location | Hyderabad") has the same
     // shape as "Company - Title". Reject anything whose left side is one of
@@ -647,7 +653,16 @@ function findEmployment(sections) {
     const company = titleish.test(a) && !titleish.test(b) ? b : a;
     const title   = company === a ? b : a;
     rows.push({ company, title, period: period || null });
+    spans.push({ start: m.index, end: m.index + m[0].length });
   }
+  rows.forEach((row, i) => {
+    const from = spans[i].end;
+    const to = i + 1 < spans.length ? spans[i + 1].start : src.length;
+    const body = src.slice(from, to < from ? src.length : to).split(/\r?\n/)
+      .map((l) => l.replace(/^[\s•*\u2022\u25aa\u25cf-]+/, '').trim()).filter((l) => l.length > 2);
+    const text = clean(body.join('; ')).slice(0, 700);
+    if (text) row.details = text;
+  });
   return rows;
 }
 
