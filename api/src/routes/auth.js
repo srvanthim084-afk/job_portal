@@ -24,7 +24,7 @@ import {
 } from '../registration/settings.js';
 import { queueWelcome } from '../notify/registration-messages.js';
 /* 0117: resume-first registration - the draft the resume was read into. */
-import { draftForRegistration, finishDraft } from './registration-draft.js';
+import { draftForRegistration, finishDraft, otpRequired } from './registration-draft.js';
 
 /*
  * AN ADDRESS OR A MOBILE NUMBER.
@@ -115,6 +115,9 @@ const registerSchema = z.object({
   draftToken: z.string().trim().max(64).optional(),
   currentLocation: z.string().trim().max(160).optional(),
 });
+
+/* The notice periods the registration offers (the resume registration accepts only these). */
+const NOTICE_OPTIONS = ['Immediate', '15 days', '30 days', '60 days', '90 days', 'Currently serving notice'];
 
 const parse = (schema, body) => {
   const out = schema.safeParse(body || {});
@@ -307,14 +310,23 @@ export default function authRoutes() {
             draftId, draftToken, currentLocation } = parse(registerSchema, req.body);
 
     if (website) throw badRequest('Please check the highlighted fields and try again.');
-    if (!draftId && !String(noticePeriod || '').trim()) {
-      throw badRequest('Please check the highlighted fields and try again.',
-        { noticePeriod: 'Please select a notice period' });
+    /* The notice period is mandatory, and from the resume registration it must be one of the offered options. */
+    const noticeGiven = String(noticePeriod || '').trim();
+    if (!noticeGiven) {
+      throw badRequest('Please check the highlighted fields and try again.', { noticePeriod: 'Notice period is required' });
+    }
+    if (draftId && !NOTICE_OPTIONS.includes(noticeGiven)) {
+      throw badRequest('Please check the highlighted fields and try again.', { noticePeriod: 'Choose a valid notice period' });
     }
 
-    /* 0117: from a resume draft, the email must have answered its code
-       before an account is made for it. Checked before anything is written. */
-    const draft = draftId ? await draftForRegistration({ draftId, draftToken, email }) : null;
+    /* Where OTP is required (production, or REGISTRATION_OTP_REQUIRED=true) an account is created ONLY from a
+       resume draft whose mobile number answered an OTP - not by calling this route with a bare form. */
+    if (!draftId && otpRequired()) {
+      throw badRequest('Please register with your resume and verify your mobile number.',
+        { resume: 'Please upload your resume to register.', phone: 'Please verify your mobile number with the OTP first.' });
+    }
+    /* 0123: from a resume draft, the MOBILE number must have answered an OTP. Checked before anything is written. */
+    const draft = draftId ? await draftForRegistration({ draftId, draftToken, phone }) : null;
 
     /* 0109: the checks the form makes, made again here. */
     const problems = {};

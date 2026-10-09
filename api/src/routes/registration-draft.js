@@ -10,6 +10,8 @@
  *                                              fields the reading was unsure of
  *   POST  /registration/drafts/:id/email-code  send a 6-digit code to the address
  *   POST  /registration/drafts/:id/verify-email
+ *   POST  /registration/drafts/:id/phone-otp   send a 6-digit code by SMS to the mobile number (0123)
+ *   POST  /registration/drafts/:id/verify-phone
  *   GET   /me/profile-completeness             what is filled in, what is missing
  *
  * The account itself is still created by POST /auth/register - the same
@@ -130,6 +132,8 @@ async function view(d) {
     ask,
     email,
     emailVerified: !!d.email_verified_at,
+    phone: d.phone || null,
+    phoneVerified: !!d.phone_verified_at,
     existing,
     source: ex.source || null,
     parser: ex.parser || null,
@@ -189,7 +193,7 @@ async function purgeSometimes() {
 }
 
 const CORRECTABLE = new Set([...VERIFY_KEYS, 'name', 'phone', 'skills', 'title', 'currentCompany',
-  'expYears', 'qualification', 'linkedin', 'github', 'portfolio', 'summary']);
+  'expYears', 'qualification', 'institution', 'passingYear', 'linkedin', 'github', 'portfolio', 'summary']);
 
 const correctionsSchema = z.object({
   corrections: z.record(z.union([
@@ -332,6 +336,64 @@ export default function registrationDraftRoutes() {
     res.json(await view(await readDraft(req.params.id, token)));
   }));
 
+  /* ---- the mobile number: a code by SMS (0123) ---------------------------------------- */
+  r.post('/registration/drafts/:id/phone-otp', wrap(async (req, res) => {
+    const token = tokenOf(req);
+    const phone = String((req.body && req.body.phone) || '').trim();
+    if (!validIndianMobile(phone)) {
+      throw badRequest('Enter a valid 10-digit mobile number.', { phone: 'Enter a valid 10-digit mobile number.' });
+    }
+    await readDraft(req.params.id, token);
+    if ((await taken(null, phone)).phone) {
+      throw new ApiError(409, 'PHONE_TAKEN', 'An account with this mobile number already exists. Please Login.',
+        { phone: 'An account with this mobile number already exists. Please Login.' });
+    }
+
+    const code = String(randomInt(100000, 1000000));
+    const n = await withUser(null, async (c) => (await c.query(
+      `select registration_phone_otp_issue($1,$2,$3,$4,10) as n`,
+      [req.params.id, hashToken(token), phone, codeHash(req.params.id, code)])).rows[0].n);
+    if (n === -2) throw notFound('Your registration session has expired. Please upload your resume again.');
+    if (n === -3) throw new ApiError(429, CODES.RATE_LIMITED, 'Please wait 30 seconds before asking for another OTP.', { phone: 'Please wait 30 seconds before asking for another OTP.' });
+    if (n === -1) throw new ApiError(429, CODES.RATE_LIMITED, 'Too many OTPs requested. Please wait an hour and try again.', { phone: 'Too many OTPs requested. Please try again in an hour.' });
+
+    const text = `${code} is your TeamLink verification code. It is valid for 10 minutes. Do not share it with anyone.`;
+    const sent = await providers.sms.send({ to: phone, text, purpose: 'otp', vars: [code, '10'] })
+      .catch((err) => ({ status: 'failed', error: err.message }));
+
+    if (sent.status === 'sent') return res.json({ sent: true, phone: registrationPhone10(phone) });
+    /* Not delivered. Outside production the code is shown on screen, said to be a development code, so the flow
+       can be used without an SMS gateway. In production the candidate is told plainly. */
+    if (!isProd()) {
+      return res.json({ sent: false, phone: registrationPhone10(phone), devCode: code,
+        note: 'SMS is not being sent from this server (development). Use this code.' });
+    }
+    if (sent.status === 'not_configured') {
+      throw new ApiError(503, 'SMS_UNAVAILABLE', 'We cannot send an OTP right now. Please try again later.');
+    }
+    throw new ApiError(502, 'SMS_FAILED', 'We could not send the OTP to this number. Please check it and try again.',
+      { phone: 'We could not send the OTP to this number.' });
+  }));
+
+  r.post('/registration/drafts/:id/verify-phone', wrap(async (req, res) => {
+    const token = tokenOf(req);
+    const phone = String((req.body && req.body.phone) || '').trim();
+    const code = String((req.body && req.body.code) || '').replace(/\D/g, '');
+    if (!validIndianMobile(phone)) {
+      throw badRequest('Enter a valid 10-digit mobile number.', { phone: 'Enter a valid 10-digit mobile number.' });
+    }
+    if (code.length !== 6) throw badRequest('Enter the 6-digit OTP', { code: 'Enter the 6-digit OTP' });
+    const out = await withUser(null, async (c) => (await c.query(
+      `select registration_phone_otp_check($1,$2,$3,$4) as r`,
+      [req.params.id, hashToken(token), phone, codeHash(req.params.id, code)])).rows[0].r);
+    const msg = {
+      wrong: 'Invalid OTP', expired: 'That OTP has expired. Please request a new one.',
+      locked: 'Too many wrong attempts. Please request a new OTP.', none: 'Please request an OTP first.',
+    };
+    if (out !== 'ok') throw badRequest(msg[out] || msg.none, { code: msg[out] || msg.none });
+    res.json(await view(await readDraft(req.params.id, token)));
+  }));
+
   r.get('/me/profile-completeness', requireAuth(), requireRole('candidate'), wrap(async (req, res) => {
     const out = await withUser(req.session, (c) => completenessFor(c, req.session.profileId));
     if (!out) throw notFound('Profile not found.');
@@ -350,16 +412,31 @@ export default function registrationDraftRoutes() {
  * must exist, be this browser's, and its email must have answered a code.
  * Returns the draft.
  */
-export async function draftForRegistration({ draftId, draftToken, email }) {
+export async function draftForRegistration({ draftId, draftToken, phone }) {
   if (!/^[a-f0-9]{48}$/.test(String(draftToken || ''))) {
     throw new ApiError(401, 'DRAFT_TOKEN', 'Your registration session has expired. Please upload your resume again.');
   }
   const d = await readDraft(draftId, draftToken);
-  const verify = !/^(0|false|no|off)$/i.test(String(process.env.REGISTRATION_EMAIL_VERIFY || 'true'));
-  if (verify && (!d.email_verified_at || String(d.email || '').toLowerCase() !== String(email || '').toLowerCase())) {
-    throw badRequest('Please verify your email address first.', { email: 'Please verify your email address first.' });
+  /* THE MOBILE OTP CANNOT BE SKIPPED. The draft must remember that THIS number answered a code
+     (phone_verified_at). Checked here, on the server, before anything is written - so calling the
+     API directly, or changing the number after verifying, is refused. */
+  if (!d.resume_file) {
+    throw badRequest('Please upload your resume to register.', { resume: 'Please upload your resume to register.' });
+  }
+  if (!d.phone_verified_at || registrationPhone10(d.phone) !== registrationPhone10(phone)) {
+    throw badRequest('Please verify your mobile number with the OTP first.', { phone: 'Please verify your mobile number with the OTP first.' });
   }
   return d;
+}
+
+const registrationPhone10 = (v) => String(v || '').replace(/\D/g, '').slice(-10);
+
+/** Whether an account may ONLY be created through a resume draft with a verified mobile number. */
+export function otpRequired() {
+  const v = String(process.env.REGISTRATION_OTP_REQUIRED || '').trim();
+  if (/^(1|true|yes|on)$/i.test(v)) return true;
+  if (/^(0|false|no|off)$/i.test(v)) return false;
+  return isProd();
 }
 
 const isoDate = (v) => {
@@ -388,6 +465,18 @@ const isoDate = (v) => {
 export async function finishDraft({ draftId, draftToken, draft, candidateId, session, provided }) {
   const { fields, sources } = acceptedFields(draft.extraction, draft.corrections);
   for (const k of ['name', 'email', 'phone']) delete fields[k];
+  /* What the candidate typed on the one-screen form wins over what the reading found: their highest
+     qualification, institute and year are the first education record. */
+  const typed = draft.corrections || {};
+  if (typed.qualification || typed.institution || typed.passingYear) {
+    const recs = Array.isArray(fields.educationRecords) ? fields.educationRecords.map((x) => ({ ...x })) : [];
+    recs[0] = { ...(recs[0] || {}),
+      ...(typed.qualification ? { qualification: String(typed.qualification) } : {}),
+      ...(typed.institution ? { institution: String(typed.institution) } : {}),
+      ...(typed.passingYear ? { passingYear: String(typed.passingYear) } : {}) };
+    fields.educationRecords = recs;
+    if (typed.qualification) fields.education = String(typed.qualification);
+  }
 
   const fieldSources = {};
   for (const [k, s] of Object.entries(sources)) {
@@ -401,7 +490,7 @@ export async function finishDraft({ draftId, draftToken, draft, candidateId, ses
   fieldSources.email = ex.email && String(ex.email).toLowerCase() === String(provided.email).toLowerCase()
     ? 'EXTRACTED' : 'USER_PROVIDED';
   fieldSources.phone = provided.phone && ex.phone && same(provided.phone, ex.phone) ? 'EXTRACTED' : 'USER_PROVIDED';
-  for (const k of ['location', 'preferredLocation', 'workMode', 'expectedSalary']) {   /* notice period: asked later, by the profile step */
+  for (const k of ['location', 'preferredLocation', 'noticePeriod', 'workMode', 'expectedSalary']) {
     fieldSources[k] = 'USER_PROVIDED';
   }
   if (draft.resume_storage_path) fieldSources.resume = 'EXTRACTED';

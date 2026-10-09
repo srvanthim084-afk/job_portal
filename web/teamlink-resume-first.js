@@ -1,30 +1,30 @@
 /* =====================================================================
-   TEAMLINK — resume-first registration (0117)
+   TEAMLINK — candidate registration on ONE screen (0117, 0123)
 
-     UPLOAD RESUME  ->  read on the server, kept as a draft
-       ->  (only if needed) confirm what the reading was unsure of
-       ->  the candidate types ONLY: current location, preferred
-           location, work mode, expected salary, password
-       ->  verify the email (6-digit code)
-       ->  Create Account  ->  "Your profile has been created from your
-           resume" + only the fields that are still missing
+   Everything is on the page from the start, in this order, whether or not a resume has been
+   uploaded yet:
 
-   THE RESUME IS THE SOURCE. Nothing the resume already said is asked
-   again. Name, email or mobile are asked only when the resume did not
-   give them, or gave them in a way the reading was not sure of.
+     1  Resume upload            mandatory, PDF or DOCX, 5 MB
+     2  Personal details         full name, email
+     3  Education                highest qualification, institute, year of passing
+     4  Experience               total experience, current company, current role, notice period
+        Account & preferences    password, locations, expected salary, work mode, consents
+     5  Mobile number            Send OTP -> enter the 6-digit OTP -> Verify
+     6  Create Account           hidden until the mobile number is verified
 
-   THE SERVER HOLDS EVERYTHING. The file, its text, what was read from
-   it and how sure each field is live in a registration draft
-   (/api/registration/drafts). This page keeps only the draft's id and
-   token in sessionStorage, so a refresh picks up where it was; a closed
-   tab loses nothing that matters, because nothing that matters is here.
+   THE RESUME FILLS THE BLANKS. When a resume is read on the server (a registration draft), every
+   field that is EMPTY is filled from it - name, email, education, experience, mobile, notice period
+   where the resume says one of the offered options. A value the candidate has typed is never
+   replaced, and every filled value stays editable. If the reading fails or misses something, those
+   fields simply stay empty for typing: nothing blocks.
 
-   THE SEVEN-STEP FORM IS STILL HERE (teamlink-registration.js), hidden,
-   untouched: "Enter my details manually" shows it, for a candidate with
-   no resume or one that cannot be read. Its own submit, its own rules.
+   THE SERVER HOLDS THE PROOF. The file, its reading and the verified mobile number live in the
+   draft (/api/registration/drafts). The Create Account button is only a convenience: the server
+   refuses to create the account unless the draft has a resume and its mobile number answered an
+   OTP, and refuses a missing or unknown notice period. Calling the API directly skips nothing.
 
-   Same page, same classes, same look: panels, review fields, option
-   rows, consent rows - nothing restyled.
+   The seven-step form (teamlink-registration.js) is still in the page, hidden and untouched, for
+   the scripts that drive it (TLResumeFirst.manual()).
    ===================================================================== */
 (function () {
   'use strict';
@@ -32,28 +32,24 @@
   window.__tlResumeFirst = true;
 
   var KEY = 'tl_reg_resume_draft_v1';
-  /* "Enter my details manually", remembered for this tab: a refresh keeps
-     the seven-step form the candidate chose. */
   var MANUAL_KEY = 'tl_reg_manual_v1';
-  var ACCEPT = ['pdf', 'doc', 'docx', 'txt'];
+  var ACCEPT = ['pdf', 'docx'];
   var MAX = 5 * 1024 * 1024;
   var EMAIL_RX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  var NOTICE = ['Immediate', '7 days', '15 days', '30 days', '45 days', '60 days', '90 days', 'Other'];
-  /* The stored values the matcher already reads (Office / Hybrid / Remote);
-     "Any" is all three. */
+  var MOBILE_RX = /^(?:\+?91[\s-]?|0)?[6-9]\d{9}$/;
+  var NOTICE = ['Immediate', '15 days', '30 days', '60 days', '90 days', 'Currently serving notice'];
   var MODES = [['Office', 'Work From Office'], ['Hybrid', 'Hybrid'], ['Remote', 'Work From Home'], ['Any', 'Any']];
   var CITIES = ['Hyderabad', 'Bengaluru', 'Chennai', 'Mumbai', 'Delhi', 'Pune', 'Kolkata', 'Noida', 'Gurugram',
     'Ahmedabad', 'Visakhapatnam', 'Vijayawada', 'Coimbatore', 'Kochi', 'Remote'];
-  var LABEL = {
-    name: 'Full name', email: 'Email', phone: 'Mobile number', altPhone: 'Alternate mobile',
-    title: 'Current designation', currentCompany: 'Current company', expYears: 'Total experience (years)',
-    relevantExpYears: 'Relevant experience (years)', qualification: 'Highest qualification',
-    dob: 'Date of birth', currentSalary: 'Current salary',
-  };
+  var QUALS = ['10th', '12th / Intermediate', 'Diploma', 'B.Tech / B.E', 'B.Sc', 'B.Com', 'BBA', 'BCA', 'B.A', 'M.Tech / M.E',
+    'M.Sc', 'M.Com', 'MBA', 'MCA', 'M.A', 'PhD'];
+  var REQ = '<span class="tlrf-req" aria-hidden="true"> *</span>';
 
   var S = {
-    manual: (function () { try { return sessionStorage.getItem(MANUAL_KEY) === '1'; } catch (e) { return false; } })(), phase: 'upload', draft: null, token: null, file: null, busy: false,
-    err: {}, msg: '', codeSent: false, devCode: null, done: null,
+    manual: (function () { try { return sessionStorage.getItem(MANUAL_KEY) === '1'; } catch (e) { return false; } })(),
+    phase: 'upload', draft: null, token: null, file: null, busy: false, reading: false,
+    err: {}, msg: '', otpSent: false, otpBusy: false, devCode: null, otpNote: '', done: null,
+    auto: {},                                         // which fields were filled from the resume
     input: { prefLocs: [], modes: [] },
   };
 
@@ -79,22 +75,17 @@
     S.manual = !!on;
     try { if (on) sessionStorage.setItem(MANUAL_KEY, '1'); else sessionStorage.removeItem(MANUAL_KEY); } catch (e) { /* this tab only */ }
   }
-  function remembered() {
-    try { return JSON.parse(sessionStorage.getItem(KEY) || 'null'); } catch (e) { return null; }
-  }
-  function fieldVal(k) {
-    var d = S.draft || {};
-    var c = d.corrections || {};
-    if (Object.prototype.hasOwnProperty.call(c, k)) return c[k];
-    return (d.fields || {})[k];
-  }
+  function remembered() { try { return JSON.parse(sessionStorage.getItem(KEY) || 'null'); } catch (e) { return null; } }
   function val(id) { var el = $(id); return el ? String(el.value || '').trim() : ''; }
   function apiMessage(er) { return (er && er.message) || 'Something went wrong. Please try again.'; }
   function details(er) { return (er && (er.details || er.fields)) || {}; }
+  function last10(v) { return String(v || '').replace(/\D/g, '').slice(-10); }
+  function empty(v) { return v === undefined || v === null || String(v).trim() === ''; }
+  function phoneVerified() {
+    return !!(S.draft && S.draft.phoneVerified && S.draft.phone && last10(S.draft.phone) === last10(S.input.phone));
+  }
 
-  /* ------------------------------------------------------------------ *
-   * the page
-   * ------------------------------------------------------------------ */
+  /* ------------------------------------------------------------------ */
   function css() {
     if ($('tlrf-css')) return;
     var s = document.createElement('style');
@@ -104,16 +95,20 @@
       + '#tlrfHost .tlrf-found{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 0}'
       + '#tlrfHost .tlrf-found span{background:var(--ok-100,#e8f6ee);color:var(--ok-700,#1d6b3f);border-radius:99px;padding:3px 10px;font-size:12px}'
       + '#tlrfHost .tlrf-err{color:var(--bad-600,#c0392b);font-size:12px;margin-top:4px}'
+      + '#tlrfHost .tlrf-req{color:#d92d20;font-weight:700}'
+      + '#tlrfHost .tlrf-bad input,#tlrfHost .tlrf-bad select{border-color:var(--bad-600,#c0392b)}'
       + '#tlrfHost .tlrf-note{font-size:12.5px;color:var(--text-soft);margin:6px 0 0}'
       + '#tlrfHost .tlrf-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}'
       + '#tlrfHost .tlrf-row input{flex:1;min-width:160px}'
       + '#tlrfHost .tlrf-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}'
       + '#tlrfHost .tlrf-ok{color:var(--ok-700,#1d6b3f);font-weight:600;font-size:13px}'
+      + '#tlrfHost .tlrf-tick{color:#1a8a4a;font-weight:700;font-size:14px}'
       + '#tlrfHost .tlrf-bar{height:8px;background:var(--bg-alt,#eef2f6);border-radius:99px;overflow:hidden;margin:6px 0 2px}'
       + '#tlrfHost .tlrf-bar i{display:block;height:100%;background:var(--brand-500,#1490b3)}'
       + '#tlrfHost .tlrf-dev{background:#fff7e6;border:1px solid #f3d38a;border-radius:8px;padding:8px 10px;font-size:12.5px;margin-top:6px}'
       + '#tlrfHost .tlrf-warn{background:#fff4f2;border:1px solid #f1c3bb;border-radius:8px;padding:10px 12px;font-size:13px;margin:0 0 12px}'
       + '#tlrfHost .tlrf-link{background:none;border:0;padding:0;color:var(--brand-600,#0f7c9c);text-decoration:underline;cursor:pointer;font:inherit}'
+      + '#tlrfHost .tlrf-auto{font-size:10.5px;font-weight:700;color:var(--ok-700,#1d6b3f);background:var(--ok-100,#e8f6ee);border-radius:99px;padding:1px 7px;margin-left:6px;text-transform:none;letter-spacing:0}'
       + '#tlrfHost [hidden]{display:none!important}'
       + '#tlrfModes{display:grid;grid-template-columns:1fr 1fr;gap:8px}'
       + '#tlrfModes .opt-row{margin:0;justify-content:flex-start;text-align:left}'
@@ -121,33 +116,46 @@
     document.head.appendChild(s);
   }
 
-  function uploadPanel() {
-    var reading = S.phase === 'reading';
-    return '<div class="panel ai-panel"><div class="panel-head"><h2><span class="reg-section-num">1</span>Upload your resume</h2></div>'
-      + '<div class="panel-body"><div class="resume-upload-box">'
-      + '<div style="font-size:28px">📄</div>'
-      + '<b>' + (reading ? 'Reading your resume…' : 'Start with your resume') + '</b>'
-      + '<p>' + (reading ? 'This takes a few seconds. Your resume is already saved.'
-        : 'We read it and build your profile from it, so you do not type what it already says. PDF, DOC, DOCX or TXT, up to 5 MB.') + '</p>'
-      + (reading ? '' : '<button type="button" class="btn btn-primary" data-tlrf="pick" style="margin-top:10px">Choose resume</button>')
-      + '<input type="file" id="tlrfFile" accept=".pdf,.doc,.docx,.txt" hidden aria-label="Resume file">'
-      + (S.err.file ? '<div class="tlrf-err" role="alert">' + h(S.err.file) + '</div>' : '')
-      + '</div>'
-      + '<p class="tlrf-note">No resume? <button type="button" class="tlrf-link" data-tlrf="manual">Enter my details manually</button></p>'
-      + '</div></div>';
+  /* ------------------------------------------------------------------ *
+   * the sections
+   * ------------------------------------------------------------------ */
+  function fieldHtml(id, label, inputHtml, errKey, opts) {
+    opts = opts || {};
+    var bad = !!S.err[errKey];
+    return '<div class="review-field' + (bad ? ' tlrf-bad' : '') + '"><label for="' + id + '">' + h(label) + (opts.optional ? '' : REQ)
+      + (opts.autoKey && S.auto[opts.autoKey] ? '<span class="tlrf-auto">from your resume</span>' : '') + '</label>'
+      + inputHtml + (bad ? '<div class="tlrf-err" role="alert">' + h(S.err[errKey]) + '</div>' : '') + '</div>';
+  }
+  function txt(id, key, ph, extra) {
+    var v = S.input[key];
+    return '<input id="' + id + '" value="' + h(v === undefined || v === null ? '' : v) + '" placeholder="' + h(ph || '') + '" autocomplete="off"' + (extra || '') + '>';
   }
 
-  function failedPanel() {
-    var e = (S.draft && S.draft.error) || {};
-    return '<div class="panel"><div class="panel-head"><h2><span class="reg-section-num">1</span>Your resume</h2></div><div class="panel-body">'
-      + '<div class="tlrf-warn" role="alert"><b>' + h(e.message || "We couldn't extract your resume automatically. Please review or enter the missing information manually.") + '</b>'
-      + (S.draft && S.draft.resume ? '<div class="tlrf-note">Your resume <b>' + h(S.draft.resume.fileName) + '</b> is saved - nothing is lost.</div>' : '')
-      + '</div>'
-      + '<div class="tlrf-row">'
-      + '<button type="button" class="btn btn-primary" data-tlrf="retry"' + (S.busy ? ' disabled' : '') + '>Try reading it again</button>'
-      + '<button type="button" class="btn btn-ghost" data-tlrf="pick">Upload a different file</button>'
-      + '<button type="button" class="btn btn-ghost" data-tlrf="manual">Enter my details manually</button>'
-      + '</div><input type="file" id="tlrfFile" accept=".pdf,.doc,.docx,.txt" hidden aria-label="Resume file"></div></div>';
+  function resumeSection() {
+    var d = S.draft;
+    var failed = d && d.status === 'failed';
+    var body;
+    if (S.reading) {
+      body = '<div class="resume-upload-box"><div style="font-size:28px">📄</div><b>Reading your resume…</b>'
+        + '<p>This takes a few seconds. Your resume is already saved.</p></div>';
+    } else if (d && d.resume) {
+      body = '<div class="tlrf-ok" role="status">✓ Uploaded: ' + h(d.resume.fileName) + '</div>'
+        + (failed
+          ? '<div class="tlrf-warn" role="alert" style="margin-top:8px"><b>' + h((d.error && d.error.message) || "We couldn't extract your resume automatically. Please review or enter the missing information manually.")
+            + '</b><div class="tlrf-note">Your resume is saved. Fill in the details below.</div>'
+            + '<div class="tlrf-row" style="margin-top:8px"><button type="button" class="btn btn-ghost btn-sm" data-tlrf="retry"' + (S.busy ? ' disabled' : '') + '>Try reading it again</button></div></div>'
+          : '<div class="tlrf-found">' + foundSummary(d) + '</div>')
+        + '<div class="tlrf-row" style="margin-top:10px"><button type="button" class="btn btn-ghost btn-sm" data-tlrf="pick">Replace resume</button></div>';
+    } else {
+      body = '<div class="resume-upload-box"><div style="font-size:28px">📄</div><b>Upload your resume</b>'
+        + '<p>We read it and fill in your details for you. PDF or DOCX, up to 5 MB. You can still type everything yourself.</p>'
+        + '<button type="button" class="btn btn-primary" data-tlrf="pick" style="margin-top:10px">Choose resume</button></div>';
+    }
+    return '<div class="panel ai-panel' + (S.err.resume ? ' tlrf-bad' : '') + '"><div class="panel-head"><h2><span class="reg-section-num">1</span>Upload your resume' + REQ + '</h2></div>'
+      + '<div class="panel-body">' + body
+      + '<input type="file" id="tlrfFile" accept=".pdf,.docx" hidden aria-label="Resume file">'
+      + (S.err.resume ? '<div class="tlrf-err" role="alert">' + h(S.err.resume) + '</div>' : '')
+      + '</div></div>';
   }
 
   function foundSummary(d) {
@@ -162,43 +170,40 @@
     if (f.skills && f.skills.length) bits.push(f.skills.length + ' skills');
     var edu = (f.educationRecords && f.educationRecords.length) || (f.education ? 1 : 0);
     if (edu) bits.push(edu + ' education record' + (edu === 1 ? '' : 's'));
-    if (f.employmentHistory && f.employmentHistory.length) bits.push(f.employmentHistory.length + ' companies');
-    if (f.projects && f.projects.length) bits.push(f.projects.length + ' projects');
-    if (f.certifications && f.certifications.length) bits.push(f.certifications.length + ' certifications');
     return bits.map(function (b) { return '<span>✓ ' + h(b) + '</span>'; }).join('');
   }
 
-  /* Only what the reading was unsure of, or did not find for name / mobile. */
-  function confirmKeys(d) {
-    var keys = (d.needsVerification || []).slice();
-    if (d.ask && d.ask.name && keys.indexOf('name') < 0) keys.unshift('name');
-    if (d.ask && d.ask.phone && keys.indexOf('phone') < 0) keys.push('phone');
-    return keys.filter(function (k) { return k !== 'email'; });
+  function personalSection() {
+    return '<div class="panel"><div class="panel-head"><h2><span class="reg-section-num">2</span>Personal details</h2></div><div class="panel-body">'
+      + '<div class="review-grid">'
+      + fieldHtml('tlrfName', 'Full name', txt('tlrfName', 'name', 'As on your resume', ' autocomplete="name"'), 'name', { autoKey: 'name' })
+      + fieldHtml('tlrfEmail', 'Email', txt('tlrfEmail', 'email', 'you@example.com', ' type="email" autocomplete="email"'), 'email', { autoKey: 'email' })
+      + '</div></div></div>';
   }
 
-  function readPanel(d) {
-    var keys = confirmKeys(d);
-    var out = '<div class="panel ai-panel"><div class="panel-head"><h2><span class="reg-section-num">1</span>Your resume</h2>'
-      + '<button type="button" class="btn btn-ghost btn-sm" data-tlrf="pick">Replace</button></div><div class="panel-body">'
-      + '<div class="tlrf-ok">✓ ' + h((d.resume && d.resume.fileName) || 'Resume') + ' - we read your resume and filled your profile from it.</div>'
-      + '<div class="tlrf-found">' + foundSummary(d) + '</div>'
-      + '<input type="file" id="tlrfFile" accept=".pdf,.doc,.docx,.txt" hidden aria-label="Resume file">'
-      + '</div></div>';
-    if (keys.length) {
-      out += '<div class="panel"><div class="panel-head"><h2><span class="reg-section-num">2</span>Please check</h2></div><div class="panel-body">'
-        + '<p class="tlrf-note" style="margin:0 0 10px">We found the following information from your resume, but we are not sure it is right. Correct anything that is wrong.</p>'
-        + '<div class="review-grid">' + keys.map(function (k) {
-          var v = fieldVal(k);
-          if (k === 'name' && (v === undefined || v === null || v === '') && d.nameSuggestion) v = d.nameSuggestion;
-          var id = 'tlrfC_' + k;
-          var req = (k === 'name' || k === 'phone') ? ' *' : '';
-          return '<div class="review-field"><label for="' + id + '">' + h(LABEL[k] || k) + req + '</label>'
-            + '<input id="' + id + '" data-tlrf-c="' + h(k) + '" value="' + h(v === undefined || v === null ? '' : v) + '"'
-            + (k === 'phone' ? ' inputmode="numeric" maxlength="15"' : '') + '>'
-            + (S.err['c_' + k] ? '<div class="tlrf-err">' + h(S.err['c_' + k]) + '</div>' : '') + '</div>';
-        }).join('') + '</div></div></div>';
-    }
-    return out;
+  function educationSection() {
+    return '<div class="panel"><div class="panel-head"><h2><span class="reg-section-num">3</span>Education</h2></div><div class="panel-body">'
+      + '<datalist id="tlrfQualList">' + QUALS.map(function (q) { return '<option value="' + h(q) + '">'; }).join('') + '</datalist>'
+      + '<div class="review-grid">'
+      + fieldHtml('tlrfQual', 'Highest qualification', txt('tlrfQual', 'qualification', 'e.g. B.Tech', ' list="tlrfQualList"'), 'qualification', { autoKey: 'qualification' })
+      + fieldHtml('tlrfInst', 'Institute', txt('tlrfInst', 'institution', 'College / university'), 'institution', { autoKey: 'institution' })
+      + fieldHtml('tlrfYear', 'Year of passing', txt('tlrfYear', 'passingYear', 'e.g. 2021', ' inputmode="numeric" maxlength="4"'), 'passingYear', { autoKey: 'passingYear' })
+      + '</div></div></div>';
+  }
+
+  function experienceSection() {
+    var cur = S.input.notice || '';
+    var needsJob = Number(S.input.expYears) > 0;
+    return '<div class="panel"><div class="panel-head"><h2><span class="reg-section-num">4</span>Experience</h2></div><div class="panel-body">'
+      + '<div class="review-grid">'
+      + fieldHtml('tlrfExp', 'Total experience (years)', txt('tlrfExp', 'expYears', '0 if you are a fresher', ' inputmode="decimal"'), 'expYears', { autoKey: 'expYears' })
+      + fieldHtml('tlrfCompany', 'Current company', txt('tlrfCompany', 'company', needsJob ? 'Where you work now' : 'Optional for freshers'), 'company', { autoKey: 'company', optional: !needsJob })
+      + fieldHtml('tlrfRole', 'Current role', txt('tlrfRole', 'role', needsJob ? 'Your designation' : 'Optional for freshers'), 'role', { autoKey: 'role', optional: !needsJob })
+      + fieldHtml('tlrfNotice', 'Notice period',
+        '<select id="tlrfNotice"><option value="">Select</option>' + NOTICE.map(function (o) {
+          return '<option' + (cur === o ? ' selected' : '') + '>' + h(o) + '</option>';
+        }).join('') + '</select>', 'notice', { autoKey: 'notice' })
+      + '</div></div></div>';
   }
 
   function locOptions() {
@@ -208,68 +213,60 @@
     return '<datalist id="tlrfLocList">' + all.map(function (l) { return '<option value="' + h(l) + '">'; }).join('') + '</datalist>';
   }
 
-  function detailsPanel(d) {
-    var n = confirmKeys(d).length ? 3 : 2;
-    var I = S.input;
-    var email = I.email !== undefined ? I.email : (d.email || '');
-    var verified = !!d.emailVerified && String(d.email || '').toLowerCase() === String(email || '').toLowerCase();
-    var e = S.err;
-    var exists = d.existing || {};
-    var warn = (exists.email || exists.phone)
-      ? '<div class="tlrf-warn" role="alert">An account with this ' + (exists.email ? 'email' : 'mobile number')
-        + ' already exists. <a href="#/login/candidate">Please Login</a> instead of registering again.</div>' : '';
-    return '<div class="panel"><div class="panel-head"><h2><span class="reg-section-num">' + n + '</span>A few details your resume cannot tell us</h2></div><div class="panel-body">'
-      + warn + locOptions()
+  function accountSection() {
+    var I = S.input, e = S.err;
+    return '<div class="panel"><div class="panel-head"><h2>Account &amp; preferences</h2></div><div class="panel-body">'
+      + locOptions()
       + '<div class="review-grid"><div>'
-      + '<div class="review-field"><label for="tlrfLoc">Current Location *</label>'
-      + '<input id="tlrfLoc" list="tlrfLocList" autocomplete="off" placeholder="e.g. Hyderabad" value="' + h(I.loc !== undefined ? I.loc : (fieldVal('location') || '')) + '">'
-      + (e.loc ? '<div class="tlrf-err">' + h(e.loc) + '</div>' : '') + '</div>'
-      + '<div class="review-field"><label for="tlrfPrefIn">Preferred Location *</label>'
+      + fieldHtml('tlrfLoc', 'Current location', txt('tlrfLoc', 'loc', 'e.g. Hyderabad', ' list="tlrfLocList"'), 'loc', { autoKey: 'loc' })
+      + '<div class="review-field' + (e.pref ? ' tlrf-bad' : '') + '"><label for="tlrfPrefIn">Preferred location' + REQ + '</label>'
       + '<div class="tlrf-row"><input id="tlrfPrefIn" list="tlrfLocList" autocomplete="off" placeholder="Type a city and press Enter">'
       + '<button type="button" class="btn btn-ghost btn-sm" data-tlrf="addpref">Add</button></div>'
       + '<div class="tlrf-chips">' + I.prefLocs.map(function (l, i) {
         return '<span class="filter-chip">' + h(l) + '<button type="button" data-tlrf="rmpref" data-i="' + i + '" aria-label="Remove ' + h(l) + '">✕</button></span>';
-      }).join('') + '</div>'
-      + (e.pref ? '<div class="tlrf-err">' + h(e.pref) + '</div>' : '') + '</div>'
-      + '<div class="review-field"><label for="tlrfSal">Expected Salary (₹ LPA) *</label>'
-      + '<input id="tlrfSal" type="number" min="0" step="0.5" placeholder="e.g. 8" value="' + h(I.sal || '') + '">'
-      + (e.sal ? '<div class="tlrf-err">' + h(e.sal) + '</div>' : '') + '</div>'
+      }).join('') + '</div>' + (e.pref ? '<div class="tlrf-err" role="alert">' + h(e.pref) + '</div>' : '') + '</div>'
+      + fieldHtml('tlrfSal', 'Expected salary (₹ LPA)', '<input id="tlrfSal" type="number" min="0" step="0.5" placeholder="e.g. 8" value="' + h(I.sal || '') + '">', 'sal')
       + '</div><div>'
-      + '<div class="review-field"><label>Work Mode *</label><div class="opt-row-group" id="tlrfModes">'
+      + '<div class="review-field' + (e.modes ? ' tlrf-bad' : '') + '"><label>Work mode' + REQ + '</label><div class="opt-row-group" id="tlrfModes">'
       + MODES.map(function (m) {
         var on = I.modes.indexOf(m[0]) >= 0;
         return '<label class="opt-row' + (on ? ' active' : '') + '"><input type="checkbox" value="' + m[0] + '"' + (on ? ' checked' : '') + ' data-tlrf-mode="1"><span>' + h(m[1]) + '</span></label>';
-      }).join('') + '</div>'
-      + (e.modes ? '<div class="tlrf-err">' + h(e.modes) + '</div>' : '') + '</div>'
+      }).join('') + '</div>' + (e.modes ? '<div class="tlrf-err" role="alert">' + h(e.modes) + '</div>' : '') + '</div>'
+      + fieldHtml('tlrfPw', 'Password', '<input id="tlrfPw" type="password" autocomplete="new-password" placeholder="At least 8 characters, a letter and a number">', 'pw')
+      + fieldHtml('tlrfPw2', 'Confirm password', '<input id="tlrfPw2" type="password" autocomplete="new-password">', 'pw2')
       + '</div></div>'
-
-      + '<div class="review-grid"><div>'
-      + '<div class="review-field"><label for="tlrfEmail">Email *' + (d.fields && d.fields.email ? ' <span class="ai-extracted-tag">from your resume</span>' : '') + '</label>'
-      + '<div class="tlrf-row"><input id="tlrfEmail" type="email" autocomplete="email" value="' + h(email) + '"' + (verified ? ' readonly' : '') + '>'
-      + (verified ? '<span class="tlrf-ok">✓ Verified</span>'
-        : '<button type="button" class="btn btn-ghost btn-sm" data-tlrf="sendcode"' + (S.busy ? ' disabled' : '') + '>' + (S.codeSent ? 'Send again' : 'Send code') + '</button>') + '</div>'
-      + (verified ? '' : '<p class="tlrf-note">We send a 6-digit code to confirm the address. You sign in with it.</p>')
-      + (S.codeSent && !verified ? '<div class="tlrf-row" style="margin-top:6px"><input id="tlrfCode" inputmode="numeric" maxlength="6" placeholder="6-digit code" autocomplete="one-time-code">'
-        + '<button type="button" class="btn btn-primary btn-sm" data-tlrf="verify"' + (S.busy ? ' disabled' : '') + '>Verify</button></div>' : '')
-      + (S.devCode && !verified ? '<div class="tlrf-dev">Development server: email is not being sent. Your code is <b>' + h(S.devCode) + '</b>.</div>' : '')
-      + (e.email ? '<div class="tlrf-err" role="alert">' + h(e.email) + '</div>' : '')
-      + (e.code ? '<div class="tlrf-err" role="alert">' + h(e.code) + '</div>' : '')
-      + '</div></div>'
-      + '<div>'
-      + '<div class="review-field"><label for="tlrfPw">Password *</label><input id="tlrfPw" type="password" autocomplete="new-password" placeholder="At least 8 characters, a letter and a number">'
-      + (e.pw ? '<div class="tlrf-err">' + h(e.pw) + '</div>' : '') + '</div>'
-      + '<div class="review-field"><label for="tlrfPw2">Confirm Password *</label><input id="tlrfPw2" type="password" autocomplete="new-password">'
-      + (e.pw2 ? '<div class="tlrf-err">' + h(e.pw2) + '</div>' : '') + '</div>'
-      + '</div></div>'
-
-      + '<label class="consent-row"><input type="checkbox" id="tlrfTerms"' + (I.terms ? ' checked' : '') + '><span>I agree to the TeamLink Terms &amp; Conditions and Privacy Policy *</span></label>'
-      + '<label class="consent-row"><input type="checkbox" id="tlrfComm"' + (I.comm ? ' checked' : '') + '><span>I agree to receive recruitment communication from TeamLink *</span></label>'
+      + '<label class="consent-row"><input type="checkbox" id="tlrfTerms"' + (I.terms ? ' checked' : '') + '><span>I agree to the TeamLink Terms &amp; Conditions and Privacy Policy' + REQ + '</span></label>'
+      + '<label class="consent-row"><input type="checkbox" id="tlrfComm"' + (I.comm ? ' checked' : '') + '><span>I agree to receive recruitment communication from TeamLink' + REQ + '</span></label>'
       + '<label class="consent-row" style="margin-bottom:0"><input type="checkbox" id="tlrfResume"' + (I.resume !== false ? ' checked' : '') + '><span>I consent to my resume being processed for recruitment</span></label>'
-      + (e.consent ? '<div class="tlrf-err">' + h(e.consent) + '</div>' : '')
-      + (S.msg ? '<div class="tlrf-err" role="alert" style="margin-top:10px">' + h(S.msg) + '</div>' : '')
-      + '</div></div>'
-      + '<button type="button" class="btn btn-primary btn-block" data-tlrf="create" style="padding:13px"' + (S.busy || exists.email || exists.phone ? ' disabled' : '') + '>'
-      + (S.busy ? 'Creating your account…' : 'Create account') + '</button>'
+      + (e.consent ? '<div class="tlrf-err" role="alert">' + h(e.consent) + '</div>' : '')
+      + '</div></div>';
+  }
+
+  function mobileSection() {
+    var e = S.err, ok = phoneVerified();
+    return '<div class="panel"><div class="panel-head"><h2><span class="reg-section-num">5</span>Verify your mobile number</h2></div><div class="panel-body">'
+      + '<div class="review-field' + (e.phone ? ' tlrf-bad' : '') + '"><label for="tlrfPhone">Mobile number' + REQ
+      + (S.auto.phone ? '<span class="tlrf-auto">from your resume</span>' : '') + '</label>'
+      + '<div class="tlrf-row"><input id="tlrfPhone" type="tel" inputmode="numeric" maxlength="15" autocomplete="tel" placeholder="10-digit mobile number" value="' + h(S.input.phone || '') + '">'
+      + '<button type="button" class="btn btn-ghost btn-sm" id="tlrfSendOtp" data-tlrf="sendotp"' + (S.otpBusy ? ' disabled' : '') + (ok ? ' hidden' : '') + '>'
+      + (S.otpBusy ? 'Sending…' : (S.otpSent ? 'Resend OTP' : 'Send OTP')) + '</button>'
+      + '<span class="tlrf-tick" id="tlrfTick" role="status"' + (ok ? '' : ' hidden') + '>✓ Mobile number verified</span></div>'
+      + (e.phone ? '<div class="tlrf-err" role="alert">' + h(e.phone) + '</div>' : '')
+      + '</div>'
+      + '<div id="tlrfOtpBox"' + (S.otpSent && !ok ? '' : ' hidden') + '>'
+      + '<div class="tlrf-row"><input id="tlrfOtp" inputmode="numeric" maxlength="6" placeholder="6-digit OTP" autocomplete="one-time-code" aria-label="OTP">'
+      + '<button type="button" class="btn btn-primary btn-sm" data-tlrf="verifyotp">Verify</button></div>'
+      + (S.otpNote ? '<p class="tlrf-note">' + h(S.otpNote) + '</p>' : '')
+      + (S.devCode ? '<div class="tlrf-dev">Development server: SMS is not being sent. Your OTP is <b>' + h(S.devCode) + '</b>.</div>' : '')
+      + (e.otp ? '<div class="tlrf-err" role="alert">' + h(e.otp) + '</div>' : '')
+      + '</div></div></div>';
+  }
+
+  function createSection() {
+    var ok = phoneVerified();
+    return (S.msg ? '<div class="tlrf-err" role="alert" style="margin:0 0 10px;font-size:13px;font-weight:600">' + h(S.msg) + '</div>' : '')
+      + '<button type="button" class="btn btn-primary btn-block" id="tlrfCreate" data-tlrf="create" style="padding:13px"' + (S.busy ? ' disabled' : '') + (ok ? '' : ' hidden') + '>'
+      + (S.busy ? 'Creating your account…' : 'Create Account') + '</button>'
       + '<div class="switch-role">Already have an account? <a href="#/login/candidate">Log in</a></div>';
   }
 
@@ -310,18 +307,14 @@
     if (!host) return;
     var form = $('registerForm');
     if (S.manual) {
-      host.innerHTML = '<p class="tlrf-note" style="margin:0 0 12px">Have a resume? <button type="button" class="tlrf-link" data-tlrf="auto">Upload it and skip the typing</button></p>';
+      host.innerHTML = '<p class="tlrf-note" style="margin:0 0 12px">Back to <button type="button" class="tlrf-link" data-tlrf="auto">registration with my resume</button></p>';
       if (form) form.hidden = false;
       return;
     }
     if (form) form.hidden = true;
-    var d = S.draft;
-    var html;
-    if (S.phase === 'done') html = donePanel();
-    else if (!d || S.phase === 'reading') html = uploadPanel();
-    else if (d.status === 'failed') html = failedPanel();
-    else html = readPanel(d) + detailsPanel(d);
-    host.innerHTML = html;
+    if (S.phase === 'done') { host.innerHTML = donePanel(); return; }
+    host.innerHTML = resumeSection() + personalSection() + educationSection() + experienceSection()
+      + accountSection() + mobileSection() + createSection();
   }
 
   function mount() {
@@ -340,6 +333,52 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * what the page holds, and what the resume fills in
+   * ------------------------------------------------------------------ */
+  function keepInputs() {
+    var I = S.input;
+    var map = { tlrfName: 'name', tlrfEmail: 'email', tlrfQual: 'qualification', tlrfInst: 'institution', tlrfYear: 'passingYear',
+      tlrfExp: 'expYears', tlrfCompany: 'company', tlrfRole: 'role', tlrfNotice: 'notice', tlrfLoc: 'loc', tlrfSal: 'sal', tlrfPhone: 'phone' };
+    Object.keys(map).forEach(function (id) { if ($(id)) I[map[id]] = val(id); });
+    if ($('tlrfTerms')) I.terms = $('tlrfTerms').checked;
+    if ($('tlrfComm')) I.comm = $('tlrfComm').checked;
+    if ($('tlrfResume')) I.resume = $('tlrfResume').checked;
+    var pw = $('tlrfPw'), pw2 = $('tlrfPw2');
+    S.pw = pw ? pw.value : S.pw; S.pw2 = pw2 ? pw2.value : S.pw2;
+  }
+  function repaint() {
+    keepInputs(); paint();
+    if (S.pw && $('tlrfPw')) $('tlrfPw').value = S.pw;
+    if (S.pw2 && $('tlrfPw2')) $('tlrfPw2').value = S.pw2;
+  }
+
+  /* Fill ONLY what is empty, from the reading. Never replaces a typed value. */
+  function autofill(d) {
+    keepInputs();
+    var f = (d && d.fields) || {};
+    var I = S.input;
+    var edu = (f.educationRecords && f.educationRecords[0]) || {};
+    var set = function (key, value, flag) {
+      if (!empty(I[key]) || empty(value)) return;
+      I[key] = String(value).trim(); S.auto[flag || key] = true;
+    };
+    set('name', f.name || d.nameSuggestion, 'name');
+    set('email', d.email || f.email, 'email');
+    set('phone', f.phone, 'phone');
+    set('qualification', edu.qualification || edu.level || f.qualification || f.education, 'qualification');
+    set('institution', edu.institution, 'institution');
+    set('passingYear', edu.passingYear, 'passingYear');
+    if (empty(I.expYears) && f.expYears !== undefined && f.expYears !== null) { I.expYears = String(f.expYears); S.auto.expYears = true; }
+    set('company', f.currentCompany, 'company');
+    set('role', f.title, 'role');
+    set('loc', f.location, 'loc');
+    if (empty(I.notice) && f.noticePeriod) {
+      var match = NOTICE.filter(function (o) { return o.toLowerCase() === String(f.noticePeriod).trim().toLowerCase(); })[0];
+      if (match) { I.notice = match; S.auto.notice = true; }
+    }
+  }
+
+  /* ------------------------------------------------------------------ *
    * talking to the server
    * ------------------------------------------------------------------ */
   function restore() {
@@ -347,156 +386,138 @@
     if (!r || !r.id || !r.token || !api()) return;
     S.token = r.token;
     api().get('/registration/drafts/' + encodeURIComponent(r.id), hdr()).then(function (d) {
-      S.draft = d; S.phase = 'read'; seedInputs(d); paint();
+      S.draft = d; S.phase = 'read'; autofill(d); paint();
     }, function () { S.token = null; remember(); });
   }
 
-  function seedInputs(d) {
-    var I = S.input;
-    if (I.loc === undefined && d.fields && d.fields.location) I.loc = d.fields.location;
-    if (I.email === undefined) {
-      var typed = '';
-      try { typed = sessionStorage.getItem('tl_apply_contact_v1') || ''; } catch (e) { typed = ''; }
-      I.email = d.email || typed || '';
-    }
-  }
-
   function upload(file) {
-    S.err = {}; S.msg = '';
+    keepInputs();
+    S.err.resume = ''; S.msg = '';
     var ext = String(file.name || '').split('.').pop().toLowerCase();
-    if (ACCEPT.indexOf(ext) < 0) { S.err.file = 'Please upload a PDF, DOC, DOCX or TXT file.'; paint(); return; }
-    if (file.size > MAX) { S.err.file = 'That file is too large. The limit is 5 MB.'; paint(); return; }
-    S.file = file;
-    S.phase = 'reading'; S.draft = null; S.token = null; S.codeSent = false; S.devCode = null;
-    S.input = { prefLocs: [], modes: [] };
+    if (ACCEPT.indexOf(ext) < 0) { S.err.resume = 'Please upload a PDF or DOCX file.'; paint(); return; }
+    if (file.size > MAX) { S.err.resume = 'That file is too large. The limit is 5 MB.'; paint(); return; }
+    S.file = file; S.reading = true;
     paint();
     var fd = new FormData();
     fd.append('resume', file, file.name);
     api().post('/registration/drafts', fd, { timeout: 120000 }).then(function (d) {
+      S.reading = false;
+      /* a different file is a different draft: the number verified on the old one is not carried over */
       S.token = d.draftToken; delete d.draftToken;
-      S.draft = d; S.phase = 'read';
-      seedInputs(d);
+      S.draft = d; S.phase = 'read'; S.otpSent = false; S.devCode = null; S.otpNote = '';
+      autofill(d);
       remember();
       paint();
     }, function (er) {
-      S.phase = 'upload'; S.err.file = apiMessage(er); paint();
+      S.reading = false; S.err.resume = apiMessage(er); paint();
     });
   }
 
   function retry() {
-    S.busy = true; S.phase = 'reading'; paint();
+    S.busy = true; S.reading = true; paint();
     api().post('/registration/drafts/' + encodeURIComponent(S.draft.draftId) + '/retry', {}, hdr()).then(function (d) {
-      S.busy = false; S.draft = d; S.phase = 'read'; seedInputs(d); paint();
+      S.busy = false; S.reading = false; S.draft = d; autofill(d); paint();
     }, function (er) {
-      S.busy = false; S.phase = 'read'; say(apiMessage(er), '⚠️'); paint();
+      S.busy = false; S.reading = false; say(apiMessage(er), '⚠️'); paint();
     });
   }
 
-  function keepInputs() {
-    var I = S.input;
-    if ($('tlrfLoc')) I.loc = val('tlrfLoc');
-    if ($('tlrfSal')) I.sal = val('tlrfSal');
-    if ($('tlrfNotice')) I.notice = val('tlrfNotice');
-    if ($('tlrfNoticeOther')) I.noticeOther = val('tlrfNoticeOther');
-    if ($('tlrfEmail')) I.email = val('tlrfEmail');
-    if ($('tlrfTerms')) I.terms = $('tlrfTerms').checked;
-    if ($('tlrfComm')) I.comm = $('tlrfComm').checked;
-    if ($('tlrfResume')) I.resume = $('tlrfResume').checked;
-    var pw = $('tlrfPw'), pw2 = $('tlrfPw2');
-    S.pw = pw ? pw.value : S.pw; S.pw2 = pw2 ? pw2.value : S.pw2;
-    Array.prototype.forEach.call(document.querySelectorAll('#tlrfHost [data-tlrf-c]'), function (x) {
-      S.corr = S.corr || {};
-      S.corr[x.getAttribute('data-tlrf-c')] = String(x.value || '').trim();
-    });
-  }
-  function repaint() {
-    keepInputs(); paint();
-    if (S.pw && $('tlrfPw')) $('tlrfPw').value = S.pw;
-    if (S.pw2 && $('tlrfPw2')) $('tlrfPw2').value = S.pw2;
-    Object.keys(S.corr || {}).forEach(function (k) { var el = $('tlrfC_' + k); if (el) el.value = S.corr[k]; });
-  }
-
-  function sendCode() {
+  function sendOtp() {
     keepInputs();
-    S.err.email = ''; S.err.code = '';
-    var email = S.input.email;
-    if (!EMAIL_RX.test(email)) { S.err.email = 'Please enter a valid email address.'; repaint(); return; }
-    S.busy = true; repaint();
-    api().post('/registration/drafts/' + encodeURIComponent(S.draft.draftId) + '/email-code', { email: email }, hdr()).then(function (r) {
-      S.busy = false; S.codeSent = true; S.devCode = r.devCode || null;
-      if (r.sent) say('We sent a 6-digit code to ' + email, '✉️');
+    S.err.phone = ''; S.err.otp = '';
+    var phone = S.input.phone || '';
+    if (!MOBILE_RX.test(phone.replace(/[\s-]/g, ''))) { S.err.phone = 'Enter a valid 10-digit mobile number'; repaint(); return; }
+    if (!S.draft) { S.err.phone = 'Upload your resume first, then verify your mobile number.'; S.err.resume = S.err.resume || 'Upload your resume (PDF or DOCX).'; repaint(); return; }
+    S.otpBusy = true; repaint();
+    api().post('/registration/drafts/' + encodeURIComponent(S.draft.draftId) + '/phone-otp', { phone: phone }, hdr()).then(function (r) {
+      S.otpBusy = false; S.otpSent = true; S.devCode = r.devCode || null;
+      S.otpNote = r.sent ? 'We sent a 6-digit OTP to ' + last10(phone) + '.' : '';
       repaint();
-      var c = $('tlrfCode'); if (c) c.focus();
+      var c = $('tlrfOtp'); if (c) c.focus();
     }, function (er) {
-      S.busy = false; S.err.email = (details(er).email) || apiMessage(er); repaint();
+      S.otpBusy = false; S.err.phone = (details(er).phone) || apiMessage(er); repaint();
     });
   }
 
-  function verify() {
+  function verifyOtp() {
     keepInputs();
-    var code = val('tlrfCode').replace(/\D/g, '');
-    if (code.length !== 6) { S.err.code = 'Enter the 6-digit code from the email.'; repaint(); return; }
-    S.busy = true; repaint();
-    api().post('/registration/drafts/' + encodeURIComponent(S.draft.draftId) + '/verify-email',
-      { email: S.input.email, code: code }, hdr()).then(function (d) {
-      S.busy = false; S.err.code = ''; S.draft = d; S.devCode = null; repaint();
-      say('Email verified', '✓');
+    var code = val('tlrfOtp').replace(/\D/g, '');
+    S.err.otp = '';
+    if (code.length !== 6) { S.err.otp = 'Enter the 6-digit OTP'; repaint(); return; }
+    api().post('/registration/drafts/' + encodeURIComponent(S.draft.draftId) + '/verify-phone', { phone: S.input.phone, code: code }, hdr()).then(function (d) {
+      S.err.otp = ''; S.err.phone = ''; S.draft = d; S.devCode = null; S.otpSent = false; S.otpNote = '';
+      repaint();
     }, function (er) {
-      S.busy = false; S.err.code = (details(er).code) || apiMessage(er); repaint();
+      S.err.otp = (details(er).code) || apiMessage(er) || 'Invalid OTP';
+      repaint();
+      var c = $('tlrfOtp'); if (c) c.focus();
     });
   }
 
   function problems() {
     var I = S.input, e = {};
-    if (!I.loc) e.loc = 'Current Location is required';
-    if (!I.prefLocs.length) e.pref = 'Preferred Job Location is required';
+    if (!S.draft || !S.draft.resume) e.resume = 'Upload your resume (PDF or DOCX)';
+    if (empty(I.name) || I.name.length < 2) e.name = 'Full name is required';
+    if (empty(I.email)) e.email = 'Email is required';
+    else if (!EMAIL_RX.test(I.email)) e.email = 'Enter a valid email address';
+    if (empty(I.qualification)) e.qualification = 'Highest qualification is required';
+    if (empty(I.institution)) e.institution = 'Institute is required';
+    var yr = Number(I.passingYear), thisYear = new Date().getFullYear();
+    if (empty(I.passingYear)) e.passingYear = 'Year of passing is required';
+    else if (!/^\d{4}$/.test(String(I.passingYear).trim()) || yr < 1960 || yr > thisYear + 6) e.passingYear = 'Enter a valid year';
+    var exp = Number(String(I.expYears || '').replace(/[^\d.]/g, ''));
+    if (empty(I.expYears)) e.expYears = 'Total experience is required (0 if you are a fresher)';
+    else if (!Number.isFinite(Number(I.expYears)) || Number(I.expYears) < 0 || Number(I.expYears) > 60) e.expYears = 'Enter the years as a number';
+    else if (exp > 0) {
+      if (empty(I.company)) e.company = 'Current company is required';
+      if (empty(I.role)) e.role = 'Current role is required';
+    }
+    /* "Select" is not a value */
+    if (empty(I.notice) || NOTICE.indexOf(I.notice) < 0) e.notice = 'Notice period is required';
+    if (empty(I.loc)) e.loc = 'Current location is required';
+    if (!I.prefLocs.length) e.pref = 'Preferred location is required';
     var sal = Number(String(I.sal || '').replace(/[^\d.]/g, ''));
-    if (!(sal > 0)) e.sal = 'Expected Salary is required';
+    if (!(sal > 0)) e.sal = 'Expected salary is required';
     else if (sal > 1000) e.sal = 'Please enter the salary in lakh per annum';
     if (!I.modes.length) e.modes = 'Select at least one work mode';
     var pw = S.pw || '';
-    if (pw.length < 8 || !/[A-Za-z]/.test(pw) || !/\d/.test(pw)) e.pw = 'Password must be at least 8 characters, with a letter and a number.';
-    if ((S.pw2 || '') !== pw) e.pw2 = 'Passwords do not match.';
-    if (!I.terms || !I.comm) e.consent = 'Please accept the Terms & Conditions and agree to recruitment communication.';
-    var d = S.draft || {};
-    var verified = !!d.emailVerified && String(d.email || '').toLowerCase() === String(I.email || '').toLowerCase();
-    if (!verified) e.email = 'Please verify your email address first.';
-    confirmKeys(d).forEach(function (k) {
-      var v = (S.corr || {})[k];
-      if (k === 'name' && (!v || v.length < 2)) e['c_name'] = 'Please enter your name.';
-      if (k === 'phone' && !/^(?:\+?91[\s-]?|0)?[6-9]\d{9}$/.test(String(v || '').replace(/[\s-]/g, ''))) e['c_phone'] = 'Please enter a valid 10-digit mobile number.';
-    });
+    if (pw.length < 8 || !/[A-Za-z]/.test(pw) || !/\d/.test(pw)) e.pw = 'Password must be at least 8 characters, with a letter and a number';
+    if ((S.pw2 || '') !== pw) e.pw2 = 'Passwords do not match';
+    if (!I.terms || !I.comm) e.consent = 'Please accept the Terms & Conditions and agree to recruitment communication';
+    if (!MOBILE_RX.test(String(I.phone || '').replace(/[\s-]/g, ''))) e.phone = 'Enter a valid 10-digit mobile number';
+    else if (!phoneVerified()) e.phone = 'Verify your mobile number with the OTP';
     return e;
   }
 
   function create() {
     keepInputs();
+    if (!phoneVerified()) { repaint(); return; }
     S.err = problems(); S.msg = '';
     if (Object.keys(S.err).length) {
-      S.msg = 'Please check the highlighted fields and try again.';
+      S.msg = 'Complete the required fields to continue';
       repaint();
-      var first = document.querySelector('#tlrfHost .tlrf-err');
-      if (first && first.scrollIntoView) first.scrollIntoView({ block: 'center' });
+      var first = document.querySelector('#tlrfHost .tlrf-err:not(#tlrfHost > .tlrf-err)');
+      var bad = document.querySelector('#tlrfHost .tlrf-bad');
+      var target = bad || first;
+      if (target && target.scrollIntoView) target.scrollIntoView({ block: 'center' });
       return;
     }
     var d = S.draft, I = S.input;
-    var corr = {};
-    confirmKeys(d).forEach(function (k) { if (S.corr && S.corr[k] !== undefined) corr[k] = S.corr[k]; });
+    var corr = { name: I.name, phone: I.phone, qualification: I.qualification, institution: I.institution,
+      passingYear: String(I.passingYear).trim(), expYears: Number(I.expYears) };
+    if (!empty(I.company)) corr.currentCompany = I.company;
+    if (!empty(I.role)) corr.title = I.role;
     S.busy = true; repaint();
-    var patch = Object.keys(corr).length
-      ? api().patch('/registration/drafts/' + encodeURIComponent(d.draftId), { corrections: corr }, hdr())
-      : Promise.resolve(d);
     var modes = I.modes.indexOf('Any') >= 0 ? ['Office', 'Hybrid', 'Remote'] : I.modes.slice();
-    patch.then(function (fresh) {
+    api().patch('/registration/drafts/' + encodeURIComponent(d.draftId), { corrections: corr }, hdr()).then(function (fresh) {
       S.draft = fresh;
-      var name = corr.name || fieldVal('name') || fresh.nameSuggestion || '';
-      var phone = corr.phone || fieldVal('phone') || '';
       return api().post('/auth/register', {
-        name: name, email: I.email, phone: phone,
+        name: I.name, email: I.email, phone: I.phone,
         password: S.pw, confirmPassword: S.pw2,
         currentLocation: I.loc,
         preferredLocation: I.prefLocs.join(', '),
         expectedCtc: Number(String(I.sal).replace(/[^\d.]/g, '')),
+        noticePeriod: I.notice,
         preferredWorkModes: modes,
         consent: { terms: !!I.terms, communication: !!I.comm, resumeProcessing: I.resume !== false },
         draftId: d.draftId, draftToken: S.token,
@@ -506,9 +527,7 @@
       S.draft = null; S.token = null; remember();
       var after = (window.TL && typeof TL.refresh === 'function') ? TL.refresh() : Promise.resolve();
       return Promise.resolve(after).catch(function () {}).then(function () {
-        /* 0118: they came from Apply Now - the application is submitted now,
-           without another click (teamlink-apply-auth.js resumes it on the
-           way to the dashboard; Apply Now is one-click). */
+        /* they came from Apply Now: the application is submitted now, without another click */
         var pendingJob = null;
         try { pendingJob = JSON.parse(sessionStorage.getItem('tl_apply_intent_v1') || 'null'); } catch (e) { pendingJob = null; }
         try { sessionStorage.removeItem('tl_apply_contact_v1'); } catch (e) { /* nothing */ }
@@ -523,15 +542,17 @@
       S.busy = false;
       var dt = details(er);
       if (dt.email) S.err.email = dt.email;
-      if (dt.phone) S.err.c_phone = dt.phone;
+      if (dt.phone) S.err.phone = dt.phone;
+      if (dt.resume) S.err.resume = dt.resume;
       if (dt.confirmPassword) S.err.pw2 = dt.confirmPassword;
       if (dt.password) S.err.pw = dt.password;
       if (dt.preferredLocation) S.err.pref = dt.preferredLocation;
       if (dt.expectedCtc) S.err.sal = dt.expectedCtc;
       if (dt.noticePeriod) S.err.notice = dt.noticePeriod;
       if (dt.preferredWorkModes) S.err.modes = dt.preferredWorkModes;
+      if (dt.name) S.err.name = dt.name;
       if (dt['consent.terms'] || dt['consent.communication']) S.err.consent = dt['consent.terms'] || dt['consent.communication'];
-      S.msg = apiMessage(er);
+      S.msg = Object.keys(dt).length ? 'Complete the required fields to continue' : apiMessage(er);
       repaint();
     });
   }
@@ -551,28 +572,45 @@
     var el = $('tlrfPrefIn'); if (el) el.focus();
   }
 
+  /* Changing the mobile number after it was verified un-verifies it: the tick goes, the Create
+     Account button goes, Send OTP comes back - without repainting the field being typed in. */
+  function syncPhoneUi() {
+    var ok = phoneVerified();
+    var tick = $('tlrfTick'), send = $('tlrfSendOtp'), box = $('tlrfOtpBox'), create = $('tlrfCreate');
+    if (tick) tick.hidden = !ok;
+    if (send) send.hidden = ok;
+    if (create) create.hidden = !ok;
+    if (box && ok) box.hidden = true;
+    if (!ok && S.draft && S.draft.phoneVerified) { S.otpSent = false; S.devCode = null; S.otpNote = ''; if (box) box.hidden = true; if (send) send.textContent = 'Send OTP'; }
+  }
+
   document.addEventListener('click', function (ev) {
     var b = ev.target && ev.target.closest && ev.target.closest('#tlrfHost [data-tlrf]');
     if (!b) return;
     var act = b.getAttribute('data-tlrf');
     if (act === 'pick') { var f = $('tlrfFile'); if (f) f.click(); return; }
-    if (act === 'manual') {
-      setManual(true);
-      /* The legacy form uploads the resume itself after the account exists. */
-      if (S.file && window.TL) TL.pendingResume = S.file;
-      paint();
-      return;
-    }
     if (act === 'auto') { setManual(false); paint(); return; }
     if (act === 'retry') { retry(); return; }
-    if (act === 'sendcode') { sendCode(); return; }
-    if (act === 'verify') { verify(); return; }
+    if (act === 'sendotp') { sendOtp(); return; }
+    if (act === 'verifyotp') { verifyOtp(); return; }
     if (act === 'addpref') { addPref(); return; }
     if (act === 'rmpref') { keepInputs(); S.input.prefLocs.splice(Number(b.getAttribute('data-i')), 1); repaint(); return; }
     if (act === 'create') { create(); return; }
     if (act === 'go') {
       S.phase = 'upload'; S.done = null;
       if (typeof window.navigate === 'function') window.navigate(b.getAttribute('data-to'));
+    }
+  });
+
+  document.addEventListener('input', function (ev) {
+    var t = ev.target;
+    if (!t || !t.closest || !t.closest('#tlrfHost')) return;
+    if (t.id === 'tlrfPhone') {
+      S.input.phone = String(t.value || '').trim(); S.err.phone = '';
+      /* ANY edit of a verified number un-verifies it - typing the old digits back does not restore it. */
+      if (S.draft && S.draft.phoneVerified && last10(S.input.phone) !== last10(S.draft.phone)) S.draft.phoneVerified = false;
+      else if (S.draft && !S.draft.phoneVerified) { /* already unverified */ }
+      syncPhoneUi();
     }
   });
 
@@ -589,12 +627,13 @@
       repaint();
       return;
     }
-    if (t.id === 'tlrfNotice') { keepInputs(); repaint(); }
+    if (t.id === 'tlrfExp') { keepInputs(); repaint(); var ne = $('tlrfExp'); if (ne) ne.focus(); }
+    if (t.id === 'tlrfNotice') { keepInputs(); S.err.notice = ''; }
   });
 
   document.addEventListener('keydown', function (ev) {
     if (ev.key === 'Enter' && ev.target && ev.target.id === 'tlrfPrefIn') { ev.preventDefault(); addPref(); }
-    if (ev.key === 'Enter' && ev.target && ev.target.id === 'tlrfCode') { ev.preventDefault(); verify(); }
+    if (ev.key === 'Enter' && ev.target && ev.target.id === 'tlrfOtp') { ev.preventDefault(); verifyOtp(); }
   });
 
   /* ------------------------------------------------------------------ *
