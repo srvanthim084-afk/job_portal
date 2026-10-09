@@ -184,7 +184,9 @@ export default function bootstrapRoutes() {
         ? {
             role: session.role, id: session.profileId, userId: session.userId,
             isTeamLead: session.isTeamLead === true,
-            mustChangePassword: !!(temp && temp.must_change_password),
+            /* Not for a session opened from HRMS (0127): HRMS signed them
+               in, and the portal password is never asked for there. */
+            mustChangePassword: !!(temp && temp.must_change_password) && !session.hrmsSid,
           }
         : null,
       data: payload,

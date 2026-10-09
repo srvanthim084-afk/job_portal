@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<title>TeamLink Job Portal</title>
+<!--
+  Opening the Job Portal from TeamLink HRMS (docs/HRMS-SSO.md).
+
+  HRMS sends the browser here as  hrms-sso.html#token=<jwt>&next=<#/recruiter/...>
+  The token is in the FRAGMENT, so it never reaches a server log or a Referer
+  header, and the first thing this page does is remove it from the address
+  bar (history.replaceState) before anything else runs. It is then POSTed
+  once to the API, which checks it (signature, 60-second expiry, single use),
+  opens the portal session and answers where to go.
+
+  Paths are relative on purpose: the same file works at /hrms-sso.html and,
+  when TeamLink.Enterprise serves the portal under /jobs, at /jobs/hrms-sso.html.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@600;700;800&amp;family=Public+Sans:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#f5f6fb; --card:#fff; --text:#141d2e; --muted:#5b6678; --line:#dde2ea;
+    --brand-600:#4f46e5; --brand-700:#3d34c4; --bad:#c2410c; --bad-100:#fff1e8;
+    --font-body:'Public Sans',-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --font-display:'Manrope',var(--font-body);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#0d1117; --card:#161b22; --text:#e6edf3; --muted:#8b949e; --line:#30363d; --bad-100:#331722;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+    background:var(--bg);color:var(--text);font:15px/1.55 var(--font-body);padding:24px 16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;max-width:440px;width:100%;
+    padding:32px 28px;text-align:center;box-shadow:0 10px 30px rgba(20,29,46,.06)}
+  .icon{width:56px;height:56px;border-radius:50%;margin:0 auto 14px;display:flex;align-items:center;
+    justify-content:center;font-size:26px;background:#eef1ff}
+  .bad .icon{background:var(--bad-100)}
+  h1{font-family:var(--font-display);font-size:20px;margin:0 0 6px;letter-spacing:-.01em}
+  p{margin:0 0 20px;color:var(--muted)}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;font-weight:650;font-size:13.5px;
+    padding:10px 18px;border-radius:10px;border:1px solid transparent;cursor:pointer;text-decoration:none;
+    background:var(--brand-600);color:#fff;font-family:var(--font-body)}
+  .btn:hover{background:var(--brand-700)}
+  .spin{width:28px;height:28px;border:3px solid var(--line);border-top-color:var(--brand-600);border-radius:50%;
+    animation:s 0.9s linear infinite;margin:6px auto 16px}
+  @keyframes s{to{transform:rotate(360deg)}}
+  [hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main class="card" id="card" aria-live="polite">
+  <div id="busy">
+    <div class="spin" aria-hidden="true"></div>
+    <h1>Opening the Job Portal…</h1>
+    <p>Signing you in with your HRMS login.</p>
+  </div>
+  <div id="fail" hidden>
+    <div class="icon" id="failIcon" aria-hidden="true">⏱️</div>
+    <h1 id="failTitle">Session expired</h1>
+    <p id="failText">Session expired. Please open the Job Portal from HRMS again.</p>
+    <a class="btn" id="backBtn" href="#" hidden>← Back to HRMS</a>
+  </div>
+</main>
+<script>
+(function () {
+  'use strict';
+  // 1. The token leaves the address bar before anything else happens.
+  var frag = String(location.hash || '').replace(/^#/, '');
+  try { history.replaceState(null, '', location.pathname); } catch (e) { /* old browser */ }
+  var params = {};
+  frag.split('&').forEach(function (kv) {
+    var i = kv.indexOf('=');
+    if (i > 0) { try { params[kv.slice(0, i)] = decodeURIComponent(kv.slice(i + 1)); } catch (e) { /* bad escape */ } }
+  });
+  var token = params.token || '';
+  var next = params.next || '';
+  frag = ''; params = null;
+
+  var EXPIRED = 'Session expired. Please open the Job Portal from HRMS again.';
+  var hrmsUrl = '';
+
+  function show(kind, title, text) {
+    document.getElementById('busy').hidden = true;
+    document.getElementById('fail').hidden = false;
+    document.getElementById('card').className = 'card bad';
+    document.getElementById('failIcon').textContent = kind === 'denied' ? '🔒' : '⏱️';
+    document.getElementById('failTitle').textContent = title;
+    document.getElementById('failText').textContent = text;
+    var b = document.getElementById('backBtn');
+    if (hrmsUrl) { b.href = hrmsUrl + '/'; b.hidden = false; }
+    document.title = title + ' · TeamLink Job Portal';
+  }
+  function cookie(name) {
+    var m = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+    return m ? decodeURIComponent(m[1]) : '';
+  }
+
+  fetch('api/auth/hrms-sso/status', { credentials: 'same-origin', cache: 'no-store' })
+    .then(function (r) { return r.json(); })
+    .catch(function () { return {}; })
+    .then(function (st) {
+      hrmsUrl = (st && st.hrmsUrl) || '';
+      if (!st || !st.enabled) throw { kind: 'expired', title: 'Not available', text: 'Opening the Job Portal from HRMS is not set up on this server.' };
+      if (!token) throw { kind: 'expired', title: 'Session expired', text: EXPIRED };
+      return cookie('tl_csrf') ? null : fetch('api/csrf', { credentials: 'same-origin', cache: 'no-store' });
+    })
+    .then(function () {
+      var body = JSON.stringify({ token: token, next: next });
+      token = '';
+      return fetch('api/auth/hrms-sso', {
+        method: 'POST', credentials: 'same-origin', cache: 'no-store',
+        headers: { 'content-type': 'application/json', 'x-csrf-token': cookie('tl_csrf') },
+        body: body,
+      });
+    })
+    .then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (b) { return { status: r.status, body: b }; });
+    })
+    .then(function (res) {
+      if (res.status === 200 && res.body && res.body.ok) {
+        try { sessionStorage.setItem('tl_hrms_sso', JSON.stringify({ hrmsUrl: hrmsUrl })); } catch (e) { /* private mode */ }
+        location.replace('./' + (res.body.next || '#/'));
+        return;
+      }
+      var err = (res.body && res.body.error) || {};
+      if (err.code === 'SSO_ACCESS_DENIED') throw { kind: 'denied', title: 'Access denied', text: err.message || 'You do not have access to the Job Portal.' };
+      if (res.status === 429) throw { kind: 'expired', title: 'Please wait', text: err.message || 'Too many attempts. Please wait a minute.' };
+      throw { kind: 'expired', title: 'Session expired', text: EXPIRED };
+    })
+    .catch(function (e) {
+      if (e && e.title) return show(e.kind, e.title, e.text);
+      show('expired', 'Session expired', EXPIRED);
+    });
+})();
+</script>
+</body>
+</html>

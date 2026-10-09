@@ -214,10 +214,12 @@ export const ACTIONS = {
   'contact.duplicate_blocked': 'Duplicate Submission Blocked', 'contact.message_holder': 'Messaged the Holder',
   'contact.override_requested': 'Override Requested', 'contact.override_approved': 'Override Approved',
   'contact.override_denied': 'Override Denied', 'contact.override_used': 'Override Used',
+  /* 0127: single sign-on from HRMS, once per HRMS session */
+  LOGIN_VIA_HRMS: 'Login (via HRMS)',
 };
 /* 0125: sign-in, sign-out and job lifecycle rows, named the same here. */
 for (const a of ACTIVITY) if (!ACTIONS[a.code]) ACTIONS[a.code] = a.label;
-const ENTITIES = ['candidate', 'application', 'recruiter', 'setting', 'interview', 'document', 'job', 'session'];
+const ENTITIES = ['candidate', 'application', 'recruiter', 'setting', 'interview', 'document', 'job', 'session', 'user'];
 
 /* The filters of the audit page, as SQL over admin_audit_events (alias e) and users (alias u). */
 function auditFilters(q) {

@@ -493,7 +493,9 @@ export default function authRoutes() {
     res.json({
       session: {
         role: req.session.role, id: req.session.profileId,
-        mustChangePassword: !!(temp && temp.must_change_password),
+        /* Not for a session opened from HRMS (0127): no portal password is
+           ever asked for there, temporary or otherwise. */
+        mustChangePassword: !!(temp && temp.must_change_password) && !req.session.hrmsSid,
       },
       profile,
     });

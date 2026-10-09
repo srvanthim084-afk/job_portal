@@ -19,6 +19,8 @@ import { attachSession, csrfProtection, issueCsrfToken, startIdleSessionSweep } 
 
 import bootstrapRoutes from './routes/bootstrap.js';
 import authRoutes from './routes/auth.js';
+import hrmsSsoRoutes from './routes/hrms-sso.js';
+import { hrmsSessionGate } from './sso/hrms.js';
 import jobRoutes from './routes/jobs.js';
 import companyRoutes from './routes/companies.js';
 import resumeRoutes from './routes/resume.js';
@@ -358,6 +360,9 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   });
 
   app.use(attachSession());
+  /* HRMS single sign-on: a session opened from HRMS shares HRMS's
+     inactivity timeout and logout (api/src/sso/hrms.js). */
+  app.use(hrmsSessionGate());
   app.use(csrfProtection());
 
   app.get('/api/health', wrap(async (_req, res) => {
@@ -389,6 +394,7 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
      registered-candidates count (numbers only). */
   app.use('/api', recruiterActivityRoutes());
   app.use('/api', portalStatsRoutes());
+  app.use('/api', hrmsSsoRoutes());
   app.use('/api', authRoutes());
   app.use('/api', companyRoutes());
   app.use('/api', resumeRoutes());
