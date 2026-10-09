@@ -115,39 +115,43 @@ export default function hrmsSsoRoutes() {
     // Signed in here as somebody else (or with a password): that session ends.
     if (req.sessionToken) await destroySession(req.sessionToken);
 
+    // "Login (via HRMS)" (auth.login_hrms), once per HRMS session. With the
+    // recruiter time-in-portal tracking (0125) in the database, a recruiter's
+    // login goes through it: portal_session_start writes that one row and
+    // opens the portal session. It runs HERE, before the session is first
+    // resolved - resolving an untracked recruiter session would otherwise
+    // record it as "session carried over". Either way there is one row.
     const { token, hash } = newSessionToken();
     const expires = new Date(Date.now() + SESSION_HOURS * 3_600_000);
-    await withUser(null, async (c) => {
+    const login = await withUser(null, async (c) => {
       await c.query(`select auth_create_session($1,$2,$3,$4,$5)`,
         [account.user_id, hash, expires, req.get('user-agent') || null, req.ip || null]);
       await c.query(`select hrms_sso_mark_session($1,$2)`, [hash, t.sid]);
+      const first = (await c.query(`select hrms_sso_first_login($1,$2) as f`, [t.sid, account.user_id])).rows[0].f;
+      let started = null;
+      if (role === 'recruiter') {
+        const tracked = (await c.query(
+          `select to_regprocedure('portal_session_start(text,text,text)') is not null as t`)).rows[0].t;
+        if (tracked && first) {
+          started = (await c.query(`select portal_session_start($1,'hrms',$2) as id`,
+            [hash, LOGIN_ACTION])).rows[0].id;
+        } else if (tracked) {
+          // Same HRMS sign-in, another browser: carry on its portal session.
+          await c.query(`select hrms_sso_join_portal_session($1,$2)`, [hash, t.sid]);
+        }
+      }
+      return { first, started };
     });
 
     const session = await resolveSession(token);
     if (!session) throw denied('Your Job Portal account could not be opened. Please contact an administrator.');
 
-    // "Login (via HRMS)" (auth.login_hrms) once per HRMS session, written AS
-    // the user so the audit log's User column is them. With the recruiter
-    // time-in-portal tracking (0125) in the database, a recruiter's login
-    // goes through it: portal_session_start writes that one row and starts
-    // the portal session. Either way there is exactly one row.
-    await withUser(session, async (c) => {
-      const first = (await c.query(`select hrms_sso_first_login($1,$2) as f`, [t.sid, account.user_id])).rows[0].f;
-      if (!first) return;
-      let started = null;
-      if (role === 'recruiter') {
-        const tracked = (await c.query(
-          `select to_regprocedure('portal_session_start(text,text,text)') is not null as t`)).rows[0].t;
-        if (tracked) {
-          started = (await c.query(`select portal_session_start($1,'hrms',$2) as id`,
-            [hash, LOGIN_ACTION])).rows[0].id;
-        }
-      }
-      if (!started) {
-        await c.query(`select audit_write($1,'user',$2,$3::jsonb)`, [LOGIN_ACTION, account.user_id,
-          JSON.stringify({ via: 'hrms', method: 'hrms', role, hrmsRole: t.hrmsRole, name: t.name || null })]);
-      }
-    });
+    // Without 0125 (or for an admin): written here, AS the user, so the audit
+    // log's User column is them.
+    if (login.first && !login.started) {
+      await withUser(session, (c) => c.query(`select audit_write($1,'user',$2,$3::jsonb)`, [LOGIN_ACTION, account.user_id,
+        JSON.stringify({ via: 'hrms', method: 'hrms', role, hrmsRole: t.hrmsRole, name: t.name || null })]));
+    }
 
     setSessionCookie(res, token, expires);
     issueCsrfToken(res, expires);

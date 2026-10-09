@@ -117,6 +117,25 @@ begin
   end if;
 end $$;
 
+/* 0125, when it is there: a second portal session of the SAME HRMS sign-in
+   (another browser or tab without the cookie) joins the recruiter portal
+   session that sign-in already has open, instead of being recorded as a
+   new login. TRUE when it joined one. */
+create or replace function hrms_sso_join_portal_session(p_token_hash text, p_sid text)
+returns boolean
+language plpgsql security definer set search_path = public as $$
+declare v_ps bigint;
+begin
+  if to_regclass('portal_sessions') is null then return false; end if;
+  execute 'select s.portal_session_id from sessions s join portal_sessions ps on ps.id = s.portal_session_id
+            where s.hrms_sid = $1 and s.token_hash <> $2 and ps.logout_at is null
+            order by ps.id desc limit 1'
+     into v_ps using p_sid, p_token_hash;
+  if v_ps is null then return false; end if;
+  execute 'update sessions set portal_session_id = $1 where token_hash = $2' using v_ps, p_token_hash;
+  return true;
+end $$;
+
 /* HRMS logged out (or its session timed out): every portal session opened
    from that HRMS session ends. Returns how many. */
 create or replace function hrms_sso_end_sid(p_sid text)
@@ -164,6 +183,7 @@ begin
                               hrms_sso_touch(text, timestamptz, boolean),
                               hrms_sso_end_sid(text),
                               hrms_sso_expire(text, timestamptz),
+                              hrms_sso_join_portal_session(text, text),
                               hrms_sso_first_login(text, uuid)
       to app_api;
   end if;

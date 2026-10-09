@@ -311,36 +311,63 @@ test('an admin-made login with a temporary password is not asked to change it wh
 });
 
 test('with 0125 recruiter session tracking present: one login row, portal session opened and closed', async () => {
-  // Stand-ins with the same signatures as 0125's portal_session_* (that
-  // migration is on another branch); they record what they were asked.
-  await raw(`alter table sessions add column if not exists portal_session_id bigint`);
-  await raw(`create table if not exists zz_ps_calls (id bigserial primary key, fn text, method text, action text, reason text, at timestamptz)`);
-  await raw(`create or replace function portal_session_start(p_token_hash text, p_method text, p_action text)
-    returns bigint language plpgsql security definer set search_path = public as $$
-    declare v_id bigint; v_user uuid;
-    begin
-      insert into zz_ps_calls (fn, method, action) values ('start', p_method, p_action) returning id into v_id;
-      update sessions set portal_session_id = v_id where token_hash = p_token_hash returning user_id into v_user;
-      insert into audit_log (actor_user_id, actor_role, action, entity, entity_id, detail)
-      values (v_user, 'recruiter', p_action, 'session', v_id::text, jsonb_build_object('method', p_method));
-      return v_id;
-    end $$`);
-  await raw(`create or replace function portal_session_close(p_id bigint, p_reason text, p_at timestamptz)
-    returns void language sql security definer set search_path = public as $$
-      insert into zz_ps_calls (fn, reason, at) values ('close', p_reason, p_at) $$`);
-  await raw(`do $$ begin if exists (select 1 from pg_roles where rolname='app_api') then
-    grant execute on function portal_session_start(text,text,text) to app_api; end if; end $$`);
+  // 0125 (recruiter time in portal) lives on another branch. When it is in
+  // this database, its real portal_sessions are checked; otherwise stand-ins
+  // with the same signatures record what they were asked.
+  const real = (await raw(`select to_regprocedure('portal_session_touch(text,integer)') is not null as r`)).rows[0].r;
+  if (!real) {
+    await raw(`alter table sessions add column if not exists portal_session_id bigint`);
+    await raw(`create table if not exists zz_ps_calls (id bigserial primary key, fn text, method text, action text, reason text, at timestamptz)`);
+    await raw(`create or replace function portal_session_start(p_token_hash text, p_method text, p_action text)
+      returns bigint language plpgsql security definer set search_path = public as $$
+      declare v_id bigint; v_user uuid;
+      begin
+        insert into zz_ps_calls (fn, method, action) values ('start', p_method, p_action) returning id into v_id;
+        update sessions set portal_session_id = v_id where token_hash = p_token_hash returning user_id into v_user;
+        insert into audit_log (actor_user_id, actor_role, action, entity, entity_id, detail)
+        values (v_user, 'recruiter', p_action, 'session', v_id::text, jsonb_build_object('method', p_method));
+        return v_id;
+      end $$`);
+    await raw(`create or replace function portal_session_close(p_id bigint, p_reason text, p_at timestamptz)
+      returns void language sql security definer set search_path = public as $$
+        insert into zz_ps_calls (fn, reason, at) values ('close', p_reason, p_at) $$`);
+    await raw(`do $$ begin if exists (select 1 from pg_roles where rolname='app_api') then
+      grant execute on function portal_session_start(text,text,text) to app_api; end if; end $$`);
+  }
+  const opened = async (sid) => (real
+    ? (await raw(`select ps.login_method method, l.action from sessions s join portal_sessions ps on ps.id = s.portal_session_id
+                   left join audit_log l on l.entity = 'session' and l.entity_id = ps.id::text and l.action like 'auth.login%'
+                   where s.hrms_sid = $1`, [sid])).rows
+    : (await raw(`select method, action from zz_ps_calls where fn='start' order by id desc limit 1`)).rows);
+  const closes = async () => (real
+    ? (await raw(`select end_reason reason, logout_at at from portal_sessions where login_method='hrms' and logout_at is not null order by id`)).rows
+    : (await raw(`select reason, at from zz_ps_calls where fn='close' order by id`)).rows);
   try {
     const before = await auditCount(recUser);
     hrmsState.set('sid-T', { active: true, lastSeenAt: Date.now() });
     const c = await browser();
     assert.equal((await c.post('/api/auth/hrms-sso', { token: launchToken({ sid: 'sid-T' }) })).status, 200);
-    const starts = (await raw(`select method, action from zz_ps_calls where fn='start'`)).rows;
-    assert.deepEqual(starts, [{ method: 'hrms', action: 'auth.login_hrms' }], 'the portal session is opened as an HRMS login');
-    assert.equal(await auditCount(recUser), before + 1, 'exactly one Login (via HRMS) row - 0125 wrote it, the route did not');
+    await c.get('/api/auth/me');   // resolving the session must not add a second "login"
+    assert.deepEqual(await opened('sid-T'), [{ method: 'hrms', action: 'auth.login_hrms' }], 'opened as an HRMS login');
+    assert.equal(await auditCount(recUser), before + 1, 'exactly one Login (via HRMS) row');
+    // A second browser in the same HRMS sign-in: no second login of any kind.
+    const loginish = async () => (await raw(
+      `select count(*)::int n from audit_log where actor_user_id=$1 and action like 'auth.%' and action not like 'auth.%logout'`, [recUser])).rows[0].n;
+    const l0 = await loginish();
+    const c2 = await browser();
+    assert.equal((await c2.post('/api/auth/hrms-sso', { token: launchToken({ sid: 'sid-T' }) })).status, 200);
+    await c2.get('/api/auth/me');
+    assert.equal(await loginish(), l0, 'neither a Login nor a "session carried over" row');
+    if (real) {
+      const ps = (await raw(`select count(distinct portal_session_id)::int n from sessions where hrms_sid='sid-T'`)).rows[0].n;
+      assert.equal(ps, 1, 'both browsers share the one portal session');
+    }
 
-    assert.equal((await (await browser()).post('/api/auth/hrms-sso/logout', { token: backchannel({ sid: 'sid-T' }) })).body.ended, 1);
-    assert.deepEqual((await raw(`select reason from zz_ps_calls where fn='close'`)).rows, [{ reason: 'logout' }], 'HRMS logout closes it as Logout');
+    const n0 = (await closes()).length;
+    assert.equal((await (await browser()).post('/api/auth/hrms-sso/logout', { token: backchannel({ sid: 'sid-T' }) })).body.ended, 2);
+    const afterLogout = await closes();
+    assert.equal(afterLogout.length, n0 + 1);
+    assert.equal(afterLogout.at(-1).reason, 'logout', 'HRMS logout closes it as Logout');
 
     hrmsState.set('sid-U', { active: true, lastSeenAt: Date.now() });
     const d = await browser();
@@ -348,14 +375,19 @@ test('with 0125 recruiter session tracking present: one login row, portal sessio
     hrmsMode = 'error';
     try {
       await raw(`update sessions set hrms_active_at = now() - interval '40 minutes', hrms_checked_at = now() - interval '40 minutes' where hrms_sid='sid-U'`);
+      // (0125 never dates a logout before its login, so the login moves back too.)
+      if (real) await raw(`update portal_sessions set login_at = now() - interval '45 minutes' where id = (select portal_session_id from sessions where hrms_sid='sid-U')`);
       assert.equal((await d.get('/api/auth/hrms-sso/status')).body.ended, true);
     } finally { hrmsMode = 'ok'; }
-    const idle = (await raw(`select reason, extract(epoch from now() - at)::int ago from zz_ps_calls where fn='close' order by id desc limit 1`)).rows[0];
+    const idle = (await closes()).at(-1);
     assert.equal(idle.reason, 'auto_timeout');
-    assert.ok(idle.ago >= 2390, `closed at the last real activity, not now (${idle.ago}s ago)`);
+    const ago = (Date.now() - new Date(idle.at).getTime()) / 1000;
+    assert.ok(ago >= 2390, `closed at the last real activity, not now (${Math.round(ago)}s ago)`);
   } finally {
-    await raw(`drop function if exists portal_session_start(text,text,text)`);
-    await raw(`drop function if exists portal_session_close(bigint,text,timestamptz)`);
+    if (!real) {
+      await raw(`drop function if exists portal_session_start(text,text,text)`);
+      await raw(`drop function if exists portal_session_close(bigint,text,timestamptz)`);
+    }
   }
 });
 

@@ -146,9 +146,14 @@ recruiter login goes through them:
 - The shared idle timeout closes it as **Auto logged out**, dated at the last
   real activity (`hrms_sso_expire`).
 - A portal logout goes through 0125's own `logout()`.
+- A second browser in the same HRMS sign-in joins that sign-in's open portal
+  session (`hrms_sso_join_portal_session`), so it is not recorded as a new
+  login or as "session carried over".
 
 Without 0125, the route writes the `auth.login_hrms` row itself. The lookup
 happens at run time, so the two migrations do not depend on each other.
+This was checked by merging the two branches in a throwaway tree: both test
+suites passed together (31/31).
 
 0125's `api/src/audit/recruiter-activity.js` names its extension point for
 this. When the two branches meet, add these two entries there so its
@@ -189,7 +194,7 @@ the idle minutes from HRMS automatically (`utils/jobPortalEmbed.js`).
   - `api/src/routes/hrms-sso.js`
   - `web/hrms-sso.html`
   - `web/teamlink-hrms-sso.js`
-  - `api/test/hrms-sso.test.mjs`
+  - `api/test/hrms-sso.test.mjs` (17 tests)
 - HRMS (TeamLink.Enterprise):
   - `backend/src/utils/jobPortalSso.js`
   - `backend/src/utils/authSessions.js`
