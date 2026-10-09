@@ -9,8 +9,9 @@
  *     HRMS out too)
  *   - ONE inactivity timeout with HRMS: API calls carry `x-tl-idle-ms`
  *     (milliseconds since the user last touched the page), so background
- *     polling never counts as activity, and a heartbeat once a minute lets
- *     the server check the HRMS session. When it has ended (HRMS logout,
+ *     polling never counts as activity, and a heartbeat once a minute while
+ *     the person is active (and on returning to the tab) lets the server
+ *     check the HRMS session. When it has ended (HRMS logout,
  *     30 minutes idle) the page goes to HRMS, which opens the portal again
  *     at the same page - or asks for the HRMS login first and then does.
  *
@@ -115,7 +116,11 @@
     var q = waiting; waiting = [];
     q.forEach(function (fn) { try { fn(); } catch (e) { /* next */ } });
   }
-  function heartbeat() {
+  function heartbeat(force) {
+    // Only while the person is actually here: an idle tab makes no requests
+    // (so it never looks busy to anything counting requests), and the next
+    // click checks the session anyway.
+    if (force !== true && Date.now() - lastActivity > HEARTBEAT_MS) return;
     fetchStatus().then(function (st) {
       if (st && st.viaHrms) { status = st; return; }
       clearInterval(beat); beat = null;
@@ -123,7 +128,7 @@
     }).catch(function () { /* offline: the server decides on the next call */ });
   }
   document.addEventListener('visibilitychange', function () {
-    if (document.visibilityState === 'visible' && status && status.viaHrms) heartbeat();
+    if (document.visibilityState === 'visible' && status && status.viaHrms) heartbeat(true);
   });
 
   function rerender() {

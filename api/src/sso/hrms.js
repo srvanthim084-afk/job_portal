@@ -32,6 +32,12 @@
  * (endBySid) and the portal logging out calls HRMS the same way
  * (notifyHrmsLogout), so either logout ends both.
  *
+ * RECRUITER TIME IN PORTAL (0125, when present): the login goes through
+ * portal_session_start(token, 'hrms', 'auth.login_hrms') - that writes the
+ * one "Login (via HRMS)" row and opens the portal session - and an HRMS
+ * session that ends here closes it (hrms_sso_end_sid / hrms_sso_expire).
+ * Without 0125 the route writes 'auth.login_hrms' itself.
+ *
  * Polling must not count as activity: the browser sends `x-tl-idle-ms`
  * (milliseconds since the user last touched the page) on its API calls, and
  * activity is "now - idle", not "now". A request without it counts as
@@ -240,7 +246,8 @@ export function hrmsSessionGate() {
 
       const cfg = ssoConfig();
       const now = Date.now();
-      let seen = row.last_seen_at ? new Date(row.last_seen_at).getTime() : 0;
+      const stored = row.hrms_active_at ? new Date(row.hrms_active_at).getTime() : 0;
+      let seen = stored;
       const checked = row.hrms_checked_at ? new Date(row.hrms_checked_at).getTime() : 0;
       let didCheck = false;
 
@@ -248,7 +255,7 @@ export function hrmsSessionGate() {
       // the user may have been busy in HRMS the whole time.
       if (now - checked >= cfg.checkMs || now - seen > cfg.idleMs) {
         const h = await checkHrmsSession(row.hrms_sid, seen || null, cfg);
-        if (h.reachable && !h.active) return expire(req, s, next);
+        if (h.reachable && !h.active) return expire(req, s, next, seen);
         if (h.reachable && h.active) {
           didCheck = true;
           const hs = h.lastSeenAt ? new Date(h.lastSeenAt).getTime() : 0;
@@ -256,11 +263,11 @@ export function hrmsSessionGate() {
         }
         // HRMS unreachable: fall back on this server's own clock.
       }
-      if (now - seen > cfg.idleMs) return expire(req, s, next);
+      if (now - seen > cfg.idleMs) return expire(req, s, next, seen);
 
       const act = activityAt(req, now);
       const newSeen = Math.max(seen, act);
-      if (didCheck || newSeen - (row.last_seen_at ? new Date(row.last_seen_at).getTime() : 0) > 15_000) {
+      if (didCheck || newSeen - stored > 15_000) {
         await withUser(null, (c) => c.query(`select hrms_sso_touch($1,$2,$3)`,
           [s.tokenHash, new Date(newSeen), didCheck]));
       }
@@ -270,8 +277,10 @@ export function hrmsSessionGate() {
   };
 }
 
-async function expire(req, s, next) {
-  await withUser(null, (c) => c.query(`select auth_destroy_session($1)`, [s.tokenHash]));
+async function expire(req, s, next, lastActive) {
+  // Dated at the last real activity, so 0125's time in portal is right.
+  await withUser(null, (c) => c.query(`select hrms_sso_expire($1,$2)`,
+    [s.tokenHash, lastActive ? new Date(lastActive) : null]));
   req.session = null;
   req.hrmsSessionEnded = true;
   return next();

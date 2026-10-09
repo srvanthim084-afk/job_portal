@@ -29,6 +29,9 @@ import {
 } from '../sso/hrms.js';
 
 export const EXPIRED_MESSAGE = 'Session expired. Please open the Job Portal from HRMS again.';
+/* The audit action code, shown as "Login (via HRMS)". The same code 0125's
+   recruiter activity list reserves for this sign-in method. */
+export const LOGIN_ACTION = 'auth.login_hrms';
 const SESSION_HOURS = 8;   // the absolute cap; the shared 30-minute idle rule ends it sooner
 
 const HOME = { recruiter: '#/recruiter/home', admin: '#/admin/users' };
@@ -123,13 +126,26 @@ export default function hrmsSsoRoutes() {
     const session = await resolveSession(token);
     if (!session) throw denied('Your Job Portal account could not be opened. Please contact an administrator.');
 
-    // "Login (via HRMS)" once per HRMS session, written AS the user so the
-    // audit log's User column is them.
+    // "Login (via HRMS)" (auth.login_hrms) once per HRMS session, written AS
+    // the user so the audit log's User column is them. With the recruiter
+    // time-in-portal tracking (0125) in the database, a recruiter's login
+    // goes through it: portal_session_start writes that one row and starts
+    // the portal session. Either way there is exactly one row.
     await withUser(session, async (c) => {
       const first = (await c.query(`select hrms_sso_first_login($1,$2) as f`, [t.sid, account.user_id])).rows[0].f;
-      if (first) {
-        await c.query(`select audit_write('LOGIN_VIA_HRMS','user',$1,$2::jsonb)`, [account.user_id,
-          JSON.stringify({ via: 'hrms', role, hrmsRole: t.hrmsRole, name: t.name || null })]);
+      if (!first) return;
+      let started = null;
+      if (role === 'recruiter') {
+        const tracked = (await c.query(
+          `select to_regprocedure('portal_session_start(text,text,text)') is not null as t`)).rows[0].t;
+        if (tracked) {
+          started = (await c.query(`select portal_session_start($1,'hrms',$2) as id`,
+            [hash, LOGIN_ACTION])).rows[0].id;
+        }
+      }
+      if (!started) {
+        await c.query(`select audit_write($1,'user',$2,$3::jsonb)`, [LOGIN_ACTION, account.user_id,
+          JSON.stringify({ via: 'hrms', method: 'hrms', role, hrmsRole: t.hrmsRole, name: t.name || null })]);
       }
     });
 

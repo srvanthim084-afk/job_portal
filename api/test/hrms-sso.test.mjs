@@ -55,7 +55,7 @@ async function browser() {
   return c;
 }
 const auditCount = async (userId) => (await raw(
-  `select count(*)::int n from audit_log where action='LOGIN_VIA_HRMS' and actor_user_id=$1`, [userId])).rows[0].n;
+  `select count(*)::int n from audit_log where action='auth.login_hrms' and actor_user_id=$1`, [userId])).rows[0].n;
 const sessionsOf = async (sid) => (await raw(`select count(*)::int n from sessions where hrms_sid=$1`, [sid])).rows[0].n;
 
 let recUser, adminUser;
@@ -216,13 +216,13 @@ test('HRMS admin -> portal admin; the audit log shows "Login (via HRMS)"; a recr
   });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.deepEqual([r.body.role, r.body.next], ['admin', '#/admin/audit-log']);
-  const log = await adm.get('/api/admin/audit-log?action=LOGIN_VIA_HRMS');
+  const log = await adm.get('/api/admin/audit-log?action=auth.login_hrms');
   assert.equal(log.status, 200, JSON.stringify(log.body));
   const row = log.body.rows.find((x) => x.user === 'sso.rec@tl-sink.local');
   assert.ok(row, 'the recruiter login is listed');
   assert.equal(row.actionLabel, 'Login (via HRMS)');
   assert.ok(row.at, 'with its date and time');
-  assert.ok(log.body.actions.some((a) => a.id === 'LOGIN_VIA_HRMS' && a.label === 'Login (via HRMS)'));
+  assert.ok(log.body.actions.some((a) => a.id === 'auth.login_hrms' && a.label === 'Login (via HRMS)'));
 
   assert.equal((await rec.get('/api/admin/audit-log')).status, 403, 'the recruiter session is a recruiter session');
 });
@@ -255,17 +255,17 @@ test('shared inactivity: idle here but busy in HRMS -> still signed in; HRMS dow
   hrmsState.set('sid-D', { active: true, lastSeenAt: Date.now() });
   const c = await browser();
   assert.equal((await c.post('/api/auth/hrms-sso', { token: launchToken({ sid: 'sid-D' }) })).status, 200);
-  await raw(`update sessions set last_seen_at = now() - interval '31 minutes', hrms_checked_at = now() - interval '31 minutes' where hrms_sid='sid-D'`);
+  await raw(`update sessions set hrms_active_at = now() - interval '31 minutes', hrms_checked_at = now() - interval '31 minutes' where hrms_sid='sid-D'`);
   const before = hrmsCalls.length;
   const st = await c.get('/api/auth/hrms-sso/status');
   assert.equal(st.body.viaHrms, true, 'HRMS saw activity, so the shared session lives');
   assert.ok(hrmsCalls.length > before, 'HRMS was asked');
-  const seen = (await raw(`select extract(epoch from now() - last_seen_at)::int s from sessions where hrms_sid='sid-D'`)).rows[0].s;
-  assert.ok(seen < 60, `last_seen moved to HRMS's activity (${seen}s ago)`);
+  const seen = (await raw(`select extract(epoch from now() - hrms_active_at)::int s from sessions where hrms_sid='sid-D'`)).rows[0].s;
+  assert.ok(seen < 60, `hrms_active_at moved to HRMS's activity (${seen}s ago)`);
 
   hrmsMode = 'error';
   try {
-    await raw(`update sessions set last_seen_at = now() - interval '31 minutes', hrms_checked_at = now() - interval '31 minutes' where hrms_sid='sid-D'`);
+    await raw(`update sessions set hrms_active_at = now() - interval '31 minutes', hrms_checked_at = now() - interval '31 minutes' where hrms_sid='sid-D'`);
     const gone = await c.get('/api/auth/hrms-sso/status');
     assert.deepEqual([gone.body.viaHrms, gone.body.ended], [false, true]);
   } finally { hrmsMode = 'ok'; }
@@ -275,8 +275,8 @@ test('polling is not activity: x-tl-idle-ms', async () => {
   hrmsState.set('sid-E', { active: true, lastSeenAt: Date.now() });
   const c = await browser();
   assert.equal((await c.post('/api/auth/hrms-sso', { token: launchToken({ sid: 'sid-E' }) })).status, 200);
-  await raw(`update sessions set last_seen_at = now() - interval '10 minutes' where hrms_sid='sid-E'`);
-  const ago = async () => (await raw(`select extract(epoch from now() - last_seen_at)::int s from sessions where hrms_sid='sid-E'`)).rows[0].s;
+  await raw(`update sessions set hrms_active_at = now() - interval '10 minutes' where hrms_sid='sid-E'`);
+  const ago = async () => (await raw(`select extract(epoch from now() - hrms_active_at)::int s from sessions where hrms_sid='sid-E'`)).rows[0].s;
   await c.get('/api/auth/hrms-sso/status', { headers: { 'x-tl-idle-ms': String(20 * 60_000) } });
   assert.ok(await ago() >= 595, 'a poll from an idle page does not move it');
   await c.get('/api/auth/hrms-sso/status', { headers: { 'x-tl-idle-ms': '0' } });
@@ -307,6 +307,55 @@ test('an admin-made login with a temporary password is not asked to change it wh
     assert.equal((await pw.get('/api/auth/me')).body.session.mustChangePassword, true, 'a password sign-in still is');
   } finally {
     await raw(`update users set must_change_password = false where id = $1`, [recUser]);
+  }
+});
+
+test('with 0125 recruiter session tracking present: one login row, portal session opened and closed', async () => {
+  // Stand-ins with the same signatures as 0125's portal_session_* (that
+  // migration is on another branch); they record what they were asked.
+  await raw(`alter table sessions add column if not exists portal_session_id bigint`);
+  await raw(`create table if not exists zz_ps_calls (id bigserial primary key, fn text, method text, action text, reason text, at timestamptz)`);
+  await raw(`create or replace function portal_session_start(p_token_hash text, p_method text, p_action text)
+    returns bigint language plpgsql security definer set search_path = public as $$
+    declare v_id bigint; v_user uuid;
+    begin
+      insert into zz_ps_calls (fn, method, action) values ('start', p_method, p_action) returning id into v_id;
+      update sessions set portal_session_id = v_id where token_hash = p_token_hash returning user_id into v_user;
+      insert into audit_log (actor_user_id, actor_role, action, entity, entity_id, detail)
+      values (v_user, 'recruiter', p_action, 'session', v_id::text, jsonb_build_object('method', p_method));
+      return v_id;
+    end $$`);
+  await raw(`create or replace function portal_session_close(p_id bigint, p_reason text, p_at timestamptz)
+    returns void language sql security definer set search_path = public as $$
+      insert into zz_ps_calls (fn, reason, at) values ('close', p_reason, p_at) $$`);
+  await raw(`do $$ begin if exists (select 1 from pg_roles where rolname='app_api') then
+    grant execute on function portal_session_start(text,text,text) to app_api; end if; end $$`);
+  try {
+    const before = await auditCount(recUser);
+    hrmsState.set('sid-T', { active: true, lastSeenAt: Date.now() });
+    const c = await browser();
+    assert.equal((await c.post('/api/auth/hrms-sso', { token: launchToken({ sid: 'sid-T' }) })).status, 200);
+    const starts = (await raw(`select method, action from zz_ps_calls where fn='start'`)).rows;
+    assert.deepEqual(starts, [{ method: 'hrms', action: 'auth.login_hrms' }], 'the portal session is opened as an HRMS login');
+    assert.equal(await auditCount(recUser), before + 1, 'exactly one Login (via HRMS) row - 0125 wrote it, the route did not');
+
+    assert.equal((await (await browser()).post('/api/auth/hrms-sso/logout', { token: backchannel({ sid: 'sid-T' }) })).body.ended, 1);
+    assert.deepEqual((await raw(`select reason from zz_ps_calls where fn='close'`)).rows, [{ reason: 'logout' }], 'HRMS logout closes it as Logout');
+
+    hrmsState.set('sid-U', { active: true, lastSeenAt: Date.now() });
+    const d = await browser();
+    assert.equal((await d.post('/api/auth/hrms-sso', { token: launchToken({ sid: 'sid-U' }) })).status, 200);
+    hrmsMode = 'error';
+    try {
+      await raw(`update sessions set hrms_active_at = now() - interval '40 minutes', hrms_checked_at = now() - interval '40 minutes' where hrms_sid='sid-U'`);
+      assert.equal((await d.get('/api/auth/hrms-sso/status')).body.ended, true);
+    } finally { hrmsMode = 'ok'; }
+    const idle = (await raw(`select reason, extract(epoch from now() - at)::int ago from zz_ps_calls where fn='close' order by id desc limit 1`)).rows[0];
+    assert.equal(idle.reason, 'auto_timeout');
+    assert.ok(idle.ago >= 2390, `closed at the last real activity, not now (${idle.ago}s ago)`);
+  } finally {
+    await raw(`drop function if exists portal_session_start(text,text,text)`);
+    await raw(`drop function if exists portal_session_close(bigint,text,timestamptz)`);
   }
 });
 

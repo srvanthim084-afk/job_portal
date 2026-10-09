@@ -126,22 +126,41 @@ A portal session opened from HRMS stores the HRMS `sid` in `sessions.hrms_sid`.
 The first time an HRMS sign-in opens the portal, the portal writes one
 `audit_log` row:
 
-- Action `LOGIN_VIA_HRMS`, shown as **Login (via HRMS)**.
-- Entity `user`, with the date and time.
+- Action `auth.login_hrms`, shown as **Login (via HRMS)**.
+- The date and time.
 - The actor is the user.
 
 Opening the portal again in the same HRMS sign-in (moving back and forth, a
 second tab, a new token) writes nothing more. The once-only rule is kept in
-`hrms_sso_logins` by `sid`. Tokens and the secret are never written to the log.
+`hrms_sso_logins` by `sid`. Tokens and the secret are never written to the
+log.
 
-The recruiter Login / Logout / Time-in-Portal tracking is being built
-separately. It should treat `LOGIN_VIA_HRMS` as a login. Portal sessions
-opened from HRMS end in four ways:
+**Recruiter Login / Logout / Time in Portal (migration 0125, built
+separately).** When its `portal_session_*` functions are in the database, the
+recruiter login goes through them:
 
-- through the ordinary `POST /api/auth/logout`;
-- through `hrms_sso_end_sid()` (HRMS Sign Out);
-- through the idle gate (`auth_destroy_session`);
-- when HRMS reports the session ended.
+- The login calls `portal_session_start(token, 'hrms', 'auth.login_hrms')`.
+  That writes the one Login (via HRMS) row and opens the portal session.
+- An HRMS logout closes the portal session as **Logout**
+  (`hrms_sso_end_sid`).
+- The shared idle timeout closes it as **Auto logged out**, dated at the last
+  real activity (`hrms_sso_expire`).
+- A portal logout goes through 0125's own `logout()`.
+
+Without 0125, the route writes the `auth.login_hrms` row itself. The lookup
+happens at run time, so the two migrations do not depend on each other.
+
+0125's `api/src/audit/recruiter-activity.js` names its extension point for
+this. When the two branches meet, add these two entries there so its
+Recruiter Audit Log labels and counts the row:
+
+- `LOGIN_METHODS.hrms = 'auth.login_hrms'`
+- `{ code: 'auth.login_hrms', label: 'Login (via HRMS)', group: 'session' }` in
+  `ACTIVITY`
+
+The portal's own idle column for this feature is `sessions.hrms_active_at`.
+It holds real activity only, from `x-tl-idle-ms`. It is deliberately separate
+from 0125's `last_seen_at`, which every request moves.
 
 ## Configuration
 

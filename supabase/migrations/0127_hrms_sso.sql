@@ -12,15 +12,23 @@
 --   hrms_sso_logins   one row per HRMS session that opened the portal, so the
 --                     audit log says "Login (via HRMS)" once per HRMS session,
 --                     however often the user moves between the two apps.
---   sessions.hrms_sid / last_seen_at / hrms_checked_at
+--   sessions.hrms_sid / hrms_active_at / hrms_checked_at
 --                     a portal session opened from HRMS carries the HRMS
---                     session id. Both apps share ONE inactivity timeout:
+--                     session id, and when the user last really did
+--                     something (not a poll: x-tl-idle-ms).
+--                     hrms_active_at is deliberately NOT 0125's last_seen_at
+--                     (recruiter time-in-portal, moved by every request). Both apps share ONE inactivity timeout:
 --                     the portal asks HRMS whether that session is still
 --                     alive (and tells it about activity here), and HRMS
 --                     logging out ends every portal session with that id.
 --
 -- Nothing here changes a session opened with a password: hrms_sid is null
 -- for those and every function below leaves them alone.
+--
+-- With 0125 (recruiter portal sessions) present, an HRMS session that ends
+-- here - HRMS logout, or the shared idle timeout - closes its portal session
+-- too (Logout / Auto logged out, time in portal). Looked up at run time, so
+-- this migration does not depend on 0125 being applied.
 
 create table if not exists hrms_sso_tokens (
   jti         text primary key,
@@ -36,7 +44,7 @@ create table if not exists hrms_sso_logins (
 );
 
 alter table sessions add column if not exists hrms_sid        text;
-alter table sessions add column if not exists last_seen_at    timestamptz;
+alter table sessions add column if not exists hrms_active_at  timestamptz;
 alter table sessions add column if not exists hrms_checked_at timestamptz;
 create index if not exists sessions_hrms_sid_idx on sessions (hrms_sid) where hrms_sid is not null;
 
@@ -73,38 +81,65 @@ $$;
 create or replace function hrms_sso_mark_session(p_token_hash text, p_sid text)
 returns void
 language sql security definer set search_path = public as $$
-  update sessions set hrms_sid = p_sid, last_seen_at = now(), hrms_checked_at = now()
+  update sessions set hrms_sid = p_sid, hrms_active_at = now(), hrms_checked_at = now()
    where token_hash = p_token_hash
 $$;
 
 /* No row = not an HRMS session (or no session at all). */
 create or replace function hrms_sso_session_state(p_token_hash text)
-returns table (hrms_sid text, last_seen_at timestamptz, hrms_checked_at timestamptz)
+returns table (hrms_sid text, hrms_active_at timestamptz, hrms_checked_at timestamptz)
 language sql security definer set search_path = public as $$
-  select s.hrms_sid, s.last_seen_at, s.hrms_checked_at from sessions s
+  select s.hrms_sid, s.hrms_active_at, s.hrms_checked_at from sessions s
    where s.token_hash = p_token_hash and s.hrms_sid is not null
 $$;
 
-/* Moves last_seen_at forward only (never back), and stamps the HRMS check. */
+/* Moves hrms_active_at forward only (never back), and stamps the HRMS check. */
 create or replace function hrms_sso_touch(p_token_hash text, p_seen timestamptz, p_checked boolean)
 returns void
 language sql security definer set search_path = public as $$
   update sessions
-     set last_seen_at = greatest(coalesce(last_seen_at, p_seen), p_seen),
+     set hrms_active_at = greatest(coalesce(hrms_active_at, p_seen), p_seen),
          hrms_checked_at = case when p_checked then now() else hrms_checked_at end
    where token_hash = p_token_hash and hrms_sid is not null
 $$;
+
+/* 0125, when it is there: close the recruiter portal session of one
+   session token (Logout or Auto logged out, dated p_at). */
+create or replace function hrms_sso_close_portal_session(p_token_hash text, p_reason text, p_at timestamptz)
+returns void
+language plpgsql security definer set search_path = public as $$
+declare v_ps bigint;
+begin
+  if to_regprocedure('portal_session_close(bigint,text,timestamptz)') is null then return; end if;
+  execute 'select portal_session_id from sessions where token_hash = $1' into v_ps using p_token_hash;
+  if v_ps is not null then
+    execute 'select portal_session_close($1, $2, $3)' using v_ps, p_reason, p_at;
+  end if;
+end $$;
 
 /* HRMS logged out (or its session timed out): every portal session opened
    from that HRMS session ends. Returns how many. */
 create or replace function hrms_sso_end_sid(p_sid text)
 returns integer
 language plpgsql security definer set search_path = public as $$
-declare n integer;
+declare r record; n integer := 0;
 begin
-  delete from sessions where hrms_sid = p_sid;
-  get diagnostics n = row_count;
+  for r in select token_hash from sessions where hrms_sid = p_sid loop
+    perform hrms_sso_close_portal_session(r.token_hash, 'logout', now());
+    delete from sessions where token_hash = r.token_hash;
+    n := n + 1;
+  end loop;
   return n;
+end $$;
+
+/* The shared inactivity timeout ended this session: closed at the user's
+   last real activity, then the token goes. */
+create or replace function hrms_sso_expire(p_token_hash text, p_at timestamptz)
+returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  perform hrms_sso_close_portal_session(p_token_hash, 'auto_timeout', coalesce(p_at, now()));
+  delete from sessions where token_hash = p_token_hash and hrms_sid is not null;
 end $$;
 
 /* TRUE only the first time this HRMS session opens the portal. */
@@ -128,7 +163,9 @@ begin
                               hrms_sso_session_state(text),
                               hrms_sso_touch(text, timestamptz, boolean),
                               hrms_sso_end_sid(text),
+                              hrms_sso_expire(text, timestamptz),
                               hrms_sso_first_login(text, uuid)
       to app_api;
   end if;
 end $$;
+revoke execute on function hrms_sso_close_portal_session(text, text, timestamptz) from public;

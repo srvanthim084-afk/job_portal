@@ -215,7 +215,7 @@ export const ACTIONS = {
   'contact.override_requested': 'Override Requested', 'contact.override_approved': 'Override Approved',
   'contact.override_denied': 'Override Denied', 'contact.override_used': 'Override Used',
   /* 0127: single sign-on from HRMS, once per HRMS session */
-  LOGIN_VIA_HRMS: 'Login (via HRMS)',
+  'auth.login_hrms': 'Login (via HRMS)',
 };
 /* 0125: sign-in, sign-out and job lifecycle rows, named the same here. */
 for (const a of ACTIVITY) if (!ACTIONS[a.code]) ACTIONS[a.code] = a.label;
