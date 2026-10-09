@@ -12,7 +12,7 @@ import { z } from 'zod';
 import { withUser } from '../db.js';
 import { wrap, badRequest, notFound, forbidden, ApiError, CODES } from '../errors.js';
 import { requireAuth, requireRole } from '../auth.js';
-import { toJob, toJobMatch } from '../shapes.js';
+import { toJob, toJobMatch, toStaffJob, JOB_RECORD_COLS } from '../shapes.js';
 import { runJobAlertsInBackground } from '../notify/job-alerts.js';
 import { normaliseWalkinBody, checkWalkin } from '../portal/walkin-jobs.js';
 import { kickWalkinNotices } from '../notify/walkin-jobs.js';
@@ -187,13 +187,13 @@ export default function jobRoutes() {
       const total = await c.query(`select count(*)::int n from ${view} ${clause}`, params);
       params.push(limit, offset);
       const rows = await c.query(
-        `select * from ${view} ${clause}
+        `select *, ${JOB_RECORD_COLS} from ${view} ${clause}
          order by published_at desc nulls last, id
          limit $${params.length - 1} offset $${params.length}`, params);
       return { total: total.rows[0].n, rows: rows.rows };
     });
 
-    res.json({ jobs: out.rows.map(toJob), total: out.total, limit, offset });
+    res.json({ jobs: out.rows.map(isStaff(req.session) ? toStaffJob : toJob), total: out.total, limit, offset });
   }));
 
   r.get('/jobs/:id', wrap(async (req, res) => {
@@ -201,7 +201,7 @@ export default function jobRoutes() {
       /* 0113: a candidate or visitor opens TeamLink jobs here; an
          external job's details are /api/portal/external-jobs/:id. */
       const { rows } = await c.query(
-        `select * from jobs_with_counts where id=$1 ${isStaff(req.session) ? '' : `and ${teamlinkOnly()}`}`,
+        `select *, ${JOB_RECORD_COLS} from jobs_with_counts where id=$1 ${isStaff(req.session) ? '' : `and ${teamlinkOnly()}`}`,
         [req.params.id]);
       return rows[0];
     });
@@ -212,7 +212,7 @@ export default function jobRoutes() {
       throw await hiddenError(req.session, 'job', req.params.id,
         new ApiError(404, CODES.JOB_UNAVAILABLE, 'This role is no longer available.'));
     }
-    res.json({ job: toJob(row) });
+    res.json({ job: isStaff(req.session) ? toStaffJob(row) : toJob(row) });
   }));
 
   r.post('/jobs', requireAuth(), requireRole('recruiter', 'admin'), wrap(async (req, res) => {
@@ -274,7 +274,7 @@ export default function jobRoutes() {
         cols.push('published_at'); vals.push(new Date()); ph.push(`$${vals.length}`);
       }
       await c.query(`insert into jobs (${cols.join(',')}) values (${ph.join(',')})`, vals);
-      const { rows } = await c.query(`select * from jobs_with_counts where id=$1`, [id]);
+      const { rows } = await c.query(`select *, ${JOB_RECORD_COLS} from jobs_with_counts where id=$1`, [id]);
       return rows[0];
     });
 
@@ -285,7 +285,7 @@ export default function jobRoutes() {
     const alerts = job.status === 'open' && !job.paused && !job.archived;
     if (alerts) runJobAlertsInBackground(id);
 
-    res.status(201).json({ job: toJob(job), alerting: alerts });
+    res.status(201).json({ job: toStaffJob(job), alerting: alerts });
   }));
 
   /**
@@ -386,13 +386,13 @@ export default function jobRoutes() {
         throw seen.rows[0].e ? forbidden('You cannot edit a job that is not yours.')
                              : notFound('That job no longer exists.');
       }
-      const { rows } = await c.query(`select * from jobs_with_counts where id=$1`, [id]);
+      const { rows } = await c.query(`select *, ${JOB_RECORD_COLS} from jobs_with_counts where id=$1`, [id]);
       return rows[0];
     });
 
     // A walk-in closed before its date tells its applicants (0106).
     kickWalkinNotices();
-    res.json({ job: toJob(job) });
+    res.json({ job: toStaffJob(job) });
   }));
 
   /** Publish / unpublish — the candidate portal reads the database state. */
@@ -412,7 +412,7 @@ export default function jobRoutes() {
         throw seen.rows[0].e ? forbidden('You cannot publish a job that is not yours.')
                              : notFound('That job no longer exists.');
       }
-      const { rows } = await c.query(`select * from jobs_with_counts where id=$1`, [req.params.id]);
+      const { rows } = await c.query(`select *, ${JOB_RECORD_COLS} from jobs_with_counts where id=$1`, [req.params.id]);
       return rows[0];
     });
 
@@ -423,7 +423,7 @@ export default function jobRoutes() {
     if (publish) runJobAlertsInBackground(req.params.id);
     else kickWalkinNotices();
 
-    res.json({ job: toJob(job), alerting: publish });
+    res.json({ job: toStaffJob(job), alerting: publish });
   }));
 
   /**

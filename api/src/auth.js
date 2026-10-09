@@ -20,6 +20,7 @@ import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { config, originAllowed } from './config.js';
 import { withUser } from './db.js';
 import { unauthorized, sessionExpired, forbidden, CODES, ApiError } from './errors.js';
+import { IDLE_MINUTES, loginActionFor } from './audit/recruiter-activity.js';
 
 const sha256 = (s) => createHash('sha256').update(s).digest('hex');
 
@@ -179,17 +180,68 @@ export async function resolveSession(token) {
     return { userId: r.user_id, role: r.role, profileId: r.profile_id, tokenHash: hash };
   });
   /* 0118: a team lead is a recruiter with the flag. Read as that person, so
-     it is the database's answer (app_is_tl), not a claim. */
+     it is the database's answer (app_is_tl), not a claim.
+     0125: the same round trip records the recruiter's activity, and a
+     session idle for IDLE_MINUTES is closed there - at its last activity -
+     and resolves to nobody, so the request is answered "session expired". */
   if (s && s.role === 'recruiter') {
-    s.isTeamLead = await withUser(s, async (c) =>
-      (await c.query(`select app_is_tl() as t`)).rows[0].t === true);
+    const row = await withUser(s, async (c) => (await c.query(
+      `select portal_session_touch($1, $2) as st, app_is_tl() as t`, [hash, IDLE_MINUTES])).rows[0]);
+    if (row.st === 'timed_out') return null;
+    s.isTeamLead = row.t === true;
   }
   return s;
 }
 
+/**
+ * 0125: opens the recruiter's portal session (login time, activity, the
+ * Audit Log's Login row) for a session token just issued. `method` is a
+ * key of LOGIN_METHODS. Anybody who is not a recruiter is not tracked,
+ * and a failure here never fails the sign-in itself.
+ */
+export async function startPortalSession(token, method = 'password') {
+  if (!token) return null;
+  try {
+    return await withUser(null, async (c) => (await c.query(
+      `select portal_session_start($1, $2, $3) as id`,
+      [sha256(token), method, loginActionFor(method)])).rows[0].id);
+  } catch (err) {
+    console.error('[sessions] the portal session could not be opened:', err.message);
+    return null;
+  }
+}
+
 export async function logout(token) {
   if (!token) return;
-  await withUser(null, (c) => c.query(`select auth_destroy_session($1)`, [sha256(token)]));
+  await withUser(null, async (c) => {
+    /* 0125: the Logout row and the time in portal, before the token goes. */
+    await c.query(`select portal_session_end($1)`, [sha256(token)]);
+    await c.query(`select auth_destroy_session($1)`, [sha256(token)]);
+  });
+}
+
+/** 0125: closes recruiter sessions idle for IDLE_MINUTES (browser closed). */
+export async function sweepIdleSessions() {
+  return withUser(null, async (c) => (await c.query(
+    `select portal_session_sweep($1) as n`, [IDLE_MINUTES])).rows[0].n);
+}
+
+export function startIdleSessionSweep() {
+  let running = false;
+  const run = async () => {
+    if (running) return;
+    running = true;
+    try {
+      const n = await sweepIdleSessions();
+      if (n) console.log(`[sessions] auto logged out ${n} idle recruiter session(s)`);
+    } catch (err) {
+      console.error('[sessions] the idle sweep failed:', err.message);
+    } finally { running = false; }
+  };
+  const first = setTimeout(run, 10_000);
+  const timer = setInterval(run, Number(process.env.IDLE_SESSION_SWEEP_MS || 60_000));
+  first.unref?.(); timer.unref?.();
+  return () => { clearTimeout(first); clearInterval(timer); };
 }
 
 /**

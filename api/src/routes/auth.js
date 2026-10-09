@@ -12,7 +12,7 @@ import { config } from '../config.js';
 import { withUser } from '../db.js';
 import { wrap, badRequest, ApiError, CODES } from '../errors.js';
 import {
-  login, logout, registerCandidate,
+  login, logout, registerCandidate, startPortalSession,
   startPasswordReset, finishPasswordReset, checkPasswordReset,
   setSessionCookie, clearSessionCookie, issueCsrfToken, requireAuth,
 } from '../auth.js';
@@ -249,6 +249,9 @@ export default function authRoutes() {
       throw new ApiError(403, CODES.FORBIDDEN,
         `Those credentials are for the ${session.role} portal.`);
     }
+
+    /* 0125: a recruiter's sign-in opens their portal session (Audit Log). */
+    await startPortalSession(token, 'password');
 
     setSessionCookie(res, token, expires);
     issueCsrfToken(res);
