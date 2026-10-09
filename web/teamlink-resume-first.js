@@ -114,7 +114,10 @@
     } catch (e) { /* private mode: a refresh starts again, nothing is lost on the server */ }
   }
   /* Verify scripts only (TLResumeFirst.manual): never remembered, never offered on the page. */
-  function setManual(on) { S.manual = !!on; }
+  function setManual(on) {
+    S.manual = !!on;
+    try { document.body.classList.toggle('tlrf-manual', S.manual); } catch (e) { /* no body yet */ }
+  }
   function remembered() {
     try { return JSON.parse(sessionStorage.getItem(KEY) || 'null'); } catch (e) { return null; }
   }
@@ -194,6 +197,7 @@
       + '#tlrfHost .tlrf-status.bad{background:#fff4f2;color:#b42318}'
       + '#tlrfHost .opt-row{cursor:pointer}'
       + '#tlrfHost [hidden]{display:none!important}'
+      + 'body:not(.tlrf-manual) #registerForm{display:none!important}'
       + '@media (max-width:720px){#tlrfHost .review-grid{grid-template-columns:1fr}}';
     document.head.appendChild(s);
   }
@@ -246,8 +250,12 @@
         + '<button type="button" class="btn btn-primary btn-sm" data-tlrf="verify"' + (S.busy ? ' disabled' : '') + '>Verify</button></div>' : '')
       + (S.devCode && !verified ? '<div class="tlrf-dev">Development server: email is not being sent. Your code is <b>' + h(S.devCode) + '</b>.</div>' : '')
       + err('email') + err('code') + '</div>';
+    var who = signedIn() && window.STATE && STATE.session ? (STATE.session.name || STATE.session.email || 'another account') : '';
+    var signedNote = who && S.phase !== 'done'
+      ? '<div class="tlrf-warn" role="status">You are signed in as <b>' + h(who) + '</b>. Creating a new account here signs you in as the new account. '
+        + '<button type="button" class="btn btn-ghost btn-sm" data-tlrf="signout">Sign out</button></div>' : '';
     return '<div class="panel"><div class="panel-head"><h2><span class="reg-section-num">1</span>Personal Information</h2></div><div class="panel-body">'
-      + warn
+      + signedNote + warn
       + '<div class="review-grid"><div>'
       + input('tlrfName', 'name', 'Full Name *', 'autocomplete="name" placeholder="e.g. Sneha Kulkarni"')
       + phoneBox()
@@ -778,6 +786,10 @@
     }
     if (act === 'rmskill') { keep(); S.v.skills.splice(Number(b.getAttribute('data-i')), 1); S.edited.skills = true; paint(); return; }
     if (act === 'create') { create(); return; }
+    if (act === 'signout') {
+      if (typeof window.doLogout === 'function') { window.doLogout(); setTimeout(function () { location.hash = '#/register/candidate'; }, 300); }
+      return;
+    }
     if (act === 'go') {
       S.phase = 'form'; S.done = null; resetForm();
       if (typeof window.navigate === 'function') window.navigate(b.getAttribute('data-to'));
@@ -850,7 +862,9 @@
     if (typeof prev === 'function' && !prev.__tlrf) {
       var next = function () {
         var out = prev.apply(this, arguments);
-        try { if (onRegisterPage() && !signedIn()) mount(); else if (onRegisterPage() && S.phase === 'done') mount(); } catch (e) {
+        /* EVERY visit to Register, signed in or not: the seven-step form must never show instead
+           (a candidate who just registered is signed in, and opening Register again showed the steps). */
+        try { if (onRegisterPage()) mount(); } catch (e) {
           if (window.TL && TL.debug) console.error('[registration]', e);
         }
         return out;

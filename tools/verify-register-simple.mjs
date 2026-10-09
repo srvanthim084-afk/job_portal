@@ -189,6 +189,25 @@ check(page.errors.length === 0, `no page errors (${page.errors.join(' | ')})`);
   check(await old.evaluate(() => document.getElementById('registerForm').hidden && ![...document.querySelectorAll('.tlr-stepper')].some((x) => x.offsetParent !== null) && !!document.getElementById('tlrfName')), 'an old "manual" choice is forgotten: one page, no steps');
 }
 
+/* ---- signed in (an admin testing, or a candidate who just registered): still the one page ---- */
+{
+  const sp = await (await browser.newContext({ viewport: { width: 1280, height: 900 } })).newPage();
+  sp.errors = []; sp.on('pageerror', (e) => sp.errors.push(String(e.message)));
+  await sp.goto(`${BASE}/`, { waitUntil: 'load' });
+  await sp.waitForFunction(() => window.TL && window.TL.ready === true, null, { timeout: 30000 });
+  await sp.evaluate(() => TL.api.post('/auth/login', { email: 'admin@teamlink.com', password: 'TeamLink@2026', role: 'admin' }).then(() => TL.refresh()));
+  await sp.evaluate(() => { location.hash = '#/register/candidate'; });
+  await sp.waitForSelector('#tlrfName', { timeout: 15000 });
+  await sp.waitForTimeout(800);
+  const shape = await sp.evaluate(() => ({ sections: document.querySelectorAll('#tlrfHost .panel-head h2').length,
+    steps: [...document.querySelectorAll('.tlr-stepper')].some((x) => x.offsetParent !== null),
+    form: !!document.getElementById('registerForm') && document.getElementById('registerForm').offsetParent !== null,
+    note: /You are signed in as/.test(document.getElementById('tlrfHost').innerText) }));
+  check(shape.sections === 5 && !shape.steps && !shape.form, `signed in: Register is still the one page, no steps (${JSON.stringify(shape)})`);
+  check(shape.note && await sp.isVisible('[data-tlrf="signout"]'), 'signed in: the page says who is signed in, with Sign out');
+  check(sp.errors.length === 0, `signed in: no page errors (${sp.errors.join(' | ')})`);
+}
+
 /* ---- a duplicate email ------------------------------------------------------------ */
 page = await openRegister();
 await fill(page, 'tlrfEmail', email);
