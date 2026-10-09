@@ -39,6 +39,7 @@ import { EDU_FORM_VALUES } from '../resume/fields.js';
 import { applyExtractedFields } from '../resume/apply.js';
 import { completenessFor, EXTRACTION_TO_FIELD } from '../profile/completeness.js';
 import { providers, isReservedTestAddress } from '../notify/providers.js';
+import { sendOtpSms, OTP_MINUTES } from '../registration/sms-otp.js';
 import { windowCounter, originOf, validIndianMobile } from '../registration/settings.js';
 
 export const EXTRACT_FAILED_MESSAGE =
@@ -426,28 +427,15 @@ export default function registrationDraftRoutes() {
 
     const code = String(randomInt(100000, 1000000));
     const n = await withUser(null, async (c) => (await c.query(
-      `select registration_phone_otp_issue($1,$2,$3,$4,10) as n`,
-      [req.params.id, hashToken(token), phone, codeHash(req.params.id, code)])).rows[0].n);
+      `select registration_phone_otp_issue($1,$2,$3,$4,$5) as n`,
+      [req.params.id, hashToken(token), phone, codeHash(req.params.id, code), OTP_MINUTES])).rows[0].n);
     if (n === -2) throw notFound('Your registration session has expired. Please refresh the page and try again.');
     if (n === -3) throw new ApiError(429, CODES.RATE_LIMITED, 'Please wait 30 seconds before asking for another OTP.', { phone: 'Please wait 30 seconds before asking for another OTP.' });
     if (n === -1) throw new ApiError(429, CODES.RATE_LIMITED, 'Too many OTPs requested. Please wait an hour and try again.', { phone: 'Too many OTPs requested. Please try again in an hour.' });
 
-    const text = `${code} is your TeamLink verification code. It is valid for 10 minutes. Do not share it with anyone.`;
-    const sent = await providers.sms.send({ to: phone, text, purpose: 'otp', vars: [code, '10'] })
-      .catch((err) => ({ status: 'failed', error: err.message }));
-
-    if (sent.status === 'sent') return res.json({ sent: true, phone: registrationPhone10(phone) });
-    /* Not delivered. Outside production the code is shown on screen, said to be a development code, so the flow
-       can be used without an SMS gateway. In production the candidate is told plainly. */
-    if (!isProd()) {
-      return res.json({ sent: false, phone: registrationPhone10(phone), devCode: code,
-        note: 'SMS is not being sent from this server (development). Use this code.' });
-    }
-    if (sent.status === 'not_configured') {
-      throw new ApiError(503, 'SMS_UNAVAILABLE', 'We cannot send an OTP right now. Please try again later.');
-    }
-    throw new ApiError(502, 'SMS_FAILED', 'We could not send the OTP to this number. Please check it and try again.',
-      { phone: 'We could not send the OTP to this number.' });
+    /* real SMS through the configured provider; 5 minutes; no code on the screen (registration/sms-otp.js) */
+    const out = await sendOtpSms(phone, code);
+    return res.json({ ...out, phone: registrationPhone10(phone), minutes: OTP_MINUTES });
   }));
 
   r.post('/registration/drafts/:id/verify-phone', wrap(async (req, res) => {

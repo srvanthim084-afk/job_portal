@@ -80,6 +80,7 @@ import { startOutboundHoldSweep } from './notify/apply-hold.js';
 import registrationRoutes from './routes/registration.js';
 import registrationDraftRoutes from './routes/registration-draft.js';
 import profileOnboardingRoutes from './routes/profile-onboarding.js';
+import phoneChangeRoutes from './routes/phone-change.js';
 import teamRoutes from './routes/teams.js';
 import { startRegistrationSweep } from './notify/registration-messages.js';
 /* 0107: the walk-in ATS (stages, check-in, notes, ratings, resumes, No Show, reminders). */
@@ -446,6 +447,7 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', miscRoutes());
   app.use('/api', uploadRoutes());
   app.use('/api', profileOnboardingRoutes());
+  app.use('/api', phoneChangeRoutes());
   app.use('/api', aiInterviewRoutes());
   app.use('/api', aiCallingRoutes());
   app.use('/api', intakeRoutes());
