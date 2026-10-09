@@ -298,9 +298,14 @@ test('the welcome email carries the Candidate ID and is sent once', async () => 
   assert.match(mail.subject, /Welcome to TeamLink/);
   assert.ok(String(mail.html).includes(c.code) && String(mail.text).includes(c.code), 'the Candidate ID is not in the email');
   assert.ok(!/Client/.test(mail.text), 'the word Client must not appear');
-  const row = await eventually(async () => (await raw(
-    `select status, attempts from candidate_registration_messages where candidate_id = $1 and kind = 'welcome'`, [c.id])).rows[0]);
-  assert.equal(row.status, 'sent');
+  /* the provider has the mail; the row is marked sent a moment after it answers - wait for the outcome,
+     not for the row (which exists, as pending, from the claim) */
+  const row = await eventually(async () => {
+    const r = (await raw(
+      `select status, attempts from candidate_registration_messages where candidate_id = $1 and kind = 'welcome'`, [c.id])).rows[0];
+    return r && r.status !== 'pending' ? r : null;
+  });
+  assert.equal(row && row.status, 'sent');
 
   const again = await msgs.sendRegistrationMessage(c.id, 'welcome');
   assert.equal(again.status, 'duplicate');

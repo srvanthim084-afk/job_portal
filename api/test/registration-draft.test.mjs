@@ -511,6 +511,37 @@ test('the seven-step registration still requires its four preferences', async ()
   for (const k of ['preferredLocation', 'expectedCtc', 'noticePeriod', 'preferredWorkModes']) assert.ok(r.body.error.details[k], k);
 });
 
+test('pasted resume text is read like a file, on a new draft or an existing one', async () => {
+  const email = `paste.${uniq()}@mailbox-teamlink-tests.in`;
+  const c = await client();
+  const text = resumeText({ name: 'Paste Person', email, phone: mobile() });
+  const r = await c.post('/api/registration/drafts', { resumeText: text });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  assert.equal(r.body.status, 'extracted');
+  assert.equal(r.body.fields.name, 'Paste Person');
+  assert.equal(r.body.resume, null, 'no file');
+  c.draft = r.body; c.h = { headers: { 'x-draft-token': r.body.draftToken } };
+  const short = await c.post(`/api/registration/drafts/${c.draft.draftId}/text`, { resumeText: 'too short' }, c.h);
+  assert.equal(short.status, 400);
+  const again = await c.post(`/api/registration/drafts/${c.draft.draftId}/text`, { resumeText: text.replace('Paste Person'.toUpperCase(), 'OTHER PERSON') }, c.h);
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.equal(again.body.fields.name, 'Other Person');
+  const noToken = await c.post(`/api/registration/drafts/${c.draft.draftId}/text`, { resumeText: text });
+  assert.equal(noToken.status, 401);
+
+  /* and the account: the classic form's fields, WhatsApp opt-in, the exact degree */
+  await verifyEmail(c, email);
+  await c.patch(`/api/registration/drafts/${c.draft.draftId}`, { corrections: { qualification: 'B.Tech/B.E', highestEducation: "Bachelor's Degree" } }, c.h);
+  const reg = await c.post('/api/auth/register', { name: 'Paste Person', email, phone: mobile(), ...SIMPLE,
+    currentLocation: 'Hyderabad', preferredLocation: 'Pune', whatsappOptIn: true,
+    draftId: c.draft.draftId, draftToken: c.h.headers['x-draft-token'] });
+  assert.equal(reg.status, 201, JSON.stringify(reg.body));
+  const row = (await raw(`select whatsapp_opt_in, location, preferred_location, education from candidates where id=$1`, [reg.body.candidateId])).rows[0];
+  assert.equal(row.whatsapp_opt_in, true);
+  assert.equal(row.location, 'Hyderabad');
+  assert.equal(row.preferred_location, 'Pune');
+});
+
 test('teardown', async () => {
   await new Promise((r) => server.close(r));
   const { stopBackgroundWork } = await import('../src/app.js');

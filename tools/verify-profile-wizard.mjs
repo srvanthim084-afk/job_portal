@@ -82,7 +82,10 @@ async function register(page, email) {
   await page.waitForSelector('#tlrfName', { timeout: 15000 });
   await page.fill('#tlrfName', 'Wizard Person'); await page.dispatchEvent('#tlrfName', 'change');
   await page.fill('#tlrfPhone', mobile()); await page.dispatchEvent('#tlrfPhone', 'change');
-  await page.selectOption('#tlrfEdu', "Bachelor's Degree"); await page.dispatchEvent('#tlrfEdu', 'change');
+  await page.fill('#tlrfLoc', 'Hyderabad'); await page.dispatchEvent('#tlrfLoc', 'change');
+  await page.selectOption('#tlrfQual', 'B.Sc'); await page.dispatchEvent('#tlrfQual', 'change');
+  await page.fill('#tlrfSkillIn', 'Excel'); await page.press('#tlrfSkillIn', 'Enter');
+  await page.fill('#tlrfPref', 'Hyderabad, Pune'); await page.dispatchEvent('#tlrfPref', 'change');
   await page.fill('#tlrfEmail', email); await page.dispatchEvent('#tlrfEmail', 'change');
   await page.click('[data-tlrf="sendcode"]');
   await page.waitForSelector('#tlrfCode', { timeout: 20000 });
@@ -93,7 +96,7 @@ async function register(page, email) {
   await page.click('[data-tlrf="verify"]');
   await page.waitForFunction(() => /✓ Verified/.test(document.getElementById('tlrfHost').innerText), null, { timeout: 15000 });
   await page.fill('#tlrfPw', 'Wizard3pass9'); await page.fill('#tlrfPw2', 'Wizard3pass9');
-  await page.check('#tlrfTerms');
+  await page.check('#tlrfTerms'); await page.check('#tlrfResumeOk');
   await page.click('[data-tlrf="create"]');
   await page.waitForFunction(() => location.hash === '#/candidate/home', null, { timeout: 30000 });
 }
@@ -136,7 +139,7 @@ check(counts.includes('2 Work experience'), '5: two jobs - the bullets are not j
 check(counts.includes('4 Key skills'), '4: skills distinct (SQL, Excel, Python, Power BI)');
 const before = await api(p, 'get', `/candidates/${me}/onboarding`);
 const row0 = await p.evaluate((id) => DATA.candidateById(id), me);
-check(!(row0.skills || []).length && !(row0.experienceRecords || []).length, '7: nothing read from the resume is on the profile yet');
+check((row0.skills || []).join(',') === 'Excel' && !(row0.experienceRecords || []).length, '7: nothing read from the resume is on the profile yet (only what registration saved)');
 check(before.body.status === 'in_progress', '10: the server says in_progress');
 
 /* ---- 3: review, edits win, skills in their own card ---------------------------------- */
@@ -165,15 +168,14 @@ check((await p.$$eval('#tlpoChips_skills .tlpo-chip', (x) => x.length)) === 5, '
 /* ---- 8/9. additional details: validation, then saved -------------------------- */
 await p.click('#tlpoHost .tlpo-btn.pri');
 await p.waitForFunction(() => /Step 4 of 5/.test(document.getElementById('tlpoStepNo').textContent), null, { timeout: 10000 });
-for (const id of ['#tlpo_curloc', '#tlpoChipIn_preferredLocations', '#tlpo_notice', '#tlpo_sal', '#tlpoChipIn_preferredRoles']) {
+for (const id of ['#tlpo_notice', '#tlpo_sal', '#tlpoChipIn_preferredRoles']) {
   check(await p.isVisible(id), `8: ${id} is asked`);
 }
+check(!(await p.$('#tlpo_curloc')) && !(await p.$('#tlpoChipIn_preferredLocations')), '9: current and preferred location (given at registration) are not asked again');
 check(/Work from Office/.test(await text(p, '#tlpoBody')) && /Hybrid/.test(await text(p, '#tlpoBody')) && /Remote/.test(await text(p, '#tlpoBody')), '8: work mode: Work from Office / Hybrid / Remote');
 check(!/Full name|Highest/i.test(await text(p, '#tlpoBody')), '9: nothing from registration is asked again here');
 await p.click('#tlpoHost .tlpo-btn.pri');
-check((await p.$$eval('#tlpoBody .tlpo-f.bad', (x) => x.length)) === 6, '8: all six are validated');
-await p.fill('#tlpo_curloc', 'Hyderabad');
-await p.fill('#tlpoChipIn_preferredLocations', 'Hyderabad, Pune'); await p.press('#tlpoChipIn_preferredLocations', 'Enter');
+check((await p.$$eval('#tlpoBody .tlpo-f.bad', (x) => x.length)) === 4, '8: the four still needed are validated');
 await p.selectOption('#tlpo_notice', '30 days');
 await p.fill('#tlpo_sal', '8.5');
 await p.fill('#tlpoChipIn_preferredRoles', 'Data Analyst'); await p.press('#tlpoChipIn_preferredRoles', 'Enter');
@@ -224,8 +226,6 @@ await p2.click('.tlpo-skip');
 await p2.waitForFunction(() => /Step 3 of 5/.test(document.getElementById('tlpoStepNo').textContent), null, { timeout: 10000 });
 await p2.fill('#tlpoChipIn_skills', 'Tally, GST'); await p2.press('#tlpoChipIn_skills', 'Enter');
 await p2.click('#tlpoHost .tlpo-btn.pri');
-await p2.fill('#tlpo_curloc', 'Vijayawada');
-await p2.fill('#tlpoChipIn_preferredLocations', 'Vijayawada'); await p2.press('#tlpoChipIn_preferredLocations', 'Enter');
 await p2.selectOption('#tlpo_notice', 'Immediate');
 await p2.fill('#tlpo_sal', '25000'); await p2.selectOption('.tlpo-unit', 'month');
 await p2.fill('#tlpoChipIn_preferredRoles', 'Accountant'); await p2.press('#tlpoChipIn_preferredRoles', 'Enter');
@@ -233,7 +233,7 @@ await p2.check('.tlpo-mode input[value="Office"]');
 await p2.click('#tlpoHost .tlpo-btn.pri');
 await p2.waitForFunction(() => location.hash === '#/candidate/home' && !document.querySelector('#tlpoHost .tlpo-ov'), null, { timeout: 30000 });
 const s2 = await p2.evaluate(() => DATA.candidateById(STATE.session.id));
-check((s2.skills || []).join(',') === 'Tally,GST' && Number(s2.expectedCtc) === 3, `6: skip the resume, type it in: saved (${s2.skills} / ${s2.expectedCtc} LPA)`);
+check((s2.skills || []).join(',') === 'Excel,Tally,GST' && Number(s2.expectedCtc) === 3, `6: skip the resume, type it in: saved (${s2.skills} / ${s2.expectedCtc} LPA)`);
 check(p2.errors.length === 0, `phone: no page errors (${p2.errors.join(' | ')})`);
 
 /* ---- 1. recruiter-added candidate: login, password reset, then the prompt ------- */

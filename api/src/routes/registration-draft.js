@@ -179,6 +179,25 @@ async function runExtraction(id, token, buffer, fileName) {
   }
 }
 
+/** Pasted resume text, read like a file's text. Never throws: a failure is recorded on the draft. */
+async function readPasted(id, token, text) {
+  try {
+    const ana = await analyseResume(text, { parser: 'pasted-text' });
+    return await saveDraft(id, token, {
+      status: 'extracted', attempt: 1,
+      resume_text: String(text).slice(0, 200_000),
+      extraction: { ...ana, parser: 'pasted-text', chars: text.length },
+      extraction_code: null,
+      extraction_error: ana.aiError ? `AI: ${ana.aiError}` : null,
+    });
+  } catch (err) {
+    return saveDraft(id, token, {
+      status: 'failed', attempt: 1, extraction_code: 'RESUME_UNREADABLE',
+      extraction_error: String((err && err.message) || 'the text could not be read').slice(0, 400),
+    });
+  }
+}
+
 /* Old drafts go, and their files with them. Now and then, not every time. */
 async function purgeSometimes() {
   if (Math.random() > 0.05) return;
@@ -238,9 +257,21 @@ export default function registrationDraftRoutes() {
     res.json(await view(d));
   }));
 
+  /* "Prefer to paste text instead?" - the pasted resume is read exactly as an uploaded one is. */
+  r.post('/registration/drafts/:id/text', wrap(async (req, res) => {
+    const token = tokenOf(req);
+    const text = String((req.body && req.body.resumeText) || '').trim();
+    if (text.length < 30) throw badRequest('Please paste a little more of your resume.');
+    if (text.length > 100_000) throw badRequest('That is too much text. Please paste the resume only.');
+    await readDraft(req.params.id, token);
+    res.json(await view(await readPasted(req.params.id, token, text)));
+  }));
+
   r.post('/registration/drafts', receive,
     wrap(async (req, res) => {
-      const noResume = !req.file && /^(1|true|yes)$/i.test(String((req.body && req.body.noResume) || ''));
+      const pasted = !req.file ? String((req.body && req.body.resumeText) || '').trim() : '';
+      if (pasted && pasted.length < 30) throw badRequest('Please paste a little more of your resume.');
+      const noResume = !req.file && (!!pasted || /^(1|true|yes)$/i.test(String((req.body && req.body.noResume) || '')));
       if (!noResume && (!req.file || !req.file.buffer || !req.file.buffer.length)) {
         throw badRequest('Please choose your resume file (PDF, DOC, DOCX or TXT).');
       }
@@ -254,7 +285,8 @@ export default function registrationDraftRoutes() {
          details still have to be kept somewhere before the account exists - that is what a draft is. This one holds
          no file and no reading. */
       if (noResume) {
-        const d = await saveDraft(id, token, { status: 'pending', attempt: 0 });
+        let d = await saveDraft(id, token, { status: 'pending', attempt: 0 });
+        if (pasted) d = await readPasted(id, token, pasted);
         purgeSometimes();
         return res.status(201).json({ ...(await view(d)), draftToken: token });
       }
@@ -448,11 +480,12 @@ export async function finishDraft({ draftId, draftToken, draft, candidateId, ses
     const levelFor = { 'PhD': 'Doctorate', "Master's Degree": 'Post Graduation', "Bachelor's Degree": 'Graduation', Diploma: 'Diploma', Intermediate: '12th', '10th': '10th' };
     const recs = Array.isArray(fields.educationRecords) ? fields.educationRecords.map((x) => ({ ...x })) : [];
     const want = levelFor[chosenEdu];
+    const degree = String((draft.corrections || {}).qualification || '').trim();
     if (want ? !recs.some((r) => r.level === want) : true) {
-      recs.unshift({ level: want || null, qualification: chosenEdu, specialization: null, institution: null, passingYear: null, score: null, educationType: want || 'Other' });
+      recs.unshift({ level: want || null, qualification: degree || chosenEdu, specialization: null, institution: null, passingYear: null, score: null, educationType: want || 'Other' });
     }
     fields.educationRecords = recs;
-    fields.education = chosenEdu;
+    fields.education = degree || chosenEdu;
     sources.education = 'USER_PROVIDED';
   }
 

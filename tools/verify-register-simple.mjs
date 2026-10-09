@@ -1,24 +1,17 @@
 /**
- * Simplified candidate registration, driven in a real browser.
+ * Candidate registration - the classic one-page form - driven in a real browser.
  *
- *     node tools/verify-register-simple.mjs     (TL_URL, default http://localhost:4323/)
+ *     TL_URL=http://127.0.0.1:4443 [SINK_LOG=<mail sink log>] node tools/verify-register-simple.mjs
  *
- * One screen: an OPTIONAL resume, seven profile fields that are always visible
- * (Full Name, Phone, Email, Highest Education, Most Recent Job Role, Most Recent
- * Company with "Fresher / No experience", Skills as tags), then the account
- * (email code, password, Terms required, recruitment communication optional).
+ *   1 Personal Information   2 Professional Information   3 Resume   4 Preferences   5 Consent
  *
- * Checks: the page shape; no pre-ticked optional consent; a resume fills the seven
- * fields (2 projects are 2, not 12); a bad file is refused with a message and the
- * form stays usable; Replace re-reads without losing the verified email or what was
- * typed; editing wins over the resume; skills are de-duplicated; Fresher clears the
- * job fields; the account needs the email code and the Terms; a duplicate email is
- * told to Login / Forgot Password; double-click makes one account; success lands on
- * #/candidate/home signed in; registering with NO resume works the same way.
- *
- * On a dev server without mail the code is shown on the page; with a mail sink set
- * TL_CODE_FROM to a function-free path is not needed - the script reads the on-page
- * development code, or the SINK_LOG file's last "verification code is NNNNNN".
+ * Checks: the five sections in that order with the owner's fields and stars; WhatsApp not pre-ticked;
+ * a resume fills EMPTY fields only (marked), a different value for a typed field is an "AI found..."
+ * tag that applies on click, the status says how many fields were detected; pasted text works the
+ * same way; a bad file is refused; Experienced shows company / designation / experience; required
+ * fields are checked; the email code; one account on a double click; signed in and on
+ * #/candidate/home; the record holds what was entered; a duplicate email is told to Login / Forgot
+ * Password; phone width has no sideways scroll.
  */
 import { chromium } from 'playwright';
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
@@ -30,28 +23,35 @@ const fail = [];
 const check = (ok, what) => { console.log(`${ok ? 'ok  ' : 'FAIL'}  ${what}`); if (!ok) fail.push(what); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+async function fromSink(to, re) {
+  if (!SINK_LOG) return null;
+  for (let i = 0; i < 30; i++) {
+    if (existsSync(SINK_LOG)) {
+      const last = readFileSync(SINK_LOG, 'utf8').split('===== MESSAGE =====')
+        .map((b) => b.replace(/=\r?\n/g, '')).filter((b) => b.includes('To: ' + to)).pop();
+      const m = last && re.exec(last);
+      if (m) return m[1];
+    }
+    await sleep(300);
+  }
+  return null;
+}
+
 const DIR = resolve('var/test-resumes');
 mkdirSync(DIR, { recursive: true });
 const stamp = Date.now().toString(36);
 const mobile = () => '9' + String(Math.floor(1e8 + Math.random() * 9e8));
 const mail = (p) => `${p}.${stamp}${Math.floor(Math.random() * 1000)}@mailbox-teamlink-tests.in`;
-
-const RESUME_A = resolve(DIR, `simple-a-${stamp}.txt`);
-writeFileSync(RESUME_A, [
+const RESUME_LINES = [
   'PRIYA SHARMA', 'priya.sharma.dev@gmail.com | +91 98765 43210', 'Hyderabad', '',
-  'EDUCATION', 'B.Sc (Statistics), Osmania University, 2021, 78%', 'Intermediate (MPC), Narayana College, 2018', '',
+  'EDUCATION', 'B.Tech (Computer Science), JNTU Hyderabad, 2021, 78%', 'Intermediate (MPC), Narayana College, 2017', '',
   'WORK EXPERIENCE', 'Infotech Systems - Associate Analyst (Jun 2021 - Jun 2022)', 'ABC Technologies Pvt Ltd - Data Analyst (Jul 2022 - Present)', '',
   'PROJECTS', '- Student Management System', '- Personal Portfolio Website', '',
   'SKILLS', 'SQL, Excel, Python, sql',
-].join('\n'));
-const RESUME_B = resolve(DIR, `simple-b-${stamp}.txt`);
-writeFileSync(RESUME_B, [
-  'MEERA IYER', 'meera.iyer.dev@gmail.com | +91 91234 56789', '',
-  'EDUCATION', 'M.Sc (Physics), IISc, 2020', '',
-  'WORK EXPERIENCE', 'Delta Labs Pvt Ltd - Research Associate (Jan 2021 - Present)', '',
-  'SKILLS', 'MATLAB, Python',
-].join('\n'));
-const BROKEN = resolve(DIR, `simple-bad-${stamp}.exe`);
+];
+const RESUME = resolve(DIR, `classic-${stamp}.txt`);
+writeFileSync(RESUME, RESUME_LINES.join('\n'));
+const BROKEN = resolve(DIR, `classic-bad-${stamp}.exe`);
 writeFileSync(BROKEN, 'MZ not a resume');
 
 const browser = await chromium.launch();
@@ -67,21 +67,16 @@ async function openRegister(viewport = { width: 1280, height: 1000 }) {
 }
 const val = (page, id) => page.evaluate((i) => (document.getElementById(i) || {}).value, id);
 const tags = (page) => page.evaluate(() => [...document.querySelectorAll('#tlrfHost .tlrf-tags .filter-chip')].map((x) => x.firstChild.textContent.trim()));
-const fillText = async (page, id, v) => { await page.fill('#' + id, v); await page.dispatchEvent('#' + id, 'change'); };
+const fill = async (page, id, v) => { await page.fill('#' + id, v); await page.dispatchEvent('#' + id, 'change'); };
 const hostText = (page) => page.evaluate(() => document.getElementById('tlrfHost').innerText);
 
-async function sendCodeAndVerify(page, email) {
-  await fillText(page, 'tlrfEmail', email);
+async function verifyEmail(page, email) {
+  await fill(page, 'tlrfEmail', email);
   await page.click('[data-tlrf="sendcode"]');
   await page.waitForSelector('#tlrfCode', { timeout: 15000 });
-  await sleep(300);
+  await sleep(400);
   let code = await page.evaluate(() => { const b = document.querySelector('#tlrfHost .tlrf-dev b'); return b ? b.textContent : null; });
-  if (!code && SINK_LOG && existsSync(SINK_LOG)) {
-    for (let i = 0; i < 20 && !code; i++) {
-      const hit = [...readFileSync(SINK_LOG, 'utf8').matchAll(new RegExp(`To: ${email.replace(/[.+]/g, '\\$&')}[\\s\\S]*?verification code is (\\d{6})`, 'g'))].pop();
-      code = hit && hit[1]; if (!code) await sleep(300);
-    }
-  }
+  if (!code) code = await fromSink(email, /verification code is (\d{6})/);
   if (!code) return false;
   await page.fill('#tlrfCode', code);
   await page.click('[data-tlrf="verify"]');
@@ -89,100 +84,106 @@ async function sendCodeAndVerify(page, email) {
   return true;
 }
 
-/* ---- the shape of the page ------------------------------------------- */
+/* ---- the shape of the page -------------------------------------------------- */
 let page = await openRegister();
-check(await page.evaluate(() => document.getElementById('registerForm').hidden), 'the older seven-step form is hidden');
-for (const id of ['tlrfName', 'tlrfPhone', 'tlrfEmail', 'tlrfEdu', 'tlrfRole', 'tlrfCompany', 'tlrfSkillIn', 'tlrfPw', 'tlrfPw2']) {
-  check(await page.isVisible('#' + id), `${id} is visible before anything is uploaded`);
+const heads = await page.$$eval('#tlrfHost .panel-head h2', (x) => x.map((h) => h.textContent.replace(/^\d+/, '').trim()));
+check(heads.join(' | ') === 'Personal Information | Professional Information | Resume | Preferences | Consent', `five sections in order (${heads.join(' | ')})`);
+const labels = await page.$$eval('#tlrfHost label', (x) => x.map((l) => l.textContent.replace(/\s+/g, ' ').trim()));
+for (const want of ['Full Name *', 'Email Address *', 'Mobile Number *', 'Password *', 'Confirm Password *', 'Current Location *', 'Candidate Type *',
+  'Highest Qualification *', 'Key Skills *', 'Preferred Job Location *', 'Expected Salary (₹ LPA)', 'Notice Period', 'Preferred Work Mode']) {
+  check(labels.some((l) => l.startsWith(want)), `field: ${want}`);
 }
-check(await page.isVisible('#tlrfFresher'), '"Fresher / No experience" is offered');
-check((await page.$$eval('#tlrfEdu option', (o) => o.map((x) => x.textContent))).join('|') === "Select|10th|Intermediate|Diploma|Bachelor's Degree|Master's Degree|PhD|Other", 'Highest Education lists the seven choices');
-check(!(await page.isChecked('#tlrfComm')), 'recruitment communication is NOT pre-selected');
-check(!(await page.isChecked('#tlrfTerms')), 'Terms & Privacy is not pre-selected');
-check(/optional/i.test(await hostText(page)), 'the resume is marked optional');
+check(/Upload Resume \(PDF \/ DOC \/ DOCX \/ TXT\)/.test(await hostText(page)) && /fills the form above automatically/.test(await hostText(page)), 'Resume: Upload button and "fills the form above automatically"');
+check(/prefer to paste text instead\? \(optional\)/i.test(await hostText(page)) && await page.isVisible('[data-tlrf="analyze"]'), 'Resume: paste text + Analyze with AI');
+check(!(await page.isChecked('#tlrfWa')) && !(await page.isChecked('#tlrfTerms')) && !(await page.isChecked('#tlrfResumeOk')), 'no consent is pre-ticked (WhatsApp optional)');
+check(!(await page.isVisible('#tlrfCompany')), 'Fresher: no company / designation fields');
+await page.check('input[name="tlrfType"][value="experienced"]');
+check(await page.isVisible('#tlrfCompany') && await page.isVisible('#tlrfDesig') && await page.isVisible('#tlrfExp'), 'Experienced: Current Company, Current Designation, Total Experience');
+await page.check('input[name="tlrfType"][value="fresher"]');
 
-/* ---- a file that is not a resume ------------------------------------- */
+/* ---- a bad file (on a fresh page: the type was chosen by hand above) ----------- */
+page = await openRegister();
 await page.setInputFiles('#tlrfFile', BROKEN);
-await page.waitForFunction(() => /PDF, DOC, DOCX or TXT/.test(document.getElementById('tlrfHost').innerText), null, { timeout: 8000 });
-check(true, 'an unsupported file type is refused with a message');
-check(await page.isVisible('#tlrfName'), 'the form is still usable after a refused file');
+await sleep(300);
+check(/PDF, DOC, DOCX or TXT/.test(await hostText(page)), 'an unsupported file is refused with a message');
 
-/* ---- a resume fills the seven fields; 2 projects are 2 ---------------- */
-await page.setInputFiles('#tlrfFile', RESUME_A);
-await page.waitForFunction(() => document.getElementById('tlrfName') && document.getElementById('tlrfName').value, null, { timeout: 60000 });
-check((await val(page, 'tlrfName')) === 'Priya Sharma', 'name read from the resume');
-check((await val(page, 'tlrfPhone')) === '9876543210', 'phone read from the resume');
-check((await val(page, 'tlrfEmail')) === 'priya.sharma.dev@gmail.com', 'email read from the resume');
-check((await val(page, 'tlrfEdu')) === "Bachelor's Degree", 'highest education = Bachelor\'s Degree');
-check((await val(page, 'tlrfRole')) === 'Data Analyst' && (await val(page, 'tlrfCompany')) === 'ABC Technologies Pvt Ltd', 'most recent role and company by dates, not by order');
-check((await tags(page)).join(',') === 'SQL,Excel,Python', 'skills are distinct tags');
-check(/2 projects/.test(await hostText(page)), 'two projects are reported as 2');
-check(/priya|simple-a/i.test(await hostText(page)), 'the file name is shown');
+/* ---- typed first, then a resume: fills the empties, never overwrites ----------------- */
+await fill(page, 'tlrfName', 'Priya S');
+await page.setInputFiles('#tlrfFile', RESUME);
+await page.waitForFunction(() => /fields? detected/.test(document.getElementById('tlrfHost').innerText), null, { timeout: 60000 });
+check(/Resume analyzed successfully — \d+ fields detected/.test(await hostText(page)), 'status: "Resume analyzed successfully — N fields detected"');
+check((await val(page, 'tlrfName')) === 'Priya S', 'a typed name is NOT overwritten');
+check(await page.isVisible('#tlrfHost .tlrf-sugg[data-k="name"]') && /AI found: Priya Sharma/.test(await hostText(page)), '...the resume\'s name is offered as "AI found: Priya Sharma"');
+check((await val(page, 'tlrfEmail')) === 'priya.sharma.dev@gmail.com' && (await val(page, 'tlrfPhone')) === '9876543210', 'empty email and mobile filled from the resume');
+check((await val(page, 'tlrfLoc')) === 'Hyderabad', 'empty current location filled');
+check((await val(page, 'tlrfQual')) === 'B.Tech/B.E', 'qualification matched to the form\'s list (B.Tech -> B.Tech/B.E)');
+check((await tags(page)).join(',') === 'SQL,Excel,Python', 'skills distinct');
+check(await page.isChecked('input[name="tlrfType"][value="experienced"]') && (await val(page, 'tlrfCompany')) === 'ABC Technologies Pvt Ltd' && (await val(page, 'tlrfDesig')) === 'Data Analyst', 'experienced: most recent company and designation by dates');
+check((await page.$$('#tlrfHost .ai-extracted-tag')).length >= 4, 'filled fields are marked "AI extracted"');
+await page.click('#tlrfHost .tlrf-sugg[data-k="name"]');
+check((await val(page, 'tlrfName')) === 'Priya Sharma', 'clicking "AI found" uses the value');
 
-/* ---- typing wins; skills tags; Replace keeps what was typed ----------- */
-await fillText(page, 'tlrfName', 'Priya S Sharma');
-await page.fill('#tlrfSkillIn', 'excel');
-await page.press('#tlrfSkillIn', 'Enter');
-await page.fill('#tlrfSkillIn', 'Tableau, Power BI');
-await page.press('#tlrfSkillIn', 'Enter');
-check((await tags(page)).join(',') === 'SQL,Excel,Python,Tableau,Power BI', 'a skill typed twice (any case) is one tag; comma adds several');
-await page.click('[data-tlrf="rmskill"][data-i="0"]');
-check((await tags(page))[0] === 'Excel', 'a tag can be removed');
-const emailA = mail('simple');
-check(await sendCodeAndVerify(page, emailA), 'the email code is sent and verified');
-await page.click('[data-tlrf="pick"]');
-await page.setInputFiles('#tlrfFile', RESUME_B);
-await page.waitForFunction(() => document.getElementById('tlrfEdu') && document.getElementById('tlrfEdu').value === "Master's Degree", null, { timeout: 60000 });
-check((await val(page, 'tlrfName')) === 'Priya S Sharma', 'Replace keeps the name the candidate typed');
-check((await val(page, 'tlrfEdu')) === "Master's Degree" && (await val(page, 'tlrfCompany')) === 'Delta Labs Pvt Ltd', 'Replace re-reads the fields the candidate did not edit');
-check((await val(page, 'tlrfEmail')) === emailA && /✓ Verified/.test(await hostText(page)), 'Replace keeps the verified email');
+/* ---- pasted text works too ----------------------------------------------------- */
+const p2 = await openRegister();
+await p2.fill('#tlrfPaste', ['MEERA IYER', 'meera.iyer.dev@gmail.com | +91 91234 56789', 'Chennai', '', 'EDUCATION', 'M.Sc (Physics), IISc, 2020', '', 'SKILLS', 'MATLAB, Python'].join('\n'));
+await p2.click('[data-tlrf="analyze"]');
+await p2.waitForFunction(() => /fields? detected/.test(document.getElementById('tlrfHost').innerText), null, { timeout: 60000 });
+check((await val(p2, 'tlrfName')) === 'Meera Iyer' && (await val(p2, 'tlrfQual')) === 'M.Sc' && (await tags(p2)).join(',') === 'MATLAB,Python', 'pasted text: Analyze with AI fills the form');
 
-/* ---- Fresher clears the job fields ----------------------------------- */
-await page.check('#tlrfFresher');
-await page.dispatchEvent('#tlrfFresher', 'change');
-check(await page.isDisabled('#tlrfCompany') && (await val(page, 'tlrfCompany')) === '', 'Fresher / No experience clears and disables company');
-await page.uncheck('#tlrfFresher');
-await page.dispatchEvent('#tlrfFresher', 'change');
-
-/* ---- Terms are required; communication is not ------------------------- */
-await fillText(page, 'tlrfPhone', mobile());
-await page.fill('#tlrfPw', 'Regist3r9pass'); await page.fill('#tlrfPw2', 'Regist3r9pass');
+/* ---- required fields ----------------------------------------------------------- */
 await page.click('[data-tlrf="create"]');
-check(/Terms/.test(await hostText(page)) && (await page.evaluate(() => location.hash)).includes('register'), 'without the Terms the account is not created');
+const errs = await hostText(page);
+check(/verify your email/i.test(errs) && /Password must be/.test(errs) && /Preferred Job Location is required/.test(errs) && /Terms/.test(errs), 'required fields are checked (email code, password, preferred location, consents)');
+check((await page.evaluate(() => location.hash)).includes('register'), 'nothing is created while fields are missing');
 
-/* ---- create it; double click makes one account; lands on Home --------- */
-await page.check('#tlrfTerms');
+/* ---- complete it ---------------------------------------------------------------- */
+const email = mail('classic');
+check(await verifyEmail(page, email), 'the email code is sent and verified');
+await fill(page, 'tlrfPhone', mobile());
+await page.fill('#tlrfPw', 'Regist3r9pass'); await page.fill('#tlrfPw2', 'Regist3r9pass');
+await page.selectOption('#tlrfExp', '3'); await page.dispatchEvent('#tlrfExp', 'change');
+await fill(page, 'tlrfPref', 'Hyderabad, Pune');
+await fill(page, 'tlrfSal', '8');
+await page.selectOption('#tlrfNotice', '30 days'); await page.dispatchEvent('#tlrfNotice', 'change');
+await page.check('input[data-tlrf-mode][value="Hybrid"]');
+await page.check('#tlrfTerms'); await page.check('#tlrfResumeOk'); await page.check('#tlrfWa');
 await page.dblclick('[data-tlrf="create"]');
 await page.waitForFunction(() => location.hash === '#/candidate/home', null, { timeout: 30000 });
-check(await page.evaluate(() => !!(window.STATE && STATE.session)), 'signed in after registering');
-const count = await page.evaluate(async (e) => (await TL.api.get('/me/profile-completeness').catch(() => null)) ? 1 : 0, emailA);
-check(count === 1, 'the session works (one account)');
+check(await page.evaluate(() => !!(window.STATE && STATE.session)), 'signed in and on #/candidate/home');
+await sleep(800);
+const me = await page.evaluate(() => DATA.candidateById(STATE.session.id));
+check(me.name === 'Priya Sharma' && me.location === 'Hyderabad', 'saved: name and current location');
+check(me.preferredLocation === 'Hyderabad, Pune' && Number(me.expectedCtc) === 8 && me.noticePeriod === '30 days' && (me.preferredWorkModes || []).includes('Hybrid'), 'saved: preferences');
+check(me.currentCompany === 'ABC Technologies Pvt Ltd' && me.title === 'Data Analyst' && Number(me.expYears) === 3, 'saved: company, designation, experience');
+check((me.skills || []).join(',') === 'SQL,Excel,Python', 'saved: skills');
+check(me.whatsappOptIn === true, 'saved: WhatsApp opt-in');
+check((me.educationRecords || []).some((e) => /B\.Tech/.test(e.qualification || '')) || /B\.Tech/.test(me.education || ''), 'saved: the qualification');
+check(!!me.resumeFile, 'saved: the resume is attached');
 check(page.errors.length === 0, `no page errors (${page.errors.join(' | ')})`);
 
-/* ---- a duplicate email is told to Login / Forgot Password ------------- */
+/* ---- a duplicate email ------------------------------------------------------------ */
 page = await openRegister();
-await fillText(page, 'tlrfEmail', emailA);
+await fill(page, 'tlrfEmail', email);
 await page.click('[data-tlrf="sendcode"]');
 await page.waitForFunction(() => /already exists/.test(document.getElementById('tlrfHost').innerText), null, { timeout: 15000 });
-check(await page.isVisible('#tlrfHost a[href="#/login/candidate"]') && await page.isVisible('#tlrfHost a[href="#/forgot-password"]'), 'duplicate email: message with Login and Forgot Password');
+check(await page.isVisible('#tlrfHost a[href="#/login/candidate"]') && await page.isVisible('#tlrfHost a[href="#/forgot-password"]'), 'duplicate email: Login and Forgot Password');
 
-/* ---- NO resume at all, on a phone-sized screen ------------------------ */
+/* ---- no resume, phone width ------------------------------------------------------- */
 page = await openRegister({ width: 390, height: 844 });
-const emailB = mail('noresume');
-await fillText(page, 'tlrfName', 'Karan Mehta');
-await fillText(page, 'tlrfPhone', mobile());
-await page.selectOption('#tlrfEdu', "Diploma");
-await page.dispatchEvent('#tlrfEdu', 'change');
-await page.check('#tlrfFresher'); await page.dispatchEvent('#tlrfFresher', 'change');
+check(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), 'phone: no sideways scroll');
+await fill(page, 'tlrfName', 'Karan Mehta');
+await fill(page, 'tlrfPhone', mobile());
+await fill(page, 'tlrfLoc', 'Vijayawada');
+await page.selectOption('#tlrfQual', 'Diploma'); await page.dispatchEvent('#tlrfQual', 'change');
 await page.fill('#tlrfSkillIn', 'Tally'); await page.press('#tlrfSkillIn', 'Enter');
-check(await sendCodeAndVerify(page, emailB), 'no resume: the email code works');
-check(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), 'no horizontal scroll at phone width');
+await fill(page, 'tlrfPref', 'Vijayawada');
+check(await verifyEmail(page, mail('noresume')), 'no resume: the email code works');
 await page.fill('#tlrfPw', 'Regist3r9pass'); await page.fill('#tlrfPw2', 'Regist3r9pass');
-await page.check('#tlrfTerms');
+await page.check('#tlrfTerms'); await page.check('#tlrfResumeOk');
 await page.click('[data-tlrf="create"]');
 await page.waitForFunction(() => location.hash === '#/candidate/home', null, { timeout: 30000 });
-check(true, 'no resume: the account is created and the candidate lands on #/candidate/home');
-check(page.errors.length === 0, `no page errors (${page.errors.join(' | ')})`);
+check(true, 'no resume: account created, on #/candidate/home');
+check(page.errors.length === 0, `phone: no page errors (${page.errors.join(' | ')})`);
 
 await browser.close();
 console.log(fail.length ? `\n${fail.length} FAILED:\n - ${fail.join('\n - ')}` : '\nall passed');

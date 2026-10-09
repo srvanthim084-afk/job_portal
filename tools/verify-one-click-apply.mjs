@@ -290,7 +290,10 @@ check(/^#\/register\/candidate/.test(await nw.evaluate(() => location.hash)), 'B
 await nw.setInputFiles('#tlrfFile', RES);
 await nw.waitForFunction(() => { const n = document.getElementById('tlrfName'); return n && n.value; }, null, { timeout: 90000 });
 await nw.fill('#tlrfEmail', newEmail); await nw.dispatchEvent('#tlrfEmail', 'change');
-await nw.check('#tlrfTerms');
+await nw.fill('#tlrfLoc', 'Hyderabad'); await nw.dispatchEvent('#tlrfLoc', 'change');
+await nw.fill('#tlrfPref', 'Hyderabad'); await nw.dispatchEvent('#tlrfPref', 'change');
+if (!(await nw.inputValue('#tlrfQual'))) { await nw.selectOption('#tlrfQual', 'B.Sc'); await nw.dispatchEvent('#tlrfQual', 'change'); }
+await nw.check('#tlrfTerms'); await nw.check('#tlrfResumeOk');
 await nw.click('[data-tlrf="sendcode"]');
 await nw.waitForSelector('.tlrf-dev b', { timeout: 20000 }).catch(() => {});
 const code = await nw.textContent('.tlrf-dev b').catch(() => '');

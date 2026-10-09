@@ -112,6 +112,8 @@ const registerSchema = z.object({
   draftId: z.string().trim().regex(/^rd_[a-f0-9]{18}$/).optional(),
   draftToken: z.string().trim().max(64).optional(),
   currentLocation: z.string().trim().max(160).optional(),
+  /* "Send me relevant job notifications on WhatsApp" - optional, never pre-ticked. */
+  whatsappOptIn: z.boolean().optional(),
 });
 
 const parse = (schema, body) => {
@@ -302,7 +304,7 @@ export default function authRoutes() {
             preferredLocation, expectedCtc, noticePeriod,
             preferredWorkModes, availability, preferredLanguage,
             confirmPassword, consent, website,
-            draftId, draftToken, currentLocation } = parse(registerSchema, req.body);
+            draftId, draftToken, currentLocation, whatsappOptIn } = parse(registerSchema, req.body);
 
     if (website) throw badRequest('Please check the highlighted fields and try again.');
     if (!draftId) {
@@ -404,6 +406,10 @@ export default function authRoutes() {
     if (currentLocation) {
       await withUser(session, (c) => c.query(
         `update candidates set location = $1 where id = app_candidate_id()`, [currentLocation]));
+    }
+    if (whatsappOptIn === true) {
+      await withUser(session, (c) => c.query(
+        `update candidates set whatsapp_opt_in = true where id = app_candidate_id()`));
     }
     let completeness = null;
     let profileWarning = null;
