@@ -1,9 +1,9 @@
 /* =====================================================================
    TEAMLINK - candidate registration (0117, the classic one-page form)
 
-     1 Personal Information   Full Name, Email Address (+ 6-digit code),
-                              Mobile Number, Password, Confirm Password,
-                              Current Location
+     1 Personal Information   Full Name, Email Address (+ 6-digit email
+                              code), Mobile Number (+ 6-digit SMS OTP),
+                              Password, Confirm Password, Current Location
      2 Professional Info      Candidate Type (Fresher / Experienced);
                               Experienced: Current Company, Current
                               Designation, Total Experience;
@@ -27,9 +27,17 @@
    pasted text, what was read from it, and the email's verification. This
    page keeps only the draft's id and token in sessionStorage.
 
+   BOTH CODES BEFORE THE ACCOUNT. The email answers a 6-digit email code
+   and the mobile number a 6-digit SMS OTP; the server refuses an account
+   whose address or number did not (draftForRegistration).
+
+   ONE PAGE, ALWAYS. No steps. The older seven-step form
+   (teamlink-registration.js) is still in the page, hidden; a choice of it
+   remembered from an earlier visit is forgotten, so it never comes back
+   on its own.
+
    AFTER "Create account" the candidate is signed in and taken to the
-   existing Candidate Home (#/candidate/home). The seven-step form
-   (teamlink-registration.js) is still in the page, hidden, untouched.
+   existing Candidate Home (#/candidate/home).
    ===================================================================== */
 (function () {
   'use strict';
@@ -74,10 +82,14 @@
       totalExp: '', qualification: '', skills: [], prefLoc: '', salary: '', notice: '', modes: [] };
   }
 
+  /* A "manual" (seven-step) choice remembered by an older version of this page: forgotten. */
+  try { sessionStorage.removeItem(MANUAL_KEY); } catch (e) { /* nothing stored */ }
+
   var S = {
-    manual: (function () { try { return sessionStorage.getItem(MANUAL_KEY) === '1'; } catch (e) { return false; } })(),
+    manual: false,
     phase: 'form', draft: null, token: null, busy: false, reading: false, creating: false,
     err: {}, msg: '', codeSent: false, devCode: null, done: null,
+    otpSent: false, otpDev: null,
     v: blankValues(), edited: {}, ai: {}, sugg: {}, review: {},
     pw: '', pw2: '', terms: false, resumeConsent: false, whatsapp: false,
     resumeStatus: '', resumeOk: false, pasted: '',
@@ -101,10 +113,8 @@
       else sessionStorage.removeItem(KEY);
     } catch (e) { /* private mode: a refresh starts again, nothing is lost on the server */ }
   }
-  function setManual(on) {
-    S.manual = !!on;
-    try { if (on) sessionStorage.setItem(MANUAL_KEY, '1'); else sessionStorage.removeItem(MANUAL_KEY); } catch (e) { /* this tab only */ }
-  }
+  /* Verify scripts only (TLResumeFirst.manual): never remembered, never offered on the page. */
+  function setManual(on) { S.manual = !!on; }
   function remembered() {
     try { return JSON.parse(sessionStorage.getItem(KEY) || 'null'); } catch (e) { return null; }
   }
@@ -212,6 +222,11 @@
     var d = S.draft;
     return !!(d && d.emailVerified && String(d.email || '').toLowerCase() === String(S.v.email || '').toLowerCase());
   }
+  function last10(p) { return String(p || '').replace(/\D/g, '').slice(-10); }
+  function isPhoneVerified() {
+    var d = S.draft;
+    return !!(d && d.phoneVerified && last10(d.phone) && last10(d.phone) === last10(S.v.phone));
+  }
 
   function personalPanel() {
     var v = S.v, d = S.draft || {};
@@ -221,7 +236,7 @@
     var warn = dup
       ? '<div class="tlrf-warn" role="alert">An account with this email already exists. '
         + '<a href="#/login/candidate">Login</a> or <a href="#/forgot-password">Forgot Password</a>.</div>'
-      : (exists.phone ? '<div class="tlrf-warn" role="alert">An account with this mobile number already exists. <a href="#/login/candidate">Login</a> instead of registering again.</div>' : '');
+      : ((exists.phone || S.err.dupPhone) ? '<div class="tlrf-warn" role="alert">An account with this mobile number already exists. <a href="#/login/candidate">Login</a> or <a href="#/forgot-password">Forgot Password</a>.</div>' : '');
     var emailBox = '<div class="review-field' + wrapCls('email') + '"><label for="tlrfEmail">Email Address *' + tags('email') + '</label>'
       + '<div class="tlrf-row"><input id="tlrfEmail" data-f="email" type="email" autocomplete="email" placeholder="you@example.com" value="' + h(v.email) + '"' + (verified ? ' readonly' : '') + '>'
       + (verified ? '<span class="tlrf-ok">✓ Verified</span> <button type="button" class="btn btn-ghost btn-sm" data-tlrf="changeemail">Change</button>'
@@ -235,13 +250,27 @@
       + warn
       + '<div class="review-grid"><div>'
       + input('tlrfName', 'name', 'Full Name *', 'autocomplete="name" placeholder="e.g. Sneha Kulkarni"')
-      + input('tlrfPhone', 'phone', 'Mobile Number *', 'type="tel" inputmode="numeric" autocomplete="tel" maxlength="15" placeholder="+91 90000 00000"')
+      + phoneBox()
       + input('tlrfLoc', 'location', 'Current Location *', 'list="tlrfLocList" autocomplete="off" placeholder="e.g. Hyderabad"')
       + '</div><div>'
       + emailBox
       + '<div class="review-field"><label for="tlrfPw">Password *</label><input id="tlrfPw" type="password" autocomplete="new-password" placeholder="At least 8 characters, with a letter and a number">' + err('pw') + '</div>'
       + '<div class="review-field"><label for="tlrfPw2">Confirm Password *</label><input id="tlrfPw2" type="password" autocomplete="new-password" placeholder="Type the password again">' + err('pw2') + '</div>'
       + '</div></div></div></div>';
+  }
+
+  function phoneBox() {
+    var v = S.v;
+    var ok = isPhoneVerified();
+    return '<div class="review-field' + wrapCls('phone') + '"><label for="tlrfPhone">Mobile Number *' + tags('phone') + '</label>'
+      + '<div class="tlrf-row"><input id="tlrfPhone" data-f="phone" type="tel" inputmode="numeric" autocomplete="tel" maxlength="15" placeholder="+91 90000 00000" value="' + h(v.phone) + '"' + (ok ? ' readonly' : '') + '>'
+      + (ok ? '<span class="tlrf-ok">✓ Verified</span> <button type="button" class="btn btn-ghost btn-sm" data-tlrf="changephone">Change</button>'
+        : '<button type="button" class="btn btn-ghost btn-sm" data-tlrf="sendotp"' + (S.busy ? ' disabled' : '') + '>' + (S.otpSent ? 'Resend OTP' : 'Send OTP') + '</button>') + '</div>'
+      + (ok ? '' : '<p class="tlrf-note">We send a 6-digit OTP by SMS to confirm this number.</p>')
+      + (S.otpSent && !ok ? '<div class="tlrf-row" style="margin-top:6px"><input id="tlrfOtp" inputmode="numeric" maxlength="6" placeholder="6-digit OTP" autocomplete="one-time-code" aria-label="Mobile OTP">'
+        + '<button type="button" class="btn btn-primary btn-sm" data-tlrf="verifyotp"' + (S.busy ? ' disabled' : '') + '>Verify</button></div>' : '')
+      + (S.otpDev && !ok ? '<div class="tlrf-dev">Development server: SMS is not being sent. Your OTP is <b>' + h(S.otpDev) + '</b>.</div>' : '')
+      + err('phone') + err('otp') + '</div>';
   }
 
   function professionalPanel() {
@@ -356,7 +385,7 @@
     if (!host) return;
     var form = $('registerForm');
     if (S.manual) {
-      host.innerHTML = '<p class="tlrf-note" style="margin:0 0 12px"><button type="button" class="btn btn-ghost btn-sm" data-tlrf="auto">Back to the one-page registration</button></p>';
+      host.innerHTML = '';
       if (form) form.hidden = false;
       return;
     }
@@ -567,12 +596,49 @@
     });
   }
 
+  function sendOtp() {
+    keep();
+    S.err.phone = ''; S.err.otp = ''; S.err.dupPhone = false;
+    if (!PHONE_RX.test(String(S.v.phone || '').replace(/[\s-]/g, ''))) { S.err.phone = 'Enter a valid 10-digit Indian mobile number.'; paint(); return; }
+    if (S.busy) return;
+    S.busy = true; paint();
+    ensureDraft().then(function (d) {
+      return api().post('/registration/drafts/' + encodeURIComponent(d.draftId) + '/phone-otp', { phone: S.v.phone }, hdr());
+    }).then(function (r) {
+      S.busy = false; S.otpSent = true; S.otpDev = r.devCode || null;
+      if (r.sent) say('We sent a 6-digit OTP to ' + S.v.phone, '📱');
+      paint();
+      var c = $('tlrfOtp'); if (c) c.focus();
+    }, function (er) {
+      S.busy = false;
+      if (er && (er.code === 'PHONE_TAKEN' || /already exists/i.test(apiMessage(er)))) S.err.dupPhone = true;
+      S.err.phone = (details(er).phone) || apiMessage(er);
+      paint();
+    });
+  }
+
+  function verifyOtp() {
+    keep();
+    var code = val('tlrfOtp').replace(/\D/g, '');
+    if (code.length !== 6) { S.err.otp = 'Enter the 6-digit OTP sent to your mobile.'; paint(); return; }
+    if (S.busy) return;
+    S.busy = true; paint();
+    api().post('/registration/drafts/' + encodeURIComponent(S.draft.draftId) + '/verify-phone',
+      { phone: S.v.phone, code: code }, hdr()).then(function (d) {
+      S.busy = false; S.err.otp = ''; S.err.phone = ''; S.draft = d; S.otpDev = null; paint();
+      say('Mobile number verified', '✓');
+    }, function (er) {
+      S.busy = false; S.err.otp = (details(er).code) || apiMessage(er); paint();
+    });
+  }
+
   function problems() {
     var v = S.v, e = {};
     if (!v.name || v.name.length < 2) e.name = 'Please enter your full name.';
     if (!EMAIL_RX.test(v.email)) e.email = 'Please enter a valid email address.';
     else if (!isVerified()) e.email = 'Please verify your email address - press Send code.';
     if (!PHONE_RX.test(String(v.phone || '').replace(/[\s-]/g, ''))) e.phone = 'Enter a valid 10-digit Indian mobile number.';
+    else if (!isPhoneVerified()) e.phone = 'Please verify your mobile number - press Send OTP.';
     if (!v.location) e.location = 'Current Location is required.';
     var pw = S.pw || '';
     if (pw.length < 8 || !/[A-Za-z]/.test(pw) || !/\d/.test(pw)) e.pw = 'Password must be at least 8 characters, with a letter and a number.';
@@ -655,7 +721,7 @@
         S.err.email = dt.email || apiMessage(er);
         if (/already exists/i.test(S.err.email)) S.err.dupEmail = true;
       }
-      if (dt.phone) S.err.phone = dt.phone;
+      if (dt.phone) { S.err.phone = dt.phone; if (/already exists/i.test(dt.phone)) S.err.dupPhone = true; }
       if (dt.confirmPassword) S.err.pw2 = dt.confirmPassword;
       if (dt.password) S.err.pw = dt.password;
       if (dt.preferredLocation) S.err.prefLoc = dt.preferredLocation;
@@ -671,6 +737,7 @@
   function resetForm() {
     S.v = blankValues();
     S.edited = {}; S.ai = {}; S.sugg = {}; S.review = {}; S.err = {}; S.msg = ''; S.codeSent = false; S.devCode = null;
+    S.otpSent = false; S.otpDev = null;
     S.pw = S.pw2 = ''; S.terms = false; S.resumeConsent = false; S.whatsapp = false;
     S.resumeStatus = ''; S.resumeOk = false; S.pasted = '';
   }
@@ -687,6 +754,15 @@
     if (act === 'auto') { setManual(false); paint(); return; }
     if (act === 'sendcode') { sendCode(); return; }
     if (act === 'verify') { verify(); return; }
+    if (act === 'sendotp') { sendOtp(); return; }
+    if (act === 'verifyotp') { verifyOtp(); return; }
+    if (act === 'changephone') {
+      keep();
+      if (S.draft) S.draft = Object.assign({}, S.draft, { phoneVerified: false });
+      S.otpSent = false; S.otpDev = null; paint();
+      var ph = $('tlrfPhone'); if (ph) ph.focus();
+      return;
+    }
     if (act === 'changeemail') {
       keep();
       if (S.draft) S.draft = Object.assign({}, S.draft, { emailVerified: false });
@@ -723,6 +799,14 @@
       paint(); return;
     }
     if (t.tagName === 'SELECT' && t.getAttribute('data-f')) { keep(); delete S.err[t.getAttribute('data-f')]; paint(); return; }
+    if (t.id === 'tlrfPhone') {
+      keep();
+      S.err.phone = ''; S.err.dupPhone = false;
+      /* a different number has to answer its own OTP */
+      if (!isPhoneVerified()) { S.otpSent = false; S.otpDev = null; }
+      paint();
+      return;
+    }
     if (t.id === 'tlrfEmail') {
       keep();
       S.err.email = ''; S.err.dupEmail = false;
@@ -749,6 +833,7 @@
       var si = $('tlrfSkillIn'); if (si) si.focus();
     }
     if (ev.key === 'Enter' && ev.target && ev.target.id === 'tlrfCode') { ev.preventDefault(); verify(); }
+    if (ev.key === 'Enter' && ev.target && ev.target.id === 'tlrfOtp') { ev.preventDefault(); verifyOtp(); }
   });
 
   /* A skill typed but not yet entered is still a skill: taken on the way out of the box. */

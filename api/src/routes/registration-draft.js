@@ -10,6 +10,8 @@
  *                                              fields the reading was unsure of
  *   POST  /registration/drafts/:id/email-code  send a 6-digit code to the address
  *   POST  /registration/drafts/:id/verify-email
+ *   POST  /registration/drafts/:id/phone-otp   send a 6-digit OTP by SMS to the mobile number (0123)
+ *   POST  /registration/drafts/:id/verify-phone
  *   GET   /me/profile-completeness             what is filled in, what is missing
  *
  * The account itself is still created by POST /auth/register - the same
@@ -131,6 +133,8 @@ async function view(d) {
     ask,
     email,
     emailVerified: !!d.email_verified_at,
+    phone: d.phone || null,
+    phoneVerified: !!d.phone_verified_at,
     existing,
     source: ex.source || null,
     parser: ex.parser || null,
@@ -407,6 +411,64 @@ export default function registrationDraftRoutes() {
     res.json(await view(await readDraft(req.params.id, token)));
   }));
 
+  /* ---- the mobile number: an OTP by SMS (0123) ------------------------------------------ */
+  r.post('/registration/drafts/:id/phone-otp', wrap(async (req, res) => {
+    const token = tokenOf(req);
+    const phone = String((req.body && req.body.phone) || '').trim();
+    if (!validIndianMobile(phone)) {
+      throw badRequest('Enter a valid 10-digit mobile number.', { phone: 'Enter a valid 10-digit mobile number.' });
+    }
+    await readDraft(req.params.id, token);
+    if ((await taken(null, phone)).phone) {
+      throw new ApiError(409, 'PHONE_TAKEN', 'An account with this mobile number already exists. Please Login.',
+        { phone: 'An account with this mobile number already exists. Please Login.' });
+    }
+
+    const code = String(randomInt(100000, 1000000));
+    const n = await withUser(null, async (c) => (await c.query(
+      `select registration_phone_otp_issue($1,$2,$3,$4,10) as n`,
+      [req.params.id, hashToken(token), phone, codeHash(req.params.id, code)])).rows[0].n);
+    if (n === -2) throw notFound('Your registration session has expired. Please refresh the page and try again.');
+    if (n === -3) throw new ApiError(429, CODES.RATE_LIMITED, 'Please wait 30 seconds before asking for another OTP.', { phone: 'Please wait 30 seconds before asking for another OTP.' });
+    if (n === -1) throw new ApiError(429, CODES.RATE_LIMITED, 'Too many OTPs requested. Please wait an hour and try again.', { phone: 'Too many OTPs requested. Please try again in an hour.' });
+
+    const text = `${code} is your TeamLink verification code. It is valid for 10 minutes. Do not share it with anyone.`;
+    const sent = await providers.sms.send({ to: phone, text, purpose: 'otp', vars: [code, '10'] })
+      .catch((err) => ({ status: 'failed', error: err.message }));
+
+    if (sent.status === 'sent') return res.json({ sent: true, phone: registrationPhone10(phone) });
+    /* Not delivered. Outside production the code is shown on screen, said to be a development code, so the flow
+       can be used without an SMS gateway. In production the candidate is told plainly. */
+    if (!isProd()) {
+      return res.json({ sent: false, phone: registrationPhone10(phone), devCode: code,
+        note: 'SMS is not being sent from this server (development). Use this code.' });
+    }
+    if (sent.status === 'not_configured') {
+      throw new ApiError(503, 'SMS_UNAVAILABLE', 'We cannot send an OTP right now. Please try again later.');
+    }
+    throw new ApiError(502, 'SMS_FAILED', 'We could not send the OTP to this number. Please check it and try again.',
+      { phone: 'We could not send the OTP to this number.' });
+  }));
+
+  r.post('/registration/drafts/:id/verify-phone', wrap(async (req, res) => {
+    const token = tokenOf(req);
+    const phone = String((req.body && req.body.phone) || '').trim();
+    const code = String((req.body && req.body.code) || '').replace(/\D/g, '');
+    if (!validIndianMobile(phone)) {
+      throw badRequest('Enter a valid 10-digit mobile number.', { phone: 'Enter a valid 10-digit mobile number.' });
+    }
+    if (code.length !== 6) throw badRequest('Enter the 6-digit OTP', { code: 'Enter the 6-digit OTP' });
+    const out = await withUser(null, async (c) => (await c.query(
+      `select registration_phone_otp_check($1,$2,$3,$4) as r`,
+      [req.params.id, hashToken(token), phone, codeHash(req.params.id, code)])).rows[0].r);
+    const msg = {
+      wrong: 'Invalid OTP', expired: 'That OTP has expired. Please request a new one.',
+      locked: 'Too many wrong attempts. Please request a new OTP.', none: 'Please request an OTP first.',
+    };
+    if (out !== 'ok') throw badRequest(msg[out] || msg.none, { code: msg[out] || msg.none });
+    res.json(await view(await readDraft(req.params.id, token)));
+  }));
+
   r.get('/me/profile-completeness', requireAuth(), requireRole('candidate'), wrap(async (req, res) => {
     const out = await withUser(req.session, (c) => completenessFor(c, req.session.profileId));
     if (!out) throw notFound('Profile not found.');
@@ -425,16 +487,43 @@ export default function registrationDraftRoutes() {
  * must exist, be this browser's, and its email must have answered a code.
  * Returns the draft.
  */
-export async function draftForRegistration({ draftId, draftToken, email }) {
+export async function draftForRegistration({ draftId, draftToken, email, phone }) {
   if (!/^[a-f0-9]{48}$/.test(String(draftToken || ''))) {
-    throw new ApiError(401, 'DRAFT_TOKEN', 'Your registration session has expired. Please upload your resume again.');
+    throw new ApiError(401, 'DRAFT_TOKEN', 'Your registration session has expired. Please refresh the page and try again.');
   }
   const d = await readDraft(draftId, draftToken);
-  const verify = !/^(0|false|no|off)$/i.test(String(process.env.REGISTRATION_EMAIL_VERIFY || 'true'));
-  if (verify && (!d.email_verified_at || String(d.email || '').toLowerCase() !== String(email || '').toLowerCase())) {
-    throw badRequest('Please verify your email address first.', { email: 'Please verify your email address first.' });
+  /* BOTH CODES, CHECKED HERE, before anything is written: the email answered its code and the MOBILE NUMBER
+     answered an OTP - the same address and the same number being registered. Calling the API directly, or
+     changing either after verifying, is refused. */
+  const problems = {};
+  const emailVerify = !/^(0|false|no|off)$/i.test(String(process.env.REGISTRATION_EMAIL_VERIFY || 'true'));
+  if (emailVerify && (!d.email_verified_at || String(d.email || '').toLowerCase() !== String(email || '').toLowerCase())) {
+    problems.email = 'Please verify your email address first.';
+  }
+  if (phoneVerifyRequired() && (!d.phone_verified_at || registrationPhone10(d.phone) !== registrationPhone10(phone))) {
+    problems.phone = 'Please verify your mobile number with the OTP first.';
+  }
+  if (Object.keys(problems).length) {
+    throw badRequest(problems.email && problems.phone ? 'Please verify your email address and mobile number first.'
+      : (problems.email || problems.phone), problems);
   }
   return d;
+}
+
+const registrationPhone10 = (v) => String(v || '').replace(/\D/g, '').slice(-10);
+
+/** The mobile OTP at registration: on unless REGISTRATION_PHONE_VERIFY=false. */
+export function phoneVerifyRequired() {
+  return !/^(0|false|no|off)$/i.test(String(process.env.REGISTRATION_PHONE_VERIFY || 'true'));
+}
+
+/** Whether an account may ONLY be created through a draft whose email and mobile were verified - not by posting
+    the older seven-step form straight to /auth/register. Production by default; REGISTRATION_OTP_REQUIRED overrides. */
+export function otpRequired() {
+  const v = String(process.env.REGISTRATION_OTP_REQUIRED || '').trim();
+  if (/^(1|true|yes|on)$/i.test(v)) return true;
+  if (/^(0|false|no|off)$/i.test(v)) return false;
+  return isProd();
 }
 
 const isoDate = (v) => {

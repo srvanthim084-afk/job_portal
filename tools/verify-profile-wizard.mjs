@@ -76,12 +76,25 @@ const api = (page, method, path, body) => page.evaluate(async ({ m, p, b }) => {
   try { return { ok: true, body: await TL.api[m](p, b) }; } catch (e) { return { ok: false, status: e.status, message: e.message }; }
 }, { m: method, p: path, b: body });
 
-/* the simplified registration, through the page */
+/* the mobile OTP: the development server shows it on the page (no SMS gateway) */
+async function verifyPhone(page, phone) {
+  if (phone) { await page.fill('#tlrfPhone', phone); await page.dispatchEvent('#tlrfPhone', 'change'); }
+  await page.click('[data-tlrf="sendotp"]');
+  await page.waitForSelector('#tlrfOtp', { timeout: 15000 });
+  await page.waitForSelector('#tlrfHost .tlrf-dev b', { timeout: 15000 });
+  const otp = await page.evaluate(() => [...document.querySelectorAll('#tlrfHost .tlrf-dev b')].map((b) => b.textContent).find((t) => /^\d{6}$/.test(t)));
+  await page.fill('#tlrfOtp', otp || '');
+  await page.click('[data-tlrf="verifyotp"]');
+  await page.waitForFunction(() => !!document.querySelector('[data-tlrf="changephone"]'), null, { timeout: 15000 });
+  return true;
+}
+
+/* the registration, through the page */
 async function register(page, email) {
   await page.evaluate(() => { location.hash = '#/register/candidate'; });
   await page.waitForSelector('#tlrfName', { timeout: 15000 });
   await page.fill('#tlrfName', 'Wizard Person'); await page.dispatchEvent('#tlrfName', 'change');
-  await page.fill('#tlrfPhone', mobile()); await page.dispatchEvent('#tlrfPhone', 'change');
+  await verifyPhone(page, mobile());
   await page.fill('#tlrfLoc', 'Hyderabad'); await page.dispatchEvent('#tlrfLoc', 'change');
   await page.selectOption('#tlrfQual', 'B.Sc'); await page.dispatchEvent('#tlrfQual', 'change');
   await page.fill('#tlrfSkillIn', 'Excel'); await page.press('#tlrfSkillIn', 'Enter');

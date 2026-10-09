@@ -301,6 +301,16 @@ check(/^\d{6}$/.test(String(code).trim()), 'B2: an email code (development serve
 await nw.fill('#tlrfCode', String(code).trim());
 await nw.click('[data-tlrf="verify"]');
 await nw.waitForSelector('#tlrfEmail[readonly]', { timeout: 20000 }).catch(() => {});
+/* the mobile OTP (development: shown on the page) */
+if (await nw.$('[data-tlrf="sendotp"]')) {
+  if (!(await nw.inputValue('#tlrfPhone'))) { await nw.fill('#tlrfPhone', mobile()); await nw.dispatchEvent('#tlrfPhone', 'change'); }
+  await nw.click('[data-tlrf="sendotp"]');
+  await nw.waitForSelector('#tlrfOtp', { timeout: 20000 }).catch(() => {});
+  const otp = await nw.evaluate(() => [...document.querySelectorAll('#tlrfHost .tlrf-dev b')].map((b) => b.textContent).find((t) => /^\d{6}$/.test(t)));
+  await nw.fill('#tlrfOtp', otp || '');
+  await nw.click('[data-tlrf="verifyotp"]');
+  await nw.waitForSelector('[data-tlrf="changephone"]', { timeout: 20000 }).catch(() => {});
+}
 await nw.fill('#tlrfPw', 'NewPerson9pass'); await nw.fill('#tlrfPw2', 'NewPerson9pass');
 await nw.click('[data-tlrf="create"]');
 await nw.waitForSelector('#tl1cDone, #tl1cProfile', { timeout: 60000 }).catch(() => {});

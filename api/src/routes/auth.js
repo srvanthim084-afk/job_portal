@@ -24,7 +24,7 @@ import {
 } from '../registration/settings.js';
 import { queueWelcome } from '../notify/registration-messages.js';
 /* 0117: resume-first registration - the draft the resume was read into. */
-import { draftForRegistration, finishDraft } from './registration-draft.js';
+import { draftForRegistration, finishDraft, otpRequired } from './registration-draft.js';
 
 /*
  * AN ADDRESS OR A MOBILE NUMBER.
@@ -318,9 +318,15 @@ export default function authRoutes() {
       }
     }
 
-    /* 0117: from a resume draft, the email must have answered its code
-       before an account is made for it. Checked before anything is written. */
-    const draft = draftId ? await draftForRegistration({ draftId, draftToken, email }) : null;
+    /* Where OTP is required (production, or REGISTRATION_OTP_REQUIRED=true) an account is created ONLY through the
+       registration page's draft, whose email and mobile number answered their codes. */
+    if (!draftId && otpRequired()) {
+      throw badRequest('Please verify your email address and mobile number to register.',
+        { email: 'Please verify your email address first.', phone: 'Please verify your mobile number with the OTP first.' });
+    }
+    /* 0117 / 0123: from the draft, the email AND the mobile number must have answered their codes.
+       Checked before anything is written. */
+    const draft = draftId ? await draftForRegistration({ draftId, draftToken, email, phone }) : null;
 
     /* 0109: the checks the form makes, made again here. */
     const problems = {};

@@ -84,6 +84,20 @@ async function verifyEmail(page, email) {
   return true;
 }
 
+
+/* the mobile OTP: the development server shows it on the page (no SMS gateway) */
+async function verifyPhone(page, phone) {
+  if (phone) { await page.fill('#tlrfPhone', phone); await page.dispatchEvent('#tlrfPhone', 'change'); }
+  await page.click('[data-tlrf="sendotp"]');
+  await page.waitForSelector('#tlrfOtp', { timeout: 15000 });
+  await page.waitForSelector('#tlrfHost .tlrf-dev b', { timeout: 15000 });
+  const otp = await page.evaluate(() => [...document.querySelectorAll('#tlrfHost .tlrf-dev b')].map((b) => b.textContent).find((t) => /^\d{6}$/.test(t)));
+  await page.fill('#tlrfOtp', otp || '');
+  await page.click('[data-tlrf="verifyotp"]');
+  await page.waitForFunction(() => !!document.querySelector('[data-tlrf="changephone"]'), null, { timeout: 15000 });
+  return true;
+}
+
 /* ---- the shape of the page -------------------------------------------------- */
 let page = await openRegister();
 const heads = await page.$$eval('#tlrfHost .panel-head h2', (x) => x.map((h) => h.textContent.replace(/^\d+/, '').trim()));
@@ -97,6 +111,8 @@ check(/Upload Resume \(PDF \/ DOC \/ DOCX \/ TXT\)/.test(await hostText(page)) &
 check(/prefer to paste text instead\? \(optional\)/i.test(await hostText(page)) && await page.isVisible('[data-tlrf="analyze"]'), 'Resume: paste text + Analyze with AI');
 check(!(await page.isChecked('#tlrfWa')) && !(await page.isChecked('#tlrfTerms')) && !(await page.isChecked('#tlrfResumeOk')), 'no consent is pre-ticked (WhatsApp optional)');
 check(!(await page.isVisible('#tlrfCompany')), 'Fresher: no company / designation fields');
+check(await page.isVisible('[data-tlrf="sendcode"]') && await page.isVisible('[data-tlrf="sendotp"]'), 'Send code (email) and Send OTP (mobile) are both on the page');
+check(await page.evaluate(() => document.getElementById('registerForm').hidden && ![...document.querySelectorAll('.tlr-stepper')].some((x) => x.offsetParent !== null)), 'no steps: one page, the seven-step form stays hidden');
 await page.check('input[name="tlrfType"][value="experienced"]');
 check(await page.isVisible('#tlrfCompany') && await page.isVisible('#tlrfDesig') && await page.isVisible('#tlrfExp'), 'Experienced: Current Company, Current Designation, Total Experience');
 await page.check('input[name="tlrfType"][value="fresher"]');
@@ -133,13 +149,13 @@ check((await val(p2, 'tlrfName')) === 'Meera Iyer' && (await val(p2, 'tlrfQual')
 /* ---- required fields ----------------------------------------------------------- */
 await page.click('[data-tlrf="create"]');
 const errs = await hostText(page);
-check(/verify your email/i.test(errs) && /Password must be/.test(errs) && /Preferred Job Location is required/.test(errs) && /Terms/.test(errs), 'required fields are checked (email code, password, preferred location, consents)');
+check(/verify your email/i.test(errs) && /verify your mobile number/i.test(errs) && /Password must be/.test(errs) && /Preferred Job Location is required/.test(errs) && /Terms/.test(errs), 'required fields are checked (email code, mobile OTP, password, preferred location, consents)');
 check((await page.evaluate(() => location.hash)).includes('register'), 'nothing is created while fields are missing');
 
 /* ---- complete it ---------------------------------------------------------------- */
 const email = mail('classic');
 check(await verifyEmail(page, email), 'the email code is sent and verified');
-await fill(page, 'tlrfPhone', mobile());
+check(await verifyPhone(page, mobile()), 'the mobile OTP is sent and verified');
 await page.fill('#tlrfPw', 'Regist3r9pass'); await page.fill('#tlrfPw2', 'Regist3r9pass');
 await page.selectOption('#tlrfExp', '3'); await page.dispatchEvent('#tlrfExp', 'change');
 await fill(page, 'tlrfPref', 'Hyderabad, Pune');
@@ -161,6 +177,18 @@ check((me.educationRecords || []).some((e) => /B\.Tech/.test(e.qualification || 
 check(!!me.resumeFile, 'saved: the resume is attached');
 check(page.errors.length === 0, `no page errors (${page.errors.join(' | ')})`);
 
+/* ---- a remembered seven-step choice from an older version does not bring the steps back ---- */
+{
+  const old = await (await browser.newContext({ viewport: { width: 1280, height: 900 } })).newPage();
+  await old.goto(`${BASE}/`, { waitUntil: 'load' });
+  await old.evaluate(() => sessionStorage.setItem('tl_reg_manual_v1', '1'));
+  await old.reload({ waitUntil: 'load' });
+  await old.waitForFunction(() => window.TL && window.TL.ready === true, null, { timeout: 30000 });
+  await old.evaluate(() => { location.hash = '#/register/candidate'; });
+  await old.waitForSelector('#tlrfName', { timeout: 15000 });
+  check(await old.evaluate(() => document.getElementById('registerForm').hidden && ![...document.querySelectorAll('.tlr-stepper')].some((x) => x.offsetParent !== null) && !!document.getElementById('tlrfName')), 'an old "manual" choice is forgotten: one page, no steps');
+}
+
 /* ---- a duplicate email ------------------------------------------------------------ */
 page = await openRegister();
 await fill(page, 'tlrfEmail', email);
@@ -172,12 +200,12 @@ check(await page.isVisible('#tlrfHost a[href="#/login/candidate"]') && await pag
 page = await openRegister({ width: 390, height: 844 });
 check(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), 'phone: no sideways scroll');
 await fill(page, 'tlrfName', 'Karan Mehta');
-await fill(page, 'tlrfPhone', mobile());
 await fill(page, 'tlrfLoc', 'Vijayawada');
 await page.selectOption('#tlrfQual', 'Diploma'); await page.dispatchEvent('#tlrfQual', 'change');
 await page.fill('#tlrfSkillIn', 'Tally'); await page.press('#tlrfSkillIn', 'Enter');
 await fill(page, 'tlrfPref', 'Vijayawada');
 check(await verifyEmail(page, mail('noresume')), 'no resume: the email code works');
+check(await verifyPhone(page, mobile()), 'no resume: the mobile OTP works');
 await page.fill('#tlrfPw', 'Regist3r9pass'); await page.fill('#tlrfPw2', 'Regist3r9pass');
 await page.check('#tlrfTerms'); await page.check('#tlrfResumeOk');
 await page.click('[data-tlrf="create"]');

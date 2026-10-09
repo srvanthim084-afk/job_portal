@@ -76,6 +76,7 @@ test('boot', async () => {
     EMAIL_API_KEY: '', EMAIL_SMTP_HOST: '', EMAIL_SMTP_USER: '', EMAIL_SMTP_PASS: '',
     EMAILJS_SERVICE_ID: '', EMAILJS_TEMPLATE_ID: '', EMAILJS_PUBLIC_KEY: '', EMAILJS_PRIVATE_KEY: '',
     OUTBOUND_ALLOWLIST: '', REGISTRATION_CONSENT_REQUIRED: '', AI_API_KEY: '',
+    REGISTRATION_PHONE_VERIFY: 'false', SMS_API_KEY: '',
   });
   raw = (sql, params) => dbh.db.query(sql, params);
   const { createApp } = await import('../src/app.js');

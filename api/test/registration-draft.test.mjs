@@ -140,6 +140,8 @@ test('boot', async () => {
     EMAILJS_SERVICE_ID: '', EMAILJS_TEMPLATE_ID: '', EMAILJS_PUBLIC_KEY: '', EMAILJS_PRIVATE_KEY: '',
     OUTBOUND_ALLOWLIST: '',
     REGISTRATION_CONSENT_REQUIRED: '',
+    /* the mobile OTP has its own tests below; the older ones are about the email and the resume */
+    REGISTRATION_PHONE_VERIFY: 'false', REGISTRATION_OTP_REQUIRED: '', SMS_API_KEY: '',
     /* "The AI is unavailable": a key is set and the model answers nonsense. */
     AI_API_KEY: 'test-ai-key',
     AI_API_URL: `http://127.0.0.1:${MOCK_PORT}/ai`,
@@ -540,6 +542,83 @@ test('pasted resume text is read like a file, on a new draft or an existing one'
   assert.equal(row.whatsapp_opt_in, true);
   assert.equal(row.location, 'Hyderabad');
   assert.equal(row.preferred_location, 'Pune');
+});
+
+/* ------------------------------------------------------------------ *
+ * the mobile OTP (0123): both codes before the account
+ * ------------------------------------------------------------------ */
+test('email code AND mobile OTP: the account needs both, for the same address and number', async () => {
+  process.env.REGISTRATION_PHONE_VERIFY = 'true';
+  try {
+    const email = `otp.${uniq()}@mailbox-teamlink-tests.in`;
+    const phone = mobile();
+    const c = await client();
+    await noResumeDraft(c);
+    await verifyEmail(c, email);
+    const body = () => ({ name: 'Otp Person', email, phone, ...SIMPLE, draftId: c.draft.draftId, draftToken: c.h.headers['x-draft-token'] });
+
+    /* email verified, mobile not: refused, and nothing is created */
+    const early = await c.post('/api/auth/register', body());
+    assert.equal(early.status, 400, JSON.stringify(early.body));
+    assert.match(early.body.error.details.phone, /verify your mobile number/i);
+    assert.equal((await raw(`select count(*)::int as n from candidates where lower(email)=lower($1)`, [email])).rows[0].n, 0);
+
+    /* an invalid number is refused before any code is sent */
+    const bad = await c.post(`/api/registration/drafts/${c.draft.draftId}/phone-otp`, { phone: '12345' }, c.h);
+    assert.equal(bad.status, 400);
+
+    /* the OTP: sent (development: shown, as there is no SMS gateway in the test) */
+    const sent = await c.post(`/api/registration/drafts/${c.draft.draftId}/phone-otp`, { phone }, c.h);
+    assert.equal(sent.status, 200, JSON.stringify(sent.body));
+    assert.match(sent.body.devCode, /^\d{6}$/);
+    const again = await c.post(`/api/registration/drafts/${c.draft.draftId}/phone-otp`, { phone }, c.h);
+    assert.equal(again.status, 429, 'one OTP every 30 seconds');
+
+    /* a wrong code is refused; the right one verifies */
+    const wrong = await c.post(`/api/registration/drafts/${c.draft.draftId}/verify-phone`,
+      { phone, code: sent.body.devCode === '000000' ? '111111' : '000000' }, c.h);
+    assert.equal(wrong.status, 400);
+    assert.match(wrong.body.error.details.code, /Invalid OTP/);
+    const ok = await c.post(`/api/registration/drafts/${c.draft.draftId}/verify-phone`, { phone, code: sent.body.devCode }, c.h);
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    assert.equal(ok.body.phoneVerified, true);
+    assert.equal(ok.body.emailVerified, true);
+
+    /* a different number than the one verified: refused */
+    const other = await c.post('/api/auth/register', { ...body(), phone: mobile() });
+    assert.equal(other.status, 400);
+    assert.match(other.body.error.details.phone, /verify your mobile number/i);
+
+    const reg = await c.post('/api/auth/register', body());
+    assert.equal(reg.status, 201, JSON.stringify(reg.body));
+    const row = (await raw(`select email_verified, mobile_verified from candidates where id=$1`, [reg.body.candidateId])).rows[0];
+    assert.deepEqual(row, { email_verified: true, mobile_verified: true });
+
+    /* a second person with the same number is told it exists */
+    const c2 = await client();
+    await noResumeDraft(c2);
+    const dup = await c2.post(`/api/registration/drafts/${c2.draft.draftId}/phone-otp`, { phone }, c2.h);
+    assert.equal(dup.status, 409);
+    assert.match(dup.body.error.details.phone, /already exists/);
+  } finally {
+    process.env.REGISTRATION_PHONE_VERIFY = 'false';
+  }
+});
+
+test('where OTP is required, the older form cannot register straight through /auth/register', async () => {
+  process.env.REGISTRATION_OTP_REQUIRED = 'true';
+  try {
+    const c = await client();
+    const r = await c.post('/api/auth/register', {
+      name: 'Bare Form', email: `bare.${uniq()}@mailbox-teamlink-tests.in`, phone: mobile(),
+      password: 'Plain1person', preferredLocation: 'Pune', expectedCtc: 4, noticePeriod: 'Immediate',
+      preferredWorkModes: ['Office'], consent: CONSENT,
+    });
+    assert.equal(r.status, 400, JSON.stringify(r.body));
+    assert.ok(r.body.error.details.phone && r.body.error.details.email);
+  } finally {
+    process.env.REGISTRATION_OTP_REQUIRED = '';
+  }
 });
 
 test('teardown', async () => {
