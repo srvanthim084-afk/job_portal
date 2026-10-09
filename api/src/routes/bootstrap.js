@@ -24,7 +24,7 @@ import { config } from '../config.js';
 import {
   toCompany, toJob, toCandidate, toApplication,
   toEducationRecord, toExperienceRecord,
-  toInterview, toOffer, toNotification, toPerson, attachPrimary,
+  toInterview, toOffer, toNotification, toPerson, attachPrimary, toStaffJob, JOB_RECORD_COLS,
 } from '../shapes.js';
 import { teamlinkOnly } from '../jobs/source-scope.js';
 
@@ -58,7 +58,7 @@ export default function bootstrapRoutes() {
          applied to (so their own applications still have a title). Staff
          keep every row RLS lets them read: that is the ATS, not the Jobs page. */
       const staff = !!session && ['recruiter', 'admin', 'bde', 'client'].includes(session.role);
-      const jobs        = await c.query(`select * from jobs_with_counts
+      const jobs        = await c.query(`select *, ${JOB_RECORD_COLS} from jobs_with_counts
         ${staff ? '' : `where ${teamlinkOnly()} or id in (select job_id from applications)`}
         order by published_at desc nulls last, id`);
       const candidates  = await c.query(`select * from candidates order by id`);
@@ -133,7 +133,7 @@ export default function bootstrapRoutes() {
 
       return {
         companies:   companies.rows.map(toCompany),
-        jobs:        jobs.rows.map(toJob),
+        jobs:        jobs.rows.map(staff ? toStaffJob : toJob),
         candidates:  cands,
         applications: extraApplications,
         interviews:  interviews.rows.map(toInterview),

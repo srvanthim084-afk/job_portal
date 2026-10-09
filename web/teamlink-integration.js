@@ -678,6 +678,8 @@
         // adopt the server's view (derived applicants, posted label)
         var local = DATA.jobById(j.id);
         if (local && res && res.job) Object.assign(local, res.job);
+        /* 0125: the server's stamps (published / unpublished, last edit) */
+        if (local && window.TLJobStats) window.TLJobStats.changed();
       }).catch(say).then(function () { TL.syncingJob = null; });
     });
   }

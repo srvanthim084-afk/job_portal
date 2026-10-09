@@ -2321,6 +2321,7 @@ function pageJobDetail(jobId){
           </div>
         </div>
 
+        ${typeof window.TLJobStats!=='undefined' ? TLJobStats.recordPanel(job) : ''}
         <!-- the description comes first: it is what the candidate opened the
              page to read. The AI match panels follow it. -->
         <div class="panel"><div class="panel-head"><h2>Job description</h2></div><div class="panel-body">${job.desc?`<p style="white-space:pre-line">${esc(job.desc)}</p>`:'<p style="color:var(--text-soft)">Not specified</p>'}</div></div>
@@ -5410,13 +5411,17 @@ function pageRecruiterDash(section, params){
   else if(section==='jobs'){
     const draft = STATE.jobDraft;
     const editing = STATE.editJobId ? DATA.jobById(STATE.editJobId) : null;
+    /* 0125: Total / Published / Not Published / Draft cards that filter the
+       table, and the creator and dates of each job (teamlink-job-stats.js). */
+    const JS = window.TLJobStats;
+    const shownJobs = JS ? JS.apply(myJobs, 'recruiter') : myJobs;
     content = `
-    <div class="stat-row">
+    ${JS ? JS.cards(myJobs, 'recruiter') : `<div class="stat-row">
       ${statTile('Open roles', myJobs.filter(j=>j.status!=='closed').length)}
       ${statTile('Total applicants', apps.length)}
       ${statTile('Avg. AI match', Math.round(apps.reduce((s,a)=>s+a.matchScore,0)/(apps.length||1))+'%')}
       ${statTile('Featured listings', myJobs.filter(j=>j.featured).length)}
-    </div>
+    </div>`}
     ${editing ? `
     <div class="panel" style="margin-bottom:18px"><div class="panel-head"><div><h2>Edit job — ${esc(editing.title)}</h2><div class="desc">Changes go live on the candidate site the moment you save</div></div></div><div class="panel-body">
       <div class="kv" style="grid-template-columns:1fr 1fr;margin-top:0">
@@ -5455,10 +5460,10 @@ function pageRecruiterDash(section, params){
       </div>
     </div></div>`:''}
     <div class="two-col">
-      <div class="panel"><div class="panel-head"><h2>${esc(co.name)} — job postings</h2></div><div class="panel-body pad0"><div class="tbl-wrap"><table class="data">
-        <thead><tr><th>Role</th><th>Location</th><th>Experience</th><th>Applicants</th><th>Posted</th><th>Status</th><th>Actions</th></tr></thead>
-        <tbody>${myJobs.map(j=>`<tr><td class="clickable" onclick="navigate('/job/${j.id}')"><b>${esc(j.title)}</b></td><td>${esc(j.location)}</td><td>${esc(j.exp)}</td><td>${apps.filter(a=>a.jobId===j.id).length}</td><td>${esc(j.posted)}</td><td>${jobStatusBadge(j)}</td>
-          <td class="row-actions"><button class="btn btn-ghost btn-sm" onclick="startEditJob('${j.id}')">Edit</button> ${j.status==='closed' ? `<button class="btn btn-sm btn-primary" onclick="toggleJobStatus('${j.id}')">Reopen</button>` : `<button class="btn btn-sm btn-danger-ghost" onclick="toggleJobStatus('${j.id}')">Close</button>`}</td></tr>`).join('')}</tbody>
+      <div class="panel"><div class="panel-head"><h2>${esc(co.name)} — job postings</h2></div><div class="panel-body pad0">${JS ? JS.filterBar(myJobs, 'recruiter') : ''}<div class="tbl-wrap"><table class="data">
+        ${JS ? `<thead><tr><th>Job Title</th>${JS.HEAD}<th>Actions</th></tr></thead>` : `<thead><tr><th>Role</th><th>Location</th><th>Experience</th><th>Applicants</th><th>Posted</th><th>Status</th><th>Actions</th></tr></thead>`}
+        <tbody>${shownJobs.map(j=>`<tr><td class="clickable" onclick="navigate('/job/${j.id}')"><b>${esc(j.title)}</b></td>${JS ? JS.cells(j) : `<td>${esc(j.location)}</td><td>${esc(j.exp)}</td><td>${apps.filter(a=>a.jobId===j.id).length}</td><td>${esc(j.posted)}</td><td>${jobStatusBadge(j)}</td>`}
+          <td class="row-actions"><button class="btn btn-ghost btn-sm" onclick="startEditJob('${j.id}')">Edit</button> ${j.status==='closed' ? `<button class="btn btn-sm btn-primary" onclick="toggleJobStatus('${j.id}')">Reopen</button>` : `<button class="btn btn-sm btn-danger-ghost" onclick="toggleJobStatus('${j.id}')">Close</button>`}</td></tr>`).join('')||(JS?'<tr><td colspan="6"><div class="empty-note">No jobs match these filters.</div></td></tr>':'')}</tbody>
       </table></div></div></div>
       <div class="panel"><div class="panel-head"><div><h2>AI Job Creation</h2><div class="desc">Describe the role, let AI draft the JD and screening questions</div></div></div><div class="panel-body">
         <div class="fgroup"><label>Job title</label><input id="njTitle" value="${esc(draft.title)}" placeholder="e.g. DevOps Engineer"></div>
@@ -6165,11 +6170,15 @@ function pageAdminDash(section){
   }
 
   else if(section==='jobs'){
+    /* 0125: the status cards, the creator and dates, and their filters. */
+    const JS = window.TLJobStats;
+    const shownJobs = JS ? JS.apply(DATA.jobs, 'admin') : DATA.jobs;
     content = `
+    ${JS ? JS.cards(DATA.jobs, 'admin') : ''}
     <div class="panel"><div class="panel-head"><div><h2>All jobs</h2><div class="desc">${DATA.jobs.length} listings across ${DATA.companies.length} companies</div></div></div>
-    <div class="panel-body pad0"><div class="tbl-wrap"><table class="data">
-      <thead><tr><th>Role</th><th>Company</th><th>Location</th><th>Applicants</th><th>Status</th></tr></thead>
-      <tbody>${DATA.jobs.map(j=>`<tr class="clickable" onclick="navigate('/job/${j.id}')"><td><b>${esc(j.title)}</b></td><td>${esc(DATA.companyById(j.companyId).name)}</td><td>${esc(j.location)}</td><td>${j.applicants}</td><td>${jobStatusBadge(j)}</td></tr>`).join('')}</tbody>
+    <div class="panel-body pad0">${JS ? JS.filterBar(DATA.jobs, 'admin') : ''}<div class="tbl-wrap"><table class="data">
+      ${JS ? `<thead><tr><th>Job Title</th>${JS.HEAD}<th>Applicants</th></tr></thead>` : `<thead><tr><th>Role</th><th>Company</th><th>Location</th><th>Applicants</th><th>Status</th></tr></thead>`}
+      <tbody>${shownJobs.map(j=>`<tr class="clickable" onclick="navigate('/job/${j.id}')"><td><b>${esc(j.title)}</b></td>${JS ? JS.cells(j) + `<td data-tl-applicants>${j.applicants}</td>` : `<td>${esc(DATA.companyById(j.companyId).name)}</td><td>${esc(j.location)}</td><td>${j.applicants}</td><td>${jobStatusBadge(j)}</td>`}</tr>`).join('')||(JS?'<tr><td colspan="6"><div class="empty-note">No jobs match these filters.</div></td></tr>':'')}</tbody>
     </table></div></div></div>`;
   }
 
@@ -30426,4 +30435,7 @@ table.data td .tl-af b{white-space:normal}
 <script src="teamlink-teams.js"></script>
 <!-- 0119: Admin -> Audit Log -->
 <script src="teamlink-audit-log.js"></script>
+<!-- 0125: Jobs page status cards / creator and dates; registered-candidates count -->
+<script src="teamlink-job-stats.js"></script>
+<script src="teamlink-candidate-stats.js"></script>
 </body></html>

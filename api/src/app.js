@@ -15,7 +15,7 @@ import rateLimit from 'express-rate-limit';
 
 import { config, originAllowed } from './config.js';
 import { errorHandler, ApiError, CODES, wrap } from './errors.js';
-import { attachSession, csrfProtection, issueCsrfToken } from './auth.js';
+import { attachSession, csrfProtection, issueCsrfToken, startIdleSessionSweep } from './auth.js';
 
 import bootstrapRoutes from './routes/bootstrap.js';
 import authRoutes from './routes/auth.js';
@@ -86,6 +86,8 @@ import { startWalkinAtsSweep } from './notify/walkin-ats.js';
 /* 0110: "New job like one you saved". */
 import savedJobAlertRoutes from './routes/saved-job-alerts.js';
 import atsRecordRoutes from './routes/ats-record.js';
+import recruiterActivityRoutes from './routes/recruiter-activity.js';
+import portalStatsRoutes from './routes/portal-stats.js';
 import { startSavedJobAlerts } from './notify/saved-job-alerts.js';
 import jobPublishingRoutes, { publishingJobHooks, publishingPublicRoutes } from './routes/job-publishing.js';
 import integrationChannelRoutes from './routes/integration-channels.js';
@@ -173,6 +175,9 @@ function startBackgroundWork(logger) {
     /* Save & Post (0112): queued, retried and newly-connected publications,
        feed confirmations, and jobs closed or edited since they went out. */
     backgroundStops.push(startPublishingSweep());
+    /* 0125: recruiters idle for 30 minutes (browser closed) are signed out
+       at their last activity - the Audit Log's "Auto logged out". */
+    backgroundStops.push(startIdleSessionSweep());
   } catch (err) {
     console.error('[background] could not start:', err.message);
   }
@@ -380,6 +385,10 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   /* 0111: tracker, ATS record, audit log, analytics (mounted early: its
      paths are specific and must not be read as /candidates/:id etc.). */
   app.use('/api', atsRecordRoutes());
+  /* 0125: Audit Log - recruiter activity and time in portal; the public
+     registered-candidates count (numbers only). */
+  app.use('/api', recruiterActivityRoutes());
+  app.use('/api', portalStatsRoutes());
   app.use('/api', authRoutes());
   app.use('/api', companyRoutes());
   app.use('/api', resumeRoutes());

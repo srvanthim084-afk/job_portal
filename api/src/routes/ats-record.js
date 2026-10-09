@@ -41,6 +41,7 @@ import { wrap, badRequest, notFound, ApiError } from '../errors.js';
 import { toJob, toCandidate } from '../shapes.js';
 import { matchCandidate } from '../ai/match.js';
 import { profileScore, profileScoresFor } from '../candidates/profile-score.js';
+import { ACTIVITY } from '../audit/recruiter-activity.js';
 
 const ENGINE = { userId: '', role: 'admin', profileId: null };
 const iso = (d) => (d ? new Date(d).toISOString() : null);
@@ -191,7 +192,7 @@ const viewLimiter = rateLimit({
   handler: (_q, res) => res.status(204).end(),   // a dropped count, never an error on the page
 });
 
-const ACTIONS = {
+export const ACTIONS = {
   'candidate.created': 'Candidate Created', 'candidate.updated': 'Candidate Updated', 'candidate.deleted': 'Candidate Deleted',
   'resume.uploaded': 'Resume Uploaded', 'resume.changed': 'Resume Changed',
   'application.submitted': 'Application Submitted', 'application.updated': 'Application Updated',
@@ -213,7 +214,9 @@ const ACTIONS = {
   'contact.override_requested': 'Override Requested', 'contact.override_approved': 'Override Approved',
   'contact.override_denied': 'Override Denied', 'contact.override_used': 'Override Used',
 };
-const ENTITIES = ['candidate', 'application', 'recruiter', 'setting', 'interview', 'document', 'job'];
+/* 0125: sign-in, sign-out and job lifecycle rows, named the same here. */
+for (const a of ACTIVITY) if (!ACTIONS[a.code]) ACTIONS[a.code] = a.label;
+const ENTITIES = ['candidate', 'application', 'recruiter', 'setting', 'interview', 'document', 'job', 'session'];
 
 /* The filters of the audit page, as SQL over admin_audit_events (alias e) and users (alias u). */
 function auditFilters(q) {

@@ -210,6 +210,29 @@ export function toJob(r) {
 }
 
 /**
+ * 0125: the job's record for STAFF screens - who created it and when, when
+ * it went live or came down, and the last change a person made. Not part
+ * of toJob(): the public board has no business with staff names.
+ *
+ * Select JOB_RECORD_COLS beside the job row so the names come with it.
+ */
+export const JOB_RECORD_COLS =
+  'staff_name_of(created_by) as created_by_name, staff_name_of(last_edited_by) as last_edited_by_name';
+const isoOrNull = (d) => (d ? new Date(d).toISOString() : null);
+export function toStaffJob(r) {
+  return Object.assign(toJob(r), {
+    createdById: r.created_by || null,
+    createdByName: nz(r.created_by_name) || null,
+    createdAt: isoOrNull(r.created_at),
+    publishedAt: isoOrNull(r.published_at),
+    unpublishedAt: isoOrNull(r.unpublished_at),
+    lastEditedAt: isoOrNull(r.last_edited_at),
+    lastEditedById: r.last_edited_by || null,
+    lastEditedByName: nz(r.last_edited_by_name) || null,
+  });
+}
+
+/**
  * @param r      the candidates row
  * @param opts   `{ staff: true }` when the reader is a recruiter, BDE or
  *               admin. Default false, so a caller that says nothing gets

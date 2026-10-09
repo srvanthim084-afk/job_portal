@@ -887,7 +887,8 @@
       if (role() === 'admin' && r.parts[0] === 'admin' && r.parts[1] === 'jobs' && !r.params.applicants) {
         Array.prototype.forEach.call(document.querySelectorAll('#app tr.clickable[onclick*="/job/"]'), function (tr) {
           var m = (tr.getAttribute('onclick') || '').match(/\/job\/([^'"]+)/);
-          var td = tr.children[3];
+          /* 0125: the Jobs list marks its Applicants cell; the old list had it 4th. */
+          var td = tr.querySelector('td[data-tl-applicants]') || (tr.querySelector('.tljs-when') ? null : tr.children[3]);
           if (!m || !td || td.querySelector('.tlwa-applink')) return;
           var n = td.textContent;
           td.innerHTML = '<button class="ss-link tlwa-applink" title="Open the applicants">' + h(n) + ' · View</button>';
