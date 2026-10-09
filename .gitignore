@@ -27,3 +27,8 @@ ui-snapshots/
 # OS noise
 Thumbs.db
 .DS_Store
+
+# Saved single-file copy of the portal (made by tools/export-single-file.mjs). It has no server behind it,
+# so opening it shows an old sample screen. Never commit it.
+TeamLink_JobPortal_Backend_Integrated.html
+TeamLink_JobPortal_Backend_Integrated_files/

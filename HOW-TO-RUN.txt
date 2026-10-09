@@ -1,0 +1,11 @@
+HOW TO OPEN TEAMLINK (read this first)
+
+Do NOT double-click any .html file. A page opened as a file has no server behind it, so it shows an old sample screen
+("This page was opened as a file").
+
+1. Install Node.js 20 or newer (https://nodejs.org) if you do not have it.
+2. Unzip this folder anywhere (Extract All - do not run it from inside the zip viewer).
+3. Double-click START-TeamLink.bat  (first run installs packages, then opens http://localhost:4323).
+4. Keep the black window open while you use the site. Close it to stop the site.
+
+Demo login on a fresh copy:  recruiter@teamlink.com / TeamLink@2026
