@@ -3636,6 +3636,7 @@
           return {
             interviewId: p.interviewId, expiresAt: p.expiresAt, startedAt: p.startedAt,
             speech: p.speech || null, questions: p.questions || [], resumed: true,
+            questionSeconds: p.questionSeconds || null,
             resumeAt: at ? { seq: at.seq, part: at.part,
               followUp: at.part === 'followup' && q && q.followUp ? q.followUp.question : null,
               kind: at.part === 'followup' && q && q.followUp ? q.followUp.kind : null } : null,
@@ -3654,6 +3655,7 @@
           startedAt: r.startedAt,
           deadlineHours: r.deadlineHours,
           speech: r.speech || null,
+          questionSeconds: r.questionSeconds || null,
           resumeAt: r.resumeAt || null,
           resumed: !!r.resumed,
           questions: (r.questions || []).map(toProtoQuestion),

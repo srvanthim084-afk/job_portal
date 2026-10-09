@@ -449,7 +449,7 @@
     var t = byId('tlviTime');
     if (t) t.textContent = TLVI.mmss(secs);
     if (pill) {
-      pill.classList.toggle('is-warn', !!running && secs <= 10);
+      pill.classList.toggle('is-warn', !!running && secs <= 15);
       pill.classList.toggle('is-idle', !running);
       pill.setAttribute('aria-label', 'Time left to answer: ' + Math.max(0, Math.round(secs)) + ' seconds');
     }

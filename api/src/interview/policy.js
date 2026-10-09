@@ -6,6 +6,7 @@
  *   INTERVIEW_RETAKE_DELAY_MINUTES   how long after a suspension the retake opens   (default 120)
  *   INTERVIEW_MAX_ATTEMPTS           attempts per application, retake included       (default 2)
  *   AI_INTERVIEW_DEADLINE_HOURS      how long an attempt may take once open          (default 48)
+ *   INTERVIEW_QUESTION_TIME_SECONDS  time per question; never below 120, clamped up   (default 120)
  *   TEAMLINK_TIMEZONE                the timezone times are SHOWN in; the database
  *                                    and every comparison stay in UTC                (default Asia/Kolkata)
  *   SUPPORT_EMAIL                    the address the suspension email points to      (default EMAIL_FROM)
@@ -30,6 +31,12 @@ export function retakePolicy() {
     maxAttempts: Math.max(1, Math.floor(num(process.env.INTERVIEW_MAX_ATTEMPTS, 2, 1))),
     deadlineHours: Math.max(1, num(process.env.AI_INTERVIEW_DEADLINE_HOURS, 48, 1)),
   };
+}
+
+/** Every question gets at least two minutes, whatever is configured. */
+export const MIN_QUESTION_SECONDS = 120;
+export function questionSeconds() {
+  return Math.max(MIN_QUESTION_SECONDS, Math.round(num(process.env.INTERVIEW_QUESTION_TIME_SECONDS, MIN_QUESTION_SECONDS, 0)));
 }
 
 export const SUSPENSION_CODES = Object.freeze([

@@ -25841,7 +25841,9 @@ table.data td .tl-af b{white-space:normal}
   /* 40 seconds an answer (the owner's default). A test can shorten it with
      window.__TLVI_TEST__ = { answerSecs } set before the page loads; nothing
      in production does. */
-  var ANSWER_SECS=(function(){ var t=window.__TLVI_TEST__, n=t&&Number(t.answerSecs); return n>=3&&n<=600?Math.round(n):40; })(), MIN_VOICE_MS=1200, VAD_THRESH=0.045;
+  var ANSWER_TEST=(function(){ var t=window.__TLVI_TEST__, n=t&&Number(t.answerSecs); return n>=3&&n<=600?Math.round(n):0; })();
+  /* Every question gets at least two minutes; the SERVER's number replaces this when the session arrives. */
+  var ANSWER_SECS=ANSWER_TEST||120, MIN_VOICE_MS=1200, VAD_THRESH=0.045;
   var AIIV={ appId:null, phase:'camera', idx:0, started:false, stream:null, camState:'off',
     answers:[], listening:false, timeLeft:0, timerId:null, rafId:null, voicedMs:0, spoke:false,
     audioCtx:null, analyser:null, rec:null, sttText:'', sttFinal:'', briefSpoken:false };
@@ -26145,7 +26147,7 @@ table.data td .tl-af b{white-space:normal}
      spoken answer is still recorded", and no caption is shown at all. */
   function sttOk(){ return !!(window.SpeechRecognition||window.webkitSpeechRecognition); }
   function startSTT(){ try{ var SR=window.SpeechRecognition||window.webkitSpeechRecognition; if(!SR || AIIV.micOff){ AIIV.rec=null; return; } var r=new SR(); r.lang='en-IN'; r.continuous=true; r.interimResults=true;
-    r.onresult=function(e){ var interim=''; for(var i=e.resultIndex;i<e.results.length;i++){ var res=e.results[i]; if(res.isFinal){ AIIV.sttFinal+=res[0].transcript+' '; } else { interim+=res[0].transcript; } } AIIV.sttText=(AIIV.sttFinal+interim).trim(); if(AIIV.sttText){ AIIV.spoke=true; setTranscript(AIIV.sttText); } };
+    r.onresult=function(e){ var interim=''; for(var i=e.resultIndex;i<e.results.length;i++){ var res=e.results[i]; if(res.isFinal){ AIIV.sttFinal+=res[0].transcript+' '; if(res[0].confidence>0){ AIIV.confSum=(AIIV.confSum||0)+res[0].confidence; AIIV.confN=(AIIV.confN||0)+1; } } else { interim+=res[0].transcript; } } AIIV.sttText=(AIIV.sttFinal+interim).trim(); if(AIIV.sttText){ AIIV.spoke=true; setTranscript(AIIV.sttText); } };
     r.onerror=function(ev){ if(ev && (ev.error==='not-allowed'||ev.error==='service-not-allowed')) AIIV.sttBlocked=true; };
     r.onend=function(){ if(AIIV.listening && !AIIV.sttBlocked && !AIIV.micOff){ try{ r.start(); }catch(e){} } };
     AIIV.rec=r; try{ r.start(); }catch(e){} }catch(e){ AIIV.rec=null; } }
@@ -26162,15 +26164,32 @@ table.data td .tl-af b{white-space:normal}
      is submitted for the candidate. The answer is recorded on camera from
      here until it is submitted. After a dropped connection the words
      already said are carried into the resumed answer (AIIV.carry). */
-  function startListening(){
+  /* The server keeps the clock. The first call for a question fixes its deadline; a refresh, a
+     reconnect or a retry gets the SAME deadline and the time that is really left. If the server
+     cannot be reached the page falls back to the full time, and the server still expires the
+     question when the candidate is back. */
+  function serverClock(cb){
+    var s=aiSession(), q=curQ();
+    if(ANSWER_TEST || !s || !q || !window.TL || !window.TL.api){ cb(null); return; }
+    window.TL.api.post('/ai-interviews/'+encodeURIComponent(s.interviewId)+'/question-start', { seq:q.seq, part:AIIV.part })
+      .then(function(r){ cb(r && r.remainingMs!=null ? Math.max(0, Math.ceil(r.remainingMs/1000)) : null); }, function(){ cb(null); });
+  }
+  function startListening(secs){
     AIIV.listening=true; AIIV.spoke=!!AIIV.carry; AIIV.voicedMs=AIIV.carryVoiced||0;
     AIIV.sttFinal=AIIV.carry?AIIV.carry+' ':''; AIIV.sttText=AIIV.carry||''; AIIV.carry=''; AIIV.carryVoiced=0;
-    AIIV.timeLeft=ANSWER_SECS;
+    AIIV.timeLeft=(secs!=null?secs:ANSWER_SECS); AIIV.deadlineP=performance.now()+AIIV.timeLeft*1000;
     if(window.TLVI){ TLVI.timer(AIIV.timeLeft, true); if(AIIV.sttText) TLVI.transcript.live(AIIV.sttText); TLVI.recorder.start(AIIV.stream); }
     startSTT();
     var last=performance.now();
     (function loop(){ if(!AIIV.listening) return; var now=performance.now(); var dt=now-last; last=now; var lvl=rmsLevel(); if(lvl>VAD_THRESH){ AIIV.voicedMs+=dt; AIIV.spoke=true; } if(window.TLVI) TLVI.meter(lvl); proctorSample(dt, lvl); AIIV.rafId=requestAnimationFrame(loop); })();
-    AIIV.timerId=setInterval(function(){ AIIV.timeLeft--; if(window.TLVI) TLVI.timer(Math.max(0,AIIV.timeLeft), true); if(AIIV.timeLeft<=0){ finishAnswer(true,false); } }, 1000);
+    AIIV.timerId=setInterval(function(){
+      var before=AIIV.timeLeft;
+      AIIV.timeLeft=Math.max(0, Math.ceil((AIIV.deadlineP-performance.now())/1000));
+      if(window.TLVI) TLVI.timer(AIIV.timeLeft, true);
+      if(before>15 && AIIV.timeLeft<=15 && AIIV.timeLeft>0) setStatus('About 15 seconds left. You can submit your answer now.', 'mic');
+      /* Time up: the SAME function as Submit saves what was said (or "unanswered") and moves on. */
+      if(AIIV.timeLeft<=0){ finishAnswer(true,false); }
+    }, 1000);
   }
   /* Between questions the answer loop is not running, and that is
      precisely when the room should be quiet. This keeps sampling. */
@@ -26259,7 +26278,7 @@ table.data td .tl-af b{white-space:normal}
      those, so an echo or a trailing word cannot count. */
   var QUIET_GRACE_MS = 2500;
   function interviewerAudioActive(){
-    if(AIIV.speaking || AIIV.saving || AIIV.finishing || AIIV.audio) return true;
+    if(AIIV.speaking || AIIV.saving || AIIV.finishing || AIIV.audio || AIIV.clockPending) return true;
     try{ if(window.speechSynthesis && (window.speechSynthesis.speaking || window.speechSynthesis.pending)) return true; }catch(e){}
     return false;
   }
@@ -26345,15 +26364,52 @@ table.data td .tl-af b{white-space:normal}
     send(1);
   }
 
+  /* A DETECTION BY THE PAGE IS A WARNING FIRST.
+     The server counts it with the other integrity detections (a second person, a second voice):
+     the first warns and the interview carries on, a second suspends. A report that cannot be
+     made - the connection, a server error - suspends nothing. Leaving the tab, the camera and
+     noise are named, deliberate conditions; a timeout, an empty answer or a Submit are not. */
+  function proctorViolation(kind){
+    if(!AIIV.started || AIIV.phase!=='interview') return;
+    if(!AIIV.integrity) proctorReset();
+    var I = AIIV.integrity;
+    if(I.ended || I.reporting) return;
+    var ses = aiSession();
+    if(!ses || !window.TL || !window.TL.api) return;
+    I.reporting = true; I.noiseMs = 0; I.camLostMs = 0;
+    window.TL.api.post('/ai-interviews/'+encodeURIComponent(ses.interviewId)+'/stop', { kind: kind, questionSeq: currentQuestionNo() })
+      .then(function(r){
+        I.reporting = false; I.cooldownUntil = performance.now() + 8000;
+        if(r && r.action === 'warn'){
+          proctorLog(kind, 'warning');
+          if(typeof window.tlIntegrityWarn === 'function') window.tlIntegrityWarn(r.strike, r.message);
+        } else if(r && r.suspended){
+          proctorLog(kind, r.message || '');
+          I.ended = { kind: kind, message: r.message || stopSentence(kind, currentQuestionNo()), retakeAt: r.retakeAvailableAt || null, known: true, at: new Date().toISOString() };
+          stopListening(); stopSpeak(); hushAudio();
+          try{ if(window.TLVI){ TLVI.recorder.stop(); TLVI.store.save(AIIV.appId, { stopped: kind }); } }catch(e){}
+          AIIV.phase = 'stopped';
+          try{ render(); }catch(e){}
+        }
+      }, function(){ I.reporting = false; I.cooldownUntil = performance.now() + 15000; });
+  }
+
   /** Watch for the tab losing focus, for as long as an interview is running. */
   function proctorWatch(){
     if(AIIV.integrity && AIIV.integrity.watching) return;
     if(!AIIV.integrity) proctorReset();
     AIIV.integrity.watching = true;
 
+    var back = function(){ if(AIIV.integrity) AIIV.integrity.awayOpen = false; };
+    window.addEventListener('focus', back);
+    document.addEventListener('visibilitychange', function(){ if(!document.hidden) back(); });
     var away = function(why){
-      if(AIIV.phase!=='interview' && AIIV.phase!=='briefing') return;
-      proctorStop('left_interview', stopSentence('left_interview', currentQuestionNo()));
+      /* One leave is one detection: the tab-hidden and the window-blur events of the same
+         departure are the same thing, and coming back re-arms the check. */
+      if(AIIV.integrity && AIIV.integrity.awayOpen) return;
+      if(AIIV.phase!=='interview') return;
+      AIIV.integrity.awayOpen = true;
+      proctorViolation('left_interview');
     };
     document.addEventListener('visibilitychange', function(){
       if(document.hidden) away('switched to another tab or minimised the window');
@@ -26379,6 +26435,8 @@ table.data td .tl-af b{white-space:normal}
     if(!AIIV.integrity) proctorReset();
     var I = AIIV.integrity;
     if(I.ended) return;
+    /* While a detection is being reported (or just was), nothing accumulates towards another. */
+    if(I.reporting || performance.now() < (I.cooldownUntil||0)){ I.noiseMs = 0; I.camLostMs = 0; return; }
 
     /* ---- background noise, while the candidate should be quiet ---- */
     if(!vadAvailable() || !roomShouldBeQuiet()){
@@ -26388,7 +26446,7 @@ table.data td .tl-af b{white-space:normal}
         I.noiseMs += dt;
         if(level > I.peakNoise) I.peakNoise = level;
         if(I.noiseMs >= PROCTOR.noiseMs){
-          proctorStop('background_noise', stopSentence('background_noise', currentQuestionNo()));
+          proctorViolation('background_noise');
           return;
         }
       } else if(I.noiseMs > 0){
@@ -26411,7 +26469,7 @@ table.data td .tl-af b{white-space:normal}
     if(lost){
       I.camLostMs += dt;
       if(I.camLostMs >= PROCTOR.camLostMs){
-        proctorStop('camera_lost', stopSentence('camera_lost', currentQuestionNo()));
+        proctorViolation('camera_lost');
         return;
       }
     } else if(I.camLostMs > 0){
@@ -26499,7 +26557,13 @@ table.data td .tl-af b{white-space:normal}
       if(AIIV.phase!=='interview' || AIIV.paused || AIIV.saving || AIIV.listening) return;
       setStatus(AIIV.micOff ? 'Your microphone is muted. Unmute to answer.'
         : vadAvailable() ? 'Listening. Please answer aloud.' : 'Answer aloud, then press Submit answer.', 'mic');
-      startListening();
+      /* The question has been asked IN FULL: only now does its clock start. */
+      AIIV.clockPending=true;
+      serverClock(function(secs){
+        AIIV.clockPending=false;
+        if(AIIV.askToken!==asked+0.5 || AIIV.phase!=='interview' || AIIV.paused || AIIV.saving || AIIV.listening) return;
+        startListening(secs);
+      });
     };
     sayQuestion(text, go);
     /* A voice that never reports it has finished (some browsers drop the
@@ -26556,7 +26620,10 @@ table.data td .tl-af b{white-space:normal}
 
     setStatus('Saving your answer…', 'sync');
     saveLocal();
-    var body={ seq:q.seq, part:part, transcript:transcript.slice(0,20000), answered:answered, voicedMs:Math.max(0,Math.round(AIIV.voicedMs||0)) };
+    var body={ seq:q.seq, part:part, transcript:transcript.slice(0,20000), answered:answered, voicedMs:Math.max(0,Math.round(AIIV.voicedMs||0)),
+      autoSubmitted:!!timedOut };
+    if(AIIV.confN){ body.confidence=Math.max(0,Math.min(1,AIIV.confSum/AIIV.confN)); }
+    AIIV.confSum=0; AIIV.confN=0;
     TLVI.persist(function(){ return window.TL.api.post('/ai-interviews/'+encodeURIComponent(ses.interviewId)+'/answer', body); })
       .then(function(res){
         if(AIIV.phase!=='interview') return;
@@ -26717,6 +26784,7 @@ table.data td .tl-af b{white-space:normal}
       if(at.part==='followup' && at.followUp){ AIIV.part='followup'; AIIV.followUp={ text:at.followUp, kind:at.kind||null }; }
     }
     AIIV.phase='interview';
+    if(!ANSWER_TEST && s.questionSeconds){ ANSWER_SECS=Math.max(120, Number(s.questionSeconds)||120); }
     proctorReset(); proctorWatch(); proctorIdleLoop();
     renderAndAsk();
   };

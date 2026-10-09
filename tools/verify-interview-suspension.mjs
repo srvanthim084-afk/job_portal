@@ -162,18 +162,30 @@ await check('Submit does not suspend, with a loud room and a long interviewer vo
   must(!/suspended/i.test(await bodyText(p)), 'the screen says suspended');
 });
 
-await check('leaving the tab suspends: the screen gives the reason, the question and the retake time', async () => {
+await check('leaving the tab WARNS first, the interview carries on; a second leave suspends with the reason, the question and the retake time', async () => {
   await p.evaluate(() => { window.__ttsMs = 15; });
   await listening();
   const q = (await interviewState()).q;
-  await p.evaluate(() => {
+  const leave = () => p.evaluate(() => {
     Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
     document.dispatchEvent(new Event('visibilitychange'));
   });
-  await p.waitForFunction(() => /Interview suspended/.test(document.body.innerText), null, { timeout: 6000 });
+  const back = () => p.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await leave();
+  await p.waitForSelector('.tlig-warn', { timeout: 8000 });
+  must(/Warning 1\/2/.test(await p.textContent('.tlig-warn')), 'no "Warning 1/2"');
+  must((await interviewState()).phase === 'interview', 'a first leave stopped the interview');
+  must(!/Interview suspended/.test(await bodyText(p)), 'suspended on the first leave');
+  await back();
+  await p.waitForTimeout(500);
+  await leave();
+  await p.waitForFunction(() => /Interview suspended/.test(document.body.innerText), null, { timeout: 8000 });
   await p.waitForFunction(() => /after .*(am|pm)/i.test(document.body.innerText), null, { timeout: 8000 });
   const t = await bodyText(p);
-  must(new RegExp(`The interview window was not in front during your answer to Question ${q}\\.`).test(t), `no reason with Question ${q}: ${t.slice(0, 300)}`);
+  must(new RegExp(`The interview window was not in front during your answer to Question ${q}\.`).test(t), `no reason with Question ${q}: ${t.slice(0, 300)}`);
   must(/You can retake this interview after .*IST/.test(t), 'no retake time in IST');
   must(!/reject|failed|disqualif/i.test(t), 'the screen uses a forbidden word');
   must(!/What was observed|confidence|threshold|rms/i.test(t), 'internal detail shown');

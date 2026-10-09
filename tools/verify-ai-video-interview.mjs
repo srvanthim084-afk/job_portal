@@ -16,7 +16,7 @@
  * Checks: the device check; the layout at 1280 (50/50, gap 16, min height
  * 400) and at 390 (stacked, sticky controls); the mirrored video; the mic
  * bar moving; AI / You transcript lines, live captions and auto-scroll; the
- * timer turning amber at 10 s and auto-submitting at 0; Submit early; a
+ * timer turning amber at 15 s and auto-submitting at 0; Submit early; a
  * follow-up; End interview with its confirmation; permission denied with
  * help and Retry; offline -> "Reconnecting" -> the same question; keyboard
  * operation; the transcript and recordings on the server, readable by the
@@ -289,8 +289,8 @@ await check('transcript: AI and You lines, the live caption, then the final word
   must(await p.evaluate(() => /Live caption/.test(document.getElementById('aiivTranscript').textContent)), 'the caption is not marked live');
 });
 
-await check(`timer: amber in the last 10 s, and the answer is submitted for the candidate at 0 (test timer ${SECS} s)`, async () => {
-  await p.waitForFunction(() => { const t = document.getElementById('tlviTime'); return t && Number(t.textContent.split(':')[1]) <= 10; }, null, { timeout: 8000 });
+await check(`timer: amber in the last 15 s, and the answer is submitted for the candidate at 0 (test timer ${SECS} s)`, async () => {
+  await p.waitForFunction(() => { const t = document.getElementById('tlviTime'); return t && Number(t.textContent.split(':')[1]) <= 15; }, null, { timeout: 8000 });
   const warn = await p.evaluate(() => { const el = document.getElementById('aiivTimer'); return { c: el.className, bg: getComputedStyle(el).backgroundColor }; });
   must(/is-warn/.test(warn.c) && warn.bg === 'rgb(255, 244, 222)', `not amber: ${warn.c} ${warn.bg}`);
   await shot(p, '2-interview-1280-amber');

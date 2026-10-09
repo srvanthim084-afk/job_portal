@@ -427,6 +427,12 @@
     });
   };
 
+  /* The page's own detections (tab, camera, noise) warn through the same banner. */
+  window.tlIntegrityWarn = function (strike, message) {
+    S.strikes = strike;
+    showWarning(strike, message);
+  };
+
   window.tlIntegrityStop = stop;
   function stop() {
     S.running = false;
@@ -607,6 +613,27 @@
       + attempts + controls + '</div>';
   }
 
+  /* What was asked, what was said, how relevant it was and why it scored what it did. */
+  var CLS = { RELEVANT: 'Relevant', PARTIALLY_RELEVANT: 'Partially relevant', IRRELEVANT: 'Irrelevant', NO_ANSWER: 'No answer' };
+  function answersBlock(r) {
+    var qs = r.questions || [];
+    if (!qs.length || !qs.some(function (q) { return q.answered || q.relevanceClass; })) return '';
+    return '<div class="tlig-sec"><h4>Answers</h4>'
+      + '<table class="tlig-tbl"><thead><tr><th>#</th><th>Question and what was said</th><th>Relevance</th><th>Score</th></tr></thead><tbody>'
+      + qs.map(function (q) {
+        return '<tr><td>' + q.seq + '</td>'
+          + '<td><div>' + esc(q.question) + '</div>'
+          + '<div class="tlig-ev" style="margin-top:3px">' + (q.transcript ? esc(q.transcript) : '<i>No spoken answer</i>')
+            + (q.timedOut ? ' <b>· time ran out</b>' : '') + '</div>'
+          + (q.reason ? '<div class="tlig-ev" style="margin-top:3px">' + esc(q.reason) + '</div>' : '')
+          + (q.needsReview ? '<div class="tlig-ev" style="color:#8a5a12;margin-top:3px">Please review: ' + esc(q.reviewReason || 'flagged') + '</div>' : '')
+          + (q.lowTranscriptConfidence && !q.needsReview ? '<div class="tlig-ev" style="color:#8a5a12;margin-top:3px">Low transcription confidence — please listen to the recording.</div>' : '')
+          + '</td>'
+          + '<td>' + esc(CLS[q.relevanceClass] || '—') + '</td>'
+          + '<td>' + (q.score == null ? '—' : Math.round(q.score) + '/' + q.maxScore) + '</td></tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+
   window.tlRetakeControl = function (interviewId, action) {
     var api = API();
     var why = ((document.getElementById('tligRetakeWhy') || {}).value || '').trim();
@@ -668,6 +695,7 @@
           + '<button class="fcr-jd-x" onclick="fcrCloseModal()">✕</button></div>'
           + '<div class="fcr-jd-body" style="padding-bottom:20px">'
           + suspensionBlock(interviewId, r)
+          + answersBlock(r)
           + '<div class="tlig-st">Status: ' + statusPill(r.integrityStatus)
             + ' &nbsp;·&nbsp; Strikes: <b>' + r.strikes + ' of 2</b>'
             + (r.suspendedAt ? ' &nbsp;·&nbsp; Suspended ' + when(r.suspendedAt) : '')
@@ -743,11 +771,11 @@
       var list = r.interviews || [];
       if (!list.length) {
         host.innerHTML = '<p class="empty-note" style="padding:10px 0">'
-          + 'No interview has raised an integrity violation.</p>';
+          + 'No AI interview has been completed or flagged yet.</p>';
         return;
       }
       host.innerHTML = '<table class="tlig-tbl"><thead><tr><th>Candidate</th><th>Role</th>'
-        + '<th>Status</th><th>Reason</th><th>Attempt</th><th>Retake</th><th>When</th><th></th></tr></thead><tbody>'
+        + '<th>Status</th><th>Reason</th><th>Attempt</th><th>Score</th><th>Retake</th><th>When</th><th></th></tr></thead><tbody>'
         + list.map(function (x) {
           return '<tr><td>' + esc(x.candidateName) + '</td>'
             + '<td>' + esc(x.jobTitle || '—') + '</td>'
@@ -758,8 +786,10 @@
               + (x.suspensionQuestionNo ? ' <span class="tlig-ev">Q' + x.suspensionQuestionNo + ' · ' + (x.detectionCount || 0) + '×</span>' : '')
               + '</td>'
             + '<td>' + (x.attemptNumber || 1) + '</td>'
+            + '<td>' + (x.overallPercentage == null ? '—' : Math.round(x.overallPercentage) + '%')
+              + (x.answersToReview ? ' <span class="tlig-ev">' + x.answersToReview + ' to review</span>' : '') + '</td>'
             + '<td>' + (x.retakeBlocked ? 'Blocked' : x.retakeAvailableAt ? when(x.retakeAvailableAt) : (x.status === 'suspended' ? 'With recruiter' : '—')) + '</td>'
-            + '<td>' + when(x.suspendedAt) + '</td>'
+            + '<td>' + when(x.suspendedAt || x.completedAt) + '</td>'
             + '<td><button class="btn btn-ghost btn-sm" onclick="tlIntegrityOpen(\''
               + esc(x.id) + '\')">Review</button></td></tr>';
         }).join('') + '</tbody></table>';
@@ -778,8 +808,8 @@
     panel.id = 'tligPanel';
     panel.style.marginTop = '14px';
     panel.innerHTML = '<div class="panel-head"><div><h2>Interview Integrity</h2>'
-      + '<div class="desc">AI interviews where another person or another voice was '
-      + 'detected during the session. A flag is evidence, not a decision — nothing '
+      + '<div class="desc">AI interviews: what each candidate said and how it was marked, and any session where an '
+      + 'integrity detection was raised. A flag is evidence, not a decision — nothing '
       + 'here rejects anybody.</div></div></div>'
       + '<div class="panel-body"><div id="tligListHost"></div></div>';
     body.appendChild(panel);

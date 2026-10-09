@@ -169,6 +169,11 @@ test('an email that fails is retried by the sweep, never lost, never blocking', 
   const bFirst = s.body.interviewId;
   const before = sent.length;
   providers.email.send = async () => ({ status: 'failed', provider: 'test', error: 'smtp down' });
+  /* the page's own detections warn first; the second suspends */
+  const w = await candB.post(`/api/ai-interviews/${bFirst}/stop`, { kind: 'left_interview', questionSeq: 2 });
+  assert.equal(w.body.action, 'warn', JSON.stringify(w.body));
+  assert.equal(w.body.suspended, false);
+  assert.equal((await rows(appB))[0].status, 'warning_issued', 'the interview carries on after a warning');
   const st = await candB.post(`/api/ai-interviews/${bFirst}/stop`, { kind: 'left_interview', questionSeq: 2 });
   assert.equal(st.status, 200, JSON.stringify(st.body));   // the suspension itself was not held up
   assert.equal(st.body.suspended, true);
@@ -222,6 +227,7 @@ test('retake: refused early with the time, opens after the wait as a NEW attempt
 let second;
 test('a suspended retake is final by default: under recruiter review, no new retake time', async () => {
   second = (await rows(appA))[1].id;
+  await candA.post(`/api/ai-interviews/${second}/stop`, { kind: 'camera_lost', questionSeq: 1 });   // warning
   const st = await candA.post(`/api/ai-interviews/${second}/stop`, { kind: 'camera_lost', questionSeq: 1 });
   assert.equal(st.body.suspended, true);
   assert.equal(st.body.retakeAvailableAt, null);
@@ -311,5 +317,9 @@ test('the ATS score is the latest COMPLETED attempt; a suspended attempt never c
 
 test('shutdown', async () => {
   await new Promise((r) => server.close(r));
+  const { stopBackgroundWork } = await import('../src/app.js');
+  stopBackgroundWork();
+  const { closePool } = await import('../src/db.js');
+  await closePool();
   await dbh.stop?.();
 });
