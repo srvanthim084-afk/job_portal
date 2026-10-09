@@ -3665,8 +3665,15 @@
       .catch(function (err) {
         // Never strand the candidate on a blank screen: the prototype's
         // own generator still works, and the result is still recorded.
-        console.error('TeamLink: the interview could not be planned on the server.', err);
+        var blockedStart = err && (err.code === 'INTERVIEW_RETAKE_WAIT' || err.code === 'INTERVIEW_UNDER_REVIEW');
+        if (!blockedStart) console.error('TeamLink: the interview could not be planned on the server.', err);
         TL.__aiivSession = null;
+        /* Too soon after a suspension, or with a recruiter: say so, instead of
+           "we could not prepare your interview". */
+        if (err && (err.code === 'INTERVIEW_RETAKE_WAIT' || err.code === 'INTERVIEW_UNDER_REVIEW') && typeof window.aiivBlocked === 'function') {
+          var d = err.details || {};
+          window.aiivBlocked({ code: err.code, reason: d.reason || null, retakeAt: d.retakeAvailableAt || null });
+        }
         return null;
       });
 

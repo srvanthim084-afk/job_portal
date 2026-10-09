@@ -26244,6 +26244,51 @@ table.data td .tl-af b{white-space:normal}
   /* Is the candidate the one who should be making noise right now? */
   function candidateIsAnswering(){ return !!AIIV.listening; }
 
+  /* WHY PRESSING SUBMIT USED TO SUSPEND THE INTERVIEW.
+     The noise rule and the second-voice rule both asked only "is the
+     candidate answering?". Everything else counted as a room that should be
+     silent - including the INTERVIEWER'S OWN VOICE coming out of the
+     speakers into the microphone, the moment between Submit and the next
+     question (the answer being saved, the next question being fetched) and
+     the tail of the candidate's own last words. A few seconds of that, a
+     few questions in, was read as continuous noise or "another voice".
+
+     Sound is now judged only in a stretch the page can say is quiet: nothing
+     being spoken by the interviewer, no answer being saved, not paused, not
+     answering - and not until a short grace has passed since the last of
+     those, so an echo or a trailing word cannot count. */
+  var QUIET_GRACE_MS = 2500;
+  function interviewerAudioActive(){
+    if(AIIV.speaking || AIIV.saving || AIIV.finishing || AIIV.audio) return true;
+    try{ if(window.speechSynthesis && (window.speechSynthesis.speaking || window.speechSynthesis.pending)) return true; }catch(e){}
+    return false;
+  }
+  function roomShouldBeQuiet(){
+    var now = performance.now();
+    if(AIIV.phase !== 'interview' || interviewerAudioActive() || AIIV.listening || AIIV.paused || AIIV.ending){
+      AIIV.audioBusyAt = now; return false;
+    }
+    return (now - (AIIV.audioBusyAt || 0)) >= QUIET_GRACE_MS;
+  }
+  window.tlRoomShouldBeQuiet = roomShouldBeQuiet;
+  /* The number the candidate sees ("Question 4 of 15"), for the record of
+     where a detection happened. */
+  function currentQuestionNo(){ return (AIIV.idx|0) + 1; }
+  window.tlCurrentQuestionNo = currentQuestionNo;
+
+  /* The one sentence for a stop, the same words the server stores and the
+     recruiter and the email carry. Used only until the server's own copy
+     comes back. */
+  function stopSentence(kind, q){
+    var n = q ? ' Question '+q : '';
+    if(kind==='left_interview') return q ? 'The interview window was not in front during your answer to'+n+'.' : 'The interview window was not in front during the interview.';
+    if(kind==='background_noise') return q ? 'Continuous background noise was detected during'+n+'.' : 'Continuous background noise was detected during the interview.';
+    if(kind==='camera_lost' || kind==='camera_off') return q ? 'Your camera was off for too long during'+n+'.' : 'Your camera was off for too long during the interview.';
+    return 'The interview was suspended after repeated violations of the interview rules.';
+  }
+  var IST_FMT = { timeZone:'Asia/Kolkata', day:'numeric', month:'short', year:'numeric', hour:'numeric', minute:'2-digit', hour12:true, timeZoneName:'short' };
+  function whenText(iso){ try{ return new Intl.DateTimeFormat('en-IN', IST_FMT).format(new Date(iso)); }catch(e){ return ''; } }
+
   /**
    * End the interview because of what was observed.
    *
@@ -26261,6 +26306,43 @@ table.data td .tl-af b{white-space:normal}
     try{ if(window.TLVI){ TLVI.recorder.stop(); TLVI.store.save(AIIV.appId, { stopped: kind }); } }catch(e){}
     AIIV.phase = 'stopped';
     try{ render(); }catch(e){}
+    proctorReportStop(kind);
+  }
+
+  /* THE PAGE'S OWN STOPS USED TO STAY ON THE PAGE. The server never heard
+     of them, so a recruiter saw an interview "in progress" for ever, no
+     reason, no email, no way back. They are now reported, saved with the
+     reason and the question number, and the server answers with the one
+     sentence everybody sees and the time the retake opens. The screen is
+     already up; it is updated when the answer arrives, and the report is
+     retried if the connection is down. */
+  function proctorReportStop(kind){
+    var end = AIIV.integrity && AIIV.integrity.ended;
+    if(!end) return;
+    var ses = aiSession();
+    if(!window.TL || !window.TL.api) return;
+    if(kind === 'integrity_violation'){
+      /* decided by the server already: fetch its words and the retake time */
+      if(!ses) return;
+      window.TL.api.get('/ai-interviews/'+encodeURIComponent(ses.interviewId)+'/suspension').then(function(r){
+        if(r && r.message) end.message = r.message;
+        end.retakeAt = (r && r.retakeAvailableAt) || end.retakeAt || null;
+        end.known = true; try{ render(); }catch(e){}
+      }, function(){});
+      return;
+    }
+    if(!ses) return;
+    end.question = currentQuestionNo();
+    end.message = stopSentence(kind, end.question);
+    var send = function(n){
+      window.TL.api.post('/ai-interviews/'+encodeURIComponent(ses.interviewId)+'/stop', { kind: kind, questionSeq: end.question }).then(function(r){
+        if(r && r.message) end.message = r.message;
+        end.retakeAt = (r && r.retakeAvailableAt) || null;
+        end.known = true;
+        try{ render(); }catch(e){}
+      }, function(){ if(n < 4) setTimeout(function(){ send(n+1); }, 2500*n); });
+    };
+    send(1);
   }
 
   /** Watch for the tab losing focus, for as long as an interview is running. */
@@ -26271,8 +26353,7 @@ table.data td .tl-af b{white-space:normal}
 
     var away = function(why){
       if(AIIV.phase!=='interview' && AIIV.phase!=='briefing') return;
-      proctorStop('left_interview',
-        'The interview was suspended because this tab stopped being the active window ('+why+').');
+      proctorStop('left_interview', stopSentence('left_interview', currentQuestionNo()));
     };
     document.addEventListener('visibilitychange', function(){
       if(document.hidden) away('switched to another tab or minimised the window');
@@ -26300,15 +26381,14 @@ table.data td .tl-af b{white-space:normal}
     if(I.ended) return;
 
     /* ---- background noise, while the candidate should be quiet ---- */
-    if(!candidateIsAnswering() && vadAvailable()){
+    if(!vadAvailable() || !roomShouldBeQuiet()){
+      I.noiseMs = 0;                  /* it must be CONTINUOUS, in a stretch that should be silent */
+    } else {
       if(level > PROCTOR.noiseLevel){
         I.noiseMs += dt;
         if(level > I.peakNoise) I.peakNoise = level;
         if(I.noiseMs >= PROCTOR.noiseMs){
-          proctorStop('background_noise',
-            'The interview ended because there was continuous background noise for '
-            + Math.round(PROCTOR.noiseMs/1000) + ' seconds while the interviewer was speaking. '
-            + 'Please retake it somewhere quiet.');
+          proctorStop('background_noise', stopSentence('background_noise', currentQuestionNo()));
           return;
         }
       } else if(I.noiseMs > 0){
@@ -26331,9 +26411,7 @@ table.data td .tl-af b{white-space:normal}
     if(lost){
       I.camLostMs += dt;
       if(I.camLostMs >= PROCTOR.camLostMs){
-        proctorStop('camera_lost',
-          'The interview ended because ' + lost + ' for more than '
-          + Math.round(PROCTOR.camLostMs/1000) + ' seconds. Your camera must stay on.');
+        proctorStop('camera_lost', stopSentence('camera_lost', currentQuestionNo()));
         return;
       }
     } else if(I.camLostMs > 0){
@@ -26502,7 +26580,7 @@ table.data td .tl-af b{white-space:normal}
      integrity rule, decided by the server), or one past its deadline. */
   function answerRefused(err){
     AIIV.saving=false;
-    if(err && err.code==='INTERVIEW_SUSPENDED'){ proctorStop('integrity_violation', err.message||'This interview has been suspended.'); return; }
+    if(err && err.code==='INTERVIEW_SUSPENDED'){ proctorStop('integrity_violation', 'The interview was suspended.'); return; }
     stopListening(); stopSpeak(); hushAudio(); proctorIdleStop();
     AIIV.phase='halted'; AIIV.haltMsg=(err&&err.message)||'Your answer could not be saved.';
     render();
@@ -26642,6 +26720,40 @@ table.data td .tl-af b{white-space:normal}
     proctorReset(); proctorWatch(); proctorIdleLoop();
     renderAndAsk();
   };
+  /* Leaving a stopped screen clears this page's interview state, so the
+     application page offers the interview again exactly when the SERVER
+     allows it (it refuses a start before the retake time). */
+  window.aiivLeaveStopped=function(appId){
+    stopSpeak(); hushAudio(); proctorIdleStop(); stopListening();
+    var keep=AIIV;
+    AIIV={ appId:null, phase:'camera', idx:0, started:false, stream:keep.stream, camState:keep.camState||'off',
+      answers:[], listening:false, timeLeft:0, timerId:null, rafId:null, voicedMs:0, spoke:false,
+      audioCtx:keep.audioCtx, analyser:keep.analyser, rec:null, sttText:'', sttFinal:'', briefSpoken:false };
+    stopCam();
+    try{ if(window.TL) window.TL.__aiivSession=null; }catch(e){}
+    navigate('/candidate-app/'+appId);
+  };
+  /* The server refused to start the interview: it is too soon after a
+     suspension, or it is with a recruiter. Said plainly, not as "we could
+     not prepare your interview". */
+  window.aiivBlocked=function(info){
+    if(!AIIV.started) return;
+    stopCam();
+    AIIV.block = { reason: info.reason || null, retakeAt: info.retakeAt || null };
+    AIIV.phase = info.code==='INTERVIEW_RETAKE_WAIT' ? 'retake_wait' : 'under_review';
+    try{ render(); }catch(e){}
+  };
+  var stopTick=null;
+  function aiivStopTicker(){
+    var el=byId('aiivStopNext'); if(stopTick){ clearInterval(stopTick); stopTick=null; }
+    if(!el || !el.getAttribute('data-retake')) return;
+    stopTick=setInterval(function(){
+      var e2=byId('aiivStopNext');
+      if(!e2){ clearInterval(stopTick); stopTick=null; return; }
+      var at=new Date(e2.getAttribute('data-retake')).getTime();
+      if(at<=Date.now()){ e2.textContent='Your retake is now open. You can start it again from your application.'; clearInterval(stopTick); stopTick=null; }
+    }, 15000);
+  }
   window.aiivRetryPlan=function(){
     if(AIIV.phase!=='plan_failed') return;
     if(window.TL) window.TL.__aiivPlan=null;
@@ -26741,31 +26853,38 @@ table.data td .tl-af b{white-space:normal}
       if(T) setTimeout(function(){ T.uploads.paint(); }, 0);
       return shell('applications','AI Interview',crumb,content);
     }
-    /* SUSPENDED, AND IT SAYS WHY.
-       An interview that simply stops is indistinguishable from one that
-       crashed, and the candidate has nothing to tell a recruiter. The
-       reason recorded by the proctor is shown here, in the candidate's
-       own words rather than as a code, along with what to do next. */
-    if(AIIV.started && AIIV.appId===rec.applicationId && AIIV.phase==='stopped'){
-      var stop=(AIIV.integrity&&AIIV.integrity.ended)||{kind:'unknown',message:'The interview was stopped.'};
-      var heading={ left_interview:'Interview suspended',
-                    background_noise:'Interview ended \u2014 background noise',
-                    camera_lost:'Interview ended \u2014 camera' }[stop.kind]||'Interview stopped';
-      var seen=(AIIV.integrity&&AIIV.integrity.events)||[];
+    /* SUSPENDED, AND IT SAYS WHY - and what happens next.
+       The sentence is the one the server stored, the same one the recruiter
+       sees and the email carries. After a first suspension the screen gives
+       the time the retake opens; otherwise the interview is with a
+       recruiter. Nothing here says "rejected" or "failed", and nothing
+       about thresholds or detectors. */
+    if(AIIV.started && AIIV.appId===rec.applicationId && (AIIV.phase==='stopped' || AIIV.phase==='retake_wait' || AIIV.phase==='under_review')){
+      var stop, retakeAt = null;
+      if(AIIV.phase==='stopped'){
+        stop=(AIIV.integrity&&AIIV.integrity.ended)||{kind:'unknown',message:'The interview was stopped.'};
+        retakeAt = stop.retakeAt || null;
+      } else {
+        var blk = AIIV.block || {};
+        stop = { message: blk.reason || 'The interview was suspended.' };
+        retakeAt = AIIV.phase==='retake_wait' ? (blk.retakeAt || null) : null;
+      }
+      var open = retakeAt && new Date(retakeAt).getTime() <= Date.now();
+      var next = retakeAt
+        ? (open ? 'Your retake is now open. You can start it again from your application.'
+                : 'You can retake this interview after <strong>'+esc2(whenText(retakeAt))+'</strong>. We will email you when it is open.')
+        : 'Your interview is under recruiter review. You will be informed of the next steps.';
       content='<div style="max-width:640px;margin:0 auto"><div class="panel"><div class="panel-body" style="text-align:center;padding:30px 26px">'
         +'<div style="width:60px;height:60px;border-radius:50%;background:var(--bad-100);color:var(--bad-600);display:flex;align-items:center;justify-content:center;font-size:28px;margin:0 auto 14px">!</div>'
-        +'<h2 style="font-size:19px">'+esc2(heading)+'</h2>'
+        +'<h2 style="font-size:19px">Interview suspended</h2>'
         +'<p style="color:var(--text-soft);margin:10px auto 0;max-width:460px;line-height:1.5">'+esc2(stop.message)+'</p>'
-        +'<div class="req-note" style="margin-top:16px;text-align:left">Your answers up to this point were kept. '
-        +'Nothing has been submitted for scoring, and your recruiter can see that the interview was interrupted and why.</div>'
-        +(seen.length?'<div style="margin-top:14px;text-align:left;font-size:11.5px;color:var(--text-soft)">'
-            +'<div style="font-weight:800;text-transform:uppercase;letter-spacing:.04em;font-size:10px;margin-bottom:4px">What was observed</div>'
-            +seen.slice(-4).map(function(e){ return '<div>\u00b7 '+esc2(e.detail||e.kind)+'</div>'; }).join('')
-            +'</div>':'')
+        +'<div class="req-note" style="margin-top:16px;text-align:left" id="aiivStopNext" data-retake="'+esc2(retakeAt||'')+'">'+next+'</div>'
+        +'<div class="req-note" style="margin-top:10px;text-align:left">Your answers up to this point were saved. If you think this was a mistake or you had a technical problem, reply to the suspension email or contact the recruiter.</div>'
         +'<div style="margin-top:18px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap">'
-        +'<button class="btn btn-primary" onclick="navigate(\'/candidate-app/'+rec.applicationId+'\')">Back to my application</button>'
+        +'<button class="btn btn-primary" onclick="aiivLeaveStopped(\''+rec.applicationId+'\')">Back to my application</button>'
         +'</div>'
         +'</div></div></div>';
+      setTimeout(aiivStopTicker, 50);
       return shell('applications','AI Interview','Candidate \u00b7 '+esc2(c?c.name:''),content);
     }
     var mine = AIIV.started && AIIV.appId===rec.applicationId;
