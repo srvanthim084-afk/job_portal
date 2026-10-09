@@ -61,26 +61,8 @@ alter table ai_interviews add constraint ai_interviews_suspension_code_check
 alter table applications
   add column if not exists extra_interview_attempts int not null default 0 check (extra_interview_attempts >= 0);
 
-/* Interviews suspended before this existed: give them the reason they were
-   already carrying, in the new columns. They get NO retake window - that
-   was never promised to them, so they stay with a recruiter. */
-update ai_interviews
-   set suspension_code = case
-         when coalesce(suspend_reason, '') ilike '%person%' then 'additional_person'
-         when coalesce(suspend_reason, '') ilike '%voice%'  then 'additional_voice'
-         else 'repeated_violations' end,
-       suspension_message = coalesce(nullif(btrim(suspend_reason), ''), 'The interview was suspended.'),
-       detection_count = greatest(integrity_strikes, 1),
-       last_detection_at = coalesce(suspended_at, last_detection_at)
- where status = 'suspended' and suspension_code is null;
-
-/* Attempt numbers for what already exists: the order the rows were made. */
-update ai_interviews a
-   set attempt_number = r.n
-  from (select id, row_number() over (partition by application_id order by created_at, id) as n
-          from ai_interviews where application_id is not null) r
- where a.id = r.id and a.attempt_number is distinct from r.n;
-
+/* Indexes first: an index cannot be created in the same transaction after rows were updated
+   ("pending trigger events"), which the backfills below do on a database with interviews in it. */
 create index if not exists ai_interviews_app_attempt_idx on ai_interviews (application_id, attempt_number);
 create index if not exists ai_interviews_retake_due_idx on ai_interviews (retake_available_at)
   where status = 'suspended' and retake_open_notified_at is null;
@@ -443,3 +425,27 @@ language sql security definer set search_path = public stable as $$
 $$;
 
 grant execute on function ai_interview_notices_due(int) to app_api;
+
+-- ---------------------------------------------------------------------
+-- backfills LAST: row updates leave pending trigger events, after which no DDL
+-- on the table is allowed in this transaction
+-- ---------------------------------------------------------------------
+/* Interviews suspended before this existed: give them the reason they were
+   already carrying, in the new columns. They get NO retake window - that
+   was never promised to them, so they stay with a recruiter. */
+update ai_interviews
+   set suspension_code = case
+         when coalesce(suspend_reason, '') ilike '%person%' then 'additional_person'
+         when coalesce(suspend_reason, '') ilike '%voice%'  then 'additional_voice'
+         else 'repeated_violations' end,
+       suspension_message = coalesce(nullif(btrim(suspend_reason), ''), 'The interview was suspended.'),
+       detection_count = greatest(integrity_strikes, 1),
+       last_detection_at = coalesce(suspended_at, last_detection_at)
+ where status = 'suspended' and suspension_code is null;
+
+/* Attempt numbers for what already exists: the order the rows were made. */
+update ai_interviews a
+   set attempt_number = r.n
+  from (select id, row_number() over (partition by application_id order by created_at, id) as n
+          from ai_interviews where application_id is not null) r
+ where a.id = r.id and a.attempt_number is distinct from r.n;
