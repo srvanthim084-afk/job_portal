@@ -4,8 +4,8 @@
  *     node tools/verify-register-resume-flow.mjs     (dev server on :4323)
  *
  * Upload a resume -> it is read on the server -> the page shows what it
- * found and asks ONLY for current location, preferred location, notice
- * period, work mode, expected salary and password -> the email answers a
+ * found and asks ONLY for current location, preferred location, work mode,
+ * expected salary and password (notice period is asked on the profile step) -> the email answers a
  * code -> Create account -> "Your profile has been created from your
  * resume" with only the missing details.
  *
@@ -97,7 +97,7 @@ check(errs.some((e) => /verify your email/i.test(e)), 'the email must be verifie
 /* ---- the six answers + the code --------------------------------------- */
 await page.fill('#tlrfLoc', 'Hyderabad');
 for (const c of ['Hyderabad', 'Bengaluru']) { await page.fill('#tlrfPrefIn', c); await page.press('#tlrfPrefIn', 'Enter'); }
-await page.selectOption('#tlrfNotice', '30 days');
+check(!(await page.$('#tlrfNotice')), 'notice period is not on the registration form');
 await page.check('#tlrfModes input[value="Hybrid"]');
 await page.fill('#tlrfSal', '10');
 await page.check('#tlrfTerms');
@@ -127,14 +127,14 @@ check(/TL-CAN-\d{6}/.test(done), 'the Candidate ID is shown');
 check(/Your profile has been created from your resume\./.test(done), '"Your profile has been created from your resume."');
 const pct = Number((/Profile Completeness: (\d+)%/.exec(done) || [])[1]);
 check(pct > 0 && pct < 100, `Profile Completeness is shown and below 100 while something is missing (${pct}%)`);
-check(/Availability/.test(done) && !/Key skills|Education|Resume:/.test(done), 'only the missing details are listed');
+check(/Availability/.test(done) && /Notice/i.test(done) && !/Key skills|Education|Resume:/.test(done), 'only the missing details are listed (notice period, availability)');
 const me = await page.evaluate(() => window.TL.api.get('/me/profile-completeness'));
 check(me.percent === pct, `the page and the server agree (${me.percent}%)`);
 const prof = await page.evaluate(() => window.TL.api.get('/auth/me'));
 const c = (prof && prof.profile) || {};
 check((c.skills || []).includes('Spring Boot'), 'skills are on the profile');
 check(c.currentCompany === 'ABC Technologies Pvt Ltd', 'the current company is on the profile');
-check(c.noticePeriod === '30 days' && c.location === 'Hyderabad', 'the candidate\'s answers are on the profile');
+check(!c.noticePeriod && c.location === 'Hyderabad', 'the candidate\'s answers are on the profile');
 check(!!c.resumeFile, 'the resume is attached');
 check(page.errors.length === 0, `no page errors (${page.errors.join(' | ')})`);
 await page.screenshot({ path: resolve(DIR, `resume-first-done-${stamp}.png`) });

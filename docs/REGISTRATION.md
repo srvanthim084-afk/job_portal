@@ -101,8 +101,8 @@ cannot be read); the choice is remembered for the tab.
    pattern that cannot misfire (email, URL, phone) 0.9-0.95, one reader per field, readers
    disagree 0.5, a name guessed from the email 0.4, scanned (AI OCR) text x0.85. An unconfirmed
    low-confidence value is **not** written to the profile.
-4. **The candidate types only**: Current Location, Preferred Location (several), Notice Period,
-   Work Mode (Office / Hybrid / Remote; "Any" = all three), Expected Salary (LPA), Password +
+4. **The candidate types only**: Current Location, Preferred Location (several),
+   Work Mode (Work From Office / Hybrid / Work From Home; "Any" = all three), Expected Salary (LPA), Password +
    Confirm, and the consents.
 5. **Email code**: `POST /registration/drafts/:id/email-code` (6 digits, 10 minutes, 5 tries,
    5 codes per hour). A server without mail shows the code on screen as a development code;
@@ -141,6 +141,8 @@ Tests: `api/test/registration-draft.test.mjs` (the realistic resume end to end, 
 no email, duplicate email / mobile, unreadable, timeout + retry, draft token, plain register
 unchanged); `tools/verify-register-resume-flow.mjs` (browser, desktop + 390px). The seven-step
 scripts open the manual path with `TLResumeFirst.manual()`.
+
+**Notice period is not asked at registration** (draft path only; the seven-step form still requires it). It stays empty, is never marked provided, keeps Career preferences incomplete (so the profile is below 100%), and is the first thing the "Build your profile" step asks for.
 
 Not done: phone OTP (needs a DLT-approved SMS template; `mobile_verified` stays false).
 

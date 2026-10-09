@@ -95,8 +95,10 @@ const registerSchema = z.object({
     })
     .positive('Expected Salary must be more than 0')
     .max(1000, 'Please enter the salary in lakh per annum'),
-  noticePeriod: z.string({ required_error: 'Please select a notice period' })
-    .trim().min(1, 'Please select a notice period').max(40),
+  /* Required on the seven-step form; NOT asked on the resume-first form (draftId
+     present), where it is the first thing the profile step asks for. The check
+     is in registerOne, because it depends on draftId. */
+  noticePeriod: z.string().trim().max(40).optional(),
   preferredWorkModes: z.array(z.string().trim().max(40),
       { required_error: 'Select at least one work mode',
         invalid_type_error: 'Select at least one work mode' })
@@ -305,6 +307,10 @@ export default function authRoutes() {
             draftId, draftToken, currentLocation } = parse(registerSchema, req.body);
 
     if (website) throw badRequest('Please check the highlighted fields and try again.');
+    if (!draftId && !String(noticePeriod || '').trim()) {
+      throw badRequest('Please check the highlighted fields and try again.',
+        { noticePeriod: 'Please select a notice period' });
+    }
 
     /* 0117: from a resume draft, the email must have answered its code
        before an account is made for it. Checked before anything is written. */
@@ -358,7 +364,7 @@ export default function authRoutes() {
      */
     await withUser(null, (c) => c.query(
       `select auth_register_preferences($1,$2,$3,$4,$5)`,
-      [candidateId, preferredLocation, expectedCtc, noticePeriod,
+      [candidateId, preferredLocation, expectedCtc, noticePeriod || null,
        preferredWorkModes]));
     /* 0092: their availability, onto the same just-created record. */
     await withUser(null, (c) => c.query(`select availability_register($1,$2)`,

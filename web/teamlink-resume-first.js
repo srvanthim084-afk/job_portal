@@ -4,7 +4,7 @@
      UPLOAD RESUME  ->  read on the server, kept as a draft
        ->  (only if needed) confirm what the reading was unsure of
        ->  the candidate types ONLY: current location, preferred
-           location, notice period, work mode, expected salary, password
+           location, work mode, expected salary, password
        ->  verify the email (6-digit code)
        ->  Create Account  ->  "Your profile has been created from your
            resume" + only the fields that are still missing
@@ -235,12 +235,6 @@
       + '<input id="tlrfSal" type="number" min="0" step="0.5" placeholder="e.g. 8" value="' + h(I.sal || '') + '">'
       + (e.sal ? '<div class="tlrf-err">' + h(e.sal) + '</div>' : '') + '</div>'
       + '</div><div>'
-      + '<div class="review-field"><label for="tlrfNotice">Notice Period *</label><select id="tlrfNotice">'
-      + '<option value="">Select…</option>' + NOTICE.map(function (o) {
-        return '<option' + (I.notice === o ? ' selected' : '') + '>' + h(o) + '</option>';
-      }).join('') + '</select>'
-      + '<input id="tlrfNoticeOther" placeholder="Your notice period" value="' + h(I.noticeOther || '') + '"' + (I.notice === 'Other' ? '' : ' hidden') + ' style="margin-top:6px">'
-      + (e.notice ? '<div class="tlrf-err">' + h(e.notice) + '</div>' : '') + '</div>'
       + '<div class="review-field"><label>Work Mode *</label><div class="opt-row-group" id="tlrfModes">'
       + MODES.map(function (m) {
         var on = I.modes.indexOf(m[0]) >= 0;
@@ -459,8 +453,6 @@
     var sal = Number(String(I.sal || '').replace(/[^\d.]/g, ''));
     if (!(sal > 0)) e.sal = 'Expected Salary is required';
     else if (sal > 1000) e.sal = 'Please enter the salary in lakh per annum';
-    if (!I.notice) e.notice = 'Please select a notice period';
-    else if (I.notice === 'Other' && !I.noticeOther) e.notice = 'Please enter your notice period';
     if (!I.modes.length) e.modes = 'Select at least one work mode';
     var pw = S.pw || '';
     if (pw.length < 8 || !/[A-Za-z]/.test(pw) || !/\d/.test(pw)) e.pw = 'Password must be at least 8 characters, with a letter and a number.';
@@ -505,7 +497,6 @@
         currentLocation: I.loc,
         preferredLocation: I.prefLocs.join(', '),
         expectedCtc: Number(String(I.sal).replace(/[^\d.]/g, '')),
-        noticePeriod: I.notice === 'Other' ? I.noticeOther : I.notice,
         preferredWorkModes: modes,
         consent: { terms: !!I.terms, communication: !!I.comm, resumeProcessing: I.resume !== false },
         draftId: d.draftId, draftToken: S.token,
