@@ -21,10 +21,13 @@ export const IDLE_MINUTES = Math.max(1, Number(process.env.RECRUITER_IDLE_MINUTE
 /** Sign-in method -> the action code of its audit row. */
 export const LOGIN_METHODS = {
   password: 'auth.login',
+  /* 0127: signed in from TeamLink HRMS (single sign-on) */
+  hrms: 'auth.login_hrms',
 };
 
 export const ACTIVITY = [
   { code: 'auth.login', label: 'Login', group: 'session' },
+  { code: 'auth.login_hrms', label: 'Login (via HRMS)', group: 'session' },
   { code: 'auth.session_resumed', label: 'Login (session carried over)', group: 'session' },
   { code: 'auth.logout', label: 'Logout', group: 'session' },
   { code: 'auth.auto_logout', label: 'Auto logged out', group: 'session' },
