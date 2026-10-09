@@ -266,16 +266,22 @@ test('consent is stored with its date, version and status', async () => {
   assert.equal(all.n, 2);
 });
 
-test('declined consent is refused; when configured, missing consent is refused too', async () => {
-  const no = await register({ consent: { terms: true, communication: false } });
-  assert.equal(no.res.status, 400);
-  assert.ok(no.res.body.error.details['consent.communication']);
+test('Terms are required; recruitment communication is optional (declining it is recorded, not refused)', async () => {
+  const noTerms = await register({ consent: { terms: false, communication: true } });
+  assert.equal(noTerms.res.status, 400);
+  assert.ok(noTerms.res.body.error.details['consent.terms']);
+
+  const decline = await register({ consent: { terms: true, communication: false } });
+  assert.equal(decline.res.status, 201, JSON.stringify(decline.res.body));
+  const rows = (await raw(`select kind, status from candidate_consents where candidate_id = $1 order by kind, id`, [decline.id])).rows;
+  assert.ok(rows.some((r) => r.kind === 'terms' && r.status === 'granted'));
+  assert.ok(!rows.some((r) => r.kind === 'communication' && r.status === 'granted'), 'declined communication must not be recorded as granted');
 
   process.env.REGISTRATION_CONSENT_REQUIRED = 'true';
   const missing = await register({ consent: undefined });
   assert.equal(missing.res.status, 400);
   assert.ok(missing.res.body.error.details['consent.terms']);
-  assert.ok(missing.res.body.error.details['consent.communication']);
+  assert.ok(!missing.res.body.error.details['consent.communication'], 'communication is never required');
   const ok = await register();
   assert.equal(ok.res.status, 201);
   process.env.REGISTRATION_CONSENT_REQUIRED = '';

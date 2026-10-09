@@ -33,6 +33,7 @@ import { requireAuth, requireRole } from '../auth.js';
 import { storeResume, getStorage } from '../storage.js';
 import { extractResumeText } from '../resume/extract.js';
 import { analyseResume, acceptedFields, confidenceMin, VERIFY_KEYS } from '../resume/confidence.js';
+import { EDU_FORM_VALUES } from '../resume/fields.js';
 import { applyExtractedFields } from '../resume/apply.js';
 import { completenessFor, EXTRACTION_TO_FIELD } from '../profile/completeness.js';
 import { providers, isReservedTestAddress } from '../notify/providers.js';
@@ -189,7 +190,7 @@ async function purgeSometimes() {
 }
 
 const CORRECTABLE = new Set([...VERIFY_KEYS, 'name', 'phone', 'skills', 'title', 'currentCompany',
-  'expYears', 'qualification', 'linkedin', 'github', 'portfolio', 'summary']);
+  'expYears', 'qualification', 'highestEducation', 'linkedin', 'github', 'portfolio', 'summary']);
 
 const correctionsSchema = z.object({
   corrections: z.record(z.union([
@@ -203,17 +204,44 @@ const correctionsSchema = z.object({
 export default function registrationDraftRoutes() {
   const r = Router();
 
-  r.post('/registration/drafts',
-    (req, res, next) => upload.single('resume')(req, res, (err) => {
-      if (!err) return next();
-      if (err.code === 'LIMIT_FILE_SIZE') {
-        const mb = Math.round(config.maxUploadBytes / 1024 / 1024);
-        return next(new ApiError(413, CODES.FILE_TOO_LARGE, `That file is too large. The limit is ${mb}MB.`));
-      }
-      return next(new ApiError(400, CODES.UPLOAD_FAILED, 'That file could not be uploaded. Please try again.'));
-    }),
+  const receive = (req, res, next) => upload.single('resume')(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      const mb = Math.round(config.maxUploadBytes / 1024 / 1024);
+      return next(new ApiError(413, CODES.FILE_TOO_LARGE, `That file is too large. The limit is ${mb}MB.`));
+    }
+    return next(new ApiError(400, CODES.UPLOAD_FAILED, 'That file could not be uploaded. Please try again.'));
+  });
+
+  /* REPLACE (or add) THE RESUME ON A DRAFT THAT EXISTS. The email code already answered, and what was typed,
+     stay; the old file and its reading are replaced by the new ones. A failed read leaves no stale reading. */
+  r.post('/registration/drafts/:id/resume', receive, wrap(async (req, res) => {
+    const token = tokenOf(req);
+    const d0 = await readDraft(req.params.id, token);
+    if (!req.file || !req.file.buffer || !req.file.buffer.length) {
+      throw badRequest('Please choose your resume file (PDF, DOC, DOCX or TXT).');
+    }
+    if (drafts.hit(originOf(req)) > draftLimit()) {
+      throw new ApiError(429, CODES.RATE_LIMITED, 'Too many uploads from this connection. Please try again later.');
+    }
+    const stored = await storeResume({ candidateId: `draft-${d0.id}`, buffer: req.file.buffer, originalName: req.file.originalname });
+    await saveDraft(d0.id, token, {
+      status: 'pending',
+      resume_file: stored.displayName, resume_storage_path: stored.path,
+      resume_mime: stored.mime, resume_size: stored.size, resume_sha256: stored.sha256,
+      resume_text: null, extraction: null, extraction_code: null, extraction_error: null,
+    });
+    if (d0.resume_storage_path && d0.resume_storage_path !== stored.path) {
+      await getStorage().remove(d0.resume_storage_path).catch(() => {});
+    }
+    const d = await runExtraction(d0.id, token, req.file.buffer, req.file.originalname);
+    res.json(await view(d));
+  }));
+
+  r.post('/registration/drafts', receive,
     wrap(async (req, res) => {
-      if (!req.file || !req.file.buffer || !req.file.buffer.length) {
+      const noResume = !req.file && /^(1|true|yes)$/i.test(String((req.body && req.body.noResume) || ''));
+      if (!noResume && (!req.file || !req.file.buffer || !req.file.buffer.length)) {
         throw badRequest('Please choose your resume file (PDF, DOC, DOCX or TXT).');
       }
       if (drafts.hit(originOf(req)) > draftLimit()) {
@@ -221,6 +249,15 @@ export default function registrationDraftRoutes() {
       }
       const id = 'rd_' + randomBytes(9).toString('hex');
       const token = randomBytes(24).toString('hex');
+
+      /* REGISTRATION WITHOUT A RESUME. The resume is optional, but the email still has to answer its code and the
+         details still have to be kept somewhere before the account exists - that is what a draft is. This one holds
+         no file and no reading. */
+      if (noResume) {
+        const d = await saveDraft(id, token, { status: 'pending', attempt: 0 });
+        purgeSometimes();
+        return res.status(201).json({ ...(await view(d)), draftToken: token });
+      }
 
       /* The file first: whatever happens to the reading, the resume is kept.
          storeResume checks the bytes are the type the name claims. */
@@ -261,7 +298,13 @@ export default function registrationDraftRoutes() {
       if (k === 'name' && v !== null && String(v).trim().length < 2) problems.name = 'Please enter your name.';
       if (k === 'phone' && v && !validIndianMobile(String(v))) problems.phone = 'Please enter a valid 10-digit mobile number.';
       if (k === 'expYears' && v !== null && v !== '' && !Number.isFinite(Number(v))) problems.expYears = 'Enter years as a number.';
-      out[k] = k === 'expYears' && v !== null && v !== '' ? Number(v) : v;
+      if (k === 'highestEducation' && v && !EDU_FORM_VALUES.includes(String(v))) problems.highestEducation = 'Choose one of the listed qualifications.';
+      let val = k === 'expYears' && v !== null && v !== '' ? Number(v) : v;
+      /* the same skill twice, in any case, is one skill */
+      if (k === 'skills' && Array.isArray(val)) {
+        val = val.filter((x, i, a) => a.findIndex((y) => y.toLowerCase() === x.toLowerCase()) === i);
+      }
+      out[k] = val;
     }
     if (Object.keys(problems).length) throw badRequest('Please check the highlighted fields and try again.', problems);
     await readDraft(req.params.id, token);
@@ -388,6 +431,30 @@ const isoDate = (v) => {
 export async function finishDraft({ draftId, draftToken, draft, candidateId, session, provided }) {
   const { fields, sources } = acceptedFields(draft.extraction, draft.corrections);
   for (const k of ['name', 'email', 'phone']) delete fields[k];
+
+  /* A FRESHER HAS NO EMPLOYER. Whatever the resume says about jobs (an internship line, a project at a company) is
+     not put on the profile as work history when the candidate chose "Fresher / No experience". */
+  if (provided && provided.fresher) {
+    for (const k of ['title', 'currentCompany', 'previousCompanies', 'employmentHistory', 'relevantExpYears']) delete fields[k];
+    fields.expYears = 0;
+    delete sources.title; delete sources.currentCompany;
+  }
+
+  /* THE QUALIFICATION THE CANDIDATE CHOSE. The registration asks for ONE (the highest); the resume's other education
+     records stay on the profile. A choice the resume does not support becomes a record of its own, so the profile
+     never shows less than they said. */
+  const chosenEdu = (draft.corrections || {}).highestEducation;
+  if (chosenEdu) {
+    const levelFor = { 'PhD': 'Doctorate', "Master's Degree": 'Post Graduation', "Bachelor's Degree": 'Graduation', Diploma: 'Diploma', Intermediate: '12th', '10th': '10th' };
+    const recs = Array.isArray(fields.educationRecords) ? fields.educationRecords.map((x) => ({ ...x })) : [];
+    const want = levelFor[chosenEdu];
+    if (want ? !recs.some((r) => r.level === want) : true) {
+      recs.unshift({ level: want || null, qualification: chosenEdu, specialization: null, institution: null, passingYear: null, score: null, educationType: want || 'Other' });
+    }
+    fields.educationRecords = recs;
+    fields.education = chosenEdu;
+    sources.education = 'USER_PROVIDED';
+  }
 
   const fieldSources = {};
   for (const [k, s] of Object.entries(sources)) {

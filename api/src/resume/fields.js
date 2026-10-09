@@ -225,11 +225,14 @@ function repairEmail(raw) {
   return original;
 }
 
-function findEmail(text) {
+function findEmail(text, notes) {
   const all = (String(text).match(EMAIL_RE) || []).map(repairEmail);
   // Skip obvious non-personal addresses that appear in headers/footers.
-  const personal = all.find((e) => !/^(info|hr|careers|jobs|support|noreply|no-reply)@/i.test(e));
-  return personal || all[0] || null;
+  const people = all.filter((e) => !/^(info|hr|careers|jobs|support|noreply|no-reply)@/i.test(e));
+  const pool = people.length ? people : all;
+  const pick = contactIn(text, pool);
+  if (pick.ambiguous && notes) notes.emailAmbiguous = true;
+  return pick.value;
 }
 
 function findPhones(text) {
@@ -748,7 +751,7 @@ function findList(section, { max = 40, minLen = 2 } = {}) {
     const parts = body.includes(',') && body.length < 200 ? body.split(',') : [body];
     for (const p of parts) {
       const v = clean(p).replace(/[.;]+$/, '');
-      if (v.length >= minLen && v.length <= 60 && !items.includes(v)) items.push(v);
+      if (v.length >= minLen && v.length <= 60 && !items.some((x) => x.toLowerCase() === v.toLowerCase())) items.push(v);
       if (items.length >= max) return items;
     }
   }
@@ -1179,6 +1182,173 @@ export function parseConfidence({ fields, chars }) {
   return Math.round((identity * 40) + (substance * 40) + (text * 20));
 }
 
+/* ------------------------------------------------------------------ *
+ * PROJECTS: a title with its details, never a list of lines (the "12 projects" bug)
+ * ------------------------------------------------------------------ */
+
+/*
+ * WHAT WAS WRONG. Projects were read with findList(), the reader built for SKILLS: one item per
+ * line, split again at every comma, up to twelve. A resume with two projects, each with a few bullet
+ * points ("Built the login module using Spring Security", "Wrote 40 unit tests"), came back with
+ * twelve - every bullet, and every comma-separated technology, was a project of its own. The profile,
+ * the recruiter's page and the registration summary all showed "12 projects".
+ *
+ * A project is now a TITLE with its DETAILS attached:
+ *   - a bullet that reads like a name ("Student Management System") is a title;
+ *   - a bullet that reads like a sentence ("Developed ...", more than a few words, or ending in a full
+ *     stop) is a detail of the project above it;
+ *   - lines under a plain title line, and lines indented further than their neighbours, are details;
+ *   - "Technologies: ...", "Role: ...", "Duration: ..." are details, never projects;
+ *   - "Name - what it did" on one line is one project;
+ *   - the same title twice is one project.
+ * Nothing is added to reach a count.
+ */
+const BULLET_RE = /^[\s•●▪‣⁃◦*\-–—>]+/;
+const DETAIL_LABEL = /^(?:tech(?:nolog(?:y|ies))?(?:\s*(?:stack|used))?|tools?(?:\s*used)?|role|duration|team(?:\s*size)?|description|responsibilit(?:y|ies)|environment|stack|links?|github|url|domain|client|period)\s*[:\-–]/i;
+const ACTION_START = /^(?:developed|built|designed|implemented|created|used|using|worked|managed|led|handled|wrote|written|integrated|deployed|improved|reduced|increased|achieved|responsible|collaborated|performed|analy[sz]ed|tested|maintained|configured|automated|optimi[sz]ed|conducted|coordinated|prepared|supported|enabled|ensured|designed|engineered|utili[sz]ed|involved|participated|contributed|explored|studied|applied)\b/i;
+
+function findProjects(section, max = 12) {
+  if (!section) return [];
+  const rows = String(section).split('\n').map((raw) => {
+    const indent = (/^[ \t]*/.exec(raw) || [''])[0].replace(/\t/g, '    ').length;
+    return { indent, bullet: /^\s*[•●▪‣⁃◦*\-–—>]\s*\S/.test(raw), text: clean(raw.replace(BULLET_RE, '')) };
+  }).filter((r) => r.text && !END_OF_RESUME.test(r.text) && !NOT_A_SKILL.test(r.text));
+  if (!rows.length) return [];
+
+  const words = (t) => t.split(/\s+/).filter(Boolean).length;
+  const titleLike = (t) => words(t) <= 10 && !/[.;]$/.test(t) && !ACTION_START.test(t) && !DETAIL_LABEL.test(t);
+  const minIndent = Math.min(...rows.map((r) => r.indent));
+  const hasPlainTitles = rows.some((r) => !r.bullet && titleLike(r.text) && r.indent <= minIndent + 1);
+
+  const projects = [];
+  let cur = null;
+  const open = (name, desc) => {
+    const key = name.toLowerCase();
+    const dup = projects.find((p) => p.name.toLowerCase() === key);
+    if (dup) { cur = dup; if (desc) dup.desc.push(desc); return; }
+    if (projects.length >= max) { cur = null; return; }
+    cur = { name, desc: desc ? [desc] : [] };
+    projects.push(cur);
+  };
+
+  for (const r of rows) {
+    const t = r.text;
+    /* "Name - what it did", one line */
+    const one = /^(.{3,80}?)\s+[-–—:|]\s+(.{6,})$/.exec(t);
+    const named = one && words(one[1]) <= 9 && !DETAIL_LABEL.test(t) && !ACTION_START.test(one[1]) ? one : null;
+    const deeper = cur && r.indent >= minIndent + 2 && r.bullet && !named;
+
+    if (DETAIL_LABEL.test(t) || deeper) { if (cur) cur.desc.push(t); continue; }
+    if (named && (r.bullet || r.indent <= minIndent + 1)) { open(clean(named[1]), clean(named[2])); continue; }
+
+    if (hasPlainTitles) {
+      /* titles are the plain lines; bullets and sentences belong to the project above */
+      if (!r.bullet && r.indent <= minIndent + 1 && titleLike(t)) open(t);
+      else if (cur) cur.desc.push(t);
+      else if (titleLike(t)) open(t);
+    } else if (titleLike(t) && (!cur || !r.bullet || cur.desc.length === 0 || words(t) <= 6)) {
+      open(t);                                    // a list of bullets that are names
+    } else if (cur) {
+      cur.desc.push(t);
+    }
+  }
+  return projects.map((p) => {
+    const d = clean(p.desc.join(' ')).slice(0, 320);
+    return d ? `${p.name} - ${d}` : p.name;
+  });
+}
+
+/* ------------------------------------------------------------------ *
+ * HIGHEST EDUCATION, for the registration form
+ * ------------------------------------------------------------------ */
+const EDU_RANK = { Doctorate: 6, 'Post Graduation': 5, Graduation: 4, Diploma: 3, '12th': 2, '10th': 1 };
+/** The values the registration dropdown offers, for each level the parser reads. */
+export const EDU_FORM_LABEL = {
+  Doctorate: 'PhD', 'Post Graduation': "Master's Degree", Graduation: "Bachelor's Degree",
+  Diploma: 'Diploma', '12th': 'Intermediate', '10th': '10th',
+};
+export const EDU_FORM_VALUES = ['10th', 'Intermediate', 'Diploma', "Bachelor's Degree", "Master's Degree", 'PhD', 'Other'];
+
+/**
+ * The highest qualification the DOCUMENT supports, or null. Rank, not order of appearance: a resume that
+ * lists SSC first and B.Tech last still reports a bachelor's degree. Nothing is invented - no record that
+ * names a recognisable level means no answer.
+ */
+export function highestEducation(records, qualification) {
+  let best = null;
+  for (const r of records || []) {
+    const rank = EDU_RANK[r && r.level];
+    if (rank && (!best || rank > best.rank)) best = { rank, level: r.level };
+  }
+  if (!best && qualification) {
+    const lv = levelOf(String(qualification));
+    if (lv && EDU_RANK[lv.level]) best = { rank: EDU_RANK[lv.level], level: lv.level };
+  }
+  return best ? EDU_FORM_LABEL[best.level] : null;
+}
+
+/* ------------------------------------------------------------------ *
+ * THE MOST RECENT EMPLOYER, by its dates
+ * ------------------------------------------------------------------ */
+const MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+/** When a period ends, as a sortable number; Infinity for "Present"; null when it says nothing usable. */
+function periodEnd(period) {
+  const p = String(period || '').toLowerCase();
+  if (!p) return null;
+  if (/\b(present|current|till\s*date|to\s*date|ongoing|now)\b/.test(p)) return Infinity;
+  const parts = p.split(/\s*(?:-|–|—|\bto\b)\s*/);
+  const last = parts[parts.length - 1] || '';
+  const y = /\b(19[7-9]\d|20[0-4]\d)\b/.exec(last);
+  if (y) {
+    const m = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*/.exec(last);
+    return Number(y[1]) * 12 + (m ? MONTHS[m[1]] : 12);
+  }
+  /* "2019 - 21" and "Jan 2015-16": the end year is the short number */
+  const short = /\b(\d{2})\b\s*$/.exec(last);
+  const start = /\b(19[7-9]\d|20[0-4]\d)\b/.exec(p);
+  if (short && start) {
+    const yy = Number(String(start[1]).slice(0, 2) + short[1]);
+    return (yy < Number(start[1]) ? yy + 100 : yy) * 12 + 12;
+  }
+  return null;
+}
+/**
+ * The entry the dates say is the latest. { row, certain }. With one entry, or dates on every entry,
+ * the answer is certain; with several entries and no usable dates the first is returned as a
+ * best guess and `certain` is false, so the registration can ask the candidate to check it.
+ */
+export function recentEmployment(rows) {
+  if (!rows || !rows.length) return null;
+  if (rows.length === 1) return { row: rows[0], certain: true };
+  const ends = rows.map((r) => periodEnd(r.period));
+  const dated = ends.filter((e) => e !== null);
+  if (dated.length === rows.length) {
+    let bi = 0;
+    ends.forEach((e, i) => { if (e > ends[bi]) bi = i; });
+    const ties = ends.filter((e) => e === ends[bi]).length > 1;
+    return { row: rows[bi], certain: !ties };
+  }
+  if (ends.includes(Infinity)) return { row: rows[ends.indexOf(Infinity)], certain: ends.filter((e) => e === Infinity).length === 1 };
+  return { row: rows[0], certain: false };
+}
+
+/* ------------------------------------------------------------------ *
+ * WHICH EMAIL / PHONE IS THE CANDIDATE'S
+ * ------------------------------------------------------------------ */
+/**
+ * The address (or number) in the heading block - the first lines, where a candidate puts their own
+ * contact details. When there is more than one distinct one and nothing in the heading settles it, the
+ * answer is null: a referee's address taken as the candidate's would become their sign-in.
+ */
+function contactIn(text, all) {
+  const distinct = all.filter((v, i) => all.findIndex((x) => x.toLowerCase() === v.toLowerCase()) === i);
+  if (distinct.length <= 1) return { value: distinct[0] || null, ambiguous: false };
+  const head = String(text).split('\n').slice(0, 14).join('\n').toLowerCase();
+  const inHead = distinct.filter((v) => head.includes(v.toLowerCase()));
+  if (inHead.length === 1) return { value: inHead[0], ambiguous: false };
+  return { value: null, ambiguous: true };
+}
+
 export function extractFields(text) {
   const t = String(text || '');
   if (!t.trim()) return { fields: {}, found: 0 };
@@ -1187,15 +1357,29 @@ export function extractFields(text) {
   // References contain other people's names and numbers.
   const personal = t.replace(sections.references || '\x00', '');
 
-  const email = findEmail(personal);
+  const notes = {};
+  const email = findEmail(personal, notes);
   /* Read once: the name and, when there is none, the guess. */
   const nameRead = nameFrom(personal, email);
   /* 0117: digits inside an email address ("rahul.9876543210@...") are not
      a phone number. */
-  const phones = findPhones(personal.replace(/[^\s@<>()]+@[^\s@<>()]+\.[a-z]{2,}/gi, ' '));
+  const phones = (() => {
+    const all = findPhones(personal.replace(/[^\s@<>()]+@[^\s@<>()]+\.[a-z]{2,}/gi, ' '));
+    if (all.length <= 1) return all;
+    /* several numbers: the ones in the heading block are the candidate's own (home, mobile); numbers further down
+       are referees, employers or family. None in the heading and several below: left for the candidate. */
+    const head = String(personal).split('\n').slice(0, 14).join('\n').replace(/\D/g, '');
+    const inHead = all.filter((n) => head.includes(n));
+    if (inHead.length) return inHead;
+    notes.phoneAmbiguous = true;
+    return [];
+  })();
   const links = findLinks(t);
 
   const employment = findEmployment(sections);
+  /* the entry the DATES say is the latest, not whichever happens to be written first */
+  const recent = recentEmployment(employment);
+  if (recent && !recent.certain) notes.recentEmploymentUncertain = true;
 
   /*
    * A FRESHER HAS NO EMPLOYER.
@@ -1216,7 +1400,7 @@ export function extractFields(text) {
 
   const skills = findList(sections.skills, { max: 40 });
   const certifications = findList(sections.certifications, { max: 15, minLen: 4 });
-  const projects = findList(sections.projects, { max: 12, minLen: 4 });
+  const projects = findProjects(sections.projects, 12);
   /* One item per LINE, not per comma: "Winner, Smart India Hackathon
      2022" is one achievement, and "Data Science Intern, Acme Analytics"
      is one internship. */
@@ -1226,7 +1410,6 @@ export function extractFields(text) {
     .slice(0, max);
   /* 0117: a project is usually one line - "Name - what it did" - and longer
      than a skill. When the list reader keeps none, the lines are the list. */
-  if (!projects.length) projects.push(...lineItems(sections.projects, 12));
   const internships = lineItems(sections.internships, 10);
   const achievements = lineItems(sections.achievements, 12);
   const languages = findList(sections.languages, { max: 10, minLen: 3 });
@@ -1256,12 +1439,12 @@ export function extractFields(text) {
     /* Every branch goes through plausibleValue: a labelled line is only
        believed when what follows the label is actually a value, not the
        next heading of a flattened two-column table. */
-    title: plausibleValue(firstSegment(employment[0]?.title), { maxWords: 9 })
+    title: plausibleValue(firstSegment(recent && recent.row.title), { maxWords: 9 })
       || plausibleValue(firstSegment(firstMatch(t,
           LABELLED('(?:^|\\n)[ \\t]*(?:designation|current\\s*designation|job\\s*title)',
                    '[^\\n]{0,50}'))), { maxWords: 9 })
       || findTitle(t, sections, nameRead.name),
-    currentCompany: plausibleValue(employment[0]?.company, { maxWords: 6 })
+    currentCompany: plausibleValue(recent && recent.row.company, { maxWords: 6 })
       || (hasWorked
         ? plausibleValue(firstMatch(t,
             LABELLED('(?:^|\\n)[ \\t]*(?:current\\s*(?:company|employer)|company\\s*name)',
@@ -1276,7 +1459,7 @@ export function extractFields(text) {
       || plausibleValue(scanForHealthOrg(sections.experience, t), { maxWords: 7 })
       || plausibleValue(scanForHealthOrg(t, t, { needEvidence: true }), { maxWords: 7 })
       || (hasWorked ? findCurrentCompany(t, employment, sections.experience) : ''),
-    previousCompanies: employment.slice(1).map((e) => e.company),
+    previousCompanies: employment.filter((e) => !recent || e !== recent.row).map((e) => e.company),
     employmentHistory: employment,
     expYears: findExperienceYears(t),
     relevantExpYears: (() => {
@@ -1291,6 +1474,7 @@ export function extractFields(text) {
     qualification: findQualification(t, sections),
     education: sections.education ? clean(sections.education).slice(0, 600) : null,
     educationRecords: findEducationRecords(sections.education),
+    highestEducation: null,        // filled below, from the records
     summary: sections.summary ? clean(sections.summary).slice(0, 1200) : null,
     skills,
     certifications,
@@ -1304,6 +1488,8 @@ export function extractFields(text) {
     achievements,
   };
 
+  raw.highestEducation = highestEducation(raw.educationRecords, raw.qualification);
+
   // Drop everything that was not found. An absent key is the signal the
   // form uses to leave a field alone.
   const fields = {};
@@ -1313,5 +1499,5 @@ export function extractFields(text) {
     if (typeof v === 'string' && !v.trim()) continue;
     fields[k] = v;
   }
-  return { fields, found: Object.keys(fields).length };
+  return { fields, found: Object.keys(fields).length, notes };
 }

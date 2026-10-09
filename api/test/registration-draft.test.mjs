@@ -388,6 +388,129 @@ test('the plain seven-step registration still requires a notice period; the resu
   assert.equal(r.body.error.details.noticePeriod, 'Please select a notice period');
 });
 
+/* ------------------------------------------------------------------ *
+ * the simplified registration: the resume is optional, seven profile fields
+ * ------------------------------------------------------------------ */
+const SIMPLE = { password: 'Simpl3reg9pass', confirmPassword: 'Simpl3reg9pass', consent: { terms: true, communication: false, resumeProcessing: false } };
+
+async function noResumeDraft(c) {
+  const r = await c.post('/api/registration/drafts', { noResume: true });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  c.draft = r.body;
+  c.h = { headers: { 'x-draft-token': r.body.draftToken } };
+  return r;
+}
+
+test('no resume: the seven fields are typed, the email answers its code, the account is made without the old preferences, and they are signed in', async () => {
+  const email = `norez.${uniq()}@mailbox-teamlink-tests.in`;
+  const phone = mobile();
+  const c = await client();
+  await noResumeDraft(c);
+  assert.equal(c.draft.resume, null);
+  assert.equal(c.draft.status, 'pending');
+  await verifyEmail(c, email);
+
+  const fix = await c.patch(`/api/registration/drafts/${c.draft.draftId}`, {
+    corrections: { name: 'Asha Verma', phone, highestEducation: "Master's Degree", title: 'Data Analyst',
+      currentCompany: 'Globex Corp', skills: ['SQL', 'sql', 'Excel', 'Excel ', 'Python'] } }, c.h);
+  assert.equal(fix.status, 200, JSON.stringify(fix.body));
+  assert.deepEqual(fix.body.corrections.skills, ['SQL', 'Excel', 'Python'], 'the same skill twice is one skill');
+
+  const reg = await c.post('/api/auth/register', { name: 'Asha Verma', email, phone, ...SIMPLE,
+    draftId: c.draft.draftId, draftToken: c.h.headers['x-draft-token'] });
+  assert.equal(reg.status, 201, JSON.stringify(reg.body));
+
+  const cand = (await raw(`select * from candidates where id=$1`, [reg.body.candidateId])).rows[0];
+  assert.equal(cand.name, 'Asha Verma');
+  assert.equal(cand.email_verified, true);
+  assert.equal(cand.resume_storage_path, null, 'no resume was uploaded');
+  assert.equal(cand.current_company, 'Globex Corp');
+  assert.deepEqual(cand.skills, ['SQL', 'Excel', 'Python']);
+  const edu = (await raw(`select qualification from candidate_education where candidate_id=$1`, [cand.id])).rows;
+  assert.equal(edu.length, 1);
+  assert.equal(edu[0].qualification, "Master's Degree");
+  /* the optional communication consent was declined: not granted; terms granted */
+  const consents = (await raw(`select kind, status from candidate_consents where candidate_id=$1`, [cand.id])).rows;
+  assert.ok(consents.some((x) => x.kind === 'terms' && x.status === 'granted'));
+  assert.ok(!consents.some((x) => x.kind === 'communication' && x.status === 'granted'));
+  /* the session was established: a signed-in call works with the same client */
+  const me = await c.get('/api/me/profile-completeness');
+  assert.equal(me.status, 200, JSON.stringify(me.body));
+});
+
+test('fresher: the resume employment is not put on the profile', async () => {
+  const email = `fresh.${uniq()}@mailbox-teamlink-tests.in`;
+  const phone = mobile();
+  const c = await client();
+  const up = await upload(c, resumeText({ email, phone }));
+  assert.equal(up.status, 201);
+  assert.equal(up.body.fields.currentCompany, 'ABC Technologies Pvt Ltd');
+  await verifyEmail(c, email);
+  await c.patch(`/api/registration/drafts/${c.draft.draftId}`, { corrections: { title: null, currentCompany: null } }, c.h);
+  const reg = await c.post('/api/auth/register', { name: 'Rahul Kumar', email, phone, fresher: true, ...SIMPLE,
+    draftId: c.draft.draftId, draftToken: c.h.headers['x-draft-token'] });
+  assert.equal(reg.status, 201, JSON.stringify(reg.body));
+  const cand = (await raw(`select current_company, exp_years from candidates where id=$1`, [reg.body.candidateId])).rows[0];
+  assert.equal(cand.current_company, null);
+  assert.equal(Number(cand.exp_years), 0);
+});
+
+test('replacing the resume keeps the verified email and reads the new file', async () => {
+  const email = `swap.${uniq()}@mailbox-teamlink-tests.in`;
+  const c = await client();
+  await upload(c, resumeText({ name: 'First Person', email, phone: mobile() }));
+  await verifyEmail(c, email);
+  const second = resumeText({ name: 'Second Person', email, phone: mobile() }).replace('ABC Technologies Pvt Ltd', 'Other Systems Ltd');
+  const r = await c.post(`/api/registration/drafts/${c.draft.draftId}/resume`, fileForm(Buffer.from(second, 'utf8'), 'second.txt'), c.h);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.resume.fileName, 'second.txt');
+  assert.equal(r.body.fields.name, 'Second Person');
+  assert.equal(r.body.fields.currentCompany, 'Other Systems Ltd');
+  assert.equal(r.body.emailVerified, true, 'the address already answered its code');
+});
+
+test('a highest education outside the list is refused', async () => {
+  const c = await client();
+  await noResumeDraft(c);
+  const bad = await c.patch(`/api/registration/drafts/${c.draft.draftId}`, { corrections: { highestEducation: 'Wizard School' } }, c.h);
+  assert.equal(bad.status, 400);
+  assert.ok(bad.body.error.details.highestEducation);
+});
+
+test('duplicate email: two submissions at once make one account, and a later attempt is told the address exists', async () => {
+  const email = `dup.${uniq()}@mailbox-teamlink-tests.in`;
+  const c = await client();
+  await noResumeDraft(c);
+  await verifyEmail(c, email);
+  const body = { name: 'Dup Person', email, phone: mobile(), ...SIMPLE, draftId: c.draft.draftId, draftToken: c.h.headers['x-draft-token'] };
+  const both = await Promise.all([c.post('/api/auth/register', body), c.post('/api/auth/register', body)]);
+  assert.equal(both.filter((x) => x.status === 201).length, 1, both.map((x) => x.status).join(','));
+  assert.equal((await raw(`select count(*)::int as n from candidates where lower(email)=lower($1)`, [email])).rows[0].n, 1);
+
+  const c2 = await client();
+  await noResumeDraft(c2);
+  const again = await c2.post(`/api/registration/drafts/${c2.draft.draftId}/email-code`, { email }, c2.h);
+  assert.equal(again.status, 409);
+  assert.equal(again.body.error.code, 'EMAIL_TAKEN');
+  assert.match(again.body.error.details.email, /already exists.*Login/i);
+
+  /* and straight to the register route */
+  const c3 = await client();
+  const direct = await c3.post('/api/auth/register', { name: 'Dup Person', email, phone: mobile(), ...SIMPLE,
+    draftId: c2.draft.draftId, draftToken: c2.h.headers['x-draft-token'] });
+  assert.ok([400, 409].includes(direct.status), JSON.stringify(direct.body));
+});
+
+test('the seven-step registration still requires its four preferences', async () => {
+  const c = await client();
+  const r = await c.post('/api/auth/register', {
+    name: 'No Prefs', email: `noprefs.${uniq()}@mailbox-teamlink-tests.in`, phone: mobile(),
+    password: 'Plain1person', consent: CONSENT,
+  });
+  assert.equal(r.status, 400, JSON.stringify(r.body));
+  for (const k of ['preferredLocation', 'expectedCtc', 'noticePeriod', 'preferredWorkModes']) assert.ok(r.body.error.details[k], k);
+});
+
 test('teardown', async () => {
   await new Promise((r) => server.close(r));
   const { stopBackgroundWork } = await import('../src/app.js');

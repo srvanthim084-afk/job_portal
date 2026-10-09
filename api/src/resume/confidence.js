@@ -39,7 +39,7 @@ const SINGLE = {
   name: 0.8, skills: 0.85, educationRecords: 0.8, education: 0.85, qualification: 0.85,
   certifications: 0.8, languages: 0.8, projects: 0.8, achievements: 0.75, internships: 0.75,
   employmentHistory: 0.8, previousCompanies: 0.75, expYears: 0.8, relevantExpYears: 0.75,
-  title: 0.75, currentCompany: 0.75, summary: 0.85,
+  title: 0.75, currentCompany: 0.75, summary: 0.85, highestEducation: 0.85,
   dob: 0.75,
   // read from prose by a pattern; the candidate states these at registration anyway
   location: 0.6, preferredLocation: 0.5, noticePeriod: 0.5,
@@ -125,11 +125,17 @@ export async function analyseResume(text, { parser = '', aiTimeoutMs } = {}) {
 
   const needsVerification = VERIFY_KEYS.filter((k) =>
     (merged[k] !== undefined || (k === 'name' && merged.nameSuggestion)) && (confidence[k] ?? 1) < min);
+  /* The dates could not say which job is the latest: the candidate is asked to check the role and the employer. */
+  const notes = local.notes || {};
+  if (notes.recentEmploymentUncertain) {
+    for (const k of ['title', 'currentCompany']) if (merged[k] !== undefined && !needsVerification.includes(k)) needsVerification.push(k);
+  }
 
   return {
     fields: merged,
     confidence,
     needsVerification,
+    notes,
     source: ai ? 'ai' : 'parser',
     aiError,
     found: Object.keys(merged).length,

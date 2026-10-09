@@ -87,22 +87,20 @@ const registerSchema = z.object({
    * keyed by field, so the form can put each one under the input it
    * belongs to instead of showing one sentence for all four.
    */
-  preferredLocation: z.string({ required_error: 'Preferred Job Location is required' })
-    .trim().min(1, 'Preferred Job Location is required').max(160),
-  expectedCtc: z.coerce.number({
-      required_error: 'Expected Salary is required',
+  /* Required on the seven-step form (checked in registerOne, where draftId is known). The simplified,
+     resume-optional registration (draftId present) does not ask for these three: the profile step does. */
+  preferredLocation: z.string().trim().max(160).optional(),
+  expectedCtc: z.preprocess((v) => (v === '' || v === null ? undefined : v), z.coerce.number({
       invalid_type_error: 'Expected Salary is required',
     })
     .positive('Expected Salary must be more than 0')
-    .max(1000, 'Please enter the salary in lakh per annum'),
+    .max(1000, 'Please enter the salary in lakh per annum').optional()),
   /* Required on the seven-step form; NOT asked on the resume-first form (draftId
      present), where it is the first thing the profile step asks for. The check
      is in registerOne, because it depends on draftId. */
   noticePeriod: z.string().trim().max(40).optional(),
   preferredWorkModes: z.array(z.string().trim().max(40),
-      { required_error: 'Select at least one work mode',
-        invalid_type_error: 'Select at least one work mode' })
-    .min(1, 'Select at least one work mode').max(10),
+      { invalid_type_error: 'Select at least one work mode' }).max(10).optional(),
   /* 0092: are you looking? Asked on the form; Actively looking when the
      form (or an older client) does not say. */
   availability: z.enum(['actively_looking', 'open_to_offers', 'not_looking']).optional(),
@@ -307,9 +305,15 @@ export default function authRoutes() {
             draftId, draftToken, currentLocation } = parse(registerSchema, req.body);
 
     if (website) throw badRequest('Please check the highlighted fields and try again.');
-    if (!draftId && !String(noticePeriod || '').trim()) {
-      throw badRequest('Please check the highlighted fields and try again.',
-        { noticePeriod: 'Please select a notice period' });
+    if (!draftId) {
+      const missingPrefs = {};
+      if (!preferredLocation) missingPrefs.preferredLocation = 'Preferred Job Location is required';
+      if (expectedCtc === undefined) missingPrefs.expectedCtc = 'Expected Salary is required';
+      if (!noticePeriod || !String(noticePeriod).trim()) missingPrefs.noticePeriod = 'Please select a notice period';
+      if (!preferredWorkModes || !preferredWorkModes.length) missingPrefs.preferredWorkModes = 'Select at least one work mode';
+      if (Object.keys(missingPrefs).length) {
+        throw badRequest('Please check the highlighted fields and try again.', missingPrefs);
+      }
     }
 
     /* 0117: from a resume draft, the email must have answered its code
@@ -326,9 +330,8 @@ export default function authRoutes() {
     if (declined('terms') || missing('terms')) {
       problems['consent.terms'] = 'Please accept the Terms & Conditions and Privacy Policy.';
     }
-    if (declined('communication') || missing('communication')) {
-      problems['consent.communication'] = 'Please agree to receive recruitment communication from TeamLink.';
-    }
+    /* Recruitment / marketing communication is OPTIONAL: it is never required and never pre-ticked. Declining it is
+       recorded after the account exists (below). Only the Terms & Privacy consent is mandatory. */
     if (Object.keys(problems).length) {
       throw badRequest('Please check the highlighted fields and try again.', problems);
     }
@@ -362,10 +365,12 @@ export default function authRoutes() {
      * required to get this far, so they are written here rather than
      * left to a second request that might not arrive.
      */
-    await withUser(null, (c) => c.query(
-      `select auth_register_preferences($1,$2,$3,$4,$5)`,
-      [candidateId, preferredLocation, expectedCtc, noticePeriod || null,
-       preferredWorkModes]));
+    if (preferredLocation || expectedCtc !== undefined || noticePeriod || (preferredWorkModes && preferredWorkModes.length)) {
+      await withUser(null, (c) => c.query(
+        `select auth_register_preferences($1,$2,$3,$4,$5)`,
+        [candidateId, preferredLocation || null, expectedCtc === undefined ? null : expectedCtc, noticePeriod || null,
+         preferredWorkModes || []]));
+    }
     /* 0092: their availability, onto the same just-created record. */
     await withUser(null, (c) => c.query(`select availability_register($1,$2)`,
       [candidateId, availability || 'actively_looking']));
@@ -387,6 +392,12 @@ export default function authRoutes() {
         [candidateId, reg.consentVersion, reg.privacyPolicyUrl || null,
          !!consent.terms, !!consent.communication, !!consent.resumeProcessing]));
     }
+    /* They were asked and said no to recruitment communication: that is recorded as a withdrawal, so nothing
+       optional is sent to them. */
+    if (consent && consent.communication === false) {
+      await withUser(session, (c) => c.query(`select candidate_consent_set('communication','withdrawn',$1)`, [reg.consentVersion]))
+        .catch(() => {});
+    }
     /* 0117: the current location they gave, and then the draft becomes the
        profile: the resume, what was read from it, where each value came
        from, and how complete the profile now is. */
@@ -400,7 +411,7 @@ export default function authRoutes() {
       try {
         completeness = await finishDraft({
           draftId, draftToken, draft, candidateId, session,
-          provided: { name, email, phone },
+          provided: { name, email, phone, fresher: !!req.body.fresher },
         });
       } catch (err) {
         console.error('[register] draft conversion failed:', err.message);
