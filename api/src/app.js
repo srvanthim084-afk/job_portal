@@ -52,6 +52,7 @@ import aiPipelineRoutes from './routes/ai-pipeline.js';
 import screeningRoutes from './routes/screening.js';
 import interviewPrepRoutes from './routes/interview-prep.js';
 import { startDeadlineSweep } from './notify/interview-deadline.js';
+import { startInterviewNoticeSweep } from './notify/interview-suspension.js';
 import { startIntakeSync } from './intake/scheduler.js';
 import { startScreeningSweep } from './ai/screening.js';
 import { startRetrySweep } from './notify/retry.js';
@@ -120,6 +121,7 @@ function startBackgroundWork(logger) {
   backgroundStarted = true;
   try {
     backgroundStops.push(startDeadlineSweep());
+    backgroundStops.push(startInterviewNoticeSweep());
     backgroundStops.push(startIntakeSync());
     backgroundStops.push(startScreeningSweep());
     backgroundStops.push(startRetrySweep());

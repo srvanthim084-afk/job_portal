@@ -28,6 +28,8 @@ import { dispatchEvent } from '../notify/events.js';
 import { CODES } from '../errors.js';
 import { storeRecording, getStorage, RECORDING_MAX_BYTES } from '../storage.js';
 import { speechModes, sttEnabled, ttsEnabled, transcribe, synthesise } from '../ai/interview-speech.js';
+import { retakePolicy, PAGE_STOPS, stopMessage, formatWhen } from '../interview/policy.js';
+import { afterSuspension } from '../notify/interview-suspension.js';
 
 /* Recordings are inspected in memory before anything is written, exactly
    like a resume (routes/uploads.js). */
@@ -247,22 +249,45 @@ export default function aiInterviewRoutes() {
       if (!app) throw badRequest('You have no application to interview for.');
 
       /*
-       * A SUSPENDED INTERVIEW CANNOT BE WALKED AROUND BY STARTING A NEW ONE.
+       * A SUSPENDED INTERVIEW CANNOT BE WALKED AROUND, BUT IT IS NOT THE END.
        *
-       * Suspending the session and then letting the same candidate press
-       * "Start interview" again would make the whole rule cosmetic. The
-       * suspension stands until a recruiter reopens it, which issues a
-       * fresh interview row and a fresh link (migration 0059).
+       * The suspension stands until its retake time. After that the SAME
+       * application may start one new attempt - decided HERE, from the
+       * stored retake_available_at and the database's clock (UTC), never
+       * from the browser: a candidate who calls this early, or edits the
+       * page, is refused. One retake by default (INTERVIEW_MAX_ATTEMPTS);
+       * a recruiter's block overrides it; a recruiter can grant more. A
+       * second application for the same role is not a way round it - the
+       * attempts belong to the application.
        */
-      const stopped = (await c.query(
-        `select id from ai_interviews
-          where application_id=$1 and candidate_id=$2 and status='suspended'
-          order by suspended_at desc limit 1`,
-        [app.id, req.session.profileId])).rows[0];
-      if (stopped) {
-        throw new ApiError(423, 'INTERVIEW_SUSPENDED',
-          'Your interview for this role was suspended and the recruitment team is '
-          + 'reviewing the session. You cannot start it again until a recruiter reopens it.');
+      const policy = retakePolicy();
+      const attempts = (await c.query(
+        `select id, status, attempt_number, suspended_at, suspension_message, retake_available_at, retake_blocked,
+                (retake_available_at is not null and now() >= retake_available_at) as retake_open
+           from ai_interviews
+          where application_id=$1 and candidate_id=$2
+          order by attempt_number desc`,
+        [app.id, req.session.profileId])).rows;
+      const last = attempts[0];
+      if (last && last.status === 'suspended') {
+        const suspendedCount = attempts.filter((a) => a.status === 'suspended').length;
+        const allowed = policy.maxAttempts + Number(app.extra_interview_attempts || 0);
+        const info = {
+          attemptNumber: last.attempt_number,
+          suspendedAt: last.suspended_at ? new Date(last.suspended_at).toISOString() : null,
+          reason: last.suspension_message || null,
+        };
+        if (last.retake_blocked || !last.retake_available_at || suspendedCount >= allowed) {
+          throw new ApiError(423, 'INTERVIEW_UNDER_REVIEW',
+            'Your interview is under recruiter review. You will be informed of the next steps.', info);
+        }
+        if (!last.retake_open) {
+          const at = new Date(last.retake_available_at);
+          throw new ApiError(423, 'INTERVIEW_RETAKE_WAIT',
+            `You can retake this interview after ${formatWhen(at)}.`,
+            { ...info, retakeAvailableAt: at.toISOString() });
+        }
+        /* open: fall through and create the next attempt (numbered by the database) */
       }
 
       const job = (await c.query(`select * from jobs where id=$1`, [app.job_id])).rows[0];
@@ -966,21 +991,29 @@ export default function aiInterviewRoutes() {
       agreeing: Number.isFinite(Number(ev.agreeing)) ? Number(ev.agreeing) : undefined,
       pitchHz: Number.isFinite(Number(ev.pitchHz)) ? Math.round(Number(ev.pitchHz)) : undefined,
       baselineHz: Number.isFinite(Number(ev.baselineHz)) ? Math.round(Number(ev.baselineHz)) : undefined,
-      questionSeq: Number.isFinite(Number(ev.questionSeq)) ? Number(ev.questionSeq) : undefined,
+      questionSeq: Number.isInteger(Number(ev.questionSeq)) && Number(ev.questionSeq) > 0 && Number(ev.questionSeq) < 100
+        ? Number(ev.questionSeq) : undefined,
       note: ev.note ? String(ev.note).slice(0, 300) : undefined,
     };
 
+    const policy = retakePolicy();
     const out = await withUser(ENGINE_SESSION, async (c) => (await c.query(
-      `select * from interview_integrity_report($1,$2,$3,$4::jsonb)`,
-      [iv.id, b.type, b.confidence, JSON.stringify(evidence)])).rows[0]);
+      `select * from interview_integrity_report($1,$2,$3,$4::jsonb,$5,$6,$7)`,
+      [iv.id, b.type, b.confidence, JSON.stringify(evidence),
+       policy.delayMinutes, policy.maxAttempts, policy.deadlineHours])).rows[0]);
+
+    /* The email goes only AFTER the suspension is saved, once (the claim
+       is the database's), and never holds up or undoes this answer. */
+    if (out.action === 'suspend') afterSuspension(iv.id);
 
     res.json({
       strike: Number(out.strike_no),
       of: 2,
-      action: out.action,                 // 'warn' | 'suspend' | 'suspended'
+      action: out.action,                 // 'warn' | 'suspend' | 'suspended' | 'ignored'
       message: out.message,
       interviewStatus: out.interview_status,
       integrityStatus: out.integrity_status,
+      retakeAvailableAt: out.retake_at ? new Date(out.retake_at).toISOString() : null,
       mayContinue: out.action === 'warn',
     });
   }));
@@ -994,12 +1027,117 @@ export default function aiInterviewRoutes() {
    * Declared BEFORE `/ai-interviews/:id/integrity` because Express
    * matches in order and `integrity` would otherwise be read as an id.
    */
+  /**
+   * POST /api/ai-interviews/:id/stop
+   *
+   * The page's OWN stops - the tab left, the camera gone, continuous
+   * background noise - used to end the interview on screen and tell the
+   * server nothing, so a recruiter saw an interview that was simply "in
+   * progress". They now report here and suspend through the same shared
+   * function as the two-strike rule, so every suspension has a reason, a
+   * question number, an email and a retake time.
+   *
+   * The browser names what it saw; the server turns that into a code and
+   * the one sentence everybody reads. Only the candidate whose interview
+   * it is can do this, and only to a running one.
+   */
+  r.post('/ai-interviews/:id/stop', requireAuth(), wrap(async (req, res) => {
+    const b = parse(z.object({
+      kind: z.enum(['left_interview', 'background_noise', 'camera_lost', 'camera_off']),
+      questionSeq: z.number().int().min(1).max(99).optional(),
+      note: z.string().max(200).optional(),
+    }), req.body);
+    if (req.session.role !== 'candidate') throw forbidden('Only the candidate sitting an interview can stop it.');
+
+    const iv = await withUser(req.session, async (c) => (await c.query(
+      `select id, status, questions_answered from ai_interviews where id=$1 and candidate_id=$2`,
+      [req.params.id, req.session.profileId])).rows[0]);
+    if (!iv) throw notFound('That interview could not be found.');
+
+    const code = PAGE_STOPS[b.kind];
+    const q = b.questionSeq || (Number(iv.questions_answered || 0) + 1);
+    const policy = retakePolicy();
+    let out;
+    try {
+      out = await withUser(ENGINE_SESSION, async (c) => (await c.query(
+        `select * from ai_interview_suspend($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)`,
+        [iv.id, code, stopMessage(code, q), q, 1, policy.delayMinutes, policy.maxAttempts, policy.deadlineHours,
+         JSON.stringify({ detector: 'browser', note: b.note || undefined })])).rows[0]);
+    } catch (err) {
+      /* a finished interview has nothing left to suspend: not an error for the page */
+      if (err && (err.code === '22023' || /finished interview cannot be suspended/.test(String(err.message)))) {
+        return res.json({ suspended: false, interviewStatus: iv.status });
+      }
+      throw err;
+    }
+    if (out.first_time) afterSuspension(iv.id);
+    const row = await withUser(ENGINE_SESSION, async (c) => (await c.query(
+      `select suspension_message, retake_available_at, attempt_number from ai_interviews where id=$1`, [iv.id])).rows[0]);
+    res.json({
+      suspended: true,
+      firstTime: out.first_time,
+      message: row.suspension_message,
+      retakeAvailableAt: row.retake_available_at ? new Date(row.retake_available_at).toISOString() : null,
+      attemptNumber: row.attempt_number,
+    });
+  }));
+
+  /**
+   * GET /api/ai-interviews/:id/suspension
+   *
+   * What the candidate's screen shows after a suspension: the one stored
+   * sentence and when the retake opens. Their own interview only.
+   */
+  r.get('/ai-interviews/:id/suspension', requireAuth(), wrap(async (req, res) => {
+    if (req.session.role !== 'candidate') throw forbidden('Only the candidate sitting an interview can read this.');
+    const row = await withUser(req.session, async (c) => (await c.query(
+      `select status, suspension_message, retake_available_at, retake_blocked, attempt_number
+         from ai_interviews where id=$1 and candidate_id=$2`, [req.params.id, req.session.profileId])).rows[0]);
+    if (!row) throw notFound('That interview could not be found.');
+    res.json({
+      suspended: row.status === 'suspended',
+      message: row.suspension_message || null,
+      retakeAvailableAt: row.retake_available_at && !row.retake_blocked ? new Date(row.retake_available_at).toISOString() : null,
+      attemptNumber: row.attempt_number,
+    });
+  }));
+
+  /**
+   * POST /api/ai-interviews/:id/retake
+   *
+   * The recruiter's control over the retake: block it, lift the block, or
+   * grant one more attempt. Recruiter or admin only, only on an interview
+   * their row-level access reaches, with a reason, and written to the
+   * interview's audit trail (who, when, why). A block overrides the
+   * automatic retake even after the wait.
+   */
+  r.post('/ai-interviews/:id/retake', requireAuth(), requireRole('recruiter', 'admin'), wrap(async (req, res) => {
+    const b = parse(z.object({
+      action: z.enum(['block', 'unblock', 'extra_attempt']),
+      reason: z.string().trim().min(3, 'Please give a reason.').max(1000),
+    }), req.body);
+    const seen = await withUser(req.session, async (c) => (await c.query(
+      `select id from ai_interviews where id=$1`, [req.params.id])).rows[0]);
+    if (!seen) throw notFound('That interview could not be found.');
+    const iv = await withUser(ENGINE_SESSION, async (c) => (await c.query(
+      `select * from interview_retake_control($1,$2,$3,$4)`,
+      [req.params.id, b.action, b.reason, req.session.userId || null])).rows[0]);
+    res.json({
+      interview: {
+        id: iv.id, status: iv.status, attemptNumber: iv.attempt_number, retakeBlocked: iv.retake_blocked,
+        retakeAvailableAt: iv.retake_available_at ? new Date(iv.retake_available_at).toISOString() : null,
+      },
+    });
+  }));
+
   r.get('/ai-interviews/integrity', requireAuth(),
     requireRole('recruiter', 'bde', 'admin'), wrap(async (req, res) => {
       const rows = await withUser(req.session, async (c) => (await c.query(
         `select i.id, i.candidate_id, i.application_id, i.job_id, i.status,
                 i.integrity_status, i.integrity_strikes, i.suspended_at,
                 i.suspend_reason, i.reopened_at,
+                i.suspension_code, i.suspension_message, i.suspension_question_no, i.detection_count,
+                i.last_detection_at, i.attempt_number, i.retake_available_at, i.retake_blocked,
                 c.name as candidate_name, j.title as job_title,
                 (select count(*) from ai_interview_flags f
                   where f.interview_id = i.id and f.review_status = 'open'
@@ -1007,7 +1145,7 @@ export default function aiInterviewRoutes() {
            from ai_interviews i
            join candidates c on c.id = i.candidate_id
            left join jobs j on j.id = i.job_id
-          where i.integrity_strikes > 0
+          where i.integrity_strikes > 0 or i.status = 'suspended' or i.suspension_code is not null
           order by coalesce(i.suspended_at, i.started_at, i.created_at) desc
           limit 100`)).rows);
 
@@ -1024,6 +1162,16 @@ export default function aiInterviewRoutes() {
           strikes: Number(x.integrity_strikes || 0),
           suspendedAt: x.suspended_at,
           suspendReason: x.suspend_reason,
+          suspensionCode: x.suspension_code,
+          suspensionMessage: x.suspension_message,
+          suspensionQuestionNo: x.suspension_question_no,
+          detectionCount: Number(x.detection_count || 0),
+          lastDetectionAt: x.last_detection_at,
+          attemptNumber: x.attempt_number,
+          retakeAvailableAt: x.retake_available_at,
+          retakeBlocked: !!x.retake_blocked,
+          /* a suspended interview is under review, never rejected */
+          display: x.status === 'suspended' ? 'Under Recruiter Review' : null,
           reopenedAt: x.reopened_at,
           openFlags: Number(x.open_flags || 0),
         })),
@@ -1044,9 +1192,17 @@ export default function aiInterviewRoutes() {
       const iv = (await c.query(
         `select id, status, integrity_status, integrity_strikes, suspended_at,
                 suspend_reason, reopened_at, reopen_reason, candidate_id,
-                application_id, job_id
+                application_id, job_id,
+                suspension_code, suspension_message, suspension_question_no, detection_count,
+                last_detection_at, attempt_number, retake_available_at, retake_blocked,
+                retake_block_reason, suspension_email_sent_at,
+                (retake_available_at is not null and now() >= retake_available_at) as retake_open
            from ai_interviews where id=$1`, [req.params.id])).rows[0];
       if (!iv) return null;
+      const attempts = iv.application_id ? (await c.query(
+        `select id, attempt_number, status, started_at, suspended_at, suspension_code, suspension_message,
+                suspension_question_no, completed_at, overall_percentage
+           from ai_interviews where application_id=$1 order by attempt_number`, [iv.application_id])).rows : [];
       const flags = (await c.query(
         `select id, flag_type, description, severity, strike_no, confidence,
                 confidence_band, detector, warning_message, status_after,
@@ -1054,7 +1210,7 @@ export default function aiInterviewRoutes() {
            from ai_interview_flags
           where interview_id=$1 and strike_no is not null
           order by strike_no, occurred_at`, [req.params.id])).rows;
-      return { iv, flags };
+      return { iv, flags, attempts };
     });
     if (!out) throw notFound('That interview could not be found.');
 
@@ -1078,6 +1234,32 @@ export default function aiInterviewRoutes() {
       suspendReason: out.iv.suspend_reason,
       reopenedAt: out.iv.reopened_at,
       reopenReason: out.iv.reopen_reason,
+      suspensionCode: out.iv.suspension_code,
+      suspensionMessage: out.iv.suspension_message,
+      suspensionQuestionNo: out.iv.suspension_question_no,
+      detectionCount: Number(out.iv.detection_count || 0),
+      lastDetectionAt: out.iv.last_detection_at,
+      attemptNumber: out.iv.attempt_number,
+      retakeAvailableAt: out.iv.retake_available_at,
+      retakeOpen: !!out.iv.retake_open && !out.iv.retake_blocked,
+      retakeBlocked: !!out.iv.retake_blocked,
+      ...(staff ? { retakeBlockReason: out.iv.retake_block_reason, suspensionEmailSentAt: out.iv.suspension_email_sent_at } : {}),
+      /* a suspended interview is under review - never "rejected" or "failed" */
+      display: out.iv.status === 'suspended' ? 'Under Recruiter Review' : null,
+      /* Every attempt, kept: a retake never overwrites the one before it. The recruiter
+         sees ONE current score - the latest COMPLETED attempt's. A suspended attempt has none. */
+      ...(staff ? {
+        attempts: out.attempts.map((a) => ({
+          id: a.id, attemptNumber: a.attempt_number, status: a.status, startedAt: a.started_at,
+          suspendedAt: a.suspended_at, suspensionMessage: a.suspension_message,
+          suspensionQuestionNo: a.suspension_question_no,
+          score: (a.status === 'completed' || a.status === 'evaluated') && a.overall_percentage != null ? Number(a.overall_percentage) : null,
+        })),
+        currentScore: (() => {
+          const done = out.attempts.filter((a) => (a.status === 'completed' || a.status === 'evaluated') && a.overall_percentage != null);
+          return done.length ? Number(done[done.length - 1].overall_percentage) : null;
+        })(),
+      } : {}),
       violations: out.flags.map((f) => ({
         id: Number(f.id),
         no: f.strike_no,

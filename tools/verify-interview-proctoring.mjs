@@ -207,8 +207,8 @@ try {
         const t = document.body.textContent || '';
         return { text: t.slice(0, 0) || '',
                  heading: /Interview suspended/i.test(t),
-                 why: /stopped being the active window/i.test(t),
-                 kept: /answers up to this point were kept/i.test(t) };
+                 why: /The interview window was not in front/i.test(t),
+                 kept: /answers up to this point were saved/i.test(t) };
       });
       check(suspended.heading, 'leaving the tab SUSPENDS the interview');
       check(suspended.why, '  and the screen says what happened');
@@ -275,10 +275,11 @@ check(black.blackLuma < 8 && black.greyLuma > 8,
 const fair = await page.evaluate(() => {
   const src = document.documentElement.innerHTML;
   return /function candidateIsAnswering\(\)\{\s*return\s*!!AIIV\.listening;\s*\}/.test(src)
-    && /if\(!candidateIsAnswering\(\)\s*&&\s*vadAvailable\(\)\)/.test(src);
+    && /if\(!vadAvailable\(\)\s*\|\|\s*!roomShouldBeQuiet\(\)\)/.test(src)
+    && /function roomShouldBeQuiet\(\)/.test(src) && /AIIV\.speaking\s*\|\|\s*AIIV\.saving/.test(src);
 });
 check(fair,
-  'background noise is only counted while the candidate is NOT the one talking');
+  'background noise is only counted in a stretch nothing explains: not while the candidate answers, the interviewer speaks or an answer is being saved');
 
 await page.evaluate(() => {
   try { (window.__probeStream || { getTracks: () => [] }).getTracks().forEach((t) => t.stop()); } catch (e) {}
