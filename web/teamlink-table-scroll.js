@@ -86,6 +86,16 @@
          column rather than spilling into the next one */
       '.tlts-w table.tlts > tbody > tr > td{white-space:nowrap}',
       '.tlts-w table.tlts > tbody > tr > td > *{max-width:none}',
+      /* A CANDIDATE'S NAME AND DETAILS NEVER WIDEN THE COLUMN WITHOUT LIMIT.
+         Imported candidates (from an email, a resume) carry whatever the file said as their
+         title and company - sometimes a whole sentence. The cells do not wrap, so one such row
+         stretched the pinned Candidate column to most of the window, and because that column is
+         pinned it sat on top of every other column. The text is cut with an ellipsis (the full
+         text is in the tooltip) and the column keeps to a readable width. */
+      '.tlts-w table.tlts .cell-person{max-width:340px}',
+      '.tlts-w table.tlts .cell-person > div:last-child{min-width:0; max-width:290px}',
+      '.tlts-w table.tlts .cell-person b, .tlts-w table.tlts .cell-person span{display:block; overflow:hidden;',
+      '  text-overflow:ellipsis; white-space:nowrap; max-width:290px}',
       /* the job and its company badge sit together */
       '.tlts-w table.tlts .tlts-flex{display:flex; align-items:center; gap:6px; flex-wrap:nowrap}',
       /* pinned columns */
@@ -194,6 +204,10 @@
     [].forEach.call(table.querySelectorAll('tbody > tr > td'), function (td) {
       if (td.__tltsFlex) return;
       td.__tltsFlex = true;
+      /* the full text of a cut-off candidate line, on hover */
+      [].forEach.call(td.querySelectorAll('.cell-person b, .cell-person span'), function (el) {
+        if (!el.title && el.textContent) el.title = el.textContent.trim();
+      });
       if (td.children.length >= 2 && td.querySelector('.badge, [class*="badge"], .pill, [class*="chip"]')
           && !td.querySelector('button, select, input')) {
         var kids = [].filter.call(td.children, function (k) { return getComputedStyle(k).display !== 'block'; });
