@@ -1,15 +1,15 @@
 /* =====================================================================
    TEAMLINK - candidate registration (0117, the classic one-page form)
 
-     1 Personal Information   Full Name, Email Address (+ 6-digit email
+     2 Personal Information   Full Name, Email Address (+ 6-digit email
                               code), Mobile Number (+ 6-digit SMS OTP),
                               Password, Confirm Password, Current Location
-     2 Professional Info      Candidate Type (Fresher / Experienced);
+     3 Professional Info      Candidate Type (Fresher / Experienced);
                               Experienced: Current Company, Current
                               Designation, Total Experience;
                               Highest Qualification, Key Skills (tags)
-     3 Resume                 Upload Resume (PDF / DOC / DOCX / TXT) -
-                              read at once, fills the form above; or paste
+     1 Resume (shown FIRST)   Upload Resume (PDF / DOC / DOCX / TXT) -
+                              read at once, fills the form below; or paste
                               the text and "Analyze with AI". Optional.
      4 Preferences            Preferred Job Location, Expected Salary,
                               Notice Period, Preferred Work Mode
@@ -254,7 +254,7 @@
     var signedNote = who && S.phase !== 'done'
       ? '<div class="tlrf-warn" role="status">You are signed in as <b>' + h(who) + '</b>. Creating a new account here signs you in as the new account. '
         + '<button type="button" class="btn btn-ghost btn-sm" data-tlrf="signout">Sign out</button></div>' : '';
-    return '<div class="panel"><div class="panel-head"><h2><span class="reg-section-num">1</span>Personal Information</h2></div><div class="panel-body">'
+    return '<div class="panel"><div class="panel-head"><h2><span class="reg-section-num">2</span>Personal Information</h2></div><div class="panel-body">'
       + signedNote + warn
       + '<div class="review-grid"><div>'
       + input('tlrfName', 'name', 'Full Name *', 'autocomplete="name" placeholder="e.g. Sneha Kulkarni"')
@@ -290,7 +290,7 @@
       var o = g[2].map(function (q) { return '<option' + (v.qualification === q ? ' selected' : '') + '>' + h(q) + '</option>'; }).join('');
       return g[0] ? '<optgroup label="' + h(g[0]) + '">' + o + '</optgroup>' : o;
     }).join('');
-    return '<div class="panel"><div class="panel-head"><h2><span class="reg-section-num">2</span>Professional Information</h2></div><div class="panel-body">'
+    return '<div class="panel"><div class="panel-head"><h2><span class="reg-section-num">3</span>Professional Information</h2></div><div class="panel-body">'
       + '<div class="review-field"><label>Candidate Type *</label>'
       + '<div class="opt-row-group" role="radiogroup" aria-label="Candidate Type" style="display:flex;gap:10px;flex-wrap:wrap">'
       + '<label class="opt-row' + (exp ? '' : ' active') + '"><input type="radio" name="tlrfType" value="fresher"' + (exp ? '' : ' checked') + ' data-tlrf-type="1"><span>🎓 Fresher</span></label>'
@@ -320,12 +320,12 @@
   function resumePanel() {
     var d = S.draft;
     var file = d && d.resume ? d.resume.fileName : '';
-    return '<div class="panel ai-panel"><div class="panel-head"><h2><span class="reg-section-num">3</span>Resume</h2></div><div class="panel-body">'
+    return '<div class="panel ai-panel"><div class="panel-head"><h2><span class="reg-section-num">1</span>Resume</h2></div><div class="panel-body">'
       + '<div class="resume-upload-box">'
       + '<div style="font-size:26px">📄</div>'
       + '<button type="button" class="btn btn-primary" style="margin-top:10px" data-tlrf="pick"' + (S.reading ? ' disabled' : '') + '>'
       + (S.reading ? 'Reading your resume…' : (file ? 'Replace Resume (PDF / DOC / DOCX / TXT)' : 'Upload Resume (PDF / DOC / DOCX / TXT)')) + '</button>'
-      + '<p>🤖 AI reads your resume the moment you upload it and fills the form above automatically — no extra step needed.</p>'
+      + '<p>🤖 AI reads your resume the moment you upload it and fills the form below automatically — no extra step needed.</p>'
       + (file ? '<p style="font-weight:700;color:var(--text)">📎 ' + h(file) + '</p>' : '')
       + (S.resumeStatus ? '<p class="tlrf-status ' + (S.resumeOk ? 'ok' : 'bad') + '" role="status">' + h(S.resumeStatus) + '</p>' : '')
       + '<input type="file" id="tlrfFile" accept=".pdf,.doc,.docx,.txt" hidden aria-label="Resume file">'
@@ -399,7 +399,7 @@
     }
     if (form) form.hidden = true;
     host.innerHTML = S.phase === 'done' ? donePanel()
-      : locOptions() + personalPanel() + professionalPanel() + resumePanel() + preferencesPanel() + consentPanel();
+      : locOptions() + resumePanel() + personalPanel() + professionalPanel() + preferencesPanel() + consentPanel();
     if (S.pw && $('tlrfPw')) $('tlrfPw').value = S.pw;
     if (S.pw2 && $('tlrfPw2')) $('tlrfPw2').value = S.pw2;
   }

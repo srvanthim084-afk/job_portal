@@ -101,13 +101,13 @@ async function verifyPhone(page, phone) {
 /* ---- the shape of the page -------------------------------------------------- */
 let page = await openRegister();
 const heads = await page.$$eval('#tlrfHost .panel-head h2', (x) => x.map((h) => h.textContent.replace(/^\d+/, '').trim()));
-check(heads.join(' | ') === 'Personal Information | Professional Information | Resume | Preferences | Consent', `five sections in order (${heads.join(' | ')})`);
+check(heads.join(' | ') === 'Resume | Personal Information | Professional Information | Preferences | Consent', `five sections in order (${heads.join(' | ')})`);
 const labels = await page.$$eval('#tlrfHost label', (x) => x.map((l) => l.textContent.replace(/\s+/g, ' ').trim()));
 for (const want of ['Full Name *', 'Email Address *', 'Mobile Number *', 'Password *', 'Confirm Password *', 'Current Location *', 'Candidate Type *',
   'Highest Qualification *', 'Key Skills *', 'Preferred Job Location *', 'Expected Salary (₹ LPA)', 'Notice Period', 'Preferred Work Mode']) {
   check(labels.some((l) => l.startsWith(want)), `field: ${want}`);
 }
-check(/Upload Resume \(PDF \/ DOC \/ DOCX \/ TXT\)/.test(await hostText(page)) && /fills the form above automatically/.test(await hostText(page)), 'Resume: Upload button and "fills the form above automatically"');
+check(/Upload Resume \(PDF \/ DOC \/ DOCX \/ TXT\)/.test(await hostText(page)) && /fills the form below automatically/.test(await hostText(page)), 'Resume first: Upload button and "fills the form below automatically"');
 check(/prefer to paste text instead\? \(optional\)/i.test(await hostText(page)) && await page.isVisible('[data-tlrf="analyze"]'), 'Resume: paste text + Analyze with AI');
 check(!(await page.isChecked('#tlrfWa')) && !(await page.isChecked('#tlrfTerms')) && !(await page.isChecked('#tlrfResumeOk')), 'no consent is pre-ticked (WhatsApp optional)');
 check(!(await page.isVisible('#tlrfCompany')), 'Fresher: no company / designation fields');
