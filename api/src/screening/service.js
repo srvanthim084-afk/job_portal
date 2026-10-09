@@ -226,7 +226,8 @@ export async function sendLink(applicationId, { now = Date.now(), reminder = fal
   if (!reminder) {
     nonce = randomBytes(12).toString('base64url');
     expires = new Date(now + LINK_DAYS * DAY);
-    await withUser(ENGINE, (c) => c.query(`select screening_link_issue($1,$2,$3)`, [applicationId, nonce, expires]));
+    /* 0131: sent and expiring by the same clock - the reminder compares the two */
+    await withUser(ENGINE, (c) => c.query(`select screening_link_issue($1,$2,$3,$4)`, [applicationId, nonce, expires, new Date(now)]));
   }
   if (!nonce) return { skipped: 'no live link', delivery_status: {} };
 
