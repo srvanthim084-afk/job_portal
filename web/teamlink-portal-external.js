@@ -202,7 +202,10 @@
            External Jobs page asks for clicks still unanswered) - their
            report, labelled as theirs; the click itself is only a click. */
         api().post('/external/apply', { externalJobId: id })
-          .then(null, function () { /* the click stands; the record is best effort */ });
+          .then(function (out) {
+            /* 0130: and "Did you apply?" when they come back to TeamLink. */
+            if (out && typeof window.xjArmAsk === 'function') window.xjArmAsk(out);
+          }, function () { /* the click stands; the record is best effort */ });
       } else {
         fetch('/api/portal/external-jobs/' + encodeURIComponent(id) + '/click',
           { method: 'POST', credentials: 'same-origin', keepalive: true }).catch(function () {});

@@ -38,6 +38,13 @@ export async function sendApplyMessages(session, { applicationId, candidateId, j
     if (!sent) {
       await dispatchEvent(session, 'APPLICATION_SUBMITTED', { applicationId, candidateId, jobId })
         .catch(() => null);
+    } else {
+      /* 0130: the candidate always gets the confirmation email ("You
+         applied for <job>", with the applied date and time). When the
+         invitation already went out it is email only, so no second SMS,
+         WhatsApp or call says the same thing. */
+      await dispatchEvent(session, 'APPLICATION_SUBMITTED', { applicationId, candidateId, jobId, channels: ['email'] })
+        .catch(() => null);
     }
   } catch (err) {
     // The application stands regardless. The failure is logged, and the

@@ -42,6 +42,7 @@ import { toJob, toCandidate } from '../shapes.js';
 import { matchCandidate } from '../ai/match.js';
 import { profileScore, profileScoresFor } from '../candidates/profile-score.js';
 import { ACTIVITY } from '../audit/recruiter-activity.js';
+import { istDate, istDay } from '../applied-date.js';
 
 const ENGINE = { userId: '', role: 'admin', profileId: null };
 const iso = (d) => (d ? new Date(d).toISOString() : null);
@@ -343,6 +344,13 @@ export default function atsRecordRoutes() {
     let rows = apps;
     if (q) rows = rows.filter((a) => [a.jobTitle, a.company, a.reference, a.status, a.jobType].some((v) => String(v || '').toLowerCase().includes(q)));
     if (phase) rows = rows.filter((a) => a.phase === phase);
+    /* 0130: Applied Date (India days, both ends inclusive) and the order:
+       latest applied first unless asked for the oldest. */
+    const from = istDay(req.query.from); const to = istDay(req.query.to);
+    const indiaDay = (at) => new Date(new Date(at).getTime() + 330 * 60000).toISOString().slice(0, 10);
+    if (from) rows = rows.filter((a) => a.appliedAt && indiaDay(a.appliedAt) >= from);
+    if (to) rows = rows.filter((a) => a.appliedAt && indiaDay(a.appliedAt) <= to);
+    if (req.query.sort === 'oldest') rows = rows.slice().reverse();
     res.json({
       total: rows.length, page, pageSize,
       rows: rows.slice(offset, offset + pageSize).map((a) => ({ ...a, interview: nextIv.get(a.applicationId) || null })),
@@ -505,7 +513,9 @@ export default function atsRecordRoutes() {
     if (row.resume_uploaded_at && !audit.some((x) => x.action === 'resume.uploaded')) push(row.resume_uploaded_at, 'resume_uploaded', 'Resume Uploaded');
     const STEP = { shortlisted: 'Shortlisted', offer_extended: 'Offer Released', selected: 'Selected', joined: 'Hired', rejected: 'Rejected', hold: 'On Hold', no_show: 'Did not attend', attended: 'Attended walk-in', interviewed: 'Interview Completed', interview_scheduled: 'Interview Scheduled', ai_interview_done: 'Interview Completed', client_interview: 'Interview Scheduled' };
     for (const a of out.apps) {
-      push(a.applied_at, 'applied', 'Applied', { job: a.job_title, applicationId: a.id });
+      /* 0130: the line reads "Applied for <job> on <date>" (IST); the label stays "Applied". */
+      push(a.applied_at, 'applied', 'Applied', { job: a.job_title, applicationId: a.id,
+        text: `Applied for ${a.job_title} on ${istDate(a.applied_at)}` });
       for (const h of histBy.get(a.id) || []) {
         if (!h.from_stage) continue;            // the insert is "Applied", above
         if (h.to_stage === 'interview_scheduled' && ivApps.has(a.id)) continue;   // the interview row says it, with its date

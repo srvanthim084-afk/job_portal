@@ -20,6 +20,7 @@ import { withUser } from '../db.js';
 import { providers } from './providers.js';
 import { buildEventMessages } from './templates.js';
 import { walkinOf } from '../portal/walkin-jobs.js';
+import { istDateTime } from '../applied-date.js';
 
 /** Which channels an event goes to. In-app always happens elsewhere. */
 const CHANNELS = ['email', 'sms', 'whatsapp', 'ivr'];
@@ -107,8 +108,10 @@ async function send(session, event, ctx) {
     department: meta.job_department || undefined,
     applicationDate: meta.applied_at
       ? new Date(meta.applied_at).toLocaleDateString('en-GB',
-          { day: 'numeric', month: 'short', year: 'numeric' })
+          { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' })
       : undefined,
+    // 0130: "09 Oct 2026, 3:20 PM IST" - the confirmation states the time too.
+    appliedOnText: meta.applied_at ? istDateTime(meta.applied_at) : undefined,
     reference: ctx.reference || meta.reference || undefined,
     dueAt: meta.ai_interview_due_at || undefined,
     walkin: walkinOf(meta) || undefined,

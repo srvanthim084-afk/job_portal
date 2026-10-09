@@ -25,6 +25,7 @@ import { appearanceToken } from '../profile-viewers/appearances.js';
 import { canEngageMany, recordContact, audit, editableSet, forViewer } from '../candidates/engagement.js';
 import { availabilityOf } from './availability.js';
 import { beginContact, finishContact, canOverride } from '../contact/service.js';
+import { appliedRangeSql } from '../applied-date.js';
 
 const STAFF_ROLES = ['recruiter', 'bde', 'admin'];
 
@@ -414,6 +415,19 @@ export default function candidateRoutes() {
          * and nothing else - and counts real contacts only, not the
          * pipeline events the history now also records.
          */
+        /*
+         * 0130: the calendar filters. "Added on" is when the person came
+         * into the pool (created_at); "Applied on" is an application of
+         * theirs made in the range - one this recruiter can see (RLS).
+         * India days, both ends inclusive.
+         */
+        const pp = (v) => { params.push(v); return `$${params.length}`; };
+        appliedRangeSql('candidates.created_at', q.addedFrom, q.addedTo, pp).forEach(push);
+        const appliedIn = appliedRangeSql('a.applied_at', q.appliedFrom, q.appliedTo, pp);
+        if (appliedIn.length) {
+          push(`exists (select 1 from applications a where a.candidate_id = candidates.id and ${appliedIn.join(' and ')})`);
+        }
+
         if (q.contactedWithinDays) {
           params.push(Number(q.contactedWithinDays));
           push(`candidate_last_contacted_at(candidates.id) > now() - make_interval(days => $${params.length})`);

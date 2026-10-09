@@ -275,19 +275,21 @@ export const MESSAGES = {
   },
 
   APPLICATION_SUBMITTED: {
-    subject: (c) => (c.walkin ? `Walk-in Registration Confirmed – ${c.jobTitle}` : `Application Submitted – ${c.jobTitle}`),
+    /* 0130: "You applied for <job>", and the moment it was made (IST). */
+    subject: (c) => (c.walkin ? `Walk-in Registration Confirmed – ${c.jobTitle}` : `You applied for ${c.jobTitle}`),
     body: (c) => (c.walkin
       ? `Your application for the ${c.jobTitle} walk-in interview has been received. `
         + 'Please come to the venue on the date and time below.'
-      : `Your application for the ${c.jobTitle} position has been successfully `
-        + 'submitted using your registered TeamLink resume.'),
+      : `You applied for ${c.jobTitle}. Your application has been successfully `
+        + 'submitted using your registered TeamLink resume.'
+        + (c.appliedOnText ? `\n\nApplied on ${c.appliedOnText}.` : '')),
     /* 0106: the Application ID always, and a walk-in's date, time, venue,
        address, map, documents and contact - from the job's own record.
        A walk-in names the role and the place, not the company. */
     facts: (c) => [
       ...(c.walkin ? jobFacts({ ...c, company: '' }) : jobFacts(c)),
       ['Application ID', c.reference],
-      ['Applied On', c.applicationDate],
+      ['Applied On', c.appliedOnText || c.applicationDate],
       ...walkinFacts(c.walkin),
     ],
     instruction: (c) => (c.walkin
