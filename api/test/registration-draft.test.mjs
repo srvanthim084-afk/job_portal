@@ -113,8 +113,7 @@ async function verifyEmail(c, email) {
 const ENTERED = {
   currentLocation: 'Hyderabad',
   preferredLocation: 'Hyderabad, Bengaluru',
-  noticePeriod: '30 Days',
-  preferredWorkModes: ['Hybrid'],
+  preferredWorkModes: ['Hybrid'],      /* no notice period: the profile step asks for it */
   expectedCtc: 10,
   password: 'Resum3first9',
   confirmPassword: 'Resum3first9',
@@ -205,13 +204,13 @@ test('the realistic resume: everything read, the candidate types only the six th
   assert.ok(cand.skills.includes('Spring Boot'));
   assert.equal(cand.location, 'Hyderabad');
   assert.equal(cand.preferred_location, 'Hyderabad, Bengaluru');
-  assert.equal(cand.notice_period, '30 Days');
+  assert.equal(cand.notice_period, null, 'notice period is not asked at registration');
   assert.deepEqual(cand.preferred_work_modes, ['Hybrid']);
   assert.equal(Number(cand.expected_ctc), 10);
   assert.equal(cand.certifications.length, 2);
   assert.equal(cand.linkedin, 'https://www.linkedin.com/in/rahul-kumar-dev');
   assert.equal(cand.profile_field_sources.skills, 'EXTRACTED');
-  assert.equal(cand.profile_field_sources.noticePeriod, 'USER_PROVIDED');
+  assert.equal(cand.profile_field_sources.noticePeriod, undefined, 'never marked as provided');
 
   const edu = (await raw(`select qualification, institution, passing_year, score from candidate_education
                            where candidate_id=$1 order by sort_order`, [cand.id])).rows;
@@ -226,24 +225,26 @@ test('the realistic resume: everything read, the candidate types only the six th
   /* completeness: the profile page's twelve sections; only what is missing
      is listed, and never 100% while something is */
   const comp = reg.body.completeness;
-  assert.equal(comp.percent, 92, 'eleven of twelve sections');
-  assert.deepEqual(comp.missing.map((m) => m.key), ['availability'],
-    'only availability (joining date, relocation) is missing - the resume and the six answers covered the rest');
-  assert.deepEqual(comp.missing[0].fields.map((f) => f.key), ['joining', 'relocation']);
+  assert.equal(comp.percent, 83, 'ten of twelve sections');
+  assert.deepEqual(comp.missing.map((m) => m.key), ['career', 'availability'],
+    'notice period (career preferences) and availability are what is still missing');
+  assert.deepEqual(comp.missing[0].fields.map((f) => f.key), ['noticePeriod'], 'only the notice period, not the answers already given');
+  assert.deepEqual(comp.missing[1].fields.map((f) => f.key), ['joining', 'relocation']);
   const st = Object.fromEntries(comp.fields.map((f) => [f.key, f.status]));
   assert.equal(st.skills, 'EXTRACTED');
   assert.equal(st.education, 'EXTRACTED');
   assert.equal(st.name, 'EXTRACTED');
   assert.equal(st.expectedSalary, 'USER_PROVIDED');
+  assert.equal(st.noticePeriod, 'MISSING');
   assert.equal(st.joining, 'MISSING');
 
-  /* the score rises as the missing details are completed */
-  await raw(`update candidates set immediate_joiner = false, available_from = '2026-11-15' where id=$1`, [cand.id]);
+  /* never 100% while a detail is missing, and the score rises as each is completed */
+  await raw(`update candidates set notice_period = '30 days' where id=$1`, [cand.id]);
   const mid = await c.get('/api/me/profile-completeness');
   assert.equal(mid.status, 200, JSON.stringify(mid.body));
-  assert.equal(mid.body.percent, 92, 'one of the two availability details is not enough for the section');
-  assert.deepEqual(mid.body.missing[0].fields.map((f) => f.key), ['relocation']);
-  await raw(`update candidates set willing_to_relocate = true where id=$1`, [cand.id]);
+  assert.equal(mid.body.percent, 92, 'notice period completes career preferences');
+  assert.deepEqual(mid.body.missing.map((m) => m.key), ['availability']);
+  await raw(`update candidates set immediate_joiner = false, available_from = '2026-11-15', willing_to_relocate = true where id=$1`, [cand.id]);
   const after = await c.get('/api/me/profile-completeness');
   assert.equal(after.body.percent, 100);
   assert.equal(after.body.complete, true);
@@ -374,6 +375,17 @@ test('the plain registration (no resume) is unchanged', async () => {
   });
   assert.equal(r.status, 201, JSON.stringify(r.body));
   assert.equal(r.body.completeness, undefined);
+});
+
+test('the plain seven-step registration still requires a notice period; the resume-first one does not', async () => {
+  const c = await client();
+  const r = await c.post('/api/auth/register', {
+    name: 'No Notice', email: `nonotice.${uniq()}@mailbox-teamlink-tests.in`, phone: mobile(),
+    password: 'Plain1person', preferredLocation: 'Pune', expectedCtc: 4,
+    preferredWorkModes: ['Office'], consent: CONSENT,
+  });
+  assert.equal(r.status, 400, JSON.stringify(r.body));
+  assert.equal(r.body.error.details.noticePeriod, 'Please select a notice period');
 });
 
 test('teardown', async () => {
