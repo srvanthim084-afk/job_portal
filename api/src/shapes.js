@@ -485,6 +485,7 @@ export function toApplication(r) {
     /* 0138: a walk-in's final AI interview score and the eligibility the database decided from it */
     walkinAiScore: numOrU(r.walkin_ai_score),
     walkinEligibility: nz(r.walkin_ai_eligibility),
+    sourceChannel: nz(r.source_channel),
     postingType: nz(r.posting_type),
     // date columns arrive as 'YYYY-MM-DD' strings (see the type parser in
     // db.js); the Date branch is a fallback for any caller that bypasses it

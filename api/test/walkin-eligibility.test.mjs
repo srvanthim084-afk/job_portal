@@ -109,7 +109,7 @@ test('a walk-in application tells HR at once - before any interview - with the w
   const t = mails[0].text;
   for (const want of ['Application ID: TL-APP-', 'Job ID: j_el_walkin', 'Client / Company: Eligible Works Pvt Ltd', c.email,
     'Venue: TeamLink Office', 'Google Maps: https://maps.app.goo.gl/AbCdEf123', 'Contact person: Ravi Kumar',
-    'Designation: HR Manager', 'Contact phone: 9876500011', 'AI interview: Pending', '/#/recruiter/jobs?applicants=j_el_walkin&app=']) {
+    'Designation: HR Manager', 'Contact phone: 9876500011', 'AI interview: Pending', '/#/recruiter/manage-jobs?applicants=j_el_walkin&app=']) {
     assert.ok(t.includes(want), `HR email has "${want}"`);
   }
   assert.equal((await one(`select count(*)::int n from ai_interviews where application_id=$1`, [first])).n, 0, 'no interview yet');

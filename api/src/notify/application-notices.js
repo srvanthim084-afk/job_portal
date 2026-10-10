@@ -82,7 +82,7 @@ function walkinFacts(r) {
     ['Contact phone', oneLine(r.walkin_phone)],
   ];
 }
-const atsLink = (r) => `${base()}/#/recruiter/jobs?applicants=${encodeURIComponent(r.job_id)}&app=${encodeURIComponent(r.id)}`;
+const atsLink = (r) => `${base()}/#/recruiter/manage-jobs?applicants=${encodeURIComponent(r.job_id)}&app=${encodeURIComponent(r.id)}`;
 const source = (r) => oneLine(r.source_channel || r.source || 'TeamLink Job Portal');
 
 /** "New Walk-in Application - <candidate> - <job>". Exported so the words can be tested. */

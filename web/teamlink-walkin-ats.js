@@ -159,13 +159,17 @@
       var info = candInfo(app.id);
       if (info) {
         extra += '<div class="tlwa-cand"><span>Application ID: <b>' + h(info.reference) + '</b></span>'
-          + '<span class="tlwa-cstatus">' + h(info.status) + '</span></div>';
+          + '<span class="tlwa-cstatus">' + h(info.status) + '</span>'
+          /* 0138: the walk-in eligibility the final AI interview score gave - not attendance */
+          + (info.walkinEligibility ? '<span class="tlwa-cstatus">AI interview: ' + h(info.walkinEligibility.result)
+            + (info.walkinEligibility.score != null ? ' (' + h(info.walkinEligibility.score) + '%)' : '') + '</span>' : '')
+          + '</div>';
         if (info.walkin) {
           var w = info.walkin;
           extra += '<div class="tlwa-cwalk"><div class="tlwa-cwalk-body"><b>Walk-in Interview</b>'
             + (w.when ? '<div>📅 ' + h(w.when) + '</div>' : '')
             + (w.venue ? '<div>📍 ' + h(w.venue) + (w.address ? ', ' + h(w.address) : '') + '</div>' : '')
-            + (w.contactPerson || w.contactNumber ? '<div>☎ ' + h([w.contactPerson, w.contactNumber].filter(Boolean).join(', ')) + '</div>' : '')
+            + (w.contactPerson || w.contactNumber ? '<div>☎ ' + h([w.contactPerson + (w.contactDesignation ? ' (' + w.contactDesignation + ')' : ''), w.contactNumber].filter(Boolean).join(', ')) + '</div>' : '')
             + (w.documents && w.documents.length ? '<div>📄 Bring: ' + h(w.documents.join(', ')) + '</div>' : '')
             + (w.mapLink && /^https:\/\//.test(w.mapLink) ? '<div><a href="' + h(w.mapLink) + '" target="_blank" rel="noopener">View on Map</a></div>' : '')
             + '<div class="tlwa-small">Show this Application ID (or the QR code) at the venue for a quick check-in.</div></div>'
@@ -504,6 +508,12 @@
     if (!d || (!d.data && !d.err)) return back + '<div class="empty-note">Loading…</div>';
     if (d.err) return back + '<div class="empty-note">' + h(d.err) + '</div>';
     var o = d.data, c = o.candidate, j = o.job, a = o.application, w = o.walkin;
+    /* 0138: the AI interview and the walk-in eligibility the database decided from its final score */
+    var ai = o.aiInterview || {};
+    var ELIG = { eligible: '<span class="badge badge-good">Eligible</span>', not_eligible: '<span class="badge badge-bad">Not Eligible</span>',
+      score_invalid: '<span class="badge badge-neutral">No valid score</span>' };
+    var AI_ST = { in_progress: 'In progress', warning_issued: 'In progress (warning issued)', completed: 'Completed', evaluated: 'Completed',
+      suspended: 'Suspended - under review', expired: 'Expired', abandoned: 'Not finished', cancelled: 'Cancelled' };
     var walkin = !!w;
     var row = function (k, v) { return '<div class="tlwa-kv"><span>' + h(k) + '</span><b>' + (v == null || v === '' ? '—' : v) + '</b></div>'; };
     var acts = '';
@@ -550,6 +560,10 @@
       + '<div class="panel"><div class="panel-head"><h2>Application</h2>' + stageChip(a.stage, a.stageLabel) + '</div><div class="panel-body">'
       + row('Application ID', '<span class="tlwa-mono">' + h(a.reference) + '</span>') + row('Job ID', h(j.jobId)) + row('Job Title', h(j.title)) + row('Job Type', h(j.jobType))
       + row('Application Date', h(fmtDT(a.applicationDate))) + row('Current Stage', h(a.stageLabel)) + row('Status', h(a.status))
+      + row('Application Source', h(a.source || ''))
+      + row('AI Interview Status', h(ai.required === false ? 'Not required for this walk-in' : (AI_ST[ai.status] || (ai.status ? ai.status : 'Not started'))))
+      + row('Final AI Interview Score', ai.score == null ? '' : h(ai.score + '%') + (ai.completedAt ? ' <span class="tlwa-soft">' + h(fmtDT(ai.completedAt)) + '</span>' : ''))
+      + (walkin ? row('Walk-in Eligibility', ai.eligibility ? (ELIG[ai.eligibility] || h(ai.eligibility)) + ' <span class="tlwa-soft">(' + h(ai.threshold) + '% or more)</span>' : '<span class="tlwa-soft">Decided when the AI interview is scored</span>') : '')
       + row('Rating', stars(a.rating.average) + (a.rating.count > 1 ? ' <span class="tlwa-soft">(' + a.rating.count + ' recruiters)</span>' : ''))
       + row('Last updated', h(fmtDT(a.updatedAt) + (a.updatedBy ? ' by ' + a.updatedBy : '')))
       + '<div class="tlwa-acts">' + acts + '</div>'
@@ -558,7 +572,8 @@
       + (walkin ? '<div class="panel"><div class="panel-head"><h2>Walk-in information</h2>'
         + '<span class="badge ' + (w.status === 'open' ? 'badge-good' : 'badge-neutral') + '">' + (w.status === 'open' ? 'Open' : 'Closed') + '</span></div><div class="panel-body">'
         + row('Date', h(w.date)) + row('Time', h([t12(w.startTime), t12(w.endTime)].filter(Boolean).join(' – '))) + row('Venue', h(w.venue)) + row('Address', h(w.address))
-        + row('Contact person', h(w.contactPerson)) + row('Contact number', h(w.contactNumber))
+        + row('Google Maps', w.mapLink && /^https:\/\//.test(w.mapLink) ? '<a href="' + h(w.mapLink) + '" target="_blank" rel="noopener noreferrer">' + h(w.mapLink) + '</a>' : '')
+        + row('Contact person', h(w.contactPerson + (w.contactDesignation ? ', ' + w.contactDesignation : ''))) + row('Contact number', h(w.contactNumber))
         + row('Check-in time', h(w.checkedInAt ? fmtDT(w.checkedInAt) + (w.checkedInBy ? ' · ' + w.checkedInBy : '') : ''))
         + row('Attended time', h(w.attendedAt ? fmtDT(w.attendedAt) + (w.attendedBy ? ' · ' + w.attendedBy : '') : ''))
         + '<div class="tlwa-acts">'

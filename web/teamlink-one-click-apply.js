@@ -198,6 +198,20 @@
   }
   function showSubmitted(job, app) {
     var UNDO_MS = 5000;
+    /* 0138: the full "Application Submitted Successfully!" screen (Application ID, job, company,
+       location, submitted time, source, status, AI interview, walk-in details and QR), with Undo
+       for the same five seconds. The toast below stays as the fallback. */
+    if (job && app && window.TLWalkinJobs && typeof TLWalkinJobs.success === 'function' && typeof window.fcrModal === 'function') {
+      var shown = false;
+      try {
+        shown = TLWalkinJobs.success(job, app, { undoMs: UNDO_MS, undo: function () {
+          if (window.TLPortalUpgrades && TLPortalUpgrades.undo) {
+            TLPortalUpgrades.undo(app).then(function () { paintButtons(app.jobId); });
+          }
+        } });
+      } catch (e) { shown = false; }
+      if (shown) return;
+    }
     var el = showToast('tl1cDone', 'ok',
       '<span id="tl1cMsg">' + appliedMessage(job) + '</span>'
       + (refOf(app) ? '<small>Application ID: <span id="tl1cRef">' + h(refOf(app)) + '</span></small>' : '') + walkinLine(job)
