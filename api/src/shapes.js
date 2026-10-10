@@ -217,12 +217,15 @@ export function toJob(r) {
  * Select JOB_RECORD_COLS beside the job row so the names come with it.
  */
 export const JOB_RECORD_COLS =
-  'staff_name_of(created_by) as created_by_name, staff_name_of(last_edited_by) as last_edited_by_name';
+  'staff_name_of(created_by) as created_by_name, staff_name_of(last_edited_by) as last_edited_by_name, '
+  /* 0134: "Posted By" tells an Admin-posted job from a recruiter's */
+  + 'staff_role_of(created_by) as created_by_role';
 const isoOrNull = (d) => (d ? new Date(d).toISOString() : null);
 export function toStaffJob(r) {
   return Object.assign(toJob(r), {
     createdById: r.created_by || null,
     createdByName: nz(r.created_by_name) || null,
+    createdByRole: nz(r.created_by_role) || null,
     createdAt: isoOrNull(r.created_at),
     publishedAt: isoOrNull(r.published_at),
     unpublishedAt: isoOrNull(r.unpublished_at),

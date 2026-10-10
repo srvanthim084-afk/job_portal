@@ -493,6 +493,28 @@ export default function jobRoutes() {
     res.json(out);
   }));
 
+  /**
+   * POST /api/jobs/:id/archive  { archived: true | false }
+   *
+   * Archive (out of every list a candidate sees, kept with its applications and history) or restore.
+   * The same rule as publishing: a recruiter their own jobs (row level security), an admin any. The 0125
+   * trigger records it in the audit log as the person who did it.
+   */
+  r.post('/jobs/:id/archive', requireAuth(), requireRole('recruiter', 'admin'), wrap(async (req, res) => {
+    const archived = req.body?.archived !== false;
+    const job = await withUser(req.session, async (c) => {
+      const upd = await c.query(`update jobs set archived = $1 where id = $2 returning id`, [archived, req.params.id]);
+      if (!upd.rowCount) {
+        const seen = await c.query(`select app_row_exists('job',$1) as e`, [req.params.id]);
+        throw seen.rows[0].e ? forbidden('You cannot archive a job that is not yours.')
+                             : notFound('That job no longer exists.');
+      }
+      const { rows } = await c.query(`select *, ${JOB_RECORD_COLS} from jobs_with_counts where id=$1`, [req.params.id]);
+      return rows[0];
+    });
+    res.json({ job: toStaffJob(job) });
+  }));
+
   r.delete('/jobs/:id', requireAuth(), requireRole('admin'), wrap(async (req, res) => {
     await withUser(req.session, (c) => c.query(`delete from jobs where id=$1`, [req.params.id]));
     res.json({ ok: true });

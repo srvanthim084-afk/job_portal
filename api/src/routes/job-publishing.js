@@ -97,7 +97,7 @@ export function publishingJobHooks() {
     /* An edit, a publish / unpublish, a deadline change: the job's rows
        are reconciled (update pushed, or taken down when it closed). */
     if (req.method === 'PUT' || req.method === 'POST') {
-      const m = /^\/jobs\/([^/]+)(?:\/(publish|deadline))?\/?$/.exec(req.path);
+      const m = /^\/jobs\/([^/]+)(?:\/(publish|deadline|archive))?\/?$/.exec(req.path);
       if (m && m[1] !== 'describe' && (req.method === 'PUT' || m[2])) {
         afterJson(res, () => kickJob(decodeURIComponent(m[1])));
       }
