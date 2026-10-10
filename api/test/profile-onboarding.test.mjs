@@ -40,11 +40,17 @@ async function newCandidate({ prefs = false } = {}) {
   assert.equal(s.status, 200, JSON.stringify(s.body));
   const v = await c.post(`/api/registration/drafts/${d.body.draftId}/verify-email`, { email, code: s.body.devCode }, h);
   assert.equal(v.status, 200, JSON.stringify(v.body));
+  /* the registration page requires preferred location, notice period and salary */
   const reg = await c.post('/api/auth/register', { name: 'Onboard Person', email, phone: mobile(), ...SIMPLE,
-    ...(prefs ? { preferredLocation: 'Pune', expectedCtc: 7, noticePeriod: '30 days', preferredWorkModes: ['Hybrid'] } : {}),
+    preferredLocation: 'Pune', expectedCtc: 7, noticePeriod: '30 days', preferredWorkModes: ['Hybrid'],
     draftId: d.body.draftId, draftToken: d.body.draftToken });
   assert.equal(reg.status, 201, JSON.stringify(reg.body));
   c.id = reg.body.candidateId;
+  /* without prefs: a candidate as the Talent Pool adds one (a recruiter, a CV import) - none of the details given */
+  if (!prefs) {
+    await raw(`update candidates set location = null, preferred_location = null, notice_period = null, expected_ctc = null,
+                 preferred_work_modes = '{}', preferred_role = null where id = $1`, [c.id]);
+  }
   c.email = email;
   return c;
 }

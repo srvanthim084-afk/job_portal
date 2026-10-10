@@ -97,7 +97,7 @@ const heads = await page.$$eval('#tlrfHost .panel-head h2', (x) => x.map((h) => 
 check(heads.join(' | ') === 'Resume | Personal Information | Professional Information | Preferences | Consent', `five sections in order (${heads.join(' | ')})`);
 const labels = await page.$$eval('#tlrfHost label', (x) => x.map((l) => l.textContent.replace(/\s+/g, ' ').trim()));
 for (const want of ['Full Name *', 'Email Address *', 'Mobile Number *', 'Password *', 'Confirm Password *', 'Current Location *', 'Candidate Type *',
-  'Highest Qualification *', 'Key Skills *', 'Preferred Job Location *', 'Expected Salary (₹ LPA)', 'Notice Period', 'Preferred Work Mode']) {
+  'Highest Qualification *', 'Key Skills *', 'Preferred Job Location *', 'Expected Salary (₹ LPA) *', 'Notice Period *', 'Preferred Work Mode']) {
   check(labels.some((l) => l.startsWith(want)), `field: ${want}`);
 }
 check(/Upload Resume \(PDF \/ DOC \/ DOCX \/ TXT\)/.test(await hostText(page)) && /fills the form below automatically/.test(await hostText(page)), 'Resume first: Upload button and "fills the form below automatically"');
@@ -142,7 +142,7 @@ check((await val(p2, 'tlrfName')) === 'Meera Iyer' && (await val(p2, 'tlrfQual')
 /* ---- required fields ----------------------------------------------------------- */
 await page.click('[data-tlrf="create"]');
 const errs = await hostText(page);
-check(/verify your email/i.test(errs) && !/verify your mobile number/i.test(errs) && /Password must be/.test(errs) && /Preferred Job Location is required/.test(errs) && /Terms/.test(errs), 'required fields are checked (email code, password, preferred location, consents) - no mobile OTP');
+check(/verify your email/i.test(errs) && !/verify your mobile number/i.test(errs) && /Password must be/.test(errs) && /Preferred Job Location is required/.test(errs) && /Notice Period is required/.test(errs) && /Expected Salary is required/.test(errs) && /Terms/.test(errs), 'required fields are checked (email code, password, preferred location, notice period, expected salary, consents) - no mobile OTP');
 check((await page.evaluate(() => location.hash)).includes('register'), 'nothing is created while fields are missing');
 
 /* ---- complete it ---------------------------------------------------------------- */
@@ -216,6 +216,8 @@ await fill(page, 'tlrfLoc', 'Vijayawada');
 await page.selectOption('#tlrfQual', 'Diploma'); await page.dispatchEvent('#tlrfQual', 'change');
 await page.fill('#tlrfSkillIn', 'Tally'); await page.press('#tlrfSkillIn', 'Enter');
 await fill(page, 'tlrfPref', 'Vijayawada');
+await fill(page, 'tlrfSal', '4');
+await page.selectOption('#tlrfNotice', 'Immediate'); await page.dispatchEvent('#tlrfNotice', 'change');
 check(await verifyEmail(page, mail('noresume')), 'no resume: the email code works');
 check(await verifyPhone(page, mobile()), 'no resume: the mobile number is entered (no OTP)');
 await page.fill('#tlrfPw', 'Regist3r9pass'); await page.fill('#tlrfPw2', 'Regist3r9pass');

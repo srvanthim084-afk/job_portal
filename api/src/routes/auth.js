@@ -310,6 +310,15 @@ export default function authRoutes() {
             draftId, draftToken, currentLocation, whatsappOptIn } = parse(registerSchema, req.body);
 
     if (website) throw badRequest('Please check the highlighted fields and try again.');
+    /* The registration page asks for these and they are mandatory there (the owner's rule): checked here too,
+       so a request that skips the page is held to it. */
+    if (draftId) {
+      const need = {};
+      if (!preferredLocation) need.preferredLocation = 'Preferred Job Location is required';
+      if (!noticePeriod || !String(noticePeriod).trim()) need.noticePeriod = 'Notice Period is required';
+      if (expectedCtc === undefined) need.expectedCtc = 'Expected Salary is required';
+      if (Object.keys(need).length) throw badRequest('Please check the highlighted fields and try again.', need);
+    }
     if (!draftId) {
       const missingPrefs = {};
       if (!preferredLocation) missingPrefs.preferredLocation = 'Preferred Job Location is required';
