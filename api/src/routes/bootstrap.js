@@ -62,7 +62,13 @@ export default function bootstrapRoutes() {
         ${staff ? '' : `where ${teamlinkOnly()} or id in (select job_id from applications)`}
         order by published_at desc nulls last, id`);
       const candidates  = await c.query(`select * from candidates order by id`);
-      const applications= await c.query(`select * from applications order by applied_at desc`);
+      /* 0133: for a candidate, whether each AI interview is still open (and why not) - the job may be one
+         they can no longer read, so the page cannot work this out itself */
+      const applications= session && session.role === 'candidate'
+        ? await c.query(`select a.*, w.open as ai_interview_open, w.reason as ai_interview_closed_reason
+                           from applications a left join lateral ai_interview_window(a.id) w on true
+                          order by a.applied_at desc`)
+        : await c.query(`select * from applications order by applied_at desc`);
       const interviews  = await c.query(`select * from interviews order by scheduled_date desc nulls last`);
       const offers      = await c.query(`select * from offers order by extended_at desc`);
       const notifications = session

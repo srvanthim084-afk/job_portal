@@ -3490,9 +3490,14 @@
    */
   TL.syncInterviewDeadlines = function () {
     (DATA.applications || []).forEach(function (a) {
-      if (!a.aiInterviewDueAt || typeof window.__lcRecFor !== 'function') return;
+      if (typeof window.__lcRecFor !== 'function') return;
       var rec = window.__lcRecFor(a.candidateId, a.jobId);
-      if (rec && rec.aiInterview) rec.aiInterview.deadline = a.aiInterviewDueAt;
+      if (!rec || !rec.aiInterview) return;
+      /* 0133: the job's last date (none when the job has none - then it stays open while the job does),
+         and whether the interview is still open at all. A date stored by an older version is replaced. */
+      rec.aiInterview.deadline = a.aiInterviewDueAt || null;
+      rec.aiInterview.closed = a.aiInterviewOpen === false;
+      rec.aiInterview.closedReason = a.aiInterviewClosedReason || null;
     });
   };
 
@@ -3566,7 +3571,10 @@
 
       // Facts the server owns, whether the record is new or not.
       if (a.applicationId) rec.applicationId = a.applicationId;
-      if (a.aiInterviewDueAt) rec.aiInterview.deadline = a.aiInterviewDueAt;
+      /* 0133: always the server's date (none for a job without one) and open / closed */
+      rec.aiInterview.deadline = a.aiInterviewDueAt || null;
+      rec.aiInterview.closed = a.aiInterviewOpen === false;
+      rec.aiInterview.closedReason = a.aiInterviewClosedReason || null;
       if (a.stage) rec.stage = a.stage;
 
       if (iv && iv.status === 'completed') {
@@ -3669,7 +3677,7 @@
       .catch(function (err) {
         // Never strand the candidate on a blank screen: the prototype's
         // own generator still works, and the result is still recorded.
-        var blockedStart = err && (err.code === 'INTERVIEW_RETAKE_WAIT' || err.code === 'INTERVIEW_UNDER_REVIEW' || err.code === 'INTERVIEW_ALREADY_COMPLETED' || err.code === 'INTERVIEW_EXPIRED');
+        var blockedStart = err && (err.code === 'INTERVIEW_RETAKE_WAIT' || err.code === 'INTERVIEW_UNDER_REVIEW' || err.code === 'INTERVIEW_ALREADY_COMPLETED' || err.code === 'INTERVIEW_EXPIRED' || err.code === 'INTERVIEW_CLOSED');
         if (!blockedStart) console.error('TeamLink: the interview could not be planned on the server.', err);
         TL.__aiivSession = null;
         /* Too soon after a suspension, or with a recruiter: say so, instead of

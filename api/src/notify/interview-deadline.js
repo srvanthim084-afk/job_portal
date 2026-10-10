@@ -35,6 +35,8 @@ const EVENT_FOR = {
   reminder: 'AI_INTERVIEW_REMINDER',
   final:    'AI_INTERVIEW_FINAL',
   expired:  'AI_INTERVIEW_EXPIRED',
+  /* 0133: the job's last day - "it closes today, attend before it closes" */
+  closing_today: 'AI_INTERVIEW_CLOSING_TODAY',
 };
 
 /**

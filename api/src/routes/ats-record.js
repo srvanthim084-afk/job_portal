@@ -305,6 +305,12 @@ export default function atsRecordRoutes() {
         `select id, title, message, read, created_at from notifications
           where recipient_role = 'candidate' and recipient_id = $1 order by created_at desc limit 5`, [s.profileId])).rows,
       score: (await profileScoresFor(c, [s.profileId])).get(s.profileId) || profileScore(null),
+      /* 0133: AI interviews still to take - open (the job is open, its date not passed), not yet done */
+      aiOpen: (await c.query(
+        `select count(*)::int n from applications a cross join lateral ai_interview_window(a.id) w
+          where a.candidate_id = $1 and a.stage in ('applied','ai_screening') and w.open
+            and not exists (select 1 from ai_interviews iv where iv.application_id = a.id
+                             and iv.status in ('completed','evaluating','evaluated'))`, [s.profileId])).rows[0].n,
     }));
     const byPhase = Object.fromEntries(P.phases.map((p) => [p.id, 0]));
     apps.forEach((a) => { byPhase[a.phase] = (byPhase[a.phase] || 0) + 1; });
@@ -314,7 +320,10 @@ export default function atsRecordRoutes() {
       counts: {
         applications: apps.length,
         shortlisted: apps.filter((a) => SHORT.has(a.phase)).length,
-        interviews: upcoming.length,
+        /* every interview still ahead: the scheduled ones and the AI interviews still open to take
+           (the same items Action Required lists) - it counted the scheduled ones only */
+        interviews: upcoming.length + extra.aiOpen,
+        aiInterviews: extra.aiOpen,
         savedJobs: extra.saved,
         profileStrength: extra.score.percent,
       },

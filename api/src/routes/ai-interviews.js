@@ -131,6 +131,9 @@ const toAi = (r) => ({
   completedAt: r.completed_at ? new Date(r.completed_at).toISOString() : undefined,
 });
 
+/* 0133: what a candidate is told when the job (or the interview's date) is over */
+export const INTERVIEW_CLOSED_MESSAGE = 'You applied for this job, but the date is over, so you cannot attend the interview now.';
+
 export default function aiInterviewRoutes() {
   const r = Router();
 
@@ -350,8 +353,19 @@ export default function aiInterviewRoutes() {
         /* open: fall through and create the next attempt (numbered by the database) */
       }
 
+      /* 0133: OPEN ONLY WHILE THE JOB IS. Closed, its last date passed, a walk-in whose day is over, or the
+         interview's own date passed: refused before any question is written (and again inside
+         ai_interview_start, so the API cannot be used to skip it). A job with no date stays open.
+         Asked BEFORE reading the job: a candidate cannot read a closed or expired job at all, which used
+         to come out as "That job no longer exists". */
+      const win = (await c.query(`select * from ai_interview_window($1)`, [app.id])).rows[0];
+      if (win && !win.open) {
+        throw new ApiError(410, 'INTERVIEW_CLOSED', INTERVIEW_CLOSED_MESSAGE, { reason: win.reason });
+      }
+
       const job = (await c.query(`select * from jobs where id=$1`, [app.job_id])).rows[0];
       if (!job) throw notFound('That job no longer exists.');
+
       const cand = (await c.query(`select * from candidates where id=$1`,
         [req.session.profileId])).rows[0];
 

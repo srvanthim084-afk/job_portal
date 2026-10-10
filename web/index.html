@@ -25740,7 +25740,10 @@ table.data td .tl-af b{white-space:normal}
   function fmtDT(iso){ try{ var d=new Date(iso); return d.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'})+' · '+d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}); }catch(e){ return iso; } }
   function addDays(iso,n){ var d=new Date(iso); d.setDate(d.getDate()+n); return d.toISOString(); }
   /* Calendar days in India time between now and the deadline (07 Oct seen on 05 Oct = "Due in 2 days"); past the deadline = Overdue. Same rule as the Home Action Required section. */
-  function dueLabel(iso){ var due=Date.parse(iso), now=Date.now(), DAY=86400000, OFF=330*60000; if(!(due>0)) return {t:'',cls:''}; if(due<now) return {t:'Overdue',cls:'bad'}; var diff=Math.floor((due+OFF)/DAY)-Math.floor((now+OFF)/DAY); if(diff<=0) return {t:'Due today',cls:'warn'}; if(diff===1) return {t:'Due tomorrow',cls:'warn'}; return {t:'Due in '+diff+' days',cls:'brand'}; }
+  /* 0133: an interview closes when its job does; a job with no date has no deadline */
+  var AI_CLOSED_MSG='You applied for this job, but the date is over, so you cannot attend the interview now.';
+  function dueText(iso){ return Date.parse(iso)>0 ? 'by '+fmtDate(iso) : 'no deadline'; }
+  function dueLabel(iso){ var due=Date.parse(iso), now=Date.now(), DAY=86400000, OFF=330*60000; if(!(due>0)) return {t:'Attend any time',cls:'brand'}; if(due<now) return {t:'Overdue',cls:'bad'}; var diff=Math.floor((due+OFF)/DAY)-Math.floor((now+OFF)/DAY); if(diff<=0) return {t:'Due today',cls:'warn'}; if(diff===1) return {t:'Due tomorrow',cls:'warn'}; return {t:'Due in '+diff+' days',cls:'brand'}; }
   function esc2(s){ return (window.esc?esc(s):String(s==null?'':s)); }
   function cand(id){ return (typeof DATA!=='undefined'&&DATA.candidateById)?DATA.candidateById(id):null; }
   function job(id){ return (typeof DATA!=='undefined'&&DATA.jobById)?DATA.jobById(id):null; }
@@ -26826,7 +26829,7 @@ table.data td .tl-af b{white-space:normal}
     AIIV.block = { reason: info.reason || null, retakeAt: info.retakeAt || null };
     AIIV.block.message = info.message || null;
     AIIV.phase = info.code==='INTERVIEW_RETAKE_WAIT' ? 'retake_wait'
-      : (info.code==='INTERVIEW_ALREADY_COMPLETED' || info.code==='INTERVIEW_EXPIRED') ? 'closed' : 'under_review';
+      : (info.code==='INTERVIEW_ALREADY_COMPLETED' || info.code==='INTERVIEW_EXPIRED' || info.code==='INTERVIEW_CLOSED') ? 'closed' : 'under_review';
     try{ render(); }catch(e){}
   };
   var stopTick=null;
@@ -27018,13 +27021,23 @@ table.data td .tl-af b{white-space:normal}
       }
       if(content) return shell('applications','AI Interview',crumb,content);
     }
+    if(rec.aiInterview && rec.aiInterview.closed){
+      content='<div style="max-width:640px;margin:0 auto"><div class="panel"><div class="panel-head"><h2>AI Video Interview</h2></div><div class="panel-body">'
+        +'<div class="req-note" role="status" style="background:var(--bg-alt,#f1f4f8);color:var(--text)">🔒 <b>Interview closed.</b> '+esc2(AI_CLOSED_MSG)+'</div>'
+        +'<div class="kv" style="grid-template-columns:1fr 1fr;margin-top:12px">'
+        +'<div class="item"><div class="k">Job</div><div class="v" style="font-size:13px">'+esc2(rec.jobTitle)+'</div></div>'
+        +'<div class="item"><div class="k">Application ID</div><div class="v mono">'+esc2(rec.applicationId)+'</div></div></div>'
+        +'<div style="margin-top:16px"><button class="btn btn-ghost" onclick="navigate(\'/candidate-app/'+rec.applicationId+'\')">Back to application</button></div>'
+        +'</div></div></div>';
+      return shell('applications','AI Interview',crumb,content);
+    }
     var due=dueLabel(rec.aiInterview.deadline);
     content='<div style="max-width:640px;margin:0 auto"><div class="panel"><div class="panel-head"><h2>AI Video Interview</h2></div><div class="panel-body">'
       +'<div class="kv" style="grid-template-columns:1fr 1fr">'
       +'<div class="item"><div class="k">Job</div><div class="v" style="font-size:13px">'+esc2(rec.jobTitle)+'</div></div>'
       +'<div class="item"><div class="k">Company</div><div class="v" style="font-size:13px">'+esc2(rec.company)+'</div></div>'
       +'<div class="item"><div class="k">Application ID</div><div class="v mono">'+esc2(rec.applicationId)+'</div></div>'
-      +'<div class="item"><div class="k">Deadline</div><div class="v" style="font-size:13px">'+fmtDate(rec.aiInterview.deadline)+' · <span style="color:var(--'+due.cls+'-600)">'+due.t+'</span></div></div></div>'
+      +'<div class="item"><div class="k">Deadline</div><div class="v" style="font-size:13px">'+(Date.parse(rec.aiInterview.deadline)>0?fmtDate(rec.aiInterview.deadline)+' · ':'')+'<span style="color:var(--'+due.cls+'-600)">'+due.t+'</span></div></div></div>'
       +'<div class="req-note" style="margin-top:14px">How the interview works:<ul style="margin:8px 0 0;padding-left:18px;font-size:12.5px">'
       +'<li>A short device check first: camera, microphone and internet.</li>'
       +'<li>The AI interviewer asks one question at a time, on screen and out loud; you answer out loud. Each answer is recorded on video.</li>'
@@ -27050,8 +27063,10 @@ table.data td .tl-af b{white-space:normal}
   function appDetailPage(rec){
     var c=cand(rec.candidateId), j=job(rec.jobId);
     var ai=rec.aiInterview, due=dueLabel(ai.deadline);
-    var next = ai.status!=='completed'
-      ? '<div class="req-note" style="background:var(--ai-100);color:var(--ai-600)">🎙️ <b>Next action:</b> complete your AI Interview ('+due.t+', by '+fmtDate(ai.deadline)+'). <button class="btn btn-ai btn-sm" style="margin-left:8px" onclick="navigate(\'/ai-interview/'+rec.applicationId+'\')">Attend AI Interview</button></div>'
+    var next = ai.status!=='completed' && ai.closed
+      ? '<div class="req-note" style="background:var(--bg-alt,#f1f4f8);color:var(--text)">🔒 <b>AI Interview closed.</b> '+esc2(AI_CLOSED_MSG)+'</div>'
+      : ai.status!=='completed'
+      ? '<div class="req-note" style="background:var(--ai-100);color:var(--ai-600)">🎙️ <b>Next action:</b> complete your AI Interview ('+due.t+', '+dueText(ai.deadline)+'). <button class="btn btn-ai btn-sm" style="margin-left:8px" onclick="navigate(\'/ai-interview/'+rec.applicationId+'\')">Attend AI Interview</button></div>'
       : '<div class="req-note" style="background:var(--brand-100);color:var(--brand-700)">✓ AI Interview completed. Your application is under TeamLink review.</div>';
     var tl=(rec.timeline||[]).slice().map(function(t){ return '<div class="mt-step done" style="align-items:flex-start"><span class="dot"></span><span class="lbl" style="text-align:left"><b>'+esc2(t.label)+'</b>'+(t.detail?'<div style="font-weight:400;color:var(--text-soft);font-size:11px">'+esc2(t.detail)+'</div>':'')+'<div style="font-weight:400;color:var(--text-soft);font-size:10.5px">'+fmtDT(t.at)+'</div></span></div>'; }).join('');
     var content='<div style="display:flex;flex-direction:column;gap:16px">'
@@ -27076,7 +27091,7 @@ table.data td .tl-af b{white-space:normal}
     if(!c || ['home','profile','applications'].indexOf(section)<0) return '';
     var lc=LC(); var rows=[];
     Object.keys(lc.apps).forEach(function(k){ var rec=refreshRecMeta(lc.apps[k]); if(rec.candidateId!==c.id) return;
-      if(rec.aiInterview && rec.aiInterview.status==='pending'){ var due=dueLabel(rec.aiInterview.deadline);
+      if(rec.aiInterview && rec.aiInterview.status==='pending' && !rec.aiInterview.closed){ var due=dueLabel(rec.aiInterview.deadline);
         rows.push('<div style="display:flex;align-items:center;gap:12px;justify-content:space-between;border:1px solid var(--line);border-left:3px solid var(--ai-500);border-radius:8px;padding:10px 12px;background:var(--card)"><div><b style="font-size:13px">🎙️ AI Interview Pending</b><div style="font-size:12px;color:var(--text-soft)">'+esc2(rec.jobTitle)+' · Complete by '+fmtDate(rec.aiInterview.deadline)+' · <span style="color:var(--'+due.cls+'-600);font-weight:700">'+due.t+'</span></div></div><button class="btn btn-ai btn-sm" onclick="navigate(\'/ai-interview/'+rec.applicationId+'\')">Attend AI Interview</button></div>');
       }
     });

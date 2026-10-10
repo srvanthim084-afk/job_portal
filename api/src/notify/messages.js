@@ -47,6 +47,23 @@ const jobFacts = (c) => [
  * @type {Record<string, Message>}
  */
 export const MESSAGES = {
+  /* 0133: the job's last day, for a candidate who applied and has not taken the AI interview */
+  AI_INTERVIEW_CLOSING_TODAY: {
+    subject: (c) => `The job closes today – attend your AI interview for ${c.jobTitle}`,
+    body: (c) => `You applied for the ${c.jobTitle} position (Job ID ${c.jobId}`
+      + (c.reference ? `, Application ID ${c.reference}` : '')
+      + ') but have not attended the AI interview yet. The job closes today, so please attend '
+      + 'the interview before it closes.',
+    facts: (c) => [
+      ...jobFacts(c),
+      ['Job ID', c.jobId],
+      ['Application ID', c.reference],
+      ['Closes', c.dueText],
+    ],
+    instruction: () => 'Once the job closes, the interview can no longer be taken.',
+    cta: (c) => ({ label: 'Attend AI Interview', url: c.portalUrl }),
+  },
+
   INTERVIEW_SCHEDULED: {
     subject: (c) => `Interview Scheduled – ${c.jobTitle} | TeamLink Consultants`,
     body: (c) => 'We are pleased to inform you that your interview has been scheduled '

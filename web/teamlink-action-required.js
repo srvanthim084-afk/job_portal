@@ -36,6 +36,7 @@
   window.__tlActionRequired = true;
 
   var PENDING_STAGES = ['applied', 'ai_screening'];
+  var CLOSED_MSG = 'You applied for this job, but the date is over, so you cannot attend the interview now.';
   var DAY = 86400000;
   var IST_OFFSET = 330 * 60000;
 
@@ -78,14 +79,22 @@
     var now = Date.now();
     var done = completedApps();
     (DATA.applications || []).forEach(function (a) {
-      if (!a || a.candidateId !== c.id || !a.aiInterviewDueAt) return;
+      if (!a || a.candidateId !== c.id) return;
       if (PENDING_STAGES.indexOf(a.stage) < 0) return;
       if (done[a.id]) return;
-      var due = Date.parse(a.aiInterviewDueAt);
-      if (!(due > 0)) return;
+      var due = Date.parse(a.aiInterviewDueAt || '');
       var j = jobOf(a.jobId);
-      out.push({ kind: 'ai', appId: a.id, jobId: a.jobId, candidateId: c.id, title: (j && j.title) || 'your application',
-        due: due, state: dueState(due, now) });
+      var title = (j && j.title) || 'your application';
+      /* 0133: closed when the job is (closed, last date passed, walk-in over) or the interview's own date
+         passed - the server says which. Shown, not counted: there is nothing left to do. */
+      if (a.aiInterviewOpen === false) {
+        out.push({ kind: 'ai_closed', appId: a.id, jobId: a.jobId, title: title, due: Infinity });
+        return;
+      }
+      /* a job with no date: no deadline - attend any time while the job is open */
+      out.push({ kind: 'ai', appId: a.id, jobId: a.jobId, candidateId: c.id, title: title,
+        due: due > 0 ? due : Infinity, hasDue: due > 0,
+        state: due > 0 ? dueState(due, now) : { text: 'Attend any time', tone: 'ai' } });
     });
     (DATA.interviews || []).forEach(function (iv) {
       if (!iv || iv.candidateId !== c.id) return;
@@ -93,6 +102,9 @@
       if (/completed|cancel|no.?show/i.test(st)) return;
       var j = jobOf(iv.jobId);
       var at = Date.parse((iv.date || '') + (iv.time && /^\d{1,2}:\d{2}/.test(iv.time) ? 'T' + iv.time : ''));
+      /* 0133: an interview whose date has passed is not upcoming */
+      var dayOf = Date.parse(iv.date || '');
+      if (dayOf > 0 && istDay(dayOf) < istDay(now)) return;
       out.push({ kind: 'interview', jobId: iv.jobId, title: (j && j.title) || 'Interview', round: iv.type || 'Interview',
         when: [iv.date, iv.time].filter(Boolean).join(' · '), due: at > 0 ? at : Infinity });
     });
@@ -101,11 +113,16 @@
   }
 
   function row(it) {
+    if (it.kind === 'ai_closed') {
+      return '<div class="tlar-item tlar-closed">'
+        + '<div class="tlar-info"><b>🔒 AI Interview Closed</b>'
+        + '<div class="tlar-sub">' + h(it.title) + ' · ' + h(CLOSED_MSG) + '</div></div></div>';
+    }
     if (it.kind === 'ai') {
       var st = it.state || { text: '', tone: '' };
       return '<div class="tlar-item">'
         + '<div class="tlar-info"><b>🎙️ AI Interview Pending</b>'
-        + '<div class="tlar-sub">' + h(it.title) + ' · Complete by ' + h(fmtDate(it.due))
+        + '<div class="tlar-sub">' + h(it.title) + (it.hasDue ? ' · Complete by ' + h(fmtDate(it.due)) : ' · No deadline')
         + (st.text ? ' · <span class="tlar-' + st.tone + '">' + h(st.text) + '</span>' : '') + '</div></div>'
         + '<button type="button" class="tlar-btn" onclick="tlarAttend(\'' + h(it.appId) + '\')"'
         + ' aria-label="Attend AI Interview for ' + h(it.title) + '">Attend AI Interview</button></div>';
@@ -119,7 +136,11 @@
   function stripHtml(c) {
     var list = items(c);
     if (!list.length) return '';
-    var n = list.length;
+    /* the count is what still needs doing; a closed interview is shown, not counted */
+    var n = list.filter(function (x) { return x.kind !== 'ai_closed'; }).length;
+    if (!n) return '<section class="tlar" id="tlActionRequired" aria-labelledby="tlarH">'
+      + '<div class="tlar-hd"><h2 id="tlarH">⚡ Action Required</h2><span class="tlar-count">Nothing needs your attention</span></div>'
+      + '<div class="tlar-list">' + list.map(row).join('') + '</div></section>';
     return '<section class="tlar" id="tlActionRequired" aria-labelledby="tlarH">'
       + '<div class="tlar-hd"><h2 id="tlarH">⚡ Action Required</h2><span class="tlar-count">'
       + n + ' item' + (n === 1 ? ' needs' : 's need') + ' your attention</span></div>'
@@ -214,6 +235,7 @@
     + '.tlar-btn:hover{filter:brightness(.95)}'
     + '.tlar-btn:focus-visible{outline:3px solid #c4b5fd;outline-offset:2px}'
     + '.tlar-btn.ghost{background:#eef3fb;color:#1d4ed8}'
+    + '.tlar-closed{background:#f7f8fa;border-left-color:#b8c0cc}.tlar-closed b{color:#5f6b7a}'
     + '@media (max-width:640px){.tlar-item{flex-direction:column;align-items:stretch}.tlar-btn{width:100%;white-space:normal}}';
   try {
     var st = document.createElement('style');

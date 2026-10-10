@@ -114,6 +114,8 @@ async function send(session, event, ctx) {
     appliedOnText: meta.applied_at ? istDateTime(meta.applied_at) : undefined,
     reference: ctx.reference || meta.reference || undefined,
     dueAt: meta.ai_interview_due_at || undefined,
+    /* 0133: the closing-day email says when, in India's time */
+    dueText: meta.ai_interview_due_at ? istDateTime(meta.ai_interview_due_at) : undefined,
     walkin: walkinOf(meta) || undefined,
     portalUrl,
     ...ctx,

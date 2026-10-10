@@ -186,6 +186,7 @@ const SUBJECTS = {
   AI_INTERVIEW_REMINDER:  (c) => `Reminder: your AI interview for ${c.jobTitle} closes tomorrow`,
   AI_INTERVIEW_FINAL:     (c) => `Last chance: your AI interview for ${c.jobTitle} closes in 2 hours`,
   AI_INTERVIEW_EXPIRED:   (c) => `Your AI interview window for ${c.jobTitle} has closed`,
+  AI_INTERVIEW_CLOSING_TODAY: (c) => `The job closes today – attend your AI interview for ${c.jobTitle}`,
 
   JOB_MATCH_ALERT:        (c) => `A ${c.jobTitle} role matching your profile`,
   AI_CALL_COMPLETED:      (c) => `AI call completed - ${c.candidateName}, ${c.jobTitle}`,
@@ -258,6 +259,11 @@ const BODIES = {
     `You have not yet taken the AI interview for ${c.jobTitle} at ${c.company}.`
     + `\n\nThe window closes ${human(c.dueAt)} — about 24 hours from now. `
     + 'After that the application cannot move forward.',
+
+  /* 0133: SMS / WhatsApp - the short form of the closing-day email */
+  AI_INTERVIEW_CLOSING_TODAY: (c) =>
+    `You applied for ${c.jobTitle} (Job ID ${c.jobId}) but have not attended the AI interview. `
+    + 'The job closes today - please attend the interview before it closes.',
 
   AI_INTERVIEW_FINAL: (c) =>
     `Final reminder: the AI interview for ${c.jobTitle} at ${c.company} closes `

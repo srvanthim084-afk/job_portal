@@ -487,8 +487,12 @@ export function toApplication(r) {
     // When the AI interview window closes. Two days from the invitation,
     // set by the database, so the screen states a deadline rather than
     // counting down from whenever the tab happened to open.
+    /* 0133: the job's last date (or a retake's window); NULL when the job has no date - then the
+       interview stays open as long as the job does */
     aiInterviewDueAt: r.ai_interview_due_at
       ? new Date(r.ai_interview_due_at).toISOString() : undefined,
+    ...(r.ai_interview_open != null ? { aiInterviewOpen: !!r.ai_interview_open } : {}),
+    ...(r.ai_interview_closed_reason ? { aiInterviewClosedReason: r.ai_interview_closed_reason } : {}),
     resumeFile: nz(r.resume_path),
     primary: !!r.is_primary,
     /* 0107: the walk-in ATS. `version` is what a stage save quotes back
