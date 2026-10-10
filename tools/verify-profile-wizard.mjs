@@ -76,16 +76,9 @@ const api = (page, method, path, body) => page.evaluate(async ({ m, p, b }) => {
   try { return { ok: true, body: await TL.api[m](p, b) }; } catch (e) { return { ok: false, status: e.status, message: e.message }; }
 }, { m: method, p: path, b: body });
 
-/* the mobile OTP: the development server shows it on the page (no SMS gateway) */
+/* the mobile number: typed in (the mobile OTP is switched off - see memory: mobile-otp-parked) */
 async function verifyPhone(page, phone) {
   if (phone) { await page.fill('#tlrfPhone', phone); await page.dispatchEvent('#tlrfPhone', 'change'); }
-  await page.click('[data-tlrf="sendotp"]');
-  await page.waitForSelector('#tlrfOtp', { timeout: 15000 });
-  await page.waitForSelector('#tlrfHost .tlrf-dev b', { timeout: 15000 });
-  const otp = await page.evaluate(() => [...document.querySelectorAll('#tlrfHost .tlrf-dev b')].map((b) => b.textContent).find((t) => /^\d{6}$/.test(t)));
-  await page.fill('#tlrfOtp', otp || '');
-  await page.click('[data-tlrf="verifyotp"]');
-  await page.waitForFunction(() => !!document.querySelector('[data-tlrf="changephone"]'), null, { timeout: 15000 });
   return true;
 }
 

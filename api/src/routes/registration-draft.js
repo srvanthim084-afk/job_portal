@@ -512,9 +512,10 @@ export async function draftForRegistration({ draftId, draftToken, email, phone }
 
 const registrationPhone10 = (v) => String(v || '').replace(/\D/g, '').slice(-10);
 
-/** The mobile OTP at registration: on unless REGISTRATION_PHONE_VERIFY=false. */
+/** The mobile OTP at registration: OFF (the owner removed it from the page) unless REGISTRATION_PHONE_VERIFY=true.
+    The routes and migration 0123 stay, so it can be switched back on without a release. */
 export function phoneVerifyRequired() {
-  return !/^(0|false|no|off)$/i.test(String(process.env.REGISTRATION_PHONE_VERIFY || 'true'));
+  return /^(1|true|yes|on)$/i.test(String(process.env.REGISTRATION_PHONE_VERIFY || '').trim());
 }
 
 /** Whether an account may ONLY be created through a draft whose email and mobile were verified - not by posting

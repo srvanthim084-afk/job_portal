@@ -85,16 +85,9 @@ async function verifyEmail(page, email) {
 }
 
 
-/* the mobile OTP: the development server shows it on the page (no SMS gateway) */
+/* the mobile number: typed in (the mobile OTP is switched off - see memory: mobile-otp-parked) */
 async function verifyPhone(page, phone) {
   if (phone) { await page.fill('#tlrfPhone', phone); await page.dispatchEvent('#tlrfPhone', 'change'); }
-  await page.click('[data-tlrf="sendotp"]');
-  await page.waitForSelector('#tlrfOtp', { timeout: 15000 });
-  await page.waitForSelector('#tlrfHost .tlrf-dev b', { timeout: 15000 });
-  const otp = await page.evaluate(() => [...document.querySelectorAll('#tlrfHost .tlrf-dev b')].map((b) => b.textContent).find((t) => /^\d{6}$/.test(t)));
-  await page.fill('#tlrfOtp', otp || '');
-  await page.click('[data-tlrf="verifyotp"]');
-  await page.waitForFunction(() => !!document.querySelector('[data-tlrf="changephone"]'), null, { timeout: 15000 });
   return true;
 }
 
@@ -111,7 +104,7 @@ check(/Upload Resume \(PDF \/ DOC \/ DOCX \/ TXT\)/.test(await hostText(page)) &
 check(/prefer to paste text instead\? \(optional\)/i.test(await hostText(page)) && await page.isVisible('[data-tlrf="analyze"]'), 'Resume: paste text + Analyze with AI');
 check(!(await page.isChecked('#tlrfWa')) && !(await page.isChecked('#tlrfTerms')) && !(await page.isChecked('#tlrfResumeOk')), 'no consent is pre-ticked (WhatsApp optional)');
 check(!(await page.isVisible('#tlrfCompany')), 'Fresher: no company / designation fields');
-check(await page.isVisible('[data-tlrf="sendcode"]') && await page.isVisible('[data-tlrf="sendotp"]'), 'Send code (email) and Send OTP (mobile) are both on the page');
+check(await page.isVisible('[data-tlrf="sendcode"]') && !(await page.$('[data-tlrf="sendotp"]')), 'email Send code is on the page; no mobile OTP (switched off)');
 check(await page.evaluate(() => document.getElementById('registerForm').hidden && ![...document.querySelectorAll('.tlr-stepper')].some((x) => x.offsetParent !== null)), 'no steps: one page, the seven-step form stays hidden');
 await page.check('input[name="tlrfType"][value="experienced"]');
 check(await page.isVisible('#tlrfCompany') && await page.isVisible('#tlrfDesig') && await page.isVisible('#tlrfExp'), 'Experienced: Current Company, Current Designation, Total Experience');
@@ -149,13 +142,13 @@ check((await val(p2, 'tlrfName')) === 'Meera Iyer' && (await val(p2, 'tlrfQual')
 /* ---- required fields ----------------------------------------------------------- */
 await page.click('[data-tlrf="create"]');
 const errs = await hostText(page);
-check(/verify your email/i.test(errs) && /verify your mobile number/i.test(errs) && /Password must be/.test(errs) && /Preferred Job Location is required/.test(errs) && /Terms/.test(errs), 'required fields are checked (email code, mobile OTP, password, preferred location, consents)');
+check(/verify your email/i.test(errs) && !/verify your mobile number/i.test(errs) && /Password must be/.test(errs) && /Preferred Job Location is required/.test(errs) && /Terms/.test(errs), 'required fields are checked (email code, password, preferred location, consents) - no mobile OTP');
 check((await page.evaluate(() => location.hash)).includes('register'), 'nothing is created while fields are missing');
 
 /* ---- complete it ---------------------------------------------------------------- */
 const email = mail('classic');
 check(await verifyEmail(page, email), 'the email code is sent and verified');
-check(await verifyPhone(page, mobile()), 'the mobile OTP is sent and verified');
+check(await verifyPhone(page, mobile()), 'the mobile number is entered (no OTP)');
 await page.fill('#tlrfPw', 'Regist3r9pass'); await page.fill('#tlrfPw2', 'Regist3r9pass');
 await page.selectOption('#tlrfExp', '3'); await page.dispatchEvent('#tlrfExp', 'change');
 await fill(page, 'tlrfPref', 'Hyderabad, Pune');
@@ -224,7 +217,7 @@ await page.selectOption('#tlrfQual', 'Diploma'); await page.dispatchEvent('#tlrf
 await page.fill('#tlrfSkillIn', 'Tally'); await page.press('#tlrfSkillIn', 'Enter');
 await fill(page, 'tlrfPref', 'Vijayawada');
 check(await verifyEmail(page, mail('noresume')), 'no resume: the email code works');
-check(await verifyPhone(page, mobile()), 'no resume: the mobile OTP works');
+check(await verifyPhone(page, mobile()), 'no resume: the mobile number is entered (no OTP)');
 await page.fill('#tlrfPw', 'Regist3r9pass'); await page.fill('#tlrfPw2', 'Regist3r9pass');
 await page.check('#tlrfTerms'); await page.check('#tlrfResumeOk');
 await page.click('[data-tlrf="create"]');

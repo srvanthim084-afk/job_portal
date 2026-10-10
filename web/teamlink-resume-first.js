@@ -2,7 +2,7 @@
    TEAMLINK - candidate registration (0117, the classic one-page form)
 
      2 Personal Information   Full Name, Email Address (+ 6-digit email
-                              code), Mobile Number (+ 6-digit SMS OTP),
+                              code), Mobile Number,
                               Password, Confirm Password, Current Location
      3 Professional Info      Candidate Type (Fresher / Experienced);
                               Experienced: Current Company, Current
@@ -27,9 +27,10 @@
    pasted text, what was read from it, and the email's verification. This
    page keeps only the draft's id and token in sessionStorage.
 
-   BOTH CODES BEFORE THE ACCOUNT. The email answers a 6-digit email code
-   and the mobile number a 6-digit SMS OTP; the server refuses an account
-   whose address or number did not (draftForRegistration).
+   THE EMAIL ANSWERS A CODE BEFORE THE ACCOUNT. A 6-digit email code; the
+   server refuses an account whose address did not (draftForRegistration).
+   The mobile number is not sent an OTP (the owner removed it; the server
+   can ask for one again with REGISTRATION_PHONE_VERIFY=true).
 
    ONE PAGE, ALWAYS. No steps. The older seven-step form
    (teamlink-registration.js) is still in the page, hidden; a choice of it
@@ -89,7 +90,6 @@
     manual: false,
     phase: 'form', draft: null, token: null, busy: false, reading: false, creating: false,
     err: {}, msg: '', codeSent: false, devCode: null, done: null,
-    otpSent: false, otpDev: null,
     v: blankValues(), edited: {}, ai: {}, sugg: {}, review: {},
     pw: '', pw2: '', terms: false, resumeConsent: false, whatsapp: false,
     resumeStatus: '', resumeOk: false, pasted: '',
@@ -226,12 +226,6 @@
     var d = S.draft;
     return !!(d && d.emailVerified && String(d.email || '').toLowerCase() === String(S.v.email || '').toLowerCase());
   }
-  function last10(p) { return String(p || '').replace(/\D/g, '').slice(-10); }
-  function isPhoneVerified() {
-    var d = S.draft;
-    return !!(d && d.phoneVerified && last10(d.phone) && last10(d.phone) === last10(S.v.phone));
-  }
-
   function personalPanel() {
     var v = S.v, d = S.draft || {};
     var verified = isVerified();
@@ -258,27 +252,13 @@
       + signedNote + warn
       + '<div class="review-grid"><div>'
       + input('tlrfName', 'name', 'Full Name *', 'autocomplete="name" placeholder="e.g. Sneha Kulkarni"')
-      + phoneBox()
+      + input('tlrfPhone', 'phone', 'Mobile Number *', 'type="tel" inputmode="numeric" autocomplete="tel" maxlength="15" placeholder="+91 90000 00000"')
       + input('tlrfLoc', 'location', 'Current Location *', 'list="tlrfLocList" autocomplete="off" placeholder="e.g. Hyderabad"')
       + '</div><div>'
       + emailBox
       + '<div class="review-field"><label for="tlrfPw">Password *</label><input id="tlrfPw" type="password" autocomplete="new-password" placeholder="At least 8 characters, with a letter and a number">' + err('pw') + '</div>'
       + '<div class="review-field"><label for="tlrfPw2">Confirm Password *</label><input id="tlrfPw2" type="password" autocomplete="new-password" placeholder="Type the password again">' + err('pw2') + '</div>'
       + '</div></div></div></div>';
-  }
-
-  function phoneBox() {
-    var v = S.v;
-    var ok = isPhoneVerified();
-    return '<div class="review-field' + wrapCls('phone') + '"><label for="tlrfPhone">Mobile Number *' + tags('phone') + '</label>'
-      + '<div class="tlrf-row"><input id="tlrfPhone" data-f="phone" type="tel" inputmode="numeric" autocomplete="tel" maxlength="15" placeholder="+91 90000 00000" value="' + h(v.phone) + '"' + (ok ? ' readonly' : '') + '>'
-      + (ok ? '<span class="tlrf-ok">✓ Verified</span> <button type="button" class="btn btn-ghost btn-sm" data-tlrf="changephone">Change</button>'
-        : '<button type="button" class="btn btn-ghost btn-sm" data-tlrf="sendotp"' + (S.busy ? ' disabled' : '') + '>' + (S.otpSent ? 'Resend OTP' : 'Send OTP') + '</button>') + '</div>'
-      + (ok ? '' : '<p class="tlrf-note">We send a 6-digit OTP by SMS to confirm this number.</p>')
-      + (S.otpSent && !ok ? '<div class="tlrf-row" style="margin-top:6px"><input id="tlrfOtp" inputmode="numeric" maxlength="6" placeholder="6-digit OTP" autocomplete="one-time-code" aria-label="Mobile OTP">'
-        + '<button type="button" class="btn btn-primary btn-sm" data-tlrf="verifyotp"' + (S.busy ? ' disabled' : '') + '>Verify</button></div>' : '')
-      + (S.otpDev && !ok ? '<div class="tlrf-dev">Development server: SMS is not being sent. Your OTP is <b>' + h(S.otpDev) + '</b>.</div>' : '')
-      + err('phone') + err('otp') + '</div>';
   }
 
   function professionalPanel() {
@@ -604,49 +584,12 @@
     });
   }
 
-  function sendOtp() {
-    keep();
-    S.err.phone = ''; S.err.otp = ''; S.err.dupPhone = false;
-    if (!PHONE_RX.test(String(S.v.phone || '').replace(/[\s-]/g, ''))) { S.err.phone = 'Enter a valid 10-digit Indian mobile number.'; paint(); return; }
-    if (S.busy) return;
-    S.busy = true; paint();
-    ensureDraft().then(function (d) {
-      return api().post('/registration/drafts/' + encodeURIComponent(d.draftId) + '/phone-otp', { phone: S.v.phone }, hdr());
-    }).then(function (r) {
-      S.busy = false; S.otpSent = true; S.otpDev = r.devCode || null;
-      if (r.sent) say('We sent a 6-digit OTP to ' + S.v.phone, '📱');
-      paint();
-      var c = $('tlrfOtp'); if (c) c.focus();
-    }, function (er) {
-      S.busy = false;
-      if (er && (er.code === 'PHONE_TAKEN' || /already exists/i.test(apiMessage(er)))) S.err.dupPhone = true;
-      S.err.phone = (details(er).phone) || apiMessage(er);
-      paint();
-    });
-  }
-
-  function verifyOtp() {
-    keep();
-    var code = val('tlrfOtp').replace(/\D/g, '');
-    if (code.length !== 6) { S.err.otp = 'Enter the 6-digit OTP sent to your mobile.'; paint(); return; }
-    if (S.busy) return;
-    S.busy = true; paint();
-    api().post('/registration/drafts/' + encodeURIComponent(S.draft.draftId) + '/verify-phone',
-      { phone: S.v.phone, code: code }, hdr()).then(function (d) {
-      S.busy = false; S.err.otp = ''; S.err.phone = ''; S.draft = d; S.otpDev = null; paint();
-      say('Mobile number verified', '✓');
-    }, function (er) {
-      S.busy = false; S.err.otp = (details(er).code) || apiMessage(er); paint();
-    });
-  }
-
   function problems() {
     var v = S.v, e = {};
     if (!v.name || v.name.length < 2) e.name = 'Please enter your full name.';
     if (!EMAIL_RX.test(v.email)) e.email = 'Please enter a valid email address.';
     else if (!isVerified()) e.email = 'Please verify your email address - press Send code.';
     if (!PHONE_RX.test(String(v.phone || '').replace(/[\s-]/g, ''))) e.phone = 'Enter a valid 10-digit Indian mobile number.';
-    else if (!isPhoneVerified()) e.phone = 'Please verify your mobile number - press Send OTP.';
     if (!v.location) e.location = 'Current Location is required.';
     var pw = S.pw || '';
     if (pw.length < 8 || !/[A-Za-z]/.test(pw) || !/\d/.test(pw)) e.pw = 'Password must be at least 8 characters, with a letter and a number.';
@@ -745,7 +688,6 @@
   function resetForm() {
     S.v = blankValues();
     S.edited = {}; S.ai = {}; S.sugg = {}; S.review = {}; S.err = {}; S.msg = ''; S.codeSent = false; S.devCode = null;
-    S.otpSent = false; S.otpDev = null;
     S.pw = S.pw2 = ''; S.terms = false; S.resumeConsent = false; S.whatsapp = false;
     S.resumeStatus = ''; S.resumeOk = false; S.pasted = '';
   }
@@ -762,15 +704,6 @@
     if (act === 'auto') { setManual(false); paint(); return; }
     if (act === 'sendcode') { sendCode(); return; }
     if (act === 'verify') { verify(); return; }
-    if (act === 'sendotp') { sendOtp(); return; }
-    if (act === 'verifyotp') { verifyOtp(); return; }
-    if (act === 'changephone') {
-      keep();
-      if (S.draft) S.draft = Object.assign({}, S.draft, { phoneVerified: false });
-      S.otpSent = false; S.otpDev = null; paint();
-      var ph = $('tlrfPhone'); if (ph) ph.focus();
-      return;
-    }
     if (act === 'changeemail') {
       keep();
       if (S.draft) S.draft = Object.assign({}, S.draft, { emailVerified: false });
@@ -811,14 +744,7 @@
       paint(); return;
     }
     if (t.tagName === 'SELECT' && t.getAttribute('data-f')) { keep(); delete S.err[t.getAttribute('data-f')]; paint(); return; }
-    if (t.id === 'tlrfPhone') {
-      keep();
-      S.err.phone = ''; S.err.dupPhone = false;
-      /* a different number has to answer its own OTP */
-      if (!isPhoneVerified()) { S.otpSent = false; S.otpDev = null; }
-      paint();
-      return;
-    }
+    if (t.id === 'tlrfPhone') { keep(); S.err.phone = ''; S.err.dupPhone = false; paint(); return; }
     if (t.id === 'tlrfEmail') {
       keep();
       S.err.email = ''; S.err.dupEmail = false;
@@ -845,7 +771,6 @@
       var si = $('tlrfSkillIn'); if (si) si.focus();
     }
     if (ev.key === 'Enter' && ev.target && ev.target.id === 'tlrfCode') { ev.preventDefault(); verify(); }
-    if (ev.key === 'Enter' && ev.target && ev.target.id === 'tlrfOtp') { ev.preventDefault(); verifyOtp(); }
   });
 
   /* A skill typed but not yet entered is still a skill: taken on the way out of the box. */

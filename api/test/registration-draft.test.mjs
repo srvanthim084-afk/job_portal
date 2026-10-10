@@ -141,7 +141,7 @@ test('boot', async () => {
     OUTBOUND_ALLOWLIST: '',
     REGISTRATION_CONSENT_REQUIRED: '',
     /* the mobile OTP has its own tests below; the older ones are about the email and the resume */
-    REGISTRATION_PHONE_VERIFY: 'false', REGISTRATION_OTP_REQUIRED: '', SMS_API_KEY: '',
+    REGISTRATION_PHONE_VERIFY: '', REGISTRATION_OTP_REQUIRED: '', SMS_API_KEY: '',   /* unset = the default: no mobile OTP */
     /* "The AI is unavailable": a key is set and the model answers nonsense. */
     AI_API_KEY: 'test-ai-key',
     AI_API_URL: `http://127.0.0.1:${MOCK_PORT}/ai`,
@@ -601,7 +601,7 @@ test('email code AND mobile OTP: the account needs both, for the same address an
     assert.equal(dup.status, 409);
     assert.match(dup.body.error.details.phone, /already exists/);
   } finally {
-    process.env.REGISTRATION_PHONE_VERIFY = 'false';
+    process.env.REGISTRATION_PHONE_VERIFY = '';
   }
 });
 
@@ -615,7 +615,7 @@ test('where OTP is required, the older form cannot register straight through /au
       preferredWorkModes: ['Office'], consent: CONSENT,
     });
     assert.equal(r.status, 400, JSON.stringify(r.body));
-    assert.ok(r.body.error.details.phone && r.body.error.details.email);
+    assert.ok(r.body.error.details.email, 'the email must answer its code');
   } finally {
     process.env.REGISTRATION_OTP_REQUIRED = '';
   }

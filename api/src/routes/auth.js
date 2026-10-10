@@ -324,8 +324,8 @@ export default function authRoutes() {
     /* Where OTP is required (production, or REGISTRATION_OTP_REQUIRED=true) an account is created ONLY through the
        registration page's draft, whose email and mobile number answered their codes. */
     if (!draftId && otpRequired()) {
-      throw badRequest('Please verify your email address and mobile number to register.',
-        { email: 'Please verify your email address first.', phone: 'Please verify your mobile number with the OTP first.' });
+      throw badRequest('Please verify your email address to register.',
+        { email: 'Please verify your email address first.' });
     }
     /* 0117 / 0123: from the draft, the email AND the mobile number must have answered their codes.
        Checked before anything is written. */
