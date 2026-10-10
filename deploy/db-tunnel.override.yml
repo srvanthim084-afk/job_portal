@@ -1,0 +1,15 @@
+# TEMPORARY - only while copying the local portal's data to this server (docs/WEBSITE-JOBS.md, step 4).
+#
+# Publishes Postgres on the SERVER'S OWN 127.0.0.1:5432 - never on a public address - so the copy
+# tool on your PC can reach it through an SSH tunnel:
+#
+#   on the server:  docker compose -f docker-compose.yml -f deploy/db-tunnel.override.yml up -d db
+#   on your PC:     ssh -N -L 5433:127.0.0.1:5432 you@your-server
+#
+# When the copy is done, take the port away again:
+#
+#   docker compose up -d db
+services:
+  db:
+    ports:
+      - "127.0.0.1:5432:5432"

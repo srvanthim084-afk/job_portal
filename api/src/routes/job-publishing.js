@@ -33,7 +33,7 @@ import { config } from '../config.js';
 import { wrap, badRequest, notFound, forbidden, ApiError } from '../errors.js';
 import { requireAuth, requireRole } from '../auth.js';
 import {
-  ENGINE, OWN, setDestinations, reconcileJob, kickJob, makeDue, listForJob, sweepOnce, integrationOf,
+  ENGINE, OWN, setDestinations, ensureDefaultDestinations, reconcileJob, kickJob, makeDue, listForJob, sweepOnce, integrationOf,
   blockerFor, toPublication, confirmFromPlatform, settle,
 } from '../publishing/service.js';
 import { connectorFor } from '../publishing/connectors.js';
@@ -97,9 +97,25 @@ export function publishingJobHooks() {
     /* An edit, a publish / unpublish, a deadline change: the job's rows
        are reconciled (update pushed, or taken down when it closed). */
     if (req.method === 'PUT' || req.method === 'POST') {
+      /* A NEW job: if nobody chose its destinations, TeamLink's defaults (the portal and the
+         TeamLink Website feed) - a little later, after the job form has had its chance to send
+         its own ticks, which always win. */
+      if (req.method === 'POST' && /^\/jobs\/?$/.test(req.path)) {
+        afterJson(res, (body) => {
+          const id = body && body.job && body.job.id;
+          if (!id) return;
+          const t = setTimeout(() => {
+            ensureDefaultDestinations(id).then((rows) => { if (rows.length) kickJob(id); })
+              .catch((err) => console.error('[publishing] default destinations for', id, 'failed:', err.message));
+          }, Number(process.env.PUBLISH_DEFAULTS_DELAY_MS || 8000));
+          if (t.unref) t.unref();
+        });
+        return next();
+      }
       const m = /^\/jobs\/([^/]+)(?:\/(publish|deadline|archive))?\/?$/.exec(req.path);
       if (m && m[1] !== 'describe' && (req.method === 'PUT' || m[2])) {
-        afterJson(res, () => kickJob(decodeURIComponent(m[1])));
+        const id = decodeURIComponent(m[1]);
+        afterJson(res, () => ensureDefaultDestinations(id).catch(() => []).then(() => kickJob(id)));
       }
       return next();
     }

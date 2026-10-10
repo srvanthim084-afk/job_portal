@@ -103,6 +103,7 @@ test('boot', async () => {
     PUBLISH_HTTP_TIMEOUT_MS: '1000',
     PUBLISH_WAIT_MS: '8000',
     PUBLISH_STATUS_CHECK_MS: '600000',
+    PUBLISH_DEFAULTS_DELAY_MS: '1500',
     SMS_API_KEY: '', WHATSAPP_API_KEY: '', EMAIL_API_KEY: '',
     EMAIL_SMTP_HOST: '', EMAILJS_SERVICE_ID: '', EMAILJS_TEMPLATE_ID: '', EMAILJS_PUBLIC_KEY: '', EMAILJS_PRIVATE_KEY: '',
   });
@@ -215,6 +216,36 @@ test('the website feed: JSON + RSS, cacheable, embeddable, only open jobs ticked
   assert.ok(rss.includes(`teamlink-job-${J1}`));
   const gone = await fetch(`${base}/feeds/jobs/${notTicked}.json`);
   assert.equal(gone.status, 404);
+});
+
+test('a job posted with no destinations chosen reaches the website by default; a choice on the form wins', async () => {
+  const auto = await newJob({ title: 'Default Destinations Nurse' });
+  const kept = await newJob({ title: 'Kept Off The Website' });
+  await recruiter.put(`/api/jobs/${kept}/publications`, { destinations: ['TEAMLINK_PORTAL'] });
+  let feed = null;
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    feed = await fetch(`${base}/feeds/jobs.json`, { cache: 'no-store' }).then((x) => x.json());
+    if (feed.jobs.some((j) => j.id === auto)) break;
+  }
+  assert.ok(feed.jobs.some((j) => j.id === auto), 'the job nobody chose destinations for is on the website');
+  assert.equal(feed.jobs.some((j) => j.id === kept), false, 'unticking the website on the form keeps it off');
+  const pubs = (await raw(`select destination from job_publications where job_id = $1 order by destination`, [auto])).rows;
+  assert.deepEqual(pubs.map((p) => p.destination), ['TEAMLINK_PORTAL', 'TEAMLINK_WEBSITE'], 'only TeamLink\'s own defaults - no partner');
+  const keptSite = (await raw(`select desired from job_publications where job_id = $1 and destination = 'TEAMLINK_WEBSITE'`, [kept])).rows;
+  assert.ok(!keptSite.length || keptSite[0].desired === 'removed', JSON.stringify(keptSite));
+});
+
+test('the jobs block for the company website may be loaded from another site; nothing else may', async () => {
+  for (const enc of ['identity', 'gzip']) {
+    const r = await fetch(`${base}/teamlink-jobs-embed.js`, { headers: { 'accept-encoding': enc } });
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get('cross-origin-resource-policy'), 'cross-origin', enc);
+    assert.equal(r.headers.get('access-control-allow-origin'), '*', enc);
+    assert.match(await r.text(), /feeds\/jobs\.json/);
+  }
+  const other = await fetch(`${base}/teamlink-integration.js`, { headers: { 'accept-encoding': 'gzip' } });
+  assert.equal(other.headers.get('cross-origin-resource-policy'), 'same-origin');
 });
 
 test('who may do what: a recruiter cannot open Integrations or publish somebody else\'s job', async () => {

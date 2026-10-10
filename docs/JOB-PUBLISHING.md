@@ -52,7 +52,7 @@ per job, set `TEAMLINK_WEBSITE_JOB_URL=https://…/careers/job?id={id}`. That
 page must then also answer 200 before the row is Posted, and it becomes the
 stored URL.
 
-Embedding it is a few lines on the website:
+A ready-made, styled block for tmlink.in (search, filters, Apply Now), the hosting steps and the data copy are in `docs/WEBSITE-JOBS.md`. The bare minimum, for any site:
 
 ```html
 <ul id="tl-jobs"></ul>

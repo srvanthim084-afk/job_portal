@@ -538,6 +538,11 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
       res.setHeader('content-encoding', 'gzip');
       res.setHeader('vary', 'accept-encoding');
       res.setHeader('cache-control', 'no-cache');
+      /* the company website's jobs block may be loaded from another site (see express.static below) */
+      if (/^\/teamlink-jobs-embed\.js$/i.test(rel)) {
+        res.setHeader('cross-origin-resource-policy', 'cross-origin');
+        res.setHeader('access-control-allow-origin', '*');
+      }
       /* Weak, because the body is the gzipped form of the file rather
          than the file: a strong tag would claim byte equality with
          whatever an uncompressed request returns. */
@@ -574,6 +579,13 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
          * and removes a whole class of "I already fixed that".
          */
         if (/\.(html|js|css)$/i.test(path)) res.setHeader('cache-control', 'no-cache');
+        /* The jobs block the company website (tmlink.in) pastes in: the one file another site
+           must be allowed to load. It reads only the public jobs feed, which is cross-origin
+           already. Every other file keeps the same-origin policy. */
+        if (/[\\/]teamlink-jobs-embed\.js$/i.test(path)) {
+          res.setHeader('cross-origin-resource-policy', 'cross-origin');
+          res.setHeader('access-control-allow-origin', '*');
+        }
       },
     }));
 
