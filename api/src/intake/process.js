@@ -1524,13 +1524,15 @@ export async function syncMailbox(session, mailboxId,
 
 /** Every mailbox with auto-sync on. Used by the scheduler and by "Sync now". */
 export async function syncAll(session,
-  { onlyAuto = true, board = 'all', retry = false } = {}) {
+  { onlyAuto = true, board = 'all', retry = false, onlyIds = null } = {}) {
   const boxes = await withUser(ENGINE, async (c) => (await c.query(
-    `select id, address, auth_refused_fingerprint
+    `select id, address, provider, config, secrets_sealed, auth_refused_fingerprint
        from email_mailboxes ${onlyAuto ? 'where auto_sync' : ''} order by created_at`)).rows);
 
   const out = [];
   for (const b of boxes) {
+    /* 0135: a recruiter's "Sync" reads the mailboxes that recruiter can see, not everybody's */
+    if (onlyIds && !onlyIds.includes(b.id)) continue;
     /*
      * A password the server has already refused is NOT sent again.
      *

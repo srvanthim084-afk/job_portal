@@ -216,10 +216,14 @@ export const ACTIONS = {
   'contact.override_denied': 'Override Denied', 'contact.override_used': 'Override Used',
   /* 0127: single sign-on from HRMS, once per HRMS session */
   'auth.login_hrms': 'Login (via HRMS)',
+  /* 0135: the Naukri & Shine mailboxes Admin connects to a recruiter */
+  'intake.mailbox_connected': 'Mailbox Connected', 'intake.mailbox_reconnected': 'Mailbox Reconnected',
+  'intake.mailbox_disconnected': 'Mailbox Disconnected', 'intake.mailbox_reassigned': 'Mailbox Reassigned',
+  'intake.mailbox_synced': 'Mailbox Synced',
 };
 /* 0125: sign-in, sign-out and job lifecycle rows, named the same here. */
 for (const a of ACTIVITY) if (!ACTIONS[a.code]) ACTIONS[a.code] = a.label;
-const ENTITIES = ['candidate', 'application', 'recruiter', 'setting', 'interview', 'document', 'job', 'session', 'user'];
+const ENTITIES = ['candidate', 'application', 'recruiter', 'setting', 'interview', 'document', 'job', 'session', 'user', 'mailbox'];
 
 /* The filters of the audit page, as SQL over admin_audit_events (alias e) and users (alias u). */
 function auditFilters(q) {

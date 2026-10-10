@@ -29,7 +29,22 @@ alter table email_mailboxes
   add column if not exists secrets_sealed  text,
   add column if not exists auth_method     text,
   add column if not exists connected_at    timestamptz,
-  add column if not exists connected_by    uuid;
+  add column if not exists connected_by    uuid,
+  add column if not exists last_success_at timestamptz;
+
+/* "Last Successful Sync" is its own fact: last_sync_at moves on a failed sync too. And a mailbox
+   Admin disconnected while a sync was running stays disconnected when that sync finishes. */
+create or replace function mailbox_synced(p_id text, p_error text) returns void
+language sql security definer set search_path = public as $$
+  update email_mailboxes
+     set last_sync_at = now(),
+         last_success_at = case when p_error is null then now() else last_success_at end,
+         last_error = p_error,
+         status = case when status = 'disconnected' and source is not null then status
+                       when p_error is null then 'connected' else 'error' end,
+         updated_at = now()
+   where id = p_id;
+$$;
 
 do $$
 begin
@@ -41,6 +56,38 @@ begin
     alter table email_mailboxes add constraint email_mailboxes_auth_chk
       check (auth_method is null or auth_method in ('app_password', 'oauth', 'environment'));
   end if;
+end $$;
+
+/* The recruiter's own "connect a mailbox" (0019) cannot reach an Admin-connected Naukri / Shine
+   mailbox (it would replace its settings and take its owner), nor take another recruiter's mailbox. */
+create or replace function mailbox_upsert(
+  p_id text, p_address text, p_provider text, p_recruiter_id text,
+  p_display_name text, p_auto_sync boolean, p_rules jsonb, p_config jsonb
+) returns text
+language plpgsql security definer set search_path = public as $$
+declare v_id text; v_row email_mailboxes;
+begin
+  select * into v_row from email_mailboxes where address = lower(p_address);
+  if found and v_row.source is not null then raise exception 'MAILBOX_ADMIN_MANAGED'; end if;
+  if found and p_recruiter_id is not null and v_row.recruiter_id is not null
+     and v_row.recruiter_id <> p_recruiter_id then raise exception 'MAILBOX_OWNED'; end if;
+  insert into email_mailboxes
+    (id, address, provider, recruiter_id, display_name, auto_sync, rules, config, status)
+  values
+    (p_id, lower(p_address), coalesce(p_provider,'mock'), p_recruiter_id, p_display_name,
+     coalesce(p_auto_sync, true), coalesce(p_rules,'{}'::jsonb), coalesce(p_config,'{}'::jsonb),
+     'connected')
+  on conflict (address) do update
+     set provider = excluded.provider,
+         recruiter_id = coalesce(excluded.recruiter_id, email_mailboxes.recruiter_id),
+         display_name = coalesce(excluded.display_name, email_mailboxes.display_name),
+         auto_sync = excluded.auto_sync,
+         rules = excluded.rules,
+         config = excluded.config,
+         status = 'connected',
+         updated_at = now()
+  returning id into v_id;
+  return v_id;
 end $$;
 
 -- ---------------------------------------------------------------------
@@ -71,14 +118,15 @@ create or replace function source_mailbox_save(
   p_config jsonb, p_sealed text, p_auth text)
 returns text
 language plpgsql security definer set search_path = public as $$
-declare v_row email_mailboxes; v_id text;
+declare v_row email_mailboxes; v_id text; v_existed boolean;
 begin
   if not app_is_admin() then raise exception 'ADMIN_ONLY'; end if;
   if p_source not in ('naukri', 'shine') then raise exception 'BAD_SOURCE'; end if;
   if not exists (select 1 from recruiters where id = p_recruiter_id) then raise exception 'NO_SUCH_RECRUITER'; end if;
 
   select * into v_row from email_mailboxes where address = lower(p_address);
-  if found then
+  v_existed := found;   /* FOUND changes with the insert / update below */
+  if v_existed then
     /* the same address cannot quietly change board or owner: that is a reassignment, done on purpose */
     if v_row.source is not null and v_row.source <> p_source then raise exception 'MAILBOX_OTHER_SOURCE'; end if;
     if v_row.recruiter_id is not null and v_row.recruiter_id <> p_recruiter_id then raise exception 'MAILBOX_OWNED'; end if;
@@ -99,7 +147,7 @@ begin
     returning id into v_id;
   end if;
 
-  perform audit_write(case when found then 'intake.mailbox_reconnected' else 'intake.mailbox_connected' end,
+  perform audit_write(case when v_existed then 'intake.mailbox_reconnected' else 'intake.mailbox_connected' end,
     'mailbox', v_id, jsonb_build_object('source', p_source, 'recruiterId', p_recruiter_id, 'address', lower(p_address)));
   return v_id;
 end $$;

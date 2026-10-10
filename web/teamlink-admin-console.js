@@ -8,7 +8,7 @@
      4 Reports & Audit Log Reports · Analytics · Audit Log
      5 Availability
      6 Job Sources
-     7 Integrations       Integrations · AI Settings · Notification Settings
+     7 Integrations       Integrations · Naukri & Shine Email Import · AI Settings · Notification Settings
    with the Admin profile and Exit at the bottom, as before.
 
    NOTHING IS REMOVED. Every page that had its own sidebar entry is still
@@ -38,7 +38,7 @@
     { key: 'reports', label: 'Reports & Audit Log', icon: '📊', tabs: [['reports', 'Reports'], ['analytics', 'Analytics'], ['audit-log', 'Audit Log']] },
     { key: 'availability', label: 'Availability', icon: '🟢', tabs: [['availability', 'Availability']] },
     { key: 'job-sources', label: 'Job Sources', icon: '🌐', tabs: [['job-sources', 'Job Sources']] },
-    { key: 'integrations', label: 'Integrations', icon: '🔌', tabs: [['integrations', 'Integrations'], ['ai-settings', 'AI Settings'], ['notification-settings', 'Notification Settings']] },
+    { key: 'integrations', label: 'Integrations', icon: '🔌', tabs: [['integrations', 'Integrations'], ['email-import', 'Naukri & Shine Email Import'], ['ai-settings', 'AI Settings'], ['notification-settings', 'Notification Settings']] },
   ];
   var GROUP_OF = {};
   GROUPS.forEach(function (g) { g.tabs.forEach(function (t) { GROUP_OF[t[0]] = g; }); });
