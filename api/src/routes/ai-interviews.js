@@ -281,7 +281,7 @@ export default function aiInterviewRoutes() {
           where application_id=$1 and candidate_id=$2
           order by attempt_number desc`,
         [app.id, req.session.profileId])).rows;
-      const last = attempts[0];
+      let last = attempts[0];
 
       /*
        * AN INTERVIEW THAT IS DONE IS NOT STARTED AGAIN.
@@ -302,8 +302,20 @@ export default function aiInterviewRoutes() {
           { attemptNumber: last.attempt_number });
       }
       if (last && last.status === 'expired') {
-        throw new ApiError(410, 'INTERVIEW_EXPIRED',
-          'This interview has passed its deadline and can no longer be started. Please contact the recruiter if you need it reopened.');
+        /* 0138: an attempt that ran out of ITS OWN time is reopened where the candidate left it while the
+           job's window is still open ("No deadline - Attend any time" means exactly that). Only a closed
+           window - the job closed, its date or the walk-in day passed - keeps it shut. */
+        const back = (await c.query(`select ai_interview_resume_expired($1,$2,$3) as ok`,
+          [last.id, req.session.profileId, DEADLINE_HOURS])).rows[0].ok;
+        if (back) {
+          const now = (await c.query(`select status, started_at, expires_at from ai_interviews where id=$1`, [last.id])).rows[0];
+          last = { ...last, ...now };
+        } else {
+          const w = (await c.query(`select * from ai_interview_window($1)`, [app.id])).rows[0];
+          if (w && !w.open) throw new ApiError(410, 'INTERVIEW_CLOSED', INTERVIEW_CLOSED_MESSAGE, { reason: w.reason });
+          throw new ApiError(410, 'INTERVIEW_EXPIRED',
+            'This interview has passed its deadline and can no longer be started. Please contact the recruiter if you need it reopened.');
+        }
       }
       if (last && (last.status === 'in_progress' || last.status === 'warning_issued')) {
         const rows = (await c.query(
