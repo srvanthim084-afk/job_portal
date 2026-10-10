@@ -336,6 +336,9 @@
   function report(type, confidence, evidence) {
     var api = API();
     if (!api || !S.interviewId || S.busy || S.suspended) return;
+    /* 0136: only while the questions are running - never while the last answer is being
+       submitted and scored, on the "completed" screen, or before the first question */
+    if (!window.AIIV || window.AIIV.phase !== 'interview' || window.AIIV.ending) return;
     var now = Date.now();
     if (now - S.lastReportAt < T.cooldownMs()) return;
     S.lastReportAt = now;
@@ -350,11 +353,14 @@
       S.strikes = r.strike;
       if (r.action === 'warn') {
         showWarning(r.strike, r.message);
-      } else {
+      } else if (r.action === 'suspend' || r.action === 'suspended') {
         S.suspended = true;
         stop();
         suspend(r.message, r.retakeAvailableAt);
       }
+      /* 'noted' (the same moment as the last warning) and 'ignored' (every question already
+         answered, or the interview finished) change nothing on screen. Treating them as a
+         suspension is what put "Interview suspended" up after a final Submit. */
     }).catch(function () {
       S.busy = false;
       /* A failed report must not invent a strike locally: the count only
@@ -470,6 +476,8 @@
     try {
       var A = window.AIIV;
       if (!A || !A.started) return;
+      /* a stop only ends a RUNNING interview - never the submitting or completed screen */
+      if (A.phase !== 'interview') return;
       if (!A.integrity) A.integrity = { events: [], noiseMs: 0, camLostMs: 0 };
       A.integrity.events.push({ kind: kind, detail: message, at: new Date().toISOString() });
       A.integrity.ended = { kind: kind, message: message, retakeAt: retakeAt || null, at: new Date().toISOString() };

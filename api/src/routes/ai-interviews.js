@@ -29,7 +29,7 @@ import { CODES } from '../errors.js';
 import { storeRecording, getStorage, RECORDING_MAX_BYTES } from '../storage.js';
 import { speechModes, sttEnabled, ttsEnabled, transcribe, synthesise } from '../ai/interview-speech.js';
 import { retakePolicy, questionSeconds, PAGE_STOPS, formatWhen } from '../interview/policy.js';
-import { afterSuspension } from '../notify/interview-suspension.js';
+import { afterSuspension, sendRetakeChangedEmail } from '../notify/interview-suspension.js';
 
 /* Recordings are inspected in memory before anything is written, exactly
    like a resume (routes/uploads.js). */
@@ -1147,9 +1147,9 @@ export default function aiInterviewRoutes() {
 
     const policy = retakePolicy();
     const out = await withUser(ENGINE_SESSION, async (c) => (await c.query(
-      `select * from interview_integrity_report($1,$2,$3,$4::jsonb,$5,$6,$7)`,
+      `select * from interview_integrity_report($1,$2,$3,$4::jsonb,$5,$6,$7,$8)`,
       [iv.id, b.type, b.confidence, JSON.stringify(evidence),
-       policy.delayMinutes, policy.maxAttempts, policy.deadlineHours])).rows[0]);
+       policy.delayMinutes, policy.maxAttempts, policy.deadlineHours, policy.incidentSeconds])).rows[0]);
 
     /* The email goes only AFTER the suspension is saved, once (the claim
        is the database's), and never holds up or undoes this answer. */
@@ -1158,12 +1158,12 @@ export default function aiInterviewRoutes() {
     res.json({
       strike: Number(out.strike_no),
       of: 2,
-      action: out.action,                 // 'warn' | 'suspend' | 'suspended' | 'ignored'
+      action: out.action,                 // 'warn' | 'noted' | 'suspend' | 'suspended' | 'ignored' (0136)
       message: out.message,
       interviewStatus: out.interview_status,
       integrityStatus: out.integrity_status,
       retakeAvailableAt: out.retake_at ? new Date(out.retake_at).toISOString() : null,
-      mayContinue: out.action === 'warn',
+      mayContinue: out.action !== 'suspend' && out.action !== 'suspended',
     });
   }));
 
@@ -1210,16 +1210,16 @@ export default function aiInterviewRoutes() {
     /* The same two-strike rule as a second person / a second voice: the first
        occurrence WARNS and the interview carries on; a second one suspends. */
     const out = await withUser(ENGINE_SESSION, async (c) => (await c.query(
-      `select * from interview_integrity_report($1,$2,$3,$4::jsonb,$5,$6,$7)`,
+      `select * from interview_integrity_report($1,$2,$3,$4::jsonb,$5,$6,$7,$8)`,
       [iv.id, code, 1, JSON.stringify({ detector: 'browser', questionSeq: q, note: b.note || undefined }),
-       policy.delayMinutes, policy.maxAttempts, policy.deadlineHours])).rows[0]);
+       policy.delayMinutes, policy.maxAttempts, policy.deadlineHours, policy.incidentSeconds])).rows[0]);
     if (out.action === 'suspend') afterSuspension(iv.id);
     res.json({
-      action: out.action,                  // 'warn' | 'suspend' | 'suspended' | 'ignored'
+      action: out.action,                  // 'warn' | 'noted' | 'suspend' | 'suspended' | 'ignored' (0136)
       strike: Number(out.strike_no), of: 2,
       suspended: out.action === 'suspend' || out.action === 'suspended',
       firstTime: out.action === 'suspend',
-      mayContinue: out.action === 'warn',
+      mayContinue: out.action !== 'suspend' && out.action !== 'suspended',
       message: out.message,
       interviewStatus: out.interview_status,
       retakeAvailableAt: out.retake_at ? new Date(out.retake_at).toISOString() : null,
@@ -1266,6 +1266,8 @@ export default function aiInterviewRoutes() {
     const iv = await withUser(ENGINE_SESSION, async (c) => (await c.query(
       `select * from interview_retake_control($1,$2,$3,$4)`,
       [req.params.id, b.action, b.reason, req.session.userId || null])).rows[0]);
+    /* the candidate is told the new state (0136) - after the change is saved, never blocking it */
+    setImmediate(() => { sendRetakeChangedEmail(iv.id, b.action).catch(() => {}); });
     res.json({
       interview: {
         id: iv.id, status: iv.status, attemptNumber: iv.attempt_number, retakeBlocked: iv.retake_blocked,

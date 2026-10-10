@@ -29,7 +29,7 @@ import { providers } from './providers.js';
 import { emailLayout } from './layout.js';
 import { companyLabel } from '../portal/alerts.js';
 import { alertRecruiter } from './walkin-ats.js';
-import { formatWhen, supportEmail, retakePolicy } from '../interview/policy.js';
+import { formatWhen, supportEmail, retakePolicy, displayZone } from '../interview/policy.js';
 
 const ENGINE = { userId: '', role: 'admin', profileId: null };
 const base = () => String(config.publicOrigin || '').replace(/\/$/, '');
@@ -38,7 +38,7 @@ const oneLine = (s) => String(s == null ? '' : s).replace(/[\r\n\t]+/g, ' ').tri
 async function load(interviewId) {
   return withUser(ENGINE, async (c) => (await c.query(
     `select i.id, i.application_id, i.attempt_number, i.suspended_at, i.suspension_message, i.suspension_code,
-            i.retake_available_at, i.retake_blocked, i.status,
+            i.retake_available_at, i.retake_blocked, i.retake_open_notified_at, i.status,
             c.name as candidate_name, c.email as candidate_email,
             j.id as job_id, j.title as job_title, j.recruiter_id as job_recruiter, co.name as company_name,
             a.recruiter_id as app_recruiter, a.ai_interview_due_at
@@ -60,29 +60,43 @@ export function buildSuspensionEmail(row) {
   const support = supportEmail();
   const retakeAt = row.retake_available_at && !row.retake_blocked ? formatWhen(row.retake_available_at) : '';
 
-  const next = retakeAt
-    ? [`- You can retake the interview for ${job} after ${retakeAt}. We will send you another message when it is open.`,
-       '- Please attend from a quiet place, use headphones, keep your camera on, and make sure only you are speaking.']
-    : ['- Your recruiter will review this interview and let you know the next steps.',
-       '- If you attend another interview, please do it from a quiet place, use headphones, keep your camera on, and make sure only you are speaking.'];
-  next.push(`- If you believe this was a mistake or you faced a technical problem, reply to this email${support ? ` or contact ${support}` : ''}.`);
+  /* "12 hours after the suspension" - from the two stored times, so it is always the delay that
+     was really applied (INTERVIEW_RETAKE_DELAY_MINUTES), never a number written here */
+  const gapMin = retakeAt && row.suspended_at
+    ? Math.round((new Date(row.retake_available_at) - new Date(row.suspended_at)) / 60000) : null;
+  const gap = gapMin == null ? '' : gapMin % 60 === 0
+    ? `${gapMin / 60} hour${gapMin === 60 ? '' : 's'}` : `${gapMin} minutes`;
 
-  const subject = oneLine(`Your AI interview for ${job} has been suspended`);
-  const lines = [
-    `Hi ${name},`,
+  const next = retakeAt
+    ? ['When you can attend again:',
+       `You can attend the interview again on ${retakeAt} (${displayZone()})${gap ? `, which is ${gap} after the suspension` : ''}. `
+       + 'The interview for this same job will open for you at that time, and we will send you another message when it is open.'].join('\n')
+    : ['What happens next:',
+       'Your interview is under recruiter review. Your recruiter will look at it and let you know the next steps.'].join('\n');
+  const before = [retakeAt ? 'Before you attend again:' : 'If you attend another interview:',
+    '- Sit in a quiet place and use headphones.',
+    '- Keep your camera on for the whole interview.',
+    '- Make sure only you are speaking.',
+    '- Each question has its own time limit, so be ready to answer each one.'].join('\n');
+  const help = `If you believe this was a mistake or you faced a technical problem, reply to this email${support ? ` or contact ${support}` : ''}.`;
+
+  const subject = oneLine(retakeAt
+    ? `Your AI interview for ${job} was suspended - you can attend again on ${retakeAt}`
+    : `Your AI interview for ${job} was suspended - it is under recruiter review`);
+  const body = [
     `Your AI interview for ${job} at ${company} was suspended on ${when}.`,
     `Reason: ${reason}`,
-    ['What happens next:', ...next].join('\n'),
-    'Regards,\nTeamLink Consultants',
+    next,
+    before,
+    help,
   ];
   return {
     subject,
-    text: lines.join('\n\n'),
+    text: [`Hi ${name},`, ...body, 'Regards,\nTeamLink Consultants'].join('\n\n'),
     html: emailLayout({
       title: subject, preheader: reason, greeting: `Hi ${name},`,
-      body: [`Your AI interview for ${job} at ${company} was suspended on ${when}.`, `Reason: ${reason}`,
-        ['What happens next:', ...next].join('\n')].join('\n\n'),
-      note: 'Your recruiter will review this interview.',
+      body: body.join('\n\n'),
+      note: 'A suspension is not a decision on your application.',
     }),
   };
 }
@@ -163,6 +177,70 @@ export async function sendRetakeOpenEmail(interviewId) {
     return { status: ok ? 'sent' : 'failed' };
   } catch (err) {
     console.error('[interview] retake-open email failed:', err && err.message);
+    return { status: 'failed' };
+  }
+}
+
+/**
+ * A recruiter changed the retake (blocked it, lifted the block, gave another attempt): the
+ * candidate is told the NEW state, so the time in the earlier email is never left standing.
+ * Exported so the words can be tested exactly.
+ */
+export function buildRetakeChangedEmail(row, action) {
+  const name = oneLine(row.candidate_name) || 'there';
+  const job = oneLine(row.job_title) || 'your application';
+  const company = companyLabel(row.company_name);
+  const url = `${base()}/#/candidate/home`;
+  const at = row.retake_available_at ? new Date(row.retake_available_at) : null;
+  const future = !!(at && at.getTime() > Date.now());
+  let subject; let lines; let cta = null;
+  if (action === 'block' || row.retake_blocked) {
+    subject = `Update on your AI interview for ${job} - under recruiter review`;
+    lines = [
+      `Your AI interview for ${job} at ${company} is now under recruiter review, and it will not reopen automatically.`,
+      'The retake time in our earlier email no longer applies. Your recruiter will contact you about the next steps.',
+    ];
+  } else if (future) {
+    subject = `Update on your AI interview for ${job} - you can attend again on ${formatWhen(at)}`;
+    lines = [
+      `You can attend the AI interview for ${job} at ${company} again on ${formatWhen(at)} (${displayZone()}).`,
+      'Any earlier time we sent you no longer applies. We will send you another message when it is open.',
+    ];
+  } else {
+    subject = `Your AI interview for ${job} is open again`;
+    const due = row.ai_interview_due_at ? formatWhen(row.ai_interview_due_at) : '';
+    lines = [
+      `Your recruiter has opened the AI interview for ${job} at ${company} for you again. You can attend it now from your TeamLink dashboard.`,
+      due ? `Please complete it by ${due}.` : '',
+    ].filter(Boolean);
+    cta = { label: 'Start my interview', url };
+  }
+  lines.push('Before you start: sit in a quiet place, use headphones, keep your camera on, and make sure only you are speaking. Each question has its own time limit.');
+  subject = oneLine(subject);
+  return {
+    subject,
+    text: [`Hi ${name},`, '', ...lines.flatMap((l) => [l, '']), `Open TeamLink: ${url}`, '', 'Regards,', 'TeamLink Consultants'].join('\n'),
+    html: emailLayout({ title: subject, preheader: lines[0], greeting: `Hi ${name},`, body: lines.join('\n\n'), ...(cta ? { cta } : {}) }),
+  };
+}
+
+/** After a recruiter's retake action. Never throws, never blocks the action. */
+export async function sendRetakeChangedEmail(interviewId, action) {
+  try {
+    const row = await load(interviewId);
+    if (!row || row.status !== 'suspended') return { status: 'skipped' };
+    const at = row.retake_available_at ? new Date(row.retake_available_at).getTime() : null;
+    /* an attempt that is open now and has not been announced yet gets the ordinary
+       "open again" email from the sweep - not two emails saying the same thing */
+    if (action !== 'block' && !row.retake_blocked && at && at <= Date.now() && !row.retake_open_notified_at) {
+      return { status: 'skipped', reason: 'retake_open_notice' };
+    }
+    const r = await deliver(row, buildRetakeChangedEmail(row, action), 'retake_changed');
+    const ok = sentOk(r);
+    if (!ok) console.error(`[interview] retake-change email not sent (${r && r.status})`);
+    return { status: ok ? 'sent' : 'failed' };
+  } catch (err) {
+    console.error('[interview] retake-change email failed:', err && err.message);
     return { status: 'failed' };
   }
 }

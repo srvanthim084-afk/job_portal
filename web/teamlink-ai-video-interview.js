@@ -597,9 +597,15 @@
     if (!host) return;
     host.innerHTML = show
       ? '<div class="tlvi-banner" role="status" aria-live="assertive"><span class="tlvi-spin" style="display:inline-flex">' + I.sync + '</span>'
-        + '<span>' + esc(text || 'Reconnecting… Your transcript is safe, and the interview will carry on from this question.') + '</span></div>'
+        + '<span>' + esc(text || 'Reconnecting… Your transcript is safe, and the interview will carry on from this question.') + '</span>'
+        /* 0136: after a couple of automatic tries the candidate can try again at once. The answer
+           stays saved on this device; nothing is skipped, and nothing about this is a violation. */
+        + (retryNowFn ? '<button type="button" class="tlvi-btn" style="margin-left:auto" onclick="TLVI.retryNow()">Retry now</button>' : '')
+        + '</div>'
       : '';
   };
+  var retryNowFn = null;
+  TLVI.retryNow = function () { var f = retryNowFn; if (f) f(); };
   TLVI.bannerShown = function () { return bannerOn; };
 
   function retryable(err) {
@@ -615,22 +621,34 @@
    */
   TLVI.persist = function (fn) {
     var attempt = 0;
+    var timer = null;
+    var once = null;
     return new Promise(function (resolve, reject) {
       (function go() {
         fn().then(function (v) {
+          retryNowFn = null;
           if (attempt > 0 && TLVI.net.online()) TLVI.banner(false);
           resolve(v);
         }, function (err) {
+          retryNowFn = null;
           if (!retryable(err)) { if (attempt > 0) TLVI.banner(false); return reject(err); }
           attempt += 1;
+          var now = function () {
+            if (timer) { clearTimeout(timer); timer = null; }
+            if (once) { window.removeEventListener('online', once); once = null; }
+            retryNowFn = null;
+            TLVI.banner(true, 'Trying again… Your answer is safe on this device.');
+            go();
+          };
+          retryNowFn = attempt >= 2 ? now : null;
           TLVI.banner(true);
           var wait = Math.min(15000, 800 * Math.pow(2, Math.min(attempt, 5)));
           if (navigator.onLine === false) {
             // wait for the browser to come back, then keep backing off
-            var once = function () { window.removeEventListener('online', once); setTimeout(go, 600); };
+            once = function () { window.removeEventListener('online', once); once = null; timer = setTimeout(function () { timer = null; go(); }, 600); };
             window.addEventListener('online', once);
           } else {
-            setTimeout(go, wait);
+            timer = setTimeout(function () { timer = null; go(); }, wait);
           }
         });
       })();

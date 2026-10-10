@@ -3,10 +3,12 @@
  *
  * Nothing here is a hard-coded policy a deployment cannot change:
  *
- *   INTERVIEW_RETAKE_DELAY_MINUTES   how long after a suspension the retake opens   (default 120)
+ *   INTERVIEW_RETAKE_DELAY_MINUTES   how long after a suspension the retake opens   (default 720 = 12 hours)
  *   INTERVIEW_MAX_ATTEMPTS           attempts per application, retake included       (default 2)
  *   AI_INTERVIEW_DEADLINE_HOURS      how long an attempt may take once open          (default 48)
  *   INTERVIEW_QUESTION_TIME_SECONDS  time per question; never below 120, clamped up   (default 120)
+ *   INTERVIEW_INCIDENT_SECONDS       detections this close to the last counted one are the same
+ *                                    moment: recorded, not a new strike (0136)          (default 20)
  *   TEAMLINK_TIMEZONE                the timezone times are SHOWN in; the database
  *                                    and every comparison stay in UTC                (default Asia/Kolkata)
  *   SUPPORT_EMAIL                    the address the suspension email points to      (default EMAIL_FROM)
@@ -27,9 +29,10 @@ const num = (v, dflt, min = 0) => {
 
 export function retakePolicy() {
   return {
-    delayMinutes: num(process.env.INTERVIEW_RETAKE_DELAY_MINUTES, 120, 0),
+    delayMinutes: num(process.env.INTERVIEW_RETAKE_DELAY_MINUTES, 720, 0),
     maxAttempts: Math.max(1, Math.floor(num(process.env.INTERVIEW_MAX_ATTEMPTS, 2, 1))),
     deadlineHours: Math.max(1, num(process.env.AI_INTERVIEW_DEADLINE_HOURS, 48, 1)),
+    incidentSeconds: Math.floor(num(process.env.INTERVIEW_INCIDENT_SECONDS, 20, 0)),
   };
 }
 
