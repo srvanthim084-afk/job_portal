@@ -18,6 +18,7 @@
  * from the environment, per mailbox address, so a compromised recruiter
  * session cannot exfiltrate them and the UI has no field to leak.
  */
+import { openSecrets } from '../publishing/secrets.js';
 import { connect as tlsConnect } from 'node:tls';
 import { randomUUID, createHash } from 'node:crypto';
 import { bodyOf, attachmentsOf } from './mime.js';
@@ -55,7 +56,7 @@ function envKey(address, suffix) {
  * to connect. An address on anything else still gets mail.<domain>, and
  * an explicit HOST always wins over both.
  */
-const IMAP_HOSTS = {
+export const IMAP_HOSTS = {
   'gmail.com': 'imap.gmail.com',
   'googlemail.com': 'imap.gmail.com',
   'outlook.com': 'outlook.office365.com',
@@ -112,7 +113,21 @@ export function isAuthFailure(err) {
   return /authenticationfailed|auth.*fail|invalid credentials|refused: no|\blogin failed\b/.test(m);
 }
 
-export function mailboxSecrets(address) {
+export function mailboxSecrets(address, mailbox) {
+  /* 0135: a Naukri / Shine mailbox connected by Admin carries its own sealed credential (an app
+     password) and the incoming-mail settings that were proved to work when it was connected. */
+  const sealed = mailbox && mailbox.secrets_sealed ? openSecrets(mailbox.secrets_sealed) : null;
+  if (sealed && sealed.password) {
+    const cfg = (mailbox && mailbox.config) || {};
+    return {
+      host: cfg.host || IMAP_HOSTS[String(address || '').split('@')[1] || ''] || '',
+      port: Number(cfg.port || 993),
+      user: sealed.user || address,
+      password: sealed.password,
+      token: '',
+      sealed: true,
+    };
+  }
   const pick = (suffix, fallback) =>
     process.env[envKey(address, suffix)] || process.env[`MAILBOX_${suffix}`] || fallback || '';
 
@@ -145,7 +160,7 @@ export function mailboxSecrets(address) {
 
 /** What is missing before this mailbox can be read. */
 export function mailboxReadiness(mailbox) {
-  const s = mailboxSecrets(mailbox.address);
+  const s = mailboxSecrets(mailbox.address, mailbox);
   if (mailbox.provider === 'mock') return { ready: true, missing: [] };
   if (mailbox.provider === 'imap') {
     // Only the credential is ever genuinely missing now: the host has a
@@ -528,8 +543,23 @@ const mockProvider = {
  * This opens it: connect, LOGIN, SELECT INBOX, disconnect. Nothing is
  * read and nothing is changed.
  */
+/** Opens a mailbox with the settings given (connect, LOGIN, SELECT INBOX, close). Nothing is read or saved. */
+export async function testImapLogin({ host, port = 993, user, password, timeout = 20000 }) {
+  const client = new Imap({ host, port, user, password, timeout });
+  try {
+    await client.connect();
+    await client.login();
+    await client.selectInbox();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err).slice(0, 300), authFailed: isAuthFailure(err) };
+  } finally {
+    try { await client.logout(); } catch { /* already gone */ }
+  }
+}
+
 export async function verifyMailbox(mailbox) {
-  const s = mailboxSecrets(mailbox.address);
+  const s = mailboxSecrets(mailbox.address, mailbox);
 
   if (mailbox.provider === 'mock') return { ok: true, detail: 'sample inbox' };
 
@@ -566,7 +596,7 @@ export async function verifyMailbox(mailbox) {
 const imapProvider = {
   name: 'imap',
   async fetchNew(mailbox, { since, limit = 50 } = {}) {
-    const s = mailboxSecrets(mailbox.address);
+    const s = mailboxSecrets(mailbox.address, mailbox);
     if (!s.host || !s.password) {
       const err = new Error(`No IMAP credentials are configured for ${mailbox.address}.`);
       err.code = 'NOT_CONFIGURED';
@@ -624,7 +654,7 @@ function httpProvider(name) {
   return {
     name,
     async fetchNew(mailbox, { since, limit = 50 } = {}) {
-      const s = mailboxSecrets(mailbox.address);
+      const s = mailboxSecrets(mailbox.address, mailbox);
       if (!s.token) {
         const err = new Error(`No ${name} access token is configured for ${mailbox.address}.`);
         err.code = 'NOT_CONFIGURED';
