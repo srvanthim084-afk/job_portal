@@ -76,7 +76,7 @@
   var CITIES = ['Hyderabad', 'Bengaluru', 'Chennai', 'Mumbai', 'Delhi', 'Pune', 'Kolkata', 'Noida', 'Gurugram',
     'Ahmedabad', 'Visakhapatnam', 'Vijayawada', 'Coimbatore', 'Kochi', 'Remote'];
   /* the form's fields the reader can fill, and what they are called in a "detected" count */
-  var AI_FIELDS = ['name', 'email', 'phone', 'location', 'company', 'designation', 'totalExp', 'qualification', 'skills', 'notice'];
+  var AI_FIELDS = ['name', 'email', 'phone', 'location', 'company', 'designation', 'totalExp', 'qualification', 'skills', 'notice', 'prefLoc'];
 
   function blankValues() {
     return { name: '', email: '', phone: '', location: '', candType: 'fresher', company: '', designation: '',
@@ -329,9 +329,9 @@
     return '<div class="panel"><div class="panel-head"><h2><span class="reg-section-num">4</span>Preferences</h2></div><div class="panel-body">'
       + '<div class="review-grid"><div>'
       + input('tlrfPref', 'prefLoc', 'Preferred Job Location *', 'list="tlrfLocList" autocomplete="off" placeholder="e.g. Bengaluru"')
-      + input('tlrfSal', 'salary', 'Expected Salary (₹ LPA)', 'type="number" min="0" step="0.5" placeholder="e.g. 12"')
+      + input('tlrfSal', 'salary', 'Expected Salary (₹ LPA) *', 'type="number" min="0" step="0.5" placeholder="e.g. 12"')
       + '</div><div>'
-      + '<div class="review-field' + wrapCls('notice') + '"><label for="tlrfNotice">Notice Period' + tags('notice') + '</label>'
+      + '<div class="review-field' + wrapCls('notice') + '"><label for="tlrfNotice">Notice Period *' + tags('notice') + '</label>'
       + '<select id="tlrfNotice" data-f="notice"><option value="">Select…</option>' + NOTICE.map(function (n) {
         return '<option' + (v.notice === n ? ' selected' : '') + '>' + h(n) + '</option>';
       }).join('') + '</select>' + err('notice') + '</div>'
@@ -437,9 +437,11 @@
       location: f.location || '',
       company: f.currentCompany || '',
       designation: f.title || '',
-      totalExp: (f.expYears === undefined || f.expYears === null || f.expYears === '') ? '' : String(Math.min(10, Math.floor(Number(f.expYears)))),
-      qualification: matchQual(f.qualification || highestRecord(f.educationRecords)),
+      /* the total across every job the resume dates (the reader adds them up), to the nearest year */
+      totalExp: (f.expYears === undefined || f.expYears === null || f.expYears === '') ? '' : String(Math.min(10, Math.round(Number(f.expYears)))),
+      qualification: matchQual(highestRecord(f.educationRecords)) || matchQual(f.qualification || ''),
       notice: matchNotice(f.noticePeriod || ''),
+      prefLoc: f.preferredLocation ? String(f.preferredLocation).trim().slice(0, 160) : '',
       skills: Array.isArray(f.skills) ? dedupe(f.skills) : [],
     };
     if (!found.name && d && d.nameSuggestion) found.name = d.nameSuggestion;
@@ -602,9 +604,11 @@
     if (!v.qualification) e.qualification = 'Highest Qualification is required.';
     if (!v.skills.length) e.skills = 'Add at least one key skill.';
     if (!v.prefLoc) e.prefLoc = 'Preferred Job Location is required.';
+    if (!v.notice) e.notice = 'Notice Period is required.';
     var sal = String(v.salary || '').trim();
-    if (sal && !(Number(sal) > 0)) e.salary = 'Expected Salary must be more than 0.';
-    else if (sal && Number(sal) > 1000) e.salary = 'Please enter the salary in lakh per annum.';
+    if (!sal) e.salary = 'Expected Salary is required.';
+    else if (!(Number(sal) > 0)) e.salary = 'Expected Salary must be more than 0.';
+    else if (Number(sal) > 1000) e.salary = 'Please enter the salary in lakh per annum.';
     if (!S.terms || !S.resumeConsent) e.consent = 'Please accept the Terms & Privacy Policy and consent to resume processing.';
     return e;
   }
@@ -677,6 +681,7 @@
       if (dt.password) S.err.pw = dt.password;
       if (dt.preferredLocation) S.err.prefLoc = dt.preferredLocation;
       if (dt.expectedCtc) S.err.salary = dt.expectedCtc;
+      if (dt.noticePeriod) S.err.notice = dt.noticePeriod;
       if (dt['consent.terms']) S.err.consent = dt['consent.terms'];
       if (dt.name) S.err.name = dt.name;
       if (dt.highestEducation || dt.qualification) S.err.qualification = dt.highestEducation || dt.qualification;

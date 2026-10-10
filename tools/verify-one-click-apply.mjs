@@ -292,6 +292,8 @@ await nw.waitForFunction(() => { const n = document.getElementById('tlrfName'); 
 await nw.fill('#tlrfEmail', newEmail); await nw.dispatchEvent('#tlrfEmail', 'change');
 await nw.fill('#tlrfLoc', 'Hyderabad'); await nw.dispatchEvent('#tlrfLoc', 'change');
 await nw.fill('#tlrfPref', 'Hyderabad'); await nw.dispatchEvent('#tlrfPref', 'change');
+await nw.fill('#tlrfSal', '5'); await nw.dispatchEvent('#tlrfSal', 'change');
+await nw.selectOption('#tlrfNotice', 'Immediate'); await nw.dispatchEvent('#tlrfNotice', 'change');
 if (!(await nw.inputValue('#tlrfQual'))) { await nw.selectOption('#tlrfQual', 'B.Sc'); await nw.dispatchEvent('#tlrfQual', 'change'); }
 await nw.check('#tlrfTerms'); await nw.check('#tlrfResumeOk');
 await nw.click('[data-tlrf="sendcode"]');

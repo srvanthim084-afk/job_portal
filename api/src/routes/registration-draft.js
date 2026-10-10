@@ -591,7 +591,7 @@ export async function finishDraft({ draftId, draftToken, draft, candidateId, ses
   fieldSources.email = ex.email && String(ex.email).toLowerCase() === String(provided.email).toLowerCase()
     ? 'EXTRACTED' : 'USER_PROVIDED';
   fieldSources.phone = provided.phone && ex.phone && same(provided.phone, ex.phone) ? 'EXTRACTED' : 'USER_PROVIDED';
-  for (const k of ['location', 'preferredLocation', 'workMode', 'expectedSalary']) {   /* notice period: asked later, by the profile step */
+  for (const k of ['location', 'preferredLocation', 'workMode', 'expectedSalary', 'noticePeriod']) {   /* all asked on the registration page */
     fieldSources[k] = 'USER_PROVIDED';
   }
   if (draft.resume_storage_path) fieldSources.resume = 'EXTRACTED';

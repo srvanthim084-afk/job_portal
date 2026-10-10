@@ -502,6 +502,14 @@ function findLocation(text, which) {
   const v = labelledValue(text, LABELLED(labels, '[^\\n]{0,120}'));
 
   if (v) {
+    /* PREFERRED: every city they name ("Hyderabad, Bengaluru"), not only the first - up to the next field
+       on the same line ("| Notice Period: 30 Days"). */
+    if (preferred) {
+      const own = String(v).split(/\s*\|\s*/)[0];
+      const cities = own.split(/\s*(?:,|\/|;|\band\b|&)\s*/i).map((p) => cityIn(p)).filter(Boolean)
+        .filter((c, i, a) => a.indexOf(c) === i);
+      if (cities.length) return cities.join(', ');
+    }
     const city = cityIn(v);
     if (city) return city;
     if (preferred) return v;
@@ -564,6 +572,37 @@ const EDU_LEVELS = [
 ];
 const EDU_INSTITUTION = /\b(?:University|College|Institute|Institution|School|Vidyalaya|Academy|IIT|NIT|IIIT|Polytechnic|Board)\b/i;
 
+/* "Bachelor of Technology (B.Tech)" is a B.Tech: the long names, as the short ones the levels and the
+   registration's qualification list know. Most specific first. */
+const LONG_DEGREE = [
+  [/bachelor\s+of\s+computer\s+applications?/i, 'BCA'],
+  [/bachelor\s+of\s+business\s+administration/i, 'BBA'],
+  [/bachelor\s+of\s+technology/i, 'B.Tech'],
+  [/bachelor\s+of\s+engineering/i, 'B.E'],
+  [/bachelor\s+of\s+pharmacy/i, 'B.Pharm'],
+  [/bachelor\s+of\s+commerce/i, 'B.Com'],
+  [/bachelor\s+of\s+science/i, 'B.Sc'],
+  [/bachelor\s+of\s+arts/i, 'B.A'],
+  [/master\s+of\s+computer\s+applications?/i, 'MCA'],
+  [/master\s+of\s+business\s+administration/i, 'MBA'],
+  [/master\s+of\s+technology/i, 'M.Tech'],
+  [/master\s+of\s+engineering/i, 'M.E'],
+  [/master\s+of\s+pharmacy/i, 'M.Pharm'],
+  [/master\s+of\s+commerce/i, 'M.Com'],
+  [/master\s+of\s+science/i, 'M.Sc'],
+  [/master\s+of\s+arts/i, 'M.A'],
+  [/doctor\s+of\s+philosophy/i, 'Ph.D'],
+];
+export function shortDegree(line) {
+  for (const [re, ab] of LONG_DEGREE) {
+    if (re.test(line)) {
+      /* with its own abbreviation in brackets after it, the brackets go too */
+      return line.replace(new RegExp(re.source + '\\s*\\(\\s*[A-Za-z.]{2,9}\\s*\\)', 'i'), ab).replace(re, ab);
+    }
+  }
+  return line;
+}
+
 function levelOf(line) {
   for (const [level, re] of EDU_LEVELS) {
     const m = re.exec(line);
@@ -574,7 +613,7 @@ function levelOf(line) {
 
 export function findEducationRecords(section) {
   const lines = String(section || '').split('\n')
-    .map((l) => clean(l.replace(/^[\s•●▪*\-–—>]+/, '')))
+    .map((l) => shortDegree(clean(l.replace(/^[\s•●▪*\-–—>]+/, ''))))
     .filter((l) => l.length >= 2 && l.length <= 240);
   const records = [];
   let cur = null;
@@ -591,7 +630,7 @@ export function findEducationRecords(section) {
     if (!rec.institution) {
       const parts = line.split(/\s*[|,;–—]\s*|\s+-\s+/).map((p) => clean(p)).filter(Boolean);
       const isDegreePart = (p, i) => i === 0 && !!levelOf(p) && levelOf(p).degree === rec.qualification;
-      const leftover = parts.filter((p, i) => !isDegreePart(p, i)
+      const leftover = parts.filter((p, i) => !isDegreePart(p, i) && p !== rec.specialization
         && !/^(?:\(?\s*(?:19|20)\d\d\s*\)?|[\d.]+\s*%|(?:CGPA|GPA|CPI)?\s*[:\-]?\s*\d{1,2}(?:\.\d{1,2})?(?:\s*\/\s*10)?(?:\s*CGPA)?)$/i.test(p)
         && /[A-Za-z]{3,}/.test(p));
       const part = leftover.find((p) => EDU_INSTITUTION.test(p))
@@ -607,7 +646,7 @@ export function findEducationRecords(section) {
       cur = { level: lv.level, qualification: lv.degree, specialization: null,
               institution: null, passingYear: null, score: null };
       const spec = /\(([^)]{3,60})\)/.exec(line)
-        || new RegExp(lv.degree.replace(/[.+*?^$()[\]{}|\\]/g, '\\$&') + '\\s*(?:in|-|–|:)\\s*([A-Za-z&. ]{3,60})', 'i').exec(line);
+        || new RegExp(lv.degree.replace(/[.+*?^$()[\]{}|\\]/g, '\\$&') + '\\s*(?:in|-|–|:|,)\\s*([A-Za-z&. ]{3,60})', 'i').exec(line);
       if (spec && !/\d/.test(spec[1]) && !EDU_INSTITUTION.test(spec[1])) cur.specialization = clean(spec[1]);
       isLevelLine = true;
       take(cur, line.replace(/\([^)]*\)/, ''));
@@ -620,9 +659,109 @@ export function findEducationRecords(section) {
   return records.map((r) => ({ ...r, educationType: r.level }));
 }
 
+/* A date range, as resumes write them: "June 2023 – Present", "Jan 2019 - Mar 2021", "2018 - 2020",
+   "06/2019 - 05/2021". */
+const MON_RX = '(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\\.?';
+const DATE_POINT = '(?:(?:' + MON_RX + '\\s*,?\\s*)?(?:19|20)\\d{2}|(?:0?[1-9]|1[0-2])[/.-](?:19|20)\\d{2})';
+const DATE_RANGE = new RegExp('(' + DATE_POINT + ')\\s*(?:-|–|—|to|till)\\s*(' + DATE_POINT
+  + '|present|current|till\\s*date|to\\s*date|now|ongoing)', 'i');
+const COMPANY_HINT = /\b(?:pvt|private|ltd|limited|llp|inc|corp|corporation|company|technolog\w*|solutions?|systems?|labs?|software|services|consult\w*|infotech|infosystems|global|enterprises?|industries|group|hospitals?|bank|motors|retail)\b/i;
+
+/**
+ * "Software Developer | ABC Technologies Pvt. Ltd. — Hyderabad" with "June 2023 – Present" on its own line
+ * below (or on the same line). The common modern layout, which the one-line "Company - Title (dates)" reading
+ * below does not see at all - so the company, the job list and the total experience all came back empty.
+ * Which side is the company: the one with a company word (Pvt, Ltd, Technologies...), else the one without a
+ * job-title word. A bullet is a responsibility, never a job.
+ */
+function findEmploymentPiped(src) {
+  const lines = String(src || '').split(/\r?\n/).map((l) => l.trim());
+  const rows = []; const at = [];
+  const stripPlace = (p) => p.split(/\s+[—–]\s+|\s+-\s+/)[0].trim();
+  for (let i = 0; i < lines.length && rows.length < 12; i++) {
+    const raw = lines[i];
+    if (!raw || /^[•●▪*\u2022\u25aa\u25cf-]\s*/.test(raw) && ACTION_START.test(raw.replace(/^[•●▪*\u2022\u25aa\u25cf-]\s*/, ''))) continue;
+    if (!/\||\s+at\s+/i.test(raw)) continue;
+    const parts = raw.replace(DATE_RANGE, ' ').replace(/[()]/g, ' ').split(/\s*\|\s*|\s+at\s+/i)
+      .map((p) => clean(p)).filter((p) => p && /[A-Za-z]{2,}/.test(p));
+    if (parts.length < 2 || parts.length > 4) continue;
+    const a = stripPlace(parts[0]); const b = stripPlace(parts[1]);
+    if (!a || !b || ACTION_START.test(a) || LABEL_WORDS.test(a) || LABEL_WORDS.test(b)) continue;
+    const aCo = COMPANY_HINT.test(a); const bCo = COMPANY_HINT.test(b);
+    const aT = JOB_TITLE.test(a); const bT = JOB_TITLE.test(b);
+    let company; let title;
+    if (bCo && !aCo) { company = b; title = a; }
+    else if (aCo && !bCo) { company = a; title = b; }
+    else if (aT && !bT) { title = a; company = b; }
+    else if (bT && !aT) { title = b; company = a; }
+    else continue;
+    /* the dates: on this line, or alone on one of the next two */
+    let period = (DATE_RANGE.exec(raw) || [])[0] || null;
+    let bodyFrom = i + 1;
+    if (!period) {
+      for (let k = i + 1; k <= i + 2 && k < lines.length; k++) {
+        const m = DATE_RANGE.exec(lines[k]);
+        if (m && lines[k].replace(m[0], '').replace(/[()|,\s]/g, '').length < 30) { period = m[0]; bodyFrom = k + 1; break; }
+      }
+    }
+    if (!period && !(aCo || bCo)) continue;             // no dates and no company word: not evidence of a job
+    rows.push({ company: clean(company).slice(0, 120), title: clean(title).slice(0, 120), period: period ? clean(period) : null });
+    at.push({ start: i, bodyFrom });
+  }
+  rows.forEach((row, i) => {
+    const to = i + 1 < at.length ? at[i + 1].start : lines.length;
+    const body = lines.slice(at[i].bodyFrom, to)
+      .map((l) => l.replace(/^[\s•*\u2022\u25aa\u25cf-]+/, '').replace(/[.;]\s*$/, '').trim()).filter((l) => l.length > 2);
+    const text = clean(body.join('; ')).slice(0, 700);
+    if (text) row.details = text;
+  });
+  return rows;
+}
+
+/* ------------------------------------------------------------------ *
+ * TOTAL EXPERIENCE, from the jobs' own dates
+ * ------------------------------------------------------------------ */
+function monthOf(point, isEnd, now) {
+  const p = String(point || '').toLowerCase().trim();
+  if (/present|current|till|to\s*date|now|ongoing/.test(p)) return now;
+  const num = /(\d{1,2})[/.-]((?:19|20)\d{2})/.exec(p);
+  if (num) return Number(num[2]) * 12 + Number(num[1]) - 1;
+  const y = /((?:19|20)\d{2})/.exec(p);
+  if (!y) return null;
+  const mo = /(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/.exec(p);
+  return Number(y[1]) * 12 + (mo ? MONTHS[mo[1]] - 1 : (isEnd ? 11 : 0));
+}
+
+/**
+ * Months worked across ALL the jobs whose dates can be read, overlaps counted once; null when none can.
+ * Every job, not the latest one: a candidate with a year at one company and three at the next has four
+ * years of experience, whatever the headline says.
+ */
+export function totalExperienceMonths(rows, today = new Date()) {
+  const now = today.getFullYear() * 12 + today.getMonth();
+  const spans = [];
+  for (const r of rows || []) {
+    const m = r && r.period ? DATE_RANGE.exec(r.period) : null;
+    if (!m) continue;
+    const a = monthOf(m[1], false, now); const b = monthOf(m[2], true, now);
+    if (a == null || b == null || b < a || b > now + 1) continue;
+    spans.push([a, b + 1]);                            // the end month is a month worked
+  }
+  if (!spans.length) return null;
+  spans.sort((x, y) => x[0] - y[0]);
+  let total = 0; let [cs, ce] = spans[0];
+  for (const [st, en] of spans.slice(1)) {
+    if (st <= ce) ce = Math.max(ce, en);
+    else { total += ce - cs; cs = st; ce = en; }
+  }
+  return total + (ce - cs);
+}
+
 /** Employment history: "Company — Title (2021 - Present)" and variants. */
 function findEmployment(sections) {
   const src = sections.experience || '';
+  const piped = findEmploymentPiped(src);
+  if (piped.length) return piped;
   const rows = [];
   const re = /^[\s•*-]*([A-Z][\w&.,'()\- ]{2,60}?)\s*(?:[—–|,-]{1,2}|\bat\b)\s*([\w&.,'()\/\- ]{2,60}?)\s*(?:\(([^)]{4,40})\))?\s*$/gm;
   let m;
@@ -1476,7 +1615,11 @@ export function extractFields(text) {
       || (hasWorked ? findCurrentCompany(t, employment, sections.experience) : ''),
     previousCompanies: employment.filter((e) => !recent || e !== recent.row).map((e) => e.company),
     employmentHistory: employment,
-    expYears: findExperienceYears(t),
+    /* from the jobs' dates, all of them, when they can be read; the stated figure otherwise */
+    expYears: (() => {
+      const months = totalExperienceMonths(employment);
+      return months != null ? Math.round((months / 12) * 10) / 10 : findExperienceYears(t);
+    })(),
     relevantExpYears: (() => {
       const v = firstMatch(t, LABELLED('relevant\\s*experience', '[^\\n]{0,40}'));
       if (!v) return null;

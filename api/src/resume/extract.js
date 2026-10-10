@@ -101,8 +101,13 @@ function looksLikeText(buffer) {
  */
 async function fromDocx(buffer) {
   try {
-    const out = await mammoth.extractRawText({ buffer });
-    const text = (out?.value || '').trim();
+    /* THE LINE BREAKS INSIDE A PARAGRAPH. mammoth's raw-text mode drops <w:br/>, so a skills paragraph
+       written as "Programming: JavaScript, SQL<br>Frontend: HTML5" came out as "SQLFrontend: HTML5", and a
+       heading line ran into the next ("Hyderabad, TelanganaPreferred Location: ..."). Its HTML mode keeps
+       them as <br>, and paragraphs, list items, headings and table cells as elements - turned into lines
+       here, the same shape the raw mode gave, without the gluing. */
+    const out = await mammoth.convertToHtml({ buffer });
+    const text = htmlToText(out?.value || '').trim();
     if (text.length >= MIN_USEFUL_CHARS) return { text, parser: 'mammoth' };
     // fall through — an empty result is worth a second opinion
   } catch (err) {
@@ -121,6 +126,21 @@ async function fromDocx(buffer) {
   throw new ApiError(422, RESUME_CODES.DOCX_FAILED,
     'This DOCX file could not be read. If it opens in Word, try re-saving it as ' +
     'DOCX or PDF and uploading again.');
+}
+
+/** mammoth's HTML as text: a block (paragraph, heading, list item, row) or a <br> ends a line, a cell a tab. */
+function htmlToText(html) {
+  return String(html)
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(?:p|h[1-6]|li|tr|div|blockquote)>/gi, '\n')
+    .replace(/<\/(?:td|th)>/gi, '\t')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n');
 }
 
 /** <w:p> becomes a line, <w:tab> a space, <w:t> the text. */
