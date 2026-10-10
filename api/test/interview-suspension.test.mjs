@@ -70,7 +70,8 @@ test('boot', async () => {
     PUBLIC_ORIGIN: base,
     DISABLE_BACKGROUND_WORK: 'true',
     AI_API_KEY: '',
-    INTERVIEW_RETAKE_DELAY_MINUTES: '120', INTERVIEW_MAX_ATTEMPTS: '2',
+    INTERVIEW_RETAKE_DELAY_MINUTES: '720', INTERVIEW_MAX_ATTEMPTS: '2',
+    INTERVIEW_INCIDENT_SECONDS: '0',   // back-to-back detections here are separate incidents (0136)
     TEAMLINK_TIMEZONE: 'Asia/Kolkata', SUPPORT_EMAIL: 'support@tl-sink.local',
     EMAIL_API_KEY: '', EMAIL_SMTP_HOST: '', EMAIL_SMTP_USER: '', EMAIL_SMTP_PASS: '',
     EMAILJS_SERVICE_ID: '', EMAILJS_TEMPLATE_ID: '', EMAILJS_PUBLIC_KEY: '', EMAILJS_PRIVATE_KEY: '',
@@ -103,7 +104,7 @@ test('boot', async () => {
 
 test('policy: the numbers come from the environment, the words never say rejected', () => {
   const p = policy.retakePolicy();
-  assert.deepEqual(p, { delayMinutes: 120, maxAttempts: 2, deadlineHours: 48 });
+  assert.deepEqual(p, { delayMinutes: 720, maxAttempts: 2, deadlineHours: 48, incidentSeconds: 0 });
   for (const code of policy.SUSPENSION_CODES) {
     assert.doesNotMatch(policy.stopMessage(code, 4), /reject|fail|disqualif/i, code);
   }
@@ -134,7 +135,7 @@ test('two confirmed detections suspend: reason, question, retake time, one sente
   assert.equal(r.detection_count, 2);
   assert.equal(r.attempt_number, 1);
   const mins = (new Date(r.retake_available_at) - new Date(r.suspended_at)) / 60000;
-  assert.ok(mins > 119.9 && mins < 120.1, `retake after ${mins} minutes`);
+  assert.ok(mins > 719.9 && mins < 720.1, `retake after ${mins} minutes`);
 
   // a detector still firing after the suspension changes nothing
   const again = await voice(candA, first, 4);
@@ -147,9 +148,14 @@ test('the email: once, after the save, the same reason, escaped, no rejection wo
   const mails = sent.filter((m) => m.to === 'asha.sx@tl-sink.local' && /suspended/.test(m.subject));
   assert.equal(mails.length, 1, 'exactly one suspension email');
   const m = mails[0];
-  assert.match(m.subject, /has been suspended/);
+  assert.match(m.subject, /^Your AI interview for HR Recruiter was suspended - you can attend again on .*(am|pm) IST$/i);
   assert.match(m.text, /Reason: Another voice was detected during your answer to Question 3\./);
-  assert.match(m.text, /You can retake the interview for HR Recruiter after .*(am|pm)/);
+  assert.match(m.text, /You can attend the interview again on .*(am|pm).* \(Asia\/Kolkata\), which is 12 hours after the suspension/i);
+  assert.match(m.text, /Before you attend again:\n- Sit in a quiet place and use headphones\./);
+  assert.match(m.text, /Each question has its own time limit/);
+  // the time in the email is the stored retake time, formatted once
+  const stored = (await rows(appA))[0];
+  assert.ok(m.subject.includes(policy.formatWhen(stored.retake_available_at)), 'subject carries the stored retake time');
   assert.match(m.text, /support@tl-sink\.local/);
   assert.doesNotMatch(m.text + m.html, /reject|failed|disqualif/i);
   assert.doesNotMatch(m.html, /<b>Suspend<\/b>/, 'a name with markup is escaped');

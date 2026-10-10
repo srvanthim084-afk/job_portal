@@ -58,6 +58,7 @@ test('boot', async () => {
   applyTestEnv(dbh.url, {
     PUBLIC_ORIGIN: base, DISABLE_BACKGROUND_WORK: 'true', AI_API_KEY: '',
     INTERVIEW_QUESTION_TIME_SECONDS: '30',            // below the floor: must be clamped up
+    INTERVIEW_INCIDENT_SECONDS: '0',                  // the two page stops below are separate moments (0136)
     EMAIL_API_KEY: '', EMAIL_SMTP_HOST: '', EMAIL_SMTP_USER: '', EMAIL_SMTP_PASS: '',
     EMAILJS_SERVICE_ID: '', EMAILJS_TEMPLATE_ID: '', EMAILJS_PUBLIC_KEY: '', EMAILJS_PRIVATE_KEY: '',
     SMS_API_KEY: '', WHATSAPP_API_KEY: '',
