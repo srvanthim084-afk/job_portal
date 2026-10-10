@@ -64,6 +64,9 @@ export const config = {
   // "TeamLink Job Portal <jobs@...>" is read as a company; the address on
   // its own is read as a robot, and treated accordingly.
   emailFromName: process.env.EMAIL_FROM_NAME || '',
+  /* 0138: TeamLink's internal HR inbox - every walk-in application, and every walk-in
+     applicant found eligible by the AI interview, is sent here. Empty switches it off. */
+  internalHrEmail: process.env.INTERNAL_HR_EMAIL !== undefined ? process.env.INTERNAL_HR_EMAIL : 'internalhr.tmlink@gmail.com',
 
   /* ---- EmailJS -------------------------------------------------- *
    *

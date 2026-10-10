@@ -19,6 +19,7 @@ import { requireAuth, requireRole } from '../auth.js';
 import { toApplication, toNotification, toJob, toCandidate } from '../shapes.js';
 import { dispatchEvent } from '../notify/events.js';
 import { sendApplyMessages } from '../notify/apply-messages.js';
+import { kickApplicationNotices } from '../notify/application-notices.js';
 import { holdSeconds, scheduleHold } from '../notify/apply-hold.js';
 import { matchCandidate } from '../ai/match.js';
 import { screenApplication } from '../ai/screening.js';
@@ -269,6 +270,10 @@ export default function applicationRoutes() {
     // invitation (notify/apply-messages.js). Sent now, after the commit,
     // unless this is a one-click application inside its Undo window: then
     // they go when the hold falls due, and only if it was not undone.
+    /* 0138: HR hears about a walk-in application now - not after the AI interview, and not only
+       when a recruiter is assigned. The notice row was made with the application; this sends it. */
+    kickApplicationNotices();
+
     let messages = null;
     if (heldUntil) {
       scheduleHold(out.application.id, heldUntil);

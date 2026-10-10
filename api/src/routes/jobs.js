@@ -77,6 +77,12 @@ const jobSchema = z.object({
   walkinInstructions: z.string().trim().max(2000).optional().or(z.literal('')),
   walkinCapacity:     z.union([z.coerce.number().int().min(1).max(100000), z.literal(''), z.null()]).optional()
     .transform((v) => (v === '' ? null : v)),
+  /* 0138: the contact's designation; whether the AI interview is part of this walk-in, and the
+     final score that makes an applicant eligible (50 unless the job says otherwise) */
+  walkinContactDesignation: z.string().trim().max(120).optional().or(z.literal('')),
+  walkinAiRequired:  z.boolean().optional(),
+  walkinAiThreshold: z.coerce.number().min(0, 'The eligibility threshold is a percentage (0-100).')
+    .max(100, 'The eligibility threshold is a percentage (0-100).').optional(),
 
   internshipDuration: z.string().trim().max(40).optional().or(z.literal('')),
   internshipType:     z.enum(['Paid', 'Unpaid']).optional().or(z.literal('')),
@@ -133,6 +139,8 @@ const COLS = {
   walkinAddress: 'walkin_address', walkinMapLink: 'walkin_map_link',
   walkinDocuments: 'walkin_documents', walkinInstructions: 'walkin_instructions',
   walkinCapacity: 'walkin_capacity',
+  walkinContactDesignation: 'walkin_contact_designation',
+  walkinAiRequired: 'walkin_ai_required', walkinAiThreshold: 'walkin_ai_threshold',
   internshipDuration: 'internship_duration', internshipType: 'internship_type',
   stipend: 'stipend',
 };
