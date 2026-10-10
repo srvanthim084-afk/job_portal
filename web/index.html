@@ -29699,6 +29699,7 @@ table.data td .tl-af b{white-space:normal}
       ? '<div class="tp-sel"><b>'+picked.length+' selected</b>'
         + '<div class="sp">'
         + '<button class="btn btn-ghost btn-sm" onclick="tpAssign()">Assign to Job</button>'
+        + '<button class="btn btn-ghost btn-sm" onclick="tlSendAts(tpPickedIds())">Send to ATS</button>'
         + '<button class="btn btn-primary btn-sm" onclick="tpBulkCall()">AI Call</button>'
         /* WhatsApp, Email and SMS. Outline, like "Assign to Job" — "AI
            Call" stays the only solid button on this bar. Each opens a
@@ -29778,6 +29779,8 @@ table.data td .tl-af b{white-space:normal}
               + '<td class="act">'
               +   '<button class="btn btn-primary btn-sm" onclick="tpCall(\''+Q(c.id)+'\')">AI Call</button>'
               +   '<button class="btn btn-ghost btn-sm" onclick="navigate(\'/recruiter/candidate-profile?id='+Q(c.id)+'\')">View</button>'
+              /* Send to ATS: into a job's pipeline at Shortlisted (teamlink-send-to-ats.js) */
+              +   '<button class="btn btn-ghost btn-sm" onclick="tlSendAts([\''+Q(c.id)+'\'])">Send to ATS</button>'
               /* Sending the portal login again. The endpoint has always
                  existed; nothing in the interface ever called it, so a
                  candidate whose invitation bounced could only be helped
@@ -29927,6 +29930,11 @@ table.data td .tl-af b{white-space:normal}
     }, function(e){ alert('The calls could not be queued: '+(e&&e.message||'unknown error')); });
   };
 
+  /* the ticked candidates on this page, for the selection bar's buttons (Send to ATS) */
+  window.tpPickedIds = function(){
+    var s = st();
+    return s.rows.filter(function(c){ return s.picked[c.id]; }).map(function(c){ return c.id; });
+  };
   window.tpAssign = function(){
     var s = st();
     var ids = s.rows.filter(function(c){ return s.picked[c.id]; }).map(function(c){ return c.id; });
@@ -30554,6 +30562,8 @@ table.data td .tl-af b{white-space:normal}
 <script src="teamlink-shared-candidates.js"></script>
 <!-- Candidate availability: Actively looking / Open to offers / Not looking, re-confirmed. -->
 <script src="teamlink-availability.js"></script>
+<!-- Talent Pool: "Send to ATS" - candidates into a job's pipeline at Shortlisted. -->
+<script src="teamlink-send-to-ats.js"></script>
 <!-- Candidate Home: Action Required from server data, directly under Search Jobs. -->
 <script src="teamlink-action-required.js"></script>
 <!-- Preferred language (English / Telugu / Hindi): profile card and registration (0102). -->

@@ -38,6 +38,7 @@ import intakeRoutes from './routes/intake.js';
 import sourceMailboxRoutes from './routes/source-mailboxes.js';
 import { notificationRoutes } from './routes/notifications.js';
 import staffRoutes from './routes/staff.js';
+import sendToAtsRoutes from './routes/send-to-ats.js';
 import externalJobRoutes from './routes/external-jobs.js';
 import externalComplianceRoutes from './routes/external-compliance.js';
 import savedSearchRoutes from './routes/saved-searches.js';
@@ -456,6 +457,7 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', intakeRoutes());
   app.use('/api', notificationRoutes());
   app.use('/api', staffRoutes());
+  app.use('/api', sendToAtsRoutes());
 
   /*
    * External jobs — vacancies that belong to somebody else.
