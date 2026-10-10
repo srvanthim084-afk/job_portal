@@ -382,7 +382,11 @@
   function cardOf(k) { return CARDS.filter(function (c) { return c[0] === k; })[0] || null; }
 
   function adminPage() {
-    return '<div class="stat-row tlav-cards" id="tlavCards">' + cardsHtml() + '</div>'
+    /* Total Registered Candidates · New this week · Active jobs - on this Admin page, not the
+       candidate's dashboard (owner's request); the numbers and their refresh are teamlink-candidate-stats.js */
+    var reg = window.TLCandidateStats && typeof TLCandidateStats.cards === 'function' ? TLCandidateStats.cards() : '';
+    if (reg) setTimeout(function () { try { TLCandidateStats.load(false); } catch (e) { /* the cards say … */ } }, 0);
+    return reg + '<div class="stat-row tlav-cards" id="tlavCards">' + cardsHtml() + '</div>'
       + '<div id="tlavAdmin">' + listShellHtml() + '</div>';
   }
   function cardsHtml() {

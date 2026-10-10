@@ -2,8 +2,10 @@
    TEAMLINK - registered candidates count (0125)
 
    WHAT IT IS. "Total Registered Candidates", with "New this week" and
-   "Active jobs" beside it, at the top of the candidate dashboard; and
-   "X+ candidates registered" under the job portal's "Find your next role".
+   "Active jobs" beside it, at the top of Admin -> Availability (drawn by
+   teamlink-availability.js with cards() below - no longer on the candidate
+   dashboard, at the owner's request); and "X+ candidates registered" under
+   the job portal's "Find your next role".
 
    WHERE THE NUMBERS COME FROM. GET /api/public/candidate-stats - three
    integers counted in the database (candidates with an active portal
@@ -54,7 +56,7 @@
   }
   function soon() { setTimeout(function () { load(false); }, 0); }
 
-  /* ---- the cards on the candidate dashboard ------------------------------ */
+  /* ---- the cards (Admin -> Availability) ----------------------------------- */
   function cards() {
     var tile = function (label, k) {
       return '<div class="stat-tile"><div class="lbl">' + label + '</div><div class="val tabular">' + slot(k) + '</div></div>';
@@ -74,24 +76,8 @@
 
   function install() {
     var done = true;
-    if (typeof window.cpHome === 'function' && !window.cpHome.__tlcs) {
-      var prevHome = window.cpHome;
-      var home = function () {
-        var html = prevHome.apply(this, arguments);
-        if (typeof html !== 'string' || html.indexOf('tlcs-row') >= 0) return html;
-        soon();
-        /* After the search hero. The home's own ordering
-           (teamlink-action-required.js) then keeps its strips directly
-           under the hero, so these land below them, the same every time. */
-        var i = html.indexOf('<section class="cp-hero');
-        var end = i >= 0 ? html.indexOf('</section>', i) : -1;
-        if (end < 0) return cards() + html;
-        end += '</section>'.length;
-        return html.slice(0, end) + cards() + html.slice(end);
-      };
-      home.__tlcs = true; window.cpHome = home;
-    } else if (typeof window.cpHome !== 'function') done = false;
-
+    /* The three cards are no longer added to the candidate's dashboard (cpHome): they are on
+       Admin -> Availability. */
     if (typeof window.jobsPageBody === 'function' && !window.jobsPageBody.__tlcs) {
       var prevBody = window.jobsPageBody;
       var body = function () {
@@ -115,7 +101,6 @@
   /* Other modules wrap cpHome after this file is parsed; stay outermost. */
   var tries = 0;
   var t = setInterval(function () {
-    if (window.cpHome && !window.cpHome.__tlcs) install();
     if (window.jobsPageBody && !window.jobsPageBody.__tlcs) install();
     if (++tries > 60) clearInterval(t);
   }, 500);
