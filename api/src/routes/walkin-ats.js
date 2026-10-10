@@ -410,7 +410,14 @@ export default function walkinAtsRoutes() {
           where a.candidate_id = $1 and a.id <> $2
           order by a.applied_at desc`, [row.candidate_id, row.id])).rows;
       const nr = await notesAndRatings(c, row.id, req.session);
-      return { row, job, appRow, others, nr, timeline: await timeline(c, row.id) };
+      const ai = (await c.query(
+        `select a.source, a.source_channel, a.walkin_ai_score, a.walkin_ai_eligibility, a.walkin_ai_completed_at,
+                i.status as iv_status, i.overall_percentage as iv_score, i.completed_at as iv_completed_at
+           from applications a
+           left join lateral (select status, overall_percentage, completed_at from ai_interviews
+                               where application_id = a.id order by coalesce(attempt_number, 1) desc, created_at desc limit 1) i on true
+          where a.id = $1`, [row.id])).rows[0] || {};
+      return { row, job, appRow, others, nr, ai, timeline: await timeline(c, row.id) };
     });
     const a = applicantRow(out.row);
     const j = out.job;
@@ -426,11 +433,22 @@ export default function walkinAtsRoutes() {
         applicationId: a.applicationId, reference: a.reference, applicationDate: a.applicationDate,
         stage: a.stage, stageLabel: a.stageLabel, status: a.status, version: a.version,
         updatedAt: a.updatedAt, updatedBy: a.updatedBy, rating: out.nr.rating,
+        source: out.ai.source_channel || out.ai.source || null,
+      },
+      /* 0139: the AI interview and, for a walk-in, the eligibility decided from its final score */
+      aiInterview: {
+        status: out.ai.iv_status || null,
+        score: out.ai.walkin_ai_score == null ? (out.ai.iv_score == null ? null : Number(out.ai.iv_score)) : Number(out.ai.walkin_ai_score),
+        completedAt: iso(out.ai.walkin_ai_completed_at || out.ai.iv_completed_at),
+        eligibility: out.ai.walkin_ai_eligibility || null,
+        threshold: j.posting_kind === 'walkin' ? Number(j.walkin_ai_threshold == null ? 50 : j.walkin_ai_threshold) : null,
+        required: j.posting_kind === 'walkin' ? j.walkin_ai_required !== false : null,
       },
       walkin: j.posting_kind === 'walkin' ? {
         date: j.walkin_date || '', startTime: j.walkin_from || '', endTime: j.walkin_to || '',
         when: whenText(jobDetails(j)), venue: j.walkin_venue || '', address: j.walkin_address || '',
         mapLink: j.walkin_map_link || '', contactPerson: j.walkin_contact || '', contactNumber: j.walkin_phone || '',
+        contactDesignation: j.walkin_contact_designation || '',
         checkedInAt: a.checkedInAt, checkedInBy: out.appRow.checked_in_name || null,
         attendedAt: a.attendedAt, attendedBy: out.appRow.attended_name || null,
         interviewedAt: a.interviewedAt, status: walkinStatus(j),
@@ -878,6 +896,7 @@ export default function walkinAtsRoutes() {
   r.get('/my/applications-status', requireAuth(), requireRole('candidate'), wrap(async (req, res) => {
     const rows = await withUser(req.session, async (c) => (await c.query(
       `select a.id, a.reference, a.job_id, a.applied_at, a.stage, j.title, j.posting_kind,
+              a.walkin_ai_score, a.walkin_ai_eligibility, j.walkin_contact_designation,
               j.walkin_date, j.walkin_from, j.walkin_to, j.walkin_venue, j.walkin_address, j.walkin_map_link,
               j.walkin_contact, j.walkin_phone, j.walkin_documents, j.walkin_instructions,
               j.status as job_status, j.paused, j.archived,
@@ -893,10 +912,17 @@ export default function walkinAtsRoutes() {
         return {
           applicationId: x.id, reference: x.reference || x.id, jobId: x.job_id, jobTitle: x.title,
           jobType: walkin ? 'Walk-in' : 'Regular', applicationDate: iso(x.applied_at), status: x.cstatus,
+          /* 0139: the walk-in eligibility the final AI interview score gave (never attendance) */
+          walkinEligibility: walkin && x.walkin_ai_eligibility ? {
+            result: x.walkin_ai_eligibility === 'eligible' ? 'Eligible'
+              : x.walkin_ai_eligibility === 'not_eligible' ? 'Not Eligible' : 'No valid score',
+            score: x.walkin_ai_score == null ? null : Number(x.walkin_ai_score),
+          } : null,
           walkin: upcoming && x.stage === 'registered' ? {
             date: x.walkin_date, startTime: x.walkin_from || '', endTime: x.walkin_to || '',
             when: whenText(jobDetails(x)), venue: x.walkin_venue || '', address: x.walkin_address || '',
             mapLink: x.walkin_map_link || '', contactPerson: x.walkin_contact || '', contactNumber: x.walkin_phone || '',
+            contactDesignation: x.walkin_contact_designation || '',
             documents: jobDetails(x).documents, instructions: x.walkin_instructions || '',
           } : null,
         };

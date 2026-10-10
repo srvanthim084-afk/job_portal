@@ -14,6 +14,8 @@ import { withUser } from '../db.js';
 import { dispatchInterviewNotifications } from './dispatch.js';
 import { dispatchEvent } from './events.js';
 
+const ENGINE = { userId: '', role: 'admin', profileId: null };
+
 export async function sendApplyMessages(session, { applicationId, candidateId, jobId }) {
   // ---- multi-channel interview notification -------------------------
   //
@@ -35,16 +37,29 @@ export async function sendApplyMessages(session, { applicationId, candidateId, j
      */
     const sent = Object.values((notify && notify.delivery_status) || {})
       .some((st) => st === 'sent' || st === 'delivered');
-    if (!sent) {
-      await dispatchEvent(session, 'APPLICATION_SUBMITTED', { applicationId, candidateId, jobId })
-        .catch(() => null);
-    } else {
-      /* 0130: the candidate always gets the confirmation email ("You
-         applied for <job>", with the applied date and time). When the
-         invitation already went out it is email only, so no second SMS,
-         WhatsApp or call says the same thing. */
-      await dispatchEvent(session, 'APPLICATION_SUBMITTED', { applicationId, candidateId, jobId, channels: ['email'] })
-        .catch(() => null);
+    /* 0139: ONE confirmation per application, whatever retries or replays this path - the
+       claim is a row with a unique key (application_notices), and its outcome is recorded. */
+    const claimed = await withUser(ENGINE, async (c) => (await c.query(
+      `select application_notice_claim_one($1,'APPLICATION_SUBMITTED_CANDIDATE') as ok`, [applicationId])).rows[0].ok)
+      .catch(() => true);   // the table unreachable: send as before rather than not at all
+    if (claimed) {
+      let conf = null;
+      if (!sent) {
+        conf = await dispatchEvent(session, 'APPLICATION_SUBMITTED', { applicationId, candidateId, jobId })
+          .catch(() => null);
+      } else {
+        /* 0130: the candidate always gets the confirmation email ("You
+           applied for <job>", with the applied date and time). When the
+           invitation already went out it is email only, so no second SMS,
+           WhatsApp or call says the same thing. */
+        conf = await dispatchEvent(session, 'APPLICATION_SUBMITTED', { applicationId, candidateId, jobId, channels: ['email'] })
+          .catch(() => null);
+      }
+      const st = conf && conf.delivery_status ? conf.delivery_status.email : null;
+      await withUser(ENGINE, (c) => c.query(`select application_notice_done($1,'APPLICATION_SUBMITTED_CANDIDATE',$2,null,$3)`,
+        [applicationId, st === 'sent' || st === 'delivered' ? 'sent' : st ? 'failed' : 'skipped',
+         st === 'sent' || st === 'delivered' ? null : (conf && conf.error) || (st ? `email ${st}` : 'no email address or channel')]))
+        .catch(() => {});
     }
   } catch (err) {
     // The application stands regardless. The failure is logged, and the
@@ -59,6 +74,10 @@ export async function sendApplyMessages(session, { applicationId, candidateId, j
   // never repeats it.
   let aiInterview = null;
   try {
+    /* 0139: a walk-in that does not use the AI interview sends no invitation */
+    const notRequired = await withUser(ENGINE, async (c) => (await c.query(
+      `select (reason = 'not_required') as nr from ai_interview_window($1)`, [applicationId])).rows[0]);
+    if (notRequired && notRequired.nr) return { notify, aiInterview: { skipped: 'not_required' } };
     const due = await withUser(session, async (c) => {
       const row = (await c.query(
         `select ai_interview_due_at from applications where id=$1`, [applicationId])).rows[0];

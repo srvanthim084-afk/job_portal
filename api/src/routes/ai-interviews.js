@@ -30,6 +30,7 @@ import { storeRecording, getStorage, RECORDING_MAX_BYTES } from '../storage.js';
 import { speechModes, sttEnabled, ttsEnabled, transcribe, synthesise } from '../ai/interview-speech.js';
 import { retakePolicy, questionSeconds, PAGE_STOPS, formatWhen } from '../interview/policy.js';
 import { afterSuspension, sendRetakeChangedEmail } from '../notify/interview-suspension.js';
+import { kickApplicationNotices } from '../notify/application-notices.js';
 
 /* Recordings are inspected in memory before anything is written, exactly
    like a resume (routes/uploads.js). */
@@ -372,6 +373,10 @@ export default function aiInterviewRoutes() {
          to come out as "That job no longer exists". */
       const win = (await c.query(`select * from ai_interview_window($1)`, [app.id])).rows[0];
       if (win && !win.open) {
+        /* 0139: a walk-in that does not use the AI interview - said as that, not as "the date is over" */
+        if (win.reason === 'not_required') {
+          throw new ApiError(410, 'INTERVIEW_CLOSED', 'This walk-in does not include an AI interview - just attend the walk-in on its date.', { reason: win.reason });
+        }
         throw new ApiError(410, 'INTERVIEW_CLOSED', INTERVIEW_CLOSED_MESSAGE, { reason: win.reason });
       }
 
@@ -982,6 +987,8 @@ export default function aiInterviewRoutes() {
         // to announce it must not lose it.
         console.error('[interview] the result could not be recorded:', err.message);
       }
+      /* 0139: a walk-in applicant the score makes eligible - HR is told now (the database decided) */
+      kickApplicationNotices();
     }
 
     // Two events, because they answer different questions for the

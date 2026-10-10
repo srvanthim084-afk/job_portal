@@ -12,6 +12,24 @@ import { walkinEndsAt, walkinStartsAt } from '../shapes.js';
 const IST_MS = 330 * 60 * 1000;
 
 /**
+ * A Google Maps link (0139): what the venue QR code encodes and a phone opens in Maps.
+ * google.<tld>/maps..., maps.google.<tld>/..., maps.app.goo.gl/..., goo.gl/maps/...
+ */
+export function isGoogleMapsUrl(u) {
+  let url;
+  try { url = new URL(String(u || '').trim()); } catch { return false; }
+  if (url.protocol !== 'https:') return false;
+  const host = url.hostname.toLowerCase();
+  const path = url.pathname.toLowerCase();
+  if (host === 'maps.app.goo.gl') return path.length > 1;
+  if (host === 'goo.gl') return path.startsWith('/maps');
+  /* google.com, google.co.in, google.com.au ... - Google's own domains, and nothing after them */
+  if (/^maps\.google\.(?:[a-z]{2,3}|co\.[a-z]{2}|com\.[a-z]{2})$/.test(host)) return true;
+  if (/^(?:www\.)?google\.(?:[a-z]{2,3}|co\.[a-z]{2}|com\.[a-z]{2})$/.test(host)) return path.startsWith('/maps') || url.searchParams.has('cid');
+  return false;
+}
+
+/**
  * The refusal for a walk-in whose dates are over (0137) - one sentence, the same
  * from every apply path. `when` is the date as posted ("2026-10-07" or "6 and 7
  * october 2026"), from walkin_completed() in the database.
@@ -163,6 +181,10 @@ export function checkWalkin(body, before, now = Date.now()) {
       && hhmm(s(v.from)) && hhmm(s(v.to)) && s(v.to) <= s(v.from)) errs.walkinTo = 'End time must be after the start time.';
   if (changed('walkinPhone', 'walkin_phone') && s(v.phone) && !tenDigits(v.phone)) errs.walkinPhone = 'Contact number must be a valid 10-digit number.';
   if (changed('walkinMapLink', 'walkin_map_link') && s(v.map) && !/^https:\/\/\S+$/i.test(s(v.map))) errs.walkinMapLink = 'The map link must start with https://';
+  /* 0139: the QR code a candidate scans opens this link - so it must be a Google Maps link */
+  else if (changed('walkinMapLink', 'walkin_map_link') && s(v.map) && !isGoogleMapsUrl(s(v.map))) {
+    errs.walkinMapLink = 'Please paste the Google Maps link of the venue (google.com/maps, maps.app.goo.gl or goo.gl/maps).';
+  }
 
   const publishing = status === 'open' && (detailsEdited || reopening);
   if (publishing) {

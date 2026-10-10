@@ -105,6 +105,10 @@
       docs: String(docs || '').split(/\r?\n/).map(function (x) { return x.trim(); }).filter(Boolean),
       instructions: job.walkinInstructions || '',
       capacity: job.walkinSlotCapacity != null && job.walkinSlotCapacity !== '' ? Number(job.walkinSlotCapacity) : null,
+      designation: job.walkinContactDesignation || '',
+      /* 0139: whether the AI interview is part of this walk-in, and the final score that makes an applicant eligible */
+      aiRequired: job.walkinAiRequired !== false,
+      threshold: job.walkinAiThreshold != null && job.walkinAiThreshold !== '' ? Number(job.walkinAiThreshold) : 50,
     };
   }
   function endsAt(job) { var w = wk(job); return instant(w.date, w.to, '23:59'); }
@@ -130,6 +134,55 @@
     return isWalkin(job) && (job.walkinFull === true || job.walkinSlotsLeft === 0);
   }
   function safeUrl(u) { return /^https:\/\/\S+$/i.test(String(u || '').trim()) ? String(u).trim() : ''; }
+  /* 0139: the same rule as the server (api/src/portal/walkin-jobs.js isGoogleMapsUrl) - the venue QR opens this link */
+  function isGoogleMaps(u) {
+    var url;
+    try { url = new URL(String(u || '').trim()); } catch (e) { return false; }
+    if (url.protocol !== 'https:') return false;
+    var host = url.hostname.toLowerCase(), path = url.pathname.toLowerCase();
+    if (host === 'maps.app.goo.gl') return path.length > 1;
+    if (host === 'goo.gl') return path.indexOf('/maps') === 0;
+    if (/^maps\.google\.(?:[a-z]{2,3}|co\.[a-z]{2}|com\.[a-z]{2})$/.test(host)) return true;
+    if (/^(?:www\.)?google\.(?:[a-z]{2,3}|co\.[a-z]{2}|com\.[a-z]{2})$/.test(host)) return path.indexOf('/maps') === 0 || url.searchParams.has('cid');
+    return false;
+  }
+
+  /* 0139: THE VENUE QR CODE - it encodes the saved Google Maps link itself (scanning opens that venue in
+     Google Maps), drawn with the same library the walk-in ATS uses for the Application ID QR. A missing or
+     non-Google link gets a sentence, never a QR code that would open somewhere else. */
+  var QR_SRC = 'https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js';
+  var qrLib = null;
+  function loadQr() {
+    if (window.qrcode) return Promise.resolve(window.qrcode);
+    if (qrLib) return qrLib;
+    qrLib = new Promise(function (ok, bad) {
+      var sc = document.createElement('script');
+      sc.src = QR_SRC; sc.async = true; sc.crossOrigin = 'anonymous';
+      sc.onload = function () { window.qrcode ? ok(window.qrcode) : bad(new Error('no qrcode')); };
+      sc.onerror = function () { qrLib = null; bad(new Error('QR library unavailable')); };
+      document.head.appendChild(sc);
+    });
+    return qrLib;
+  }
+  function paintMapQrs() {
+    var els = document.querySelectorAll('[data-tlwk-qr]:not([data-done])');
+    Array.prototype.forEach.call(els, function (el) {
+      el.setAttribute('data-done', '1');
+      var url = el.getAttribute('data-tlwk-qr');
+      if (!isGoogleMaps(url)) { el.remove(); return; }
+      loadQr().then(function (qrcode) {
+        var q = qrcode(0, 'M'); q.addData(url); q.make();
+        el.innerHTML = '<img alt="QR code: the venue in Google Maps" src="' + q.createDataURL(4, 2) + '">'
+          + '<span>Scan to open the venue in Google Maps</span>';
+      }, function () { el.innerHTML = '<span>QR code unavailable - use View on Map</span>'; });
+    });
+  }
+  function mapQrHtml(job) {
+    var m = String(wk(job).map || '').trim();
+    if (!m) return '<div class="tlwk-qrnote">No Google Maps link was given for this venue.</div>';
+    if (!isGoogleMaps(m)) return '<div class="tlwk-qrnote">The map link for this venue is not a Google Maps link, so no QR code is shown.</div>';
+    return '<div class="tlwk-qr" data-tlwk-qr="' + h(m) + '"></div>';
+  }
 
   /* The walk-in block, in the job page, the form and the success screen. */
   function walkinLines(job) {
@@ -139,7 +192,7 @@
       ['Time', timeRange(w.from, w.to)],
       ['Venue', w.venue],
       ['Address', w.address],
-      ['Contact', [w.contact, w.phone ? '(' + w.phone + ')' : ''].filter(Boolean).join(' ')],
+      ['Contact', [w.contact + (w.contact && w.designation ? ', ' + w.designation : ''), w.phone ? '(' + w.phone + ')' : ''].filter(Boolean).join(' ')],
       ['Documents to carry', w.docs.join(', ')],
       ['Instructions', w.instructions],
     ];
@@ -156,6 +209,7 @@
       + ((map || opts.calendar) ? '<div class="tlwk-acts">'
         + (map ? '<a class="btn btn-ghost btn-sm" href="' + h(map) + '" target="_blank" rel="noopener noreferrer">📍 View on Map</a>' : '')
         + (opts.calendar || '') + '</div>' : '')
+      + (opts.qr === false ? '' : mapQrHtml(job))
       + '</div>';
   }
 
@@ -173,6 +227,14 @@
       '.tlwk-cardline{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:7px;font-size:12px;color:#42505f}',
       '.tlwk-box{background:#eef8fb;border:1px solid #bfe3ee;border-radius:10px;padding:12px 14px;margin:0 0 14px}',
       '.tlwk-box-h{font-weight:800;font-size:14px;color:#0f5f78;margin-bottom:6px}',
+      '.tlwk-qr{display:flex;align-items:center;gap:10px;margin-top:10px;font-size:12px;color:#42505f}',
+      '.tlwk-qr img{width:112px;height:112px;border:1px solid #bfe3ee;border-radius:8px;background:#fff;padding:4px}',
+      '.tlwk-qrnote{margin-top:8px;font-size:12px;color:#7a8798}',
+      '.tlaf-facts{text-align:left;margin:12px auto 4px;max-width:440px;border:1px solid #e6ebf2;border-radius:10px;padding:8px 12px}',
+      '.tlaf-facts div{display:flex;justify-content:space-between;gap:12px;padding:4px 0;font-size:13px;border-bottom:1px dashed #eef1f5}',
+      '.tlaf-facts div:last-child{border-bottom:0}',
+      '.tlaf-facts span{color:#7a8798}',
+      '.tlaf-facts b{color:#16202c;text-align:right}',
       '.tlwk-kv{display:flex;gap:10px;font-size:13px;line-height:1.5;padding:2px 0}',
       '.tlwk-kv .k{flex:0 0 132px;color:#4b6470;font-weight:600}',
       '.tlwk-kv .v{color:#16323d;white-space:pre-line;word-break:break-word}',
@@ -391,7 +453,7 @@
   var pending = null;
   function schedule() {
     if (pending) return;
-    pending = setTimeout(function () { pending = null; decorate(); }, 40);
+    pending = setTimeout(function () { pending = null; decorate(); paintMapQrs(); }, 40);
   }
 
   /* ================================================================ *
@@ -770,7 +832,7 @@
       try { if (TL.syncInterviewDeadlines) TL.syncInterviewDeadlines(); } catch (e) {}
       try { rec = window.__lcRecFor ? window.__lcRecFor(cid, job.id) : null; } catch (e) { rec = null; }
     }
-    showSuccess(job, a.reference || a.id, rec);
+    showSuccess(job, a.reference || a.id, rec, a);
     rerender();
   }
 
@@ -909,22 +971,58 @@
     });
   }
 
-  function showSuccess(job, ref, rec) {
+  /* 0139: what the success screen states - every value from the application the server saved */
+  var SOURCE_LABEL = { teamlink: 'TeamLink Job Portal', portal: 'TeamLink Job Portal', website: 'TeamLink Website', walkin: 'Walk-in' };
+  function savedFacts(job, app) {
+    app = app || {};
+    var co = null; try { co = DATA.companyById(job.companyId); } catch (e) {}
+    var at = app.appliedAt ? new Date(app.appliedAt) : null;
+    var when = at && !isNaN(at) ? new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric',
+      hour: 'numeric', minute: '2-digit', hour12: true }).format(at) + ' IST' : '';
+    var w = wk(job);
+    var ai = isWalkin(job) && !w.aiRequired ? 'Not required for this walk-in'
+      : 'Pending - attend your AI interview' + (isWalkin(job) ? ' (' + w.threshold + '% or more makes you eligible for the walk-in)' : '');
+    var rows = [
+      ['Candidate', (function () { try { var c = me(); return c && c.name; } catch (e) { return ''; } })()],
+      ['Job title', job.title],
+      ['Company / Client', (co && co.name) || job.company || job.companyName || ''],
+      ['Job location', job.location || ''],
+      ['Submitted', when],
+      ['Application source', app.sourceChannel || SOURCE_LABEL[String(app.source || '').toLowerCase()] || 'TeamLink Job Portal'],
+      ['Application status', 'Applied' + (isWalkin(job) ? ' - registered for the walk-in' : '')],
+      ['AI interview', ai],
+    ];
+    return '<div class="tlaf-facts">' + rows.filter(function (r) { return r[1]; })
+      .map(function (r) { return '<div><span>' + h(r[0]) + '</span><b>' + h(r[1]) + '</b></div>'; }).join('') + '</div>';
+  }
+  function showSuccess(job, ref, rec, app, opts) {
+    opts = opts || {};
     var walkin = isWalkin(job);
     FORM = null;
+    var detailId = (rec && rec.applicationId) || (app && app.id) || '';
     resultShell('<div class="fcr-jd-body tlaf"><div class="tlaf-done" id="tlafDone">'
       + '<div class="tick">✓</div>'
-      + '<h3>Application Submitted Successfully</h3>'
-      + '<p>Your application for</p><div style="font-weight:800;font-size:16px;color:#16202c">' + h(job.title) + '</div>'
-      + '<p>has been submitted successfully.</p>'
+      + '<h3>Application Submitted Successfully!</h3>'
+      + '<p>Your application has been submitted successfully. Please keep your Application ID for future reference.</p>'
       + '<p style="margin-top:12px">Application ID:</p><div class="ref" id="tlafRef">' + h(ref) + '</div>'
+      + savedFacts(job, app)
       + (walkin ? walkinBlockHtml(job, { title: 'Walk-in Interview Details', only: ['Date', 'Time', 'Venue', 'Address', 'Documents to carry', 'Contact', 'Instructions'], calendar: calendarButtons(job, ref) }) : '')
       + '<p style="font-size:12px;margin-top:10px">Keep this Application ID for any question about this application - it is also under My Applications.</p>'
       + '</div></div>'
       + '<div class="fcr-jd-actions" style="justify-content:center;flex-wrap:wrap">'
-      + (rec && rec.applicationId ? '<button type="button" class="btn btn-ai" onclick="fcrCloseModal();navigate(\'/ai-interview/' + h(rec.applicationId) + '\')">Attend AI Interview</button>' : '')
+      + (rec && rec.applicationId && !(walkin && !wk(job).aiRequired) ? '<button type="button" class="btn btn-ai" onclick="fcrCloseModal();navigate(\'/ai-interview/' + h(rec.applicationId) + '\')">Attend AI Interview</button>' : '')
+      + (detailId ? '<button type="button" class="btn btn-ghost" onclick="fcrCloseModal();navigate(\'/candidate-app/' + h(detailId) + '\')">View Application Details</button>' : '')
       + '<button type="button" class="btn btn-primary" onclick="fcrCloseModal();navigate(\'/candidate/applications\')">Go to My Applications</button>'
+      + (detailId ? '<button type="button" class="btn btn-ghost" onclick="fcrCloseModal();navigate(\'/candidate-app/' + h(detailId) + '\')">Track Application Status</button>' : '')
+      + (opts.undo ? '<button type="button" class="btn btn-ghost" id="tlafUndo">Undo</button>' : '')
       + '<button type="button" class="btn btn-ghost" data-tlaf-close>Close</button></div>');
+    paintMapQrs();
+    /* One-click: Undo stays for its few seconds, as it did on the old confirmation toast */
+    if (opts.undo) {
+      var u = document.getElementById('tlafUndo');
+      if (u) u.addEventListener('click', function () { if (typeof window.fcrCloseModal === 'function') window.fcrCloseModal(); opts.undo(); });
+      setTimeout(function () { var x = document.getElementById('tlafUndo'); if (x) x.remove(); }, opts.undoMs || 5000);
+    }
   }
 
   function showDuplicate(job, ref) {
@@ -1025,8 +1123,11 @@
       + g('Walk-in End Time', prefix + 'To', '<input type="time" id="' + prefix + 'To" value="' + h(hhmm(w.to) ? w.to : '') + '">', true)
       + g('Venue', prefix + 'Venue', '<input type="text" id="' + prefix + 'Venue" maxlength="400" value="' + h(w.venue || '') + '" placeholder="e.g. TeamLink Office, 3rd floor">', true)
       + g('Contact Number', prefix + 'Phone', '<input type="tel" id="' + prefix + 'Phone" maxlength="16" value="' + h(w.phone || '') + '" placeholder="10-digit number">', true)
+      + g('Contact Person Designation (optional)', prefix + 'Desig', '<input type="text" id="' + prefix + 'Desig" maxlength="120" value="' + h(w.designation || '') + '" placeholder="e.g. HR Manager">', false)
+      + g('AI Interview Required', prefix + 'AiReq', '<select id="' + prefix + 'AiReq"><option value="yes"' + (w.aiRequired !== false ? ' selected' : '') + '>Yes</option><option value="no"' + (w.aiRequired === false ? ' selected' : '') + '>No</option></select>', false)
+      + g('AI Interview Eligibility Threshold (%)', prefix + 'Thr', '<input type="number" id="' + prefix + 'Thr" min="0" max="100" step="1" value="' + h(w.threshold == null ? 50 : w.threshold) + '" placeholder="50">', false)
       + g('Full Address', prefix + 'Address', '<textarea id="' + prefix + 'Address" rows="2" maxlength="600" placeholder="Building, street, area, city, PIN">' + h(w.address || '') + '</textarea>', true, true)
-      + g('Google Maps Link (optional)', prefix + 'Map', '<input type="url" id="' + prefix + 'Map" maxlength="600" value="' + h(w.map || '') + '" placeholder="https://maps.google.com/…">', false)
+      + g('Google Maps Link (optional - its QR code is shown to candidates)', prefix + 'Map', '<input type="url" id="' + prefix + 'Map" maxlength="600" value="' + h(w.map || '') + '" placeholder="https://maps.app.goo.gl/…">', false)
       + g('Slot Capacity (optional)', prefix + 'Cap', '<input type="number" id="' + prefix + 'Cap" min="1" max="100000" step="1" value="' + h(w.capacity == null ? '' : w.capacity) + '" placeholder="No limit">', false)
       + g('Documents to Carry (optional, one per line)', prefix + 'Docs', '<textarea id="' + prefix + 'Docs" rows="3" maxlength="2000" placeholder="Updated resume (2 copies)&#10;Photo ID&#10;Certificates">' + h((w.docs || []).join('\n')) + '</textarea>', false, true)
       + g('Instructions (optional)', prefix + 'Instr', '<textarea id="' + prefix + 'Instr" rows="2" maxlength="2000" placeholder="e.g. Report 15 minutes early and ask at reception">' + h(w.instructions || '') + '</textarea>', false, true)
@@ -1039,6 +1140,7 @@
       date: val(prefix + 'Date'), from: val(prefix + 'From'), to: val(prefix + 'To'), venue: val(prefix + 'Venue'),
       address: val(prefix + 'Address'), map: val(prefix + 'Map'), contact: val(prefix + 'Contact'), phone: val(prefix + 'Phone'),
       docs: docs, instructions: val(prefix + 'Instr'), capacity: val(prefix + 'Cap'),
+      designation: val(prefix + 'Desig'), aiRequired: val(prefix + 'AiReq') !== 'no', threshold: val(prefix + 'Thr'),
     };
   }
   function wkErr(prefix, key, msg) {
@@ -1054,7 +1156,7 @@
    */
   function checkWk(prefix, f, before, publishing) {
     var bad = {};
-    ['Date', 'From', 'To', 'Venue', 'Address', 'Map', 'Contact', 'Phone', 'Docs', 'Instr', 'Cap'].forEach(function (k) { wkErr(prefix, k, ''); });
+    ['Date', 'From', 'To', 'Venue', 'Address', 'Map', 'Contact', 'Phone', 'Docs', 'Instr', 'Cap', 'Desig', 'Thr'].forEach(function (k) { wkErr(prefix, k, ''); });
     if (publishing) {
       if (!f.date) bad.Date = 'Walk-in date is required.';
       if (!f.from) bad.From = 'Start time is required.';
@@ -1078,6 +1180,8 @@
     }
     if (f.phone && !tenDigits(f.phone)) bad.Phone = 'Enter a valid 10-digit contact number.';
     if (f.map && !safeUrl(f.map)) bad.Map = 'The map link must start with https://';
+    else if (f.map && !isGoogleMaps(f.map)) bad.Map = 'Please paste the Google Maps link of the venue (google.com/maps, maps.app.goo.gl or goo.gl/maps).';
+    if (f.threshold !== '' && f.threshold != null && !(/^\d+(\.\d+)?$/.test(String(f.threshold)) && Number(f.threshold) <= 100)) bad.Thr = 'The threshold is a percentage from 0 to 100.';
     if (f.capacity !== '' && !(/^\d+$/.test(f.capacity) && Number(f.capacity) >= 1)) bad.Cap = 'Capacity must be a whole number of 1 or more.';
     Object.keys(bad).forEach(function (k) { wkErr(prefix, k, bad[k]); });
     return Object.keys(bad);
@@ -1091,6 +1195,9 @@
       walkinContact: f.contact, walkinContactPerson: f.contact, walkinPhone: f.phone, walkinContactNumber: f.phone,
       walkinDocumentsToCarry: f.docs, walkinInstructions: f.instructions,
       walkinSlotCapacity: f.capacity === '' ? null : Number(f.capacity),
+      walkinContactDesignation: f.designation || '',
+      walkinAiRequired: f.aiRequired !== false,
+      walkinAiThreshold: f.threshold === '' || f.threshold == null ? 50 : Number(f.threshold),
     };
   }
 
@@ -1366,6 +1473,15 @@
     open: openForm,
     isWalkin: isWalkin,
     closed: walkinClosed,
+    /* 0139: "Application Submitted Successfully!" with the saved application's details - the one
+       screen every Apply ends on (the form, and one-click, which passes its Undo) */
+    success: function (job, app, opts) {
+      if (!job || !app) return false;
+      var rec = null;
+      try { rec = window.__lcRecFor ? window.__lcRecFor(app.candidateId, job.id) : null; } catch (e) { rec = null; }
+      showSuccess(job, app.reference || app.id, rec, app, opts);
+      return true;
+    },
     /* 0137: the sentence for a walk-in whose DATES are over ('' when they are not) - asked first by
        every Apply path, so nobody is told to complete a profile for a drive that has happened */
     overMessage: function (job) { return job && walkinDatesOver(job) ? datesOverText(job) : ''; },

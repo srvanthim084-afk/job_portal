@@ -56,6 +56,7 @@ import screeningRoutes from './routes/screening.js';
 import interviewPrepRoutes from './routes/interview-prep.js';
 import { startDeadlineSweep } from './notify/interview-deadline.js';
 import { startInterviewNoticeSweep } from './notify/interview-suspension.js';
+import { startApplicationNoticeSweep } from './notify/application-notices.js';
 import { startIntakeSync } from './intake/scheduler.js';
 import { startScreeningSweep } from './ai/screening.js';
 import { startRetrySweep } from './notify/retry.js';
@@ -130,6 +131,8 @@ function startBackgroundWork(logger) {
   try {
     backgroundStops.push(startDeadlineSweep());
     backgroundStops.push(startInterviewNoticeSweep());
+    /* 0139: HR's walk-in notices (application saved, applicant eligible) - once each, retried */
+    backgroundStops.push(startApplicationNoticeSweep());
     backgroundStops.push(startIntakeSync());
     backgroundStops.push(startScreeningSweep());
     backgroundStops.push(startRetrySweep());

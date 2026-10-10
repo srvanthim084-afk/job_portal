@@ -104,6 +104,10 @@ function walkinShape(r, now = Date.now()) {
     walkinMapLink: nz(r.walkin_map_link),
     walkinContactPerson: nz(r.walkin_contact),
     walkinContactNumber: nz(r.walkin_phone),
+    walkinContactDesignation: nz(r.walkin_contact_designation),
+    /* 0139: the AI interview, for this walk-in, and the final score that makes an applicant eligible */
+    walkinAiRequired: r.walkin_ai_required === undefined ? undefined : r.walkin_ai_required !== false,
+    walkinAiThreshold: r.walkin_ai_threshold == null ? undefined : Number(r.walkin_ai_threshold),
     walkinDocumentsToCarry: nz(r.walkin_documents),
     walkinInstructions: nz(r.walkin_instructions),
     walkinSlotCapacity: cap == null ? undefined : cap,
@@ -478,6 +482,10 @@ export function toApplication(r) {
     matchScore: numOrU(r.match_score),
     aiScore: numOrU(r.ai_score),
     source: nz(r.source),
+    /* 0139: a walk-in's final AI interview score and the eligibility the database decided from it */
+    walkinAiScore: numOrU(r.walkin_ai_score),
+    walkinEligibility: nz(r.walkin_ai_eligibility),
+    sourceChannel: nz(r.source_channel),
     postingType: nz(r.posting_type),
     // date columns arrive as 'YYYY-MM-DD' strings (see the type parser in
     // db.js); the Date branch is a fallback for any caller that bypasses it
