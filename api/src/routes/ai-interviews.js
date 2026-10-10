@@ -361,6 +361,10 @@ export default function aiInterviewRoutes() {
          to come out as "That job no longer exists". */
       const win = (await c.query(`select * from ai_interview_window($1)`, [app.id])).rows[0];
       if (win && !win.open) {
+        /* 0138: a walk-in that does not use the AI interview - said as that, not as "the date is over" */
+        if (win.reason === 'not_required') {
+          throw new ApiError(410, 'INTERVIEW_CLOSED', 'This walk-in does not include an AI interview - just attend the walk-in on its date.', { reason: win.reason });
+        }
         throw new ApiError(410, 'INTERVIEW_CLOSED', INTERVIEW_CLOSED_MESSAGE, { reason: win.reason });
       }
 

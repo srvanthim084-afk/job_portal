@@ -27023,7 +27023,9 @@ table.data td .tl-af b{white-space:normal}
     }
     if(rec.aiInterview && rec.aiInterview.closed){
       content='<div style="max-width:640px;margin:0 auto"><div class="panel"><div class="panel-head"><h2>AI Video Interview</h2></div><div class="panel-body">'
-        +'<div class="req-note" role="status" style="background:var(--bg-alt,#f1f4f8);color:var(--text)">🔒 <b>Interview closed.</b> '+esc2(AI_CLOSED_MSG)+'</div>'
+        +(rec.aiInterview.closedReason==='not_required'
+          ? '<div class="req-note" role="status" style="background:var(--bg-alt,#f1f4f8);color:var(--text)">ℹ️ <b>No AI interview for this walk-in.</b> Just attend the walk-in on its date.</div>'
+          : '<div class="req-note" role="status" style="background:var(--bg-alt,#f1f4f8);color:var(--text)">🔒 <b>Interview closed.</b> '+esc2(AI_CLOSED_MSG)+'</div>')
         +'<div class="kv" style="grid-template-columns:1fr 1fr;margin-top:12px">'
         +'<div class="item"><div class="k">Job</div><div class="v" style="font-size:13px">'+esc2(rec.jobTitle)+'</div></div>'
         +'<div class="item"><div class="k">Application ID</div><div class="v mono">'+esc2(rec.applicationId)+'</div></div></div>'

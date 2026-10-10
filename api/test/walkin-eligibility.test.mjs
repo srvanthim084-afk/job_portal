@@ -238,6 +238,25 @@ test('the recruiter and the candidate see the score and the eligibility; the map
   assert.equal(ok.body.job.walkinAiThreshold, 60);
 });
 
+test('a walk-in without the AI interview sends no invitation and opens no session', async () => {
+  await raw(`insert into jobs (id, title, company_id, location, mode, status, posting_kind, employment_type,
+                               walkin_date, walkin_from, walkin_to, walkin_venue, walkin_address, walkin_contact, walkin_phone,
+                               walkin_ai_required, recruiter_id, published_at)
+             values ('j_el_noai', 'Warehouse Walk-in', 'co_el', 'Hyderabad', 'Onsite', 'open', 'walkin', 'Walk-in',
+                     $1, '10:00', '16:00', 'Depot', 'Plot 4, Medchal, Hyderabad', 'Sita', '9876500012', false, 'rel1', now())`, [istDay(4)]);
+  const c = await candidate('No Interview Walkin');
+  const app = await apply(c, 'j_el_noai');
+  const inv = await one(`select count(*)::int n from notification_deliveries where application_id=$1 and event='AI_INTERVIEW_INVITED'`, [app]);
+  assert.equal(inv.n, 0, 'no AI interview invitation');
+  const s = await c.post('/api/ai-interviews/session', { applicationId: app });
+  assert.equal(s.status, 410, JSON.stringify(s.body));
+  assert.equal(s.body.error.details.reason, 'not_required');
+  assert.match(s.body.error.message, /does not include an AI interview/);
+  await notices.kickApplicationNotices();
+  assert.equal(hrMail(/^New Walk-In Application - No Interview Walkin/).length, 1, 'HR still hears about the application');
+  assert.ok(hrMail(/^New Walk-In Application - No Interview Walkin/)[0].text.includes('AI interview: Not required for this walk-in'));
+});
+
 test('shutdown', async () => {
   await new Promise((r) => server.close(r));
   const { stopBackgroundWork } = await import('../src/app.js');

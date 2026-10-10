@@ -291,6 +291,36 @@ drop trigger if exists zz_ai_interviews_walkin_settle on ai_interviews;
 create trigger zz_ai_interviews_walkin_settle after insert or update on ai_interviews
   for each row execute function ai_interviews_walkin_settle();
 
+/* A walk-in that does not use the AI interview has no interview to attend: the window says so
+   ('not_required'), the session route refuses it, and the invitation is not sent (apply-messages.js).
+   Otherwise exactly 0137's window. */
+create or replace function ai_interview_window(p_application_id text)
+returns table (open boolean, reason text, due_at timestamptz)
+language sql stable security definer set search_path = public as $$
+  with x as (
+    select a.ai_interview_due_at as due, j.id as job_id, j.status, coalesce(j.archived, false) as archived,
+           j.expires_at, j.posting_kind, j.walkin_date, j.walkin_ai_required
+      from applications a
+      left join jobs j on j.id = a.job_id
+     where a.id = p_application_id
+  ), r as (
+    select x.*,
+           case
+             when x.job_id is null                                   then 'job_closed'
+             when x.posting_kind = 'walkin' and x.walkin_ai_required = false then 'not_required'
+             when x.status in ('closed', 'draft') or x.archived      then 'job_closed'
+             when x.expires_at is not null and x.expires_at < now()  then 'job_expired'
+             when x.posting_kind = 'walkin'
+                  and coalesce(walkin_ends_at(x.walkin_date, null) < now(), false)
+                                                                     then 'walkin_over'
+             when x.due is not null and x.due < now()                then 'due_passed'
+             else null
+           end as reason
+      from x
+  )
+  select r.reason is null, r.reason, coalesce(r.due, r.expires_at) from r;
+$$;
+
 /* What is already on file is settled once - quietly: no HR email for interviews finished before today. */
 do $$
 declare r record;

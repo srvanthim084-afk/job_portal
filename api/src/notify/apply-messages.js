@@ -74,6 +74,10 @@ export async function sendApplyMessages(session, { applicationId, candidateId, j
   // never repeats it.
   let aiInterview = null;
   try {
+    /* 0138: a walk-in that does not use the AI interview sends no invitation */
+    const notRequired = await withUser(ENGINE, async (c) => (await c.query(
+      `select (reason = 'not_required') as nr from ai_interview_window($1)`, [applicationId])).rows[0]);
+    if (notRequired && notRequired.nr) return { notify, aiInterview: { skipped: 'not_required' } };
     const due = await withUser(session, async (c) => {
       const row = (await c.query(
         `select ai_interview_due_at from applications where id=$1`, [applicationId])).rows[0];
