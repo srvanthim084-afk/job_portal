@@ -25,6 +25,9 @@ export const CODES = {
   // so it carries the matches in `details.duplicates`.
   DUPLICATE_CANDIDATE: 'DUPLICATE_CANDIDATE',
   JOB_UNAVAILABLE:     'JOB_UNAVAILABLE',
+  // 0137: a walk-in whose dates are over. Its own code, so the page can say
+  // exactly that (with the date) rather than "no longer accepting applications".
+  WALKIN_COMPLETED:    'WALKIN_COMPLETED',
   EMAIL_TAKEN:         'EMAIL_TAKEN',
   UPLOAD_FAILED:       'UPLOAD_FAILED',
   FILE_TOO_LARGE:      'FILE_TOO_LARGE',

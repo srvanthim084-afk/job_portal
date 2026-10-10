@@ -6,10 +6,22 @@
  * a venue and a person to ask for. Dates and times are India Standard
  * Time as the recruiter typed them: 'YYYY-MM-DD' and 'HH:MM'.
  */
-import { badRequest } from '../errors.js';
+import { badRequest, ApiError, CODES } from '../errors.js';
 import { walkinEndsAt, walkinStartsAt } from '../shapes.js';
 
 const IST_MS = 330 * 60 * 1000;
+
+/**
+ * The refusal for a walk-in whose dates are over (0137) - one sentence, the same
+ * from every apply path. `when` is the date as posted ("2026-10-07" or "6 and 7
+ * october 2026"), from walkin_completed() in the database.
+ */
+export function walkinCompletedError(when) {
+  const d = dateLabel(when) || 'its date';
+  return new ApiError(409, CODES.WALKIN_COMPLETED,
+    `This walk-in was on ${d} and its dates are completed, so applications are closed. Please look at our other open jobs.`,
+    { reason: 'walkin_closed', walkinDate: when || null });
+}
 
 /** 'YYYY-MM-DD' of the IST calendar day containing `now`. */
 export function istDate(now = Date.now()) {

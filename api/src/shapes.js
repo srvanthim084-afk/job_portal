@@ -87,7 +87,11 @@ export function walkinStartsAt(date, from) {
 }
 
 function walkinShape(r, now = Date.now()) {
-  const ends = walkinEndsAt(r.walkin_date, r.walkin_to);
+  /* 0137: the database's own answer when the row carries it (JOB_RECORD_COLS) - it also reads a
+     date typed as "6 and 7 october 2026", which walkinEndsAt() above does not */
+  const ends = r.walkin_ends_ts !== undefined
+    ? (r.walkin_ends_ts ? new Date(r.walkin_ends_ts).getTime() : null)
+    : walkinEndsAt(r.walkin_date, r.walkin_to);
   const open = r.status === 'open' && !r.paused && !r.archived;
   const cap = r.walkin_capacity == null ? null : Number(r.walkin_capacity);
   const taken = r.walkin_registered == null ? null : Number(r.walkin_registered);
@@ -219,7 +223,9 @@ export function toJob(r) {
 export const JOB_RECORD_COLS =
   'staff_name_of(created_by) as created_by_name, staff_name_of(last_edited_by) as last_edited_by_name, '
   /* 0134: "Posted By" tells an Admin-posted job from a recruiter's */
-  + 'staff_role_of(created_by) as created_by_role';
+  + 'staff_role_of(created_by) as created_by_role, '
+  /* 0137: when a walk-in ends, as the database reads its date (typed dates included) */
+  + 'walkin_ends_at(walkin_date, walkin_to) as walkin_ends_ts';
 const isoOrNull = (d) => (d ? new Date(d).toISOString() : null);
 export function toStaffJob(r) {
   return Object.assign(toJob(r), {

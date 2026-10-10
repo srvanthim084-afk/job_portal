@@ -178,10 +178,28 @@ language sql stable security definer set search_path = public as $$
   select r.reason is null, r.reason, coalesce(r.due, r.expires_at) from r;
 $$;
 
+-- ---------------------------------------------------------------------
+-- "is this walk-in over?" - one question for every apply path
+--
+-- Returns the walk-in date AS POSTED when the walk-in has ended, NULL
+-- otherwise (not a walk-in, still to come, or a date that cannot be read).
+-- Definer, so the answer is the same whoever asks; it says nothing about
+-- the job that the job page does not already show.
+-- ---------------------------------------------------------------------
+create or replace function walkin_completed(p_job text) returns text
+language sql stable security definer set search_path = public as $$
+  select coalesce(nullif(btrim(j.walkin_date), ''), 'its date')
+    from jobs j
+   where j.id = p_job
+     and j.posting_kind = 'walkin'
+     and coalesce(walkin_ends_at(j.walkin_date, j.walkin_to) <= now(), false)
+$$;
+
 do $$
 begin
   if exists (select 1 from pg_roles where rolname = 'app_api') then
     grant execute on function walkin_try_date(int, int, int), walkin_month_no(text), walkin_last_date(text),
-      walkin_clock(text), walkin_starts_at(text, text), walkin_ends_at(text, text) to app_api;
+      walkin_clock(text), walkin_starts_at(text, text), walkin_ends_at(text, text),
+      walkin_completed(text) to app_api;
   end if;
 end $$;

@@ -151,6 +151,7 @@
     NOT_FOUND:           [null, '⚠️'],
     DUPLICATE_APPLICATION: ['You already applied to this role', 'ℹ️'],
     JOB_UNAVAILABLE:     ['This role is no longer accepting applications', 'ℹ️'],
+    WALKIN_COMPLETED:    [null, '📅'],      // 0137: the server's sentence, with the walk-in's date
     EMAIL_TAKEN:         ['This email is already registered — try logging in instead', '⚠️'],
     UPLOAD_FAILED:       [null, '⚠️'],
     FILE_TOO_LARGE:      [null, '⚠️'],

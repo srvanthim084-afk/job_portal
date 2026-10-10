@@ -115,6 +115,17 @@
     var e = endsAt(job);
     return e != null && Date.now() > e;
   }
+  /* 0137: closed BECAUSE ITS DATES ARE OVER (the server's walkinStatus reads typed dates too), as
+     opposed to a recruiter closing or pausing it - the candidate is told which. */
+  function walkinDatesOver(job) {
+    if (!isWalkin(job)) return false;
+    if (job.status === 'closed' || job.status === 'draft' || job.paused || job.archived) return false;
+    return walkinClosed(job);
+  }
+  function datesOverText(job) {
+    var d = dateLabel(wk(job).date);
+    return 'The dates for this walk-in' + (d ? ' (' + d + ')' : '') + ' are completed, so applications are closed.';
+  }
   function walkinFull(job) {
     return isWalkin(job) && (job.walkinFull === true || job.walkinSlotsLeft === 0);
   }
@@ -258,7 +269,8 @@
     if (!isWalkin(job)) return;
     var closed = walkinClosed(job);
     var full = !closed && walkinFull(job);
-    var flag = closed ? '<span class="badge badge-bad">Closed</span>' : full ? '<span class="badge badge-warn">Registrations full</span>' : '';
+    var over = closed && walkinDatesOver(job);
+    var flag = closed ? '<span class="badge badge-bad">' + (over ? 'Walk-in completed' : 'Closed') + '</span>' : full ? '<span class="badge badge-warn">Registrations full</span>' : '';
     /* The badge, then Date / Time / Venue - from the job's own record. */
     var w = wk(job);
     var lines = [['📅', 'Date', dateLabel(w.date)], ['🕒', 'Time', timeRange(w.from, w.to)], ['📍', 'Venue', w.venue]]
@@ -278,7 +290,7 @@
       }
       if (anchor) anchor.insertAdjacentHTML('afterend', line); else el.insertAdjacentHTML('afterbegin', line);
     }
-    if (closed) disableApply(el, 'Closed');
+    if (closed) disableApply(el, over ? 'Walk-in completed' : 'Closed');
     else if (full) disableApply(el, 'Registrations full');
   }
 
@@ -294,6 +306,7 @@
     var job = jobOf(id);
     if (!isWalkin(job)) return;
     var closed = walkinClosed(job);
+    var over = closed && walkinDatesOver(job);
     var full = !closed && walkinFull(job);
     var host = app.querySelector('.two-col > div') || app.querySelector('main') || app;
     var first = null;
@@ -301,22 +314,23 @@
       if (host.children[k].classList && host.children[k].classList.contains('panel')) { first = host.children[k]; break; }
     }
     var hb = first && first.querySelector('.jc-badges');
-    if (hb) hb.insertAdjacentHTML('afterbegin', BADGE + (closed ? '<span class="badge badge-bad">Closed</span>' : full ? '<span class="badge badge-warn">Registrations full</span>' : ''));
+    if (hb) hb.insertAdjacentHTML('afterbegin', BADGE + (closed ? '<span class="badge badge-bad">' + (over ? 'Walk-in completed' : 'Closed') + '</span>' : full ? '<span class="badge badge-warn">Registrations full</span>' : ''));
     var w = wk(job);
     var seats = w.capacity != null && job.walkinSlotsLeft != null && !closed
       ? '<div class="tlwk-kv"><span class="k">Seats</span><span class="v">' + (full ? 'Registrations full' : h(job.walkinSlotsLeft) + ' of ' + h(w.capacity) + ' left') + '</span></div>' : '';
     var panel = document.createElement('div');
     panel.className = 'panel tlwk-jp';
     panel.innerHTML = '<div class="panel-head"><h2>🚶 Walk-in Interview</h2>'
-      + (closed ? '<span class="badge badge-bad">Closed</span>' : '') + '</div>'
-      + '<div class="panel-body">' + walkinBlockHtml(job, { title: closed ? 'This walk-in has closed' : '' }).replace('<div class="tlwk-box">', '<div class="tlwk-box" style="margin:0">').replace(/(<\/div>)$/, seats + '$1') + '</div>';
+      + (closed ? '<span class="badge badge-bad">' + (over ? 'Walk-in completed' : 'Closed') + '</span>' : '') + '</div>'
+      + '<div class="panel-body">' + (over ? '<p class="tlwk-over" style="margin:0 0 10px;color:var(--bad-600);font-weight:700">' + h(datesOverText(job)) + '</p>' : '')
+      + walkinBlockHtml(job, { title: closed ? (over ? 'This walk-in is completed' : 'This walk-in has closed') : '' }).replace('<div class="tlwk-box">', '<div class="tlwk-box" style="margin:0">').replace(/(<\/div>)$/, seats + '$1') + '</div>';
     if (first) host.insertBefore(panel, first.nextSibling); else host.insertBefore(panel, host.firstChild);
     if (closed) {
       Array.prototype.forEach.call(app.querySelectorAll('.btn-block'), function (b) {
         if (/apply/i.test(b.textContent || '') && !/applied|submitted/i.test(b.textContent || '')) {
           b.disabled = true; b.removeAttribute('onclick'); b.className = 'btn btn-block';
           b.style.background = 'var(--bad-100)'; b.style.color = 'var(--bad-600)';
-          b.textContent = 'Closed — this walk-in date has passed';
+          b.textContent = over ? 'Walk-in completed — applications closed' : 'Closed — this walk-in date has passed';
         }
       });
     } else if (full) {
@@ -614,7 +628,10 @@
     if (!job) { say('That job is no longer available on TeamLink', '⚠️'); return; }
     var had = existingApp(c.id, jobId);
     if (had) { showDuplicate(job, refOf(had)); return; }
-    if (isWalkin(job) && walkinClosed(job)) { say('This walk-in is closed - its date has passed', '📪'); return; }
+    if (isWalkin(job) && walkinClosed(job)) {
+      say(walkinDatesOver(job) ? datesOverText(job) : 'This walk-in is closed - its date has passed', '📪');
+      return;
+    }
     if (job.status === 'closed' || job.status === 'draft' || job.paused || job.archived) { say('This role is no longer accepting applications'); return; }
     if (walkinFull(job)) { say('Registrations full for this walk-in', '📪'); return; }
     if (typeof window.fcrModal !== 'function') { say('The application form could not open. Please reload the page.', '⚠️'); return; }
@@ -779,6 +796,16 @@
       showMsg('<b>Registrations full.</b> Every seat for this walk-in has been taken, so your application was not saved.');
       var b = document.getElementById('tlafSubmit');
       if (b) { b.disabled = true; b.textContent = 'Registrations full'; }
+      FORM && (FORM.busy = true);
+      rerender();
+      return;
+    }
+    if (code === 'WALKIN_COMPLETED') {
+      /* 0137: the server read the walk-in's date and it is over - said with the date */
+      job.walkinStatus = 'closed';
+      showMsg('<b>Walk-in completed.</b> ' + h(err.message || datesOverText(job)) + ' Your application was not saved.');
+      var b3 = document.getElementById('tlafSubmit');
+      if (b3) { b3.disabled = true; b3.textContent = 'Walk-in completed'; }
       FORM && (FORM.busy = true);
       rerender();
       return;
@@ -1339,6 +1366,9 @@
     open: openForm,
     isWalkin: isWalkin,
     closed: walkinClosed,
+    /* 0137: the sentence for a walk-in whose DATES are over ('' when they are not) - asked first by
+       every Apply path, so nobody is told to complete a profile for a drive that has happened */
+    overMessage: function (job) { return job && walkinDatesOver(job) ? datesOverText(job) : ''; },
     full: walkinFull,
     details: walkinLines,
     calendar: calendarFor,
