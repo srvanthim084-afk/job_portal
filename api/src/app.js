@@ -35,6 +35,7 @@ import aiCallingRoutes from './routes/ai-calling.js';
 import spreadsheetRoutes from './routes/spreadsheet.js';
 import placesRoutes from './routes/places.js';
 import intakeRoutes from './routes/intake.js';
+import sourceMailboxRoutes from './routes/source-mailboxes.js';
 import { notificationRoutes } from './routes/notifications.js';
 import staffRoutes from './routes/staff.js';
 import externalJobRoutes from './routes/external-jobs.js';
@@ -448,6 +449,7 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', profileOnboardingRoutes());
   app.use('/api', aiInterviewRoutes());
   app.use('/api', aiCallingRoutes());
+  app.use('/api', sourceMailboxRoutes());
   app.use('/api', intakeRoutes());
   app.use('/api', notificationRoutes());
   app.use('/api', staffRoutes());

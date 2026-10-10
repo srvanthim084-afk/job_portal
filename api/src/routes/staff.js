@@ -104,9 +104,12 @@ export default function staffRoutes() {
               ${stageCounts}
          from recruiters rec
          left join users u on u.id = rec.user_id
-         left join jobs j2 on j2.recruiter_id = rec.id
+         /* Each application ONCE per recruiter: theirs by assignment or by being on one of
+            their jobs. Joining jobs first counted every assigned application once per job the
+            recruiter owns - 260 applications on a 39-job desk read "Applied 10115". */
          left join applications a
-                on a.job_id = j2.id or a.recruiter_id = rec.id
+                on a.recruiter_id = rec.id
+                or exists (select 1 from jobs j2 where j2.id = a.job_id and j2.recruiter_id = rec.id)
         group by rec.id, u.status, u.last_login_at
         order by rec.name`)).rows);
 

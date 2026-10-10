@@ -64,6 +64,10 @@
   function rerender() { if (typeof window.render === 'function') window.render(); }
   function go(path) { if (typeof window.fcrCloseModal === 'function') fcrCloseModal(); if (typeof window.navigate === 'function') window.navigate(path); }
   function closed(job) { return !!job && (job.status === 'closed' || job.paused === true || job.archived === true); }
+  /* 0137: a walk-in whose dates are over - its own sentence, with the date (teamlink-walkin-jobs.js) */
+  function walkinOver(job) {
+    try { return window.TLWalkinJobs && TLWalkinJobs.overMessage ? TLWalkinJobs.overMessage(job) : ''; } catch (e) { return ''; }
+  }
   function myApp(jobId) {
     var s = session(); if (!s) return null;
     return (DATA.applications || []).filter(function (a) { return a.candidateId === s.id && a.jobId === jobId; })[0] || null;
@@ -315,6 +319,8 @@
     if (!applying[jobId]) dismissToast();               // a new apply replaces the last answer
     var had = myApp(jobId);
     if (had) { showAlready(job, had); paintButtons(); return Promise.resolve(had); }
+    var over = walkinOver(job);
+    if (over) { say(over, '📪'); return Promise.resolve(null); }
     if (closed(job)) { say('This role is no longer accepting applications', '⏳'); return Promise.resolve(null); }
     if (applying[jobId]) return applying[jobId];
     var missing = mandatoryMissing();
@@ -444,7 +450,13 @@
   function handle(jobId) {
     var s = session();
     if (s && s.role !== 'candidate') return false;          // staff keep what they had
-    if (!s) { var job = jobOf(jobId); if (closed(job)) { say('This role is no longer accepting applications'); return true; } signInBox(jobId); return true; }
+    if (!s) {
+      var job = jobOf(jobId);
+      var over = walkinOver(job);
+      if (over) { say(over, '📪'); return true; }
+      if (closed(job)) { say('This role is no longer accepting applications'); return true; }
+      signInBox(jobId); return true;
+    }
     applyNow(jobId);
     return true;
   }

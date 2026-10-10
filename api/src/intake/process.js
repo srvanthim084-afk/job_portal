@@ -304,6 +304,15 @@ export async function processMessage(session, { mailbox, message, rowId, provide
   // "Sync Shine" means Shine. A Naukri email is left exactly as it was,
   // unread, for the sync that wants it.
   if (!wantedBy(provider, source)) {
+    /* 0135: a mailbox that belongs to ONE board (Admin's Naukri or Shine connection) never imports the
+       other board's email: it is recorded as not this mailbox's, and nothing is created from it. */
+    if (mailbox.source && rowId) {
+      const why = `not a ${mailbox.source === 'naukri' ? 'Naukri' : 'Shine'} email - this mailbox imports `
+        + `${mailbox.source === 'naukri' ? 'Naukri' : 'Shine'} applications only`;
+      await withUser(ENGINE, (c) => c.query(
+        `select email_message_result($1,'ignored',$2,null,null,null)`, [rowId, why])).catch(() => {});
+      return { status: 'ignored', reason: why, skipped: true };
+    }
     return { status: 'skipped', reason: 'not this provider', skipped: true };
   }
 
@@ -1376,6 +1385,11 @@ export async function syncMailbox(session, mailboxId,
   const mailbox = await withUser(ENGINE, async (c) =>
     (await c.query(`select * from email_mailboxes where id=$1`, [mailboxId])).rows[0]);
   if (!mailbox) throw new Error('no such mailbox');
+  /* 0135: a Naukri mailbox syncs Naukri, a Shine mailbox Shine - whatever board was asked for */
+  if (mailbox.source) board = mailbox.source;
+  if (mailbox.source && mailbox.status === 'disconnected') {
+    return { mailbox: mailbox.address, provider: mailbox.provider, error: 'disconnected', seen: 0, imported: 0, results: [] };
+  }
 
   const ready = mailboxReadiness(mailbox);
   if (!ready.ready) {
@@ -1407,7 +1421,7 @@ export async function syncMailbox(session, mailboxId,
      * not - that is a network problem and retrying is exactly right.
      */
     if (isAuthFailure(err)) {
-      const mark = credentialFingerprint(mailbox.address, mailboxSecrets(mailbox.address).password);
+      const mark = credentialFingerprint(mailbox.address, mailboxSecrets(mailbox.address, mailbox).password);
       if (mark) {
         await withUser(ENGINE, (c) => c.query(
           `select mailbox_auth_refused($1,$2)`, [mailboxId, mark])).catch(() => {});
@@ -1459,8 +1473,17 @@ export async function syncMailbox(session, mailboxId,
       if (retrying) retried++;
     }
 
+    /* 0135: WHO OWNS THIS MAILBOX, read again before every email - a disconnect or a reassignment
+       made while a sync is running applies to the very next message, not the next sync */
+    let owner = mailbox;
+    if (mailbox.source) {
+      const now = await withUser(ENGINE, async (c) => (await c.query(
+        `select recruiter_id, status, source from email_mailboxes where id=$1`, [mailboxId])).rows[0]);
+      if (!now || now.status === 'disconnected') break;
+      owner = { ...mailbox, recruiter_id: now.recruiter_id, source: now.source };
+    }
     try {
-      const out = await processMessage(session, { mailbox, message, rowId: stored, provider: board });
+      const out = await processMessage(session, { mailbox: owner, message, rowId: stored, provider: board });
       if (out.status === 'processed') imported++;
       // The board goes on the result so the summary can say how many of
       // each arrived, not just how many emails there were.
@@ -1476,6 +1499,15 @@ export async function syncMailbox(session, mailboxId,
   }
 
   await withUser(ENGINE, (c) => c.query(`select mailbox_synced($1,null)`, [mailboxId]));
+  /* 0135: the sync, in the audit log (counts only - no names, no message content) */
+  if (mailbox.source) {
+    await withUser(session || ENGINE, (c) => c.query(`select source_mailbox_synced_audit($1,$2::jsonb)`, [mailboxId, JSON.stringify({
+      seen: fetched.length, imported, review: results.filter((r) => r.status === 'needs_review' || r.status === 'needs_mapping').length,
+      duplicates: results.filter((r) => r.status === 'duplicate').length,
+      alreadyRead: results.filter((r) => r.status === 'already_processed').length,
+      failed: results.filter((r) => r.status === 'failed').length,
+    })])).catch(() => {});
+  }
 
   return {
     mailbox: mailbox.address,
@@ -1493,13 +1525,15 @@ export async function syncMailbox(session, mailboxId,
 
 /** Every mailbox with auto-sync on. Used by the scheduler and by "Sync now". */
 export async function syncAll(session,
-  { onlyAuto = true, board = 'all', retry = false } = {}) {
+  { onlyAuto = true, board = 'all', retry = false, onlyIds = null } = {}) {
   const boxes = await withUser(ENGINE, async (c) => (await c.query(
-    `select id, address, auth_refused_fingerprint
+    `select id, address, provider, config, secrets_sealed, auth_refused_fingerprint
        from email_mailboxes ${onlyAuto ? 'where auto_sync' : ''} order by created_at`)).rows);
 
   const out = [];
   for (const b of boxes) {
+    /* 0135: a recruiter's "Sync" reads the mailboxes that recruiter can see, not everybody's */
+    if (onlyIds && !onlyIds.includes(b.id)) continue;
     /*
      * A password the server has already refused is NOT sent again.
      *
@@ -1514,7 +1548,7 @@ export async function syncAll(session,
      * pressing a button is asking on purpose.
      */
     if (onlyAuto && b.auth_refused_fingerprint) {
-      const now = credentialFingerprint(b.address, mailboxSecrets(b.address).password);
+      const now = credentialFingerprint(b.address, mailboxSecrets(b.address, b).password);
       if (now && now === b.auth_refused_fingerprint) {
         out.push({
           mailboxId: b.id, mailbox: b.address, error: 'auth_refused',

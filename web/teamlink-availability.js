@@ -19,8 +19,10 @@
    - An "Availability" filter on both screens (multi-select). By default
      the server hides Not looking and Placed; "Show all" shows them. The
      filter and the ranking run in SQL; this only adds the parameters.
-   - Admin -> Availability: counts per status, "Still looking?" messages
-     sent vs answered, and a button to run the re-confirm now.
+   - Admin -> Availability: four cards - Total Candidates, Attended
+     Interviews, Moved to ATS, Not Looking - each opening its candidate
+     list (search, filters, pages) and the candidate's record. Real counts
+     from the server; the "Still looking?" figures are no longer shown.
 
    Clients never see any of it - the server does not send it to them.
    The status cannot be changed by a recruiter: the server refuses it.
@@ -353,36 +355,206 @@
   }
 
   /* ------------------------------------------------------------------ *
-   * 5. admin report
+   * 5. Admin -> Availability: four cards, and the candidates behind each
+   *
+   *   Total Candidates · Attended Interviews · Moved to ATS · Not Looking
+   *
+   * Every number and every row comes from the server
+   * (GET /api/admin/availability/summary and /candidates - admin only);
+   * a card opens its list on this same page, with search, filters and
+   * pages; a name opens the candidate's record (GET /api/ats/candidates/:id/record).
    * ------------------------------------------------------------------ */
-  var REPORT = null;
+  var CARDS = [
+    ['total', 'Total Candidates', 'totalCandidates', 'Every candidate record, counted once'],
+    ['attended', 'Attended Interviews', 'attendedInterviews', 'Attendance recorded - scheduled interviews are not counted'],
+    ['ats', 'Moved to ATS', 'movedToAts', 'A recorded move into the hiring pipeline'],
+    ['not_looking', 'Not Looking', 'notLooking', 'The candidate said they are not looking'],
+  ];
+  var AV = { summary: null, sumErr: '', view: null, q: '', recruiterId: '', availability: '', stage: '', page: 1, pageSize: 20,
+    data: null, loading: false, err: '', seq: 0, filters: null };
+
+  function istDay(iso) {
+    if (!iso) return '';
+    var d = new Date(iso);
+    if (isNaN(d)) return '';
+    return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
+  }
+  function cardOf(k) { return CARDS.filter(function (c) { return c[0] === k; })[0] || null; }
+
   function adminPage() {
-    return '<div class="panel"><div class="panel-head"><div><h2>Candidate availability</h2>'
-      + '<div class="desc">What candidates say about their job search, and how the "Still looking?" re-confirmations are doing (last 30 days).</div></div>'
-      + '<button class="btn btn-ghost btn-sm" onclick="TLAvailability.runNow(this)">Run re-confirmation now</button></div>'
-      + '<div class="panel-body" id="tlavAdmin"><p class="empty-note">Loading…</p></div></div>';
+    return '<div class="stat-row tlav-cards" id="tlavCards">' + cardsHtml() + '</div>'
+      + '<div id="tlavAdmin">' + listShellHtml() + '</div>';
   }
-  function paintReport() {
-    var host = document.getElementById('tlavAdmin');
-    if (!host || !REPORT) return;
-    var by = REPORT.byStatus || {};
-    var ch = REPORT.checks || {};
-    var tile = function (k, v, cls) {
-      return '<div class="tlav-tile ' + (cls || '') + '"><div class="k">' + h(k) + '</div><div class="v">' + (v || 0) + '</div></div>';
+  function cardsHtml() {
+    return CARDS.map(function (c) {
+      var v = AV.summary ? AV.summary[c[2]] : null;
+      var on = AV.view === c[0];
+      return '<button type="button" class="stat-tile tlav-card' + (on ? ' on' : '') + '" aria-pressed="' + on + '" data-card="' + c[0] + '"'
+        + ' onclick="TLAvailability.open(\'' + c[0] + '\')">'
+        + '<div class="lbl">' + h(c[1]) + '</div>'
+        + '<div class="val tabular">' + (AV.summary ? h(v == null ? 0 : v) : AV.sumErr ? '—' : '…') + '</div>'
+        + '<div class="unit">' + h(c[3]) + '</div></button>';
+    }).join('');
+  }
+  function paintCards() {
+    var host = document.getElementById('tlavCards');
+    if (host) host.innerHTML = cardsHtml();
+    var err = document.getElementById('tlavSumErr');
+    if (err) err.remove();
+    if (AV.sumErr && host) {
+      var p = document.createElement('div');
+      p.id = 'tlavSumErr';
+      p.className = 'tlav-err';
+      p.innerHTML = 'The counts could not be loaded: ' + h(AV.sumErr) + ' <button type="button" class="btn btn-ghost btn-sm" onclick="TLAvailability.reload()">Retry</button>';
+      host.parentNode.insertBefore(p, host.nextSibling);
+    }
+  }
+  function loadSummary() {
+    AV.sumErr = '';
+    return api().get('/admin/availability/summary').then(function (r) { AV.summary = r.summary || {}; paintCards(); },
+      function (e) { AV.sumErr = (e && e.message) || 'Could not load'; paintCards(); });
+  }
+
+  /* the list: the toolbar is drawn once per card (typing keeps its focus); the rows are redrawn */
+  function listShellHtml() {
+    if (!AV.view) {
+      return '<div class="panel"><div class="panel-body"><p class="empty-note">Choose a card above to see those candidates.</p></div></div>';
+    }
+    var c = cardOf(AV.view);
+    var f = AV.filters || { recruiters: [], availability: [], stages: [] };
+    var opt = function (list, sel, all) {
+      return '<option value="">' + h(all) + '</option>' + list.map(function (x) {
+        return '<option value="' + h(x.id) + '"' + (x.id === sel ? ' selected' : '') + '>' + h(x.label || x.name) + '</option>';
+      }).join('');
     };
-    host.innerHTML = '<div class="tlav-tiles">'
-      + tile('Actively looking', by.actively_looking, 'g') + tile('Open to offers', by.open_to_offers, 'y')
-      + tile('Not confirmed', by.not_confirmed, 'n') + tile('Unknown', by.unknown, 'n')
-      + tile('Not looking', by.not_looking, 'n') + tile('Placed', by.placed, 'b') + '</div>'
-      + '<h3 class="tlav-h3">"Still looking?" messages</h3><div class="tlav-tiles">'
-      + tile('Sent', ch.sent) + tile('Answered', ch.answered, 'g') + tile('No answer (14 days)', ch.lapsed, 'n') + tile('Waiting', ch.open) + '</div>'
-      + '<div class="tlav-sub" style="margin-top:8px">By channel: ' + h(Object.keys(ch.byChannel || {}).map(function (k) { return k + ' ' + ch.byChannel[k]; }).join(' · ') || '—')
-      + ' &middot; Answers: ' + h(Object.keys(ch.byAnswer || {}).map(function (k) { return k.replace(/_/g, ' ') + ' ' + ch.byAnswer[k]; }).join(' · ') || '—') + '</div>';
+    return '<div class="panel tlav-list"><div class="panel-head"><div><h2>' + h(c[1]) + '</h2><div class="desc">' + h(c[3]) + '</div></div>'
+      + '<button type="button" class="btn btn-ghost btn-sm" onclick="TLAvailability.back()">← Back to summary</button></div>'
+      + '<div class="panel-body tlav-tools">'
+      + '<input type="search" id="tlavQ" placeholder="Search name, email, phone, candidate ID, job" value="' + h(AV.q) + '" oninput="TLAvailability.search(this.value)">'
+      + '<select id="tlavRec" onchange="TLAvailability.filter(\'recruiterId\', this.value)" aria-label="Recruiter">'
+      + opt(f.recruiters.map(function (r) { return { id: r.id, label: r.name }; }).concat([{ id: 'none', label: 'No recruiter assigned' }]), AV.recruiterId, 'All recruiters') + '</select>'
+      + '<select id="tlavAv" onchange="TLAvailability.filter(\'availability\', this.value)" aria-label="Availability">'
+      + opt(f.availability, AV.availability, 'Any availability') + '</select>'
+      + '<select id="tlavSt" onchange="TLAvailability.filter(\'stage\', this.value)" aria-label="ATS stage">'
+      + opt(f.stages, AV.stage, 'Any stage') + '</select>'
+      + '<button type="button" class="btn btn-ghost btn-sm" id="tlavClear" onclick="TLAvailability.clear()"' + (filtered() ? '' : ' hidden') + '>Clear filters</button>'
+      + '</div><div id="tlavRows">' + rowsHtml() + '</div></div>';
   }
-  function loadReport() {
-    api().get('/admin/availability/report').then(function (r) { REPORT = r.report || {}; paintReport(); })
-      .catch(function (e) { var host = document.getElementById('tlavAdmin'); if (host) host.innerHTML = '<p class="empty-note">' + h((e && e.message) || 'Could not load') + '</p>'; });
+  function rowsHtml() {
+    if (AV.err) {
+      return '<div class="panel-body"><p class="empty-note">' + h(AV.err)
+        + ' <button type="button" class="btn btn-ghost btn-sm" onclick="TLAvailability.retry()">Retry</button></p></div>';
+    }
+    if (!AV.data) return '<div class="panel-body"><p class="empty-note">Loading candidates…</p></div>';
+    var d = AV.data;
+    var body = (d.rows || []).map(function (x) {
+      var iv = x.interview;
+      var ivCell = iv ? '<span class="badge ' + (iv.attended ? 'badge-ok' : iv.status === 'Scheduled' ? 'badge-brand' : 'badge-neutral') + '">' + h(iv.status) + '</span>'
+        + (iv.date ? '<div class="tlav-sm">' + h(istDay(iv.date)) + '</div>' : '') : '<span class="tlav-sm">—</span>';
+      var atsCell = x.ats ? '<span class="badge badge-ai">' + h(x.ats.status || 'In ATS') + '</span><div class="tlav-sm">Moved ' + h(istDay(x.ats.movedAt)) + '</div>'
+        : x.stageLabel ? '<span class="tlav-sm">Not moved · ' + h(x.stageLabel) + '</span>' : '<span class="tlav-sm">—</span>';
+      var a = x.availability || {};
+      var avCls = a.status === 'actively_looking' && a.label !== 'Not confirmed' ? 'tlav-green' : a.status === 'open_to_offers' && a.label !== 'Not confirmed' ? 'tlav-yellow'
+        : a.status === 'placed' ? 'tlav-blue' : 'tlav-grey';
+      return '<tr class="tlav-row" data-id="' + h(x.id) + '">'
+        + '<td><button type="button" class="tlav-name" onclick="TLAvailability.profile(\'' + h(x.id) + '\')">' + h(x.name || 'Unnamed') + '</button>'
+        + (x.candidateCode ? '<div class="tlav-sm">' + h(x.candidateCode) + '</div>' : '') + '</td>'
+        + '<td>' + (x.phone ? '<div>' + h(x.phone) + '</div>' : '') + (x.email ? '<div class="tlav-sm">' + h(x.email) + '</div>' : '') + (!x.phone && !x.email ? '—' : '') + '</td>'
+        + '<td>' + (x.job ? h(x.job) : x.preferredRole ? '<span class="tlav-sm">Prefers: </span>' + h(x.preferredRole) : '—') + '</td>'
+        + '<td>' + (x.recruiterName ? h(x.recruiterName) : '<span class="tlav-sm">Not assigned</span>') + '</td>'
+        + '<td>' + ivCell + '</td>'
+        + '<td>' + atsCell + '</td>'
+        + '<td><span class="tlav-pill ' + avCls + '">' + h(a.label || 'Status unknown') + '</span></td></tr>';
+    }).join('');
+    var from = d.total ? (d.page - 1) * d.pageSize + 1 : 0;
+    var to = Math.min(d.page * d.pageSize, d.total);
+    var pages = Math.max(1, Math.ceil(d.total / d.pageSize));
+    return '<div class="tbl-wrap' + (AV.loading ? ' tlav-busy' : '') + '"><table class="data"><thead><tr><th>Candidate</th><th>Phone / Email</th><th>Applied job / Preferred role</th>'
+      + '<th>Recruiter</th><th>Interview</th><th>ATS</th><th>Availability</th></tr></thead><tbody>'
+      + (body || '<tr><td colspan="7"><div class="empty-note">' + (filtered()
+        ? 'No candidates match these filters.' : 'No candidates here yet.') + '</div></td></tr>')
+      + '</tbody></table></div>'
+      + '<div class="tlav-pg"><span class="tlav-sm">' + (d.total ? 'Showing ' + from + '–' + to + ' of ' + d.total + ' candidate' + (d.total === 1 ? '' : 's') : '0 candidates') + '</span>'
+      + '<span><button type="button" class="btn btn-ghost btn-sm" ' + (d.page <= 1 ? 'disabled' : '') + ' onclick="TLAvailability.page(' + (d.page - 1) + ')">← Previous</button>'
+      + ' <span class="tlav-sm">Page ' + d.page + ' of ' + pages + '</span> '
+      + '<button type="button" class="btn btn-ghost btn-sm" ' + (d.page >= pages ? 'disabled' : '') + ' onclick="TLAvailability.page(' + (d.page + 1) + ')">Next →</button></span></div>';
   }
+  function filtered() { return !!(AV.q || AV.recruiterId || AV.availability || AV.stage); }
+  function paintRowsOnly() {
+    var host = document.getElementById('tlavRows');
+    if (host) host.innerHTML = rowsHtml();
+    var clr = document.getElementById('tlavClear');
+    if (clr) clr.hidden = !filtered();
+  }
+  function paintList() {
+    var host = document.getElementById('tlavAdmin');
+    if (host) host.innerHTML = listShellHtml();
+  }
+  function loadList() {
+    if (!AV.view) return Promise.resolve();
+    var seq = ++AV.seq;
+    AV.loading = true; AV.err = '';
+    paintRowsOnly();
+    var qs = 'metric=' + encodeURIComponent(AV.view) + '&page=' + AV.page + '&pageSize=' + AV.pageSize
+      + (AV.q ? '&q=' + encodeURIComponent(AV.q) : '') + (AV.recruiterId ? '&recruiterId=' + encodeURIComponent(AV.recruiterId) : '')
+      + (AV.availability ? '&availability=' + encodeURIComponent(AV.availability) : '') + (AV.stage ? '&stage=' + encodeURIComponent(AV.stage) : '');
+    return api().get('/admin/availability/candidates?' + qs).then(function (r) {
+      if (seq !== AV.seq) return;
+      AV.loading = false; AV.data = r;
+      var first = !AV.filters;
+      AV.filters = r.filters || AV.filters;
+      if (first) paintList(); else paintRowsOnly();
+    }, function (e) {
+      if (seq !== AV.seq) return;
+      AV.loading = false; AV.err = (e && e.message) || 'The candidates could not be loaded.';
+      paintRowsOnly();
+    });
+  }
+
+  /* the candidate's record, in the existing modal */
+  function profileHtml(rec) {
+    var r = rec || {};
+    var row = function (k, v) { return v ? '<div><span class="tlav-sm">' + h(k) + '</span><div>' + v + '</div></div>' : ''; };
+    var apps = (r.applications || []).map(function (a) {
+      return '<tr><td>' + h(a.jobTitle || '') + (a.company ? '<div class="tlav-sm">' + h(a.company) + '</div>' : '') + '</td><td>' + h(a.stageLabel || a.stage || '') + '</td><td>' + h(istDay(a.appliedAt)) + '</td></tr>';
+    }).join('');
+    var ivs = (r.interviews || []).map(function (i) {
+      return '<tr><td>' + h(i.jobTitle || '') + '</td><td>' + h(i.round || '') + '</td><td>' + h(i.date || '') + (i.time ? ' ' + h(i.time) : '') + '</td><td>' + h(i.state || '') + '</td></tr>';
+    }).join('');
+    var tl = (r.timeline || []).slice(0, 12).map(function (e) {
+      return '<li><b>' + h(e.text || e.label) + '</b>' + (e.job && !e.text ? ' · ' + h(e.job) : '') + (e.detail ? ' · ' + h(e.detail) : '') + ' <span class="tlav-sm">' + h(istDay(e.at)) + '</span></li>';
+    }).join('');
+    return '<div class="fcr-jd-head"><h3>' + h(r.name || 'Candidate') + '</h3><p>' + h([r.candidateCode, r.experience && r.experience.title].filter(Boolean).join(' · ')) + '</p>'
+      + '<button class="fcr-jd-x" onclick="fcrCloseModal()" aria-label="Close">✕</button></div>'
+      + '<div class="fcr-jd-body"><div class="tlav-kv">'
+      + row('Email', h(r.email || '')) + row('Phone', h(r.mobile || ''))
+      + row('Current stage', r.currentStage ? h(r.currentStage.label) + (r.currentStage.job ? ' · ' + h(r.currentStage.job) : '') : '')
+      + row('Experience', h((r.experience && r.experience.label) || '')) + row('Current company', h((r.experience && r.experience.currentCompany) || ''))
+      + row('Profile score', r.profileScore == null ? '' : h(r.profileScore + '%'))
+      + row('Skills', h((r.skills || []).slice(0, 12).join(', ')))
+      + '</div>'
+      + '<h4 class="tlav-h4">Applications</h4>' + (apps ? '<div class="tbl-wrap"><table class="data"><thead><tr><th>Job</th><th>Stage</th><th>Applied</th></tr></thead><tbody>' + apps + '</tbody></table></div>' : '<p class="tlav-sm">No applications.</p>')
+      + '<h4 class="tlav-h4">Interviews</h4>' + (ivs ? '<div class="tbl-wrap"><table class="data"><thead><tr><th>Job</th><th>Round</th><th>Date</th><th>Status</th></tr></thead><tbody>' + ivs + '</tbody></table></div>' : '<p class="tlav-sm">No interviews.</p>')
+      + '<h4 class="tlav-h4">Timeline</h4>' + (tl ? '<ul class="tlav-tl">' + tl + '</ul>' : '<p class="tlav-sm">Nothing recorded yet.</p>')
+      + '</div><div class="fcr-jd-actions"><button class="btn btn-ghost" onclick="fcrCloseModal()">Close</button></div>';
+  }
+  function openProfile(id) {
+    if (typeof window.fcrModal !== 'function') return;
+    window.fcrModal('<div class="fcr-jd-head"><h3>Candidate</h3><button class="fcr-jd-x" onclick="fcrCloseModal()" aria-label="Close">✕</button></div>'
+      + '<div class="fcr-jd-body"><p class="empty-note">Loading the candidate…</p></div>');
+    var host = document.getElementById('fcrModalHost');
+    if (host) host.classList.add('tlav-modal');
+    api().get('/ats/candidates/' + encodeURIComponent(id) + '/record').then(function (r) {
+      var m = document.querySelector('#fcrModalHost .fcr-modal');
+      if (m) m.innerHTML = profileHtml(r.record);
+    }, function (e) {
+      var m = document.querySelector('#fcrModalHost .fcr-modal');
+      if (m) m.innerHTML = '<div class="fcr-jd-head"><h3>Candidate</h3><button class="fcr-jd-x" onclick="fcrCloseModal()">✕</button></div>'
+        + '<div class="fcr-jd-body"><p class="empty-note">' + h((e && e.message) || 'This candidate could not be loaded.') + '</p></div>';
+    });
+  }
+
+  function loadReport() { loadSummary(); if (AV.view) loadList(); }
 
   function installAdmin() {
     try {
@@ -394,7 +566,7 @@
     var next = function (section) {
       if (section !== 'availability') return prev.apply(this, arguments);
       return typeof window.dashShell === 'function'
-        ? window.dashShell('admin', 'availability', 'Candidate availability', 'Admin · TeamLink Platform', adminPage())
+        ? window.dashShell('admin', 'availability', 'Candidate Availability', 'Admin · TeamLink Platform', adminPage())
         : adminPage();
     };
     next.__tlav = true;
@@ -421,7 +593,7 @@
         if (isStaff()) { paintFilter(); paintRows(); }
         if (hsh.indexOf('#/admin/availability') === 0) {
           var host = document.getElementById('tlavAdmin');
-          if (host && !host.getAttribute('data-loaded')) { host.setAttribute('data-loaded', '1'); REPORT ? paintReport() : null; loadReport(); }
+          if (host && !host.getAttribute('data-loaded')) { host.setAttribute('data-loaded', '1'); loadReport(); }
         }
       } catch (e) { /* cosmetic; the server enforces */ }
     }, 40);
@@ -466,15 +638,25 @@
       refetch();
     },
     showAll: function (on) { FILTER.showAll = !!on; refetch(); },
-    runNow: function (btn) {
-      if (btn) btn.disabled = true;
-      api().post('/admin/availability/run', {}).then(function (r) {
-        var x = r.run || {};
-        say(x.skipped ? 'Not sent: ' + x.skipped : 'Asked ' + (x.asked || 0) + ' candidate(s), ' + (x.sent || 0) + ' delivered', '🟢');
-        loadReport();
-      }).catch(function (e) { say((e && e.message) || 'Could not run', '⚠️'); })
-        .then(function () { if (btn) btn.disabled = false; });
+    /* Admin -> Availability */
+    open: function (k) {
+      if (!cardOf(k)) return;
+      if (AV.view !== k) { AV.view = k; AV.page = 1; AV.data = null; AV.err = ''; }
+      paintCards(); paintList(); loadList();
+      var list = document.getElementById('tlavAdmin');
+      if (list && list.scrollIntoView) { try { list.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) { /* old browsers */ } }
     },
+    back: function () { AV.view = null; AV.data = null; AV.err = ''; paintCards(); paintList(); loadSummary(); },
+    search: function (v) {
+      clearTimeout(AV.t);
+      AV.t = setTimeout(function () { AV.q = String(v || '').trim(); AV.page = 1; loadList(); }, 300);
+    },
+    filter: function (k, v) { AV[k] = v || ''; AV.page = 1; paintList(); loadList(); },
+    clear: function () { AV.q = ''; AV.recruiterId = ''; AV.availability = ''; AV.stage = ''; AV.page = 1; paintList(); loadList(); },
+    page: function (n) { AV.page = Math.max(1, n | 0); loadList(); },
+    retry: function () { loadList(); },
+    reload: function () { loadSummary(); },
+    profile: function (id) { openProfile(id); },
   };
 
   var tries = 0;
@@ -518,6 +700,21 @@
     + '.tlav-tile .v{font-size:22px;font-weight:800;color:#1b2536}'
     + '.tlav-tile.g .v{color:#16703d}.tlav-tile.y .v{color:#8a6400}.tlav-tile.b .v{color:#1d4fa8}.tlav-tile.n .v{color:#5b6b82}'
     + '.tlav-h3{font-size:13px;margin:16px 0 8px;color:#2b3a4f}'
+    + '.tlav-cards .tlav-card{font:inherit;text-align:left;color:inherit;cursor:pointer;width:100%;transition:border-color .15s,box-shadow .15s}'
+    + '.tlav-cards .tlav-card:hover{border-color:var(--brand-500,#4f46e5)}'
+    + '.tlav-cards .tlav-card:focus-visible{outline:2px solid var(--brand-500,#4f46e5);outline-offset:2px}'
+    + '.tlav-cards .tlav-card.on{border-color:var(--brand-600,#4338ca);box-shadow:0 0 0 1px var(--brand-600,#4338ca) inset}'
+    + '.tlav-tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center;border-bottom:1px solid var(--line,#e6ebf2)}'
+    + '.tlav-tools input,.tlav-tools select{border:1px solid var(--line,#d9e0ea);border-radius:8px;padding:7px 10px;font:inherit;font-size:13px;background:var(--card,#fff);color:inherit;min-width:150px}'
+    + '.tlav-tools input{flex:1 1 260px}'
+    + '.tlav-name{border:0;background:none;padding:0;font:inherit;font-weight:700;color:var(--brand-700,#3730a3);cursor:pointer;text-align:left}'
+    + '.tlav-name:hover{text-decoration:underline}'
+    + '.tlav-sm{font-size:11.5px;color:var(--text-soft,#7a8798)}'
+    + '.tlav-pg{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 16px}'
+    + '.tlav-busy{opacity:.55;pointer-events:none}'
+    + '.tlav-kv{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px 16px;margin-bottom:6px}'
+    + '.tlav-h4{font-size:13px;margin:16px 0 6px}'
+    + '.tlav-tl{margin:0;padding-left:18px;font-size:13px;line-height:1.7}'
     + '@media (max-width:640px){.tlav-opts{width:100%}.tlav-opt{flex:1}.tlav-more label,.tlav-more select,.tlav-more input{width:100%}}';
   var tag = document.createElement('style');
   tag.id = 'tlav-css';

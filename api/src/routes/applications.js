@@ -14,6 +14,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { withUser } from '../db.js';
 import { wrap, badRequest, notFound, forbidden, ApiError, CODES } from '../errors.js';
+import { walkinCompletedError } from '../portal/walkin-jobs.js';
 import { requireAuth, requireRole } from '../auth.js';
 import { toApplication, toNotification, toJob, toCandidate } from '../shapes.js';
 import { dispatchEvent } from '../notify/events.js';
@@ -150,7 +151,9 @@ export default function applicationRoutes() {
       // pressing Submit for the last seat cannot both get it.
       const walkin = (await c.query(`select walkin_apply_check($1) as v`, [body.jobId])).rows[0].v;
       if (walkin === 'closed') {
-        throw new ApiError(409, CODES.JOB_UNAVAILABLE, 'This walk-in is closed - its date and time have passed.', { reason: 'walkin_closed' });
+        /* 0137: said as what it is - the walk-in's dates are over - with the date as posted */
+        const when = (await c.query(`select walkin_completed($1) as d`, [body.jobId])).rows[0].d;
+        throw walkinCompletedError(when);
       }
       if (walkin === 'full') {
         throw new ApiError(409, 'WALKIN_FULL', 'Registrations full - every seat for this walk-in is taken.', { reason: 'walkin_full' });

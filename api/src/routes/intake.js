@@ -12,7 +12,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { withUser } from '../db.js';
-import { wrap, badRequest, notFound, ApiError } from '../errors.js';
+import { wrap, badRequest, notFound, forbidden, ApiError } from '../errors.js';
 import { requireAuth, requireRole } from '../auth.js';
 import { syncMailbox, syncAll, mapMessage, temporaryPassword } from '../intake/process.js';
 import { SOURCES } from '../intake/source.js';
@@ -99,6 +99,29 @@ const toMessage = (r) => ({
   processedAt: r.processed_at ? new Date(r.processed_at).toISOString() : undefined,
 });
 
+/*
+ * 0135 - RECRUITER ISOLATION. A recruiter acts only on a mailbox they can see (their own, or one
+ * nobody owns - the database's read policy decides), and never on a Naukri / Shine mailbox Admin
+ * connected: those are changed in Admin -> Integrations only. Admin acts on any.
+ */
+async function mailboxInReach(session, id, { change = false } = {}) {
+  const box = await withUser(session, async (c) => (await c.query(
+    `select id, source, recruiter_id from email_mailboxes where id=$1`, [id])).rows[0]);
+  if (!box) throw notFound('That mailbox could not be found.');
+  if (change && box.source && session.role !== 'admin') {
+    throw forbidden('This Naukri / Shine mailbox is managed by Admin (Integrations -> Naukri & Shine Email Import).');
+  }
+  return box;
+}
+
+/* An email a recruiter may act on is one in a mailbox they can see (read policy, 0135). */
+async function messageInReach(session, id) {
+  const row = await withUser(session, async (c) => (await c.query(
+    `select id from email_messages where id=$1`, [id])).rows[0]);
+  if (!row) throw notFound('That email could not be found.');
+  return row;
+}
+
 export default function intakeRoutes() {
   const r = Router();
 
@@ -153,7 +176,16 @@ export default function intakeRoutes() {
       const id = await withUser(req.session, async (c) => (await c.query(
         `select mailbox_upsert($1,$2,$3,$4,$5,$6,$7::jsonb,'{}'::jsonb) as id`,
         [newId('mbx'), b.address, b.provider, recruiterId, b.displayName || null,
-         b.autoSync, JSON.stringify(b.rules || {})])).rows[0].id);
+         b.autoSync, JSON.stringify(b.rules || {})])).rows[0].id).catch((err) => {
+        /* 0135: an Admin-connected Naukri / Shine mailbox, or another recruiter's */
+        if (/MAILBOX_ADMIN_MANAGED/.test(String(err.message))) {
+          throw new ApiError(409, 'MAILBOX_ADMIN_MANAGED', 'This mailbox is connected by Admin for Naukri / Shine import and cannot be connected here.');
+        }
+        if (/MAILBOX_OWNED/.test(String(err.message))) {
+          throw new ApiError(409, 'MAILBOX_OWNED', 'This mailbox is already connected to another recruiter.');
+        }
+        throw err;
+      });
 
       const row = await withUser(req.session, async (c) => (await c.query(
         `select * from email_mailboxes where id=$1`, [id])).rows[0]);
@@ -198,9 +230,7 @@ export default function intakeRoutes() {
         onlyUnresolved: z.boolean().optional(),
       }), req.body);
 
-      const box = await withUser(req.session, async (c) => (await c.query(
-        `select id from email_mailboxes where id=$1`, [req.params.id])).rows[0]);
-      if (!box) throw notFound('That mailbox could not be found.');
+      await mailboxInReach(req.session, req.params.id, { change: true });
 
       const cleared = await withUser(ENGINE, async (c) => (await c.query(
         `delete from email_messages
@@ -220,6 +250,7 @@ export default function intakeRoutes() {
 
   r.post('/intake/mailboxes/:id/test', requireAuth(), requireRole('recruiter', 'bde', 'admin'),
     wrap(async (req, res) => {
+      await mailboxInReach(req.session, req.params.id, { change: true });
       const box = await withUser(req.session, async (c) => (await c.query(
         `select * from email_mailboxes where id=$1`, [req.params.id])).rows[0]);
       if (!box) throw notFound('That mailbox could not be found.');
@@ -259,6 +290,7 @@ export default function intakeRoutes() {
 
   r.post('/intake/mailboxes/:id/disconnect', requireAuth(), requireRole('recruiter', 'admin'),
     wrap(async (req, res) => {
+      await mailboxInReach(req.session, req.params.id, { change: true });
       await withUser(ENGINE, (c) => c.query(
         `update email_mailboxes set status='disconnected', auto_sync=false, updated_at=now()
           where id=$1`, [req.params.id]));
@@ -283,6 +315,7 @@ export default function intakeRoutes() {
    */
   r.delete('/intake/mailboxes/:id', requireAuth(), requireRole('recruiter', 'admin'),
     wrap(async (req, res) => {
+      await mailboxInReach(req.session, req.params.id, { change: true });
       const out = await withUser(ENGINE, async (c) => {
         const box = (await c.query(
           `select * from email_mailboxes where id=$1`, [req.params.id])).rows[0];
@@ -367,6 +400,7 @@ export default function intakeRoutes() {
         displayName: z.string().trim().max(120).optional(),
       }), req.body);
 
+      await mailboxInReach(req.session, req.params.id, { change: true });
       await withUser(ENGINE, (c) => c.query(
         `update email_mailboxes
             set auto_sync = coalesce($2, auto_sync),
@@ -415,9 +449,14 @@ export default function intakeRoutes() {
 
       const board = b.board || 'all';
       const retry = b.retry === true;
+      /* 0135: a recruiter syncs the mailboxes they can see; Admin and BDE, as before, all */
+      if (b.mailboxId) await mailboxInReach(req.session, b.mailboxId);
+      const visible = req.session.role === 'recruiter'
+        ? await withUser(req.session, async (c) => (await c.query(`select id from email_mailboxes`)).rows.map((x) => x.id))
+        : null;
       const out = b.mailboxId
         ? [await syncMailbox(req.session, b.mailboxId, { limit: b.limit, board, retry })]
-        : await syncAll(req.session, { onlyAuto: false, board, retry });
+        : await syncAll(req.session, { onlyAuto: false, board, retry, onlyIds: visible });
 
       /*
        * What happened, counted per outcome.
@@ -525,6 +564,7 @@ export default function intakeRoutes() {
   r.post('/intake/messages/:id/map', requireAuth(), requireRole('recruiter', 'bde', 'admin'),
     wrap(async (req, res) => {
       const b = parse(z.object({ jobId: z.string().trim().min(1).max(64) }), req.body);
+      await messageInReach(req.session, req.params.id);
       const out = await mapMessage(req.session, {
         messageId: req.params.id,
         jobId: b.jobId,
@@ -536,6 +576,7 @@ export default function intakeRoutes() {
   /** POST /api/intake/messages/:id/ignore */
   r.post('/intake/messages/:id/ignore', requireAuth(), requireRole('recruiter', 'bde', 'admin'),
     wrap(async (req, res) => {
+      await messageInReach(req.session, req.params.id);
       await withUser(ENGINE, (c) => c.query(
         `select email_message_result($1,'ignored',$2,null,null,null)`,
         [req.params.id, 'Marked not an application by a recruiter']));

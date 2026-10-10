@@ -38,6 +38,7 @@ import {
   missingForOneClick, newShareCode, shareText, shareLines, toPublicUrl, isLocalUrl, ogTags, SHARE_CHANNELS, endOfIstDay, escHtml,
 } from '../portal/core.js';
 import { kickUrgent } from '../portal/alerts.js';
+import { walkinCompletedError } from '../portal/walkin-jobs.js';
 import { feedRows, jsonLdScript } from '../publishing/feed.js';
 
 const PUBLISHING_ENGINE = { userId: '', role: 'admin', profileId: null };
@@ -288,6 +289,8 @@ export default function portalUpgradeRoutes() {
   async function applyGuards(req, jobId) {
     const state = await withUser(req.session, async (c) => ({
       job: (await c.query(`select * from portal_job_apply_state($1)`, [jobId])).rows[0],
+      /* 0137: a walk-in whose dates are over is refused before anything else */
+      walkinOver: (await c.query(`select walkin_completed($1) as d`, [jobId])).rows[0].d,
       lastHour: req.session.role === 'candidate'
         ? (await c.query(`select count(*)::int n from applications
                             where candidate_id = $1 and applied_at > now() - interval '1 hour'`,
@@ -295,6 +298,7 @@ export default function portalUpgradeRoutes() {
         : 0,
     }));
     const j = state.job;
+    if (state.walkinOver) throw walkinCompletedError(state.walkinOver);
     if (j && j.expires_at && new Date(j.expires_at) <= new Date()) {
       throw new ApiError(409, CODES.JOB_UNAVAILABLE, closedMessage(j.expires_at), { reason: 'expired' });
     }

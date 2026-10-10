@@ -31,7 +31,7 @@ import { withUser } from '../db.js';
 import { requireAuth, requireRole } from '../auth.js';
 import { wrap, badRequest, notFound, ApiError, CODES } from '../errors.js';
 import { toCandidate } from '../shapes.js';
-import { isMobile, tenDigits } from '../portal/walkin-jobs.js';
+import { isMobile, tenDigits, walkinCompletedError } from '../portal/walkin-jobs.js';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
@@ -132,10 +132,12 @@ export default function applyFormRoutes() {
     const pre = await withUser(req.session, async (c) => ({
       cand: (await c.query(`select * from candidates where id=$1`, [req.session.profileId])).rows[0],
       job: (await c.query(`select id, title, posting_kind from jobs where id=$1`, [f.jobId])).rows[0],
+      walkinOver: (await c.query(`select walkin_completed($1) as d`, [f.jobId])).rows[0].d,
       who: (await c.query(`select * from apply_identity_check($1,$2)`, [mobile, email])).rows[0],
     }));
     if (!pre.cand) throw notFound('Your profile could not be found.');
     if (!pre.job) throw new ApiError(404, CODES.JOB_UNAVAILABLE, 'This role is no longer available.');
+    if (pre.walkinOver) throw walkinCompletedError(pre.walkinOver);   // 0137
     if (!pre.cand.resume_file) {
       throw badRequest('Please upload your resume (PDF, DOC or DOCX, up to 5 MB).', { resume: 'Please upload your resume.' });
     }
