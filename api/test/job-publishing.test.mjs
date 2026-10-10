@@ -103,7 +103,6 @@ test('boot', async () => {
     PUBLISH_HTTP_TIMEOUT_MS: '1000',
     PUBLISH_WAIT_MS: '8000',
     PUBLISH_STATUS_CHECK_MS: '600000',
-    PUBLISH_DEFAULTS_DELAY_MS: '1500',
     SMS_API_KEY: '', WHATSAPP_API_KEY: '', EMAIL_API_KEY: '',
     EMAIL_SMTP_HOST: '', EMAILJS_SERVICE_ID: '', EMAILJS_TEMPLATE_ID: '', EMAILJS_PUBLIC_KEY: '', EMAILJS_PRIVATE_KEY: '',
   });
@@ -158,7 +157,8 @@ test('destinations: TeamLink works now; Naukri, Shine and Indeed need an integra
   assert.deepEqual(Object.keys(by), ALL);
   assert.equal(by.TEAMLINK_PORTAL.ready, true);
   assert.equal(by.TEAMLINK_WEBSITE.ready, true);
-  assert.equal(by.TEAMLINK_PORTAL.defaultSelected && by.TEAMLINK_WEBSITE.defaultSelected, true);
+  assert.equal(by.TEAMLINK_PORTAL.defaultSelected, true);
+  assert.equal(by.TEAMLINK_WEBSITE.defaultSelected, false, '0141: the website is ticked by the poster, not by default');
   for (const k of ['NAUKRI', 'SHINE', 'INDEED']) {
     assert.equal(by[k].ready, false);
     assert.equal(by[k].stateLabel, 'Integration Required');
@@ -218,22 +218,21 @@ test('the website feed: JSON + RSS, cacheable, embeddable, only open jobs ticked
   assert.equal(gone.status, 404);
 });
 
-test('a job posted with no destinations chosen reaches the website by default; a choice on the form wins', async () => {
-  const auto = await newJob({ title: 'Default Destinations Nurse' });
-  const kept = await newJob({ title: 'Kept Off The Website' });
-  await recruiter.put(`/api/jobs/${kept}/publications`, { destinations: ['TEAMLINK_PORTAL'] });
-  let feed = null;
-  for (let i = 0; i < 40; i++) {
-    await new Promise((r) => setTimeout(r, 500));
-    feed = await fetch(`${base}/feeds/jobs.json`, { cache: 'no-store' }).then((x) => x.json());
-    if (feed.jobs.some((j) => j.id === auto)) break;
-  }
-  assert.ok(feed.jobs.some((j) => j.id === auto), 'the job nobody chose destinations for is on the website');
-  assert.equal(feed.jobs.some((j) => j.id === kept), false, 'unticking the website on the form keeps it off');
-  const pubs = (await raw(`select destination from job_publications where job_id = $1 order by destination`, [auto])).rows;
-  assert.deepEqual(pubs.map((p) => p.destination), ['TEAMLINK_PORTAL', 'TEAMLINK_WEBSITE'], 'only TeamLink\'s own defaults - no partner');
-  const keptSite = (await raw(`select desired from job_publications where job_id = $1 and destination = 'TEAMLINK_WEBSITE'`, [kept])).rows;
-  assert.ok(!keptSite.length || keptSite[0].desired === 'removed', JSON.stringify(keptSite));
+test('TeamLink Website is the poster\'s choice: unticked to begin with, and a job nobody ticks for it stays off the website', async () => {
+  const d = await recruiter.get('/api/publishing/destinations');
+  const site = d.body.destinations.find((x) => x.key === 'TEAMLINK_WEBSITE');
+  assert.equal(site.defaultSelected, false, 'the box starts unticked');
+  assert.equal(d.body.destinations.find((x) => x.key === 'TEAMLINK_PORTAL').locked, true, 'the portal itself is always on');
+  const plain = await newJob({ title: 'Not Ticked For The Website' });
+  const portalOnly = await newJob({ title: 'Portal Only Role' });
+  await recruiter.put(`/api/jobs/${portalOnly}/publications`, { destinations: ['TEAMLINK_PORTAL'] });
+  await new Promise((r) => setTimeout(r, 2500));
+  const feed = await fetch(`${base}/feeds/jobs.json`, { cache: 'no-store' }).then((x) => x.json());
+  assert.equal(feed.jobs.some((j) => j.id === plain), false, 'a job nobody ticked for the website is not on it');
+  assert.equal(feed.jobs.some((j) => j.id === portalOnly), false);
+  assert.equal((await raw(`select count(*)::int n from job_publications where job_id = $1 and destination = 'TEAMLINK_WEBSITE'`, [plain])).rows[0].n, 0);
+  /* ticking it is what puts it there (J1, ticked in Save & Post above, is listed) */
+  assert.ok(feed.jobs.some((j) => j.id === J1));
 });
 
 test('the jobs block for the company website may be loaded from another site; nothing else may', async () => {

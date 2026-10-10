@@ -99,32 +99,6 @@ async function event(c, pub, ev, { from = null, to = null, detail = null, actor 
  * Runs as the worker; the CALLER has already checked the user may edit
  * this job.
  */
-/**
- * A job nobody chose destinations for still goes where TeamLink's own defaults say: the portal
- * and the TeamLink Website feed (default_selected, kind 'own') - so every job posted in the portal
- * shows on the company website automatically, whichever screen or API created it.
- *
- * ONE statement, and only while the job has NO publication rows at all: a choice made on the job
- * form (Save & Post sends its ticks right after creating the job) always wins, even when that
- * choice was to leave the website unticked.
- */
-export async function ensureDefaultDestinations(jobId) {
-  if (!jobId) return [];
-  return withUser(ENGINE, async (c) => {
-    const rows = (await c.query(
-      `insert into job_publications (job_id, destination, desired, status, next_attempt_at)
-       select $1, d.key, 'published', 'pending', now()
-         from publishing_destinations d
-        where d.active and d.default_selected and d.kind = 'own'
-          and exists (select 1 from jobs j where j.id = $1)
-          and not exists (select 1 from job_publications p where p.job_id = $1)
-       on conflict (job_id, destination) do nothing
-       returning *`, [jobId])).rows;
-    for (const row of rows) await event(c, row, 'requested', { to: row.status, actor: null, detail: 'TeamLink default destination (none chosen)' });
-    return rows;
-  });
-}
-
 export async function setDestinations(jobId, keys, actorUserId) {
   return withUser(ENGINE, async (c) => {
     const all = await destinations(c);

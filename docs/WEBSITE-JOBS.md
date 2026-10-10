@@ -1,6 +1,6 @@
 # Jobs on the company website (tmlink.in)
 
-**Goal:** every job posted in the portal appears on tmlink.in automatically, and Apply Now on the website
+**Goal:** a job you tick for **TeamLink Website** when posting it appears on tmlink.in automatically, and Apply Now on the website
 opens that same job in the portal. The application then lands in the portal and the ATS. There is no
 second copy of the jobs and no Excel export.
 
@@ -8,16 +8,15 @@ How it works:
 
 ```
 recruiter / admin posts a job  ──►  portal (jobs.tmlink.in)  ──►  /feeds/jobs.json  ◄──  tmlink.in jobs block
-          "TeamLink Website" ticked by default                     open jobs only       Apply Now → jobs.tmlink.in/job/<id>
+          "TeamLink Website" ticked on the form                    open jobs only       Apply Now → jobs.tmlink.in/job/<id>
 ```
 
 ## What already happens, with nothing to configure
 
-- **Every job goes to the website by default.**
-  - Every new job is put on TeamLink Website, whichever screen or API created it. If nobody chose destinations
-    for it, TeamLink's own defaults (the portal plus TeamLink Website) are applied 8 seconds after it is created
-    (`PUBLISH_DEFAULTS_DELAY_MS`).
-  - A choice made on the job form always wins, including unticking TeamLink Website.
+- **You choose, per job.** When posting a job (Save & Post, or Admin → Jobs → Post a job), the "Post to" list
+  shows TeamLink Job Portal (always on) and **TeamLink Website** (unticked to start with). Tick TeamLink
+  Website and the job goes to the website; leave it unticked and it stays on the portal only.
+  You can tick or untick it later by editing the job.
 - **A job leaves the website automatically** when it is closed, unpublished, archived or unticked, or when a
   walk-in's dates are over.
 - **The feed** (`/feeds/jobs.json`) lists only open jobs ticked for the website. It carries nothing about
@@ -97,7 +96,8 @@ If the website is WordPress, paste the two lines into a **Custom HTML** block.
 
 ## 4. Check it
 
-- Post a test job in the portal, wait about 5 minutes, and refresh tmlink.in. The job is listed.
+- Post a test job with **TeamLink Website** ticked, wait about 5 minutes, and refresh tmlink.in. The job is listed.
+- Post one with it unticked. It is not listed.
 - Click Apply Now. The portal opens that job and the application appears under Applications in the ATS.
 - Close the job. Within about 5 minutes it is gone from tmlink.in.
 
@@ -105,7 +105,7 @@ If the website is WordPress, paste the two lines into a **Custom HTML** block.
 
 | Area | Check |
 |---|---|
-| API tests (`job-publishing`, 19/19) | A job created with no destinations chosen reaches the website feed, with only TeamLink's own destinations. A job whose form unticks the website stays off it. The jobs block can be loaded from another site (both compressed and plain), and no other file can. |
+| API tests (`job-publishing`, 19/19) | TeamLink Website starts unticked. A job nobody ticks stays off the website feed. A job ticked for it is listed, with a working page and entry URL. The jobs block can be loaded from another site (both compressed and plain), and no other file can. |
 | Browser | A test "website" on another address showed the portal's jobs, the Walk-in filter worked, and Apply Now opened the job page. The website's own styles did not leak into the cards. |
 | Data copy | Run against a seeded test database into a separately migrated Postgres-protocol target. 168 tables matched row for row, and the login hash, JSON settings, candidate codes, counters and seed record were identical. |
 | Not verified here | A real server, DNS, the HTTPS certificate and tmlink.in itself. Those happen on your infrastructure. |
