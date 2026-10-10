@@ -2,7 +2,19 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "baseline-proto",
+      "name": "TeamLink (live, port 4323)",
+      "url": "http://localhost:4323",
+      "port": 4323
+    },
+    {
+      "name": "TeamLink (start the server on 4323)",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["tools/dev-server.mjs", "4323"],
+      "port": 4323,
+      "autoPort": false
+    },
+    {
+      "name": "old prototype (baseline, read-only reference)",
       "runtimeExecutable": "npx",
       "runtimeArgs": ["--yes", "http-server", "baseline", "-p", "4321", "-c-1", "--silent"],
       "port": 4321
