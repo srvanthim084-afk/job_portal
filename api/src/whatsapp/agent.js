@@ -184,11 +184,13 @@ export async function agentReply({ session, text, base, jobIds = [] }) {
     return withUser(session, async (c) => {
       const iv = await reads.getMyInterviews(c);
       const pending = (await c.query(
+        /* 0133: the AI interviews still OPEN to take - a job with no date has no due date but is open */
         `select j.title from applications a join jobs j on j.id = a.job_id
-          where a.candidate_id = app_candidate_id() and a.ai_interview_due_at is not null
+          cross join lateral ai_interview_window(a.id) w
+          where a.candidate_id = app_candidate_id() and w.open
             and a.stage in ('applied','ai_screening')
             and not exists (select 1 from ai_interviews i where i.application_id = a.id and i.status = 'completed')
-          order by a.ai_interview_due_at limit 5`)).rows;
+          order by a.ai_interview_due_at nulls last limit 5`)).rows;
       const lines = [];
       if (iv.upcoming.length) {
         lines.push(`*Your upcoming interviews*`, ...iv.upcoming.slice(0, 5).map((i, n) =>
@@ -197,7 +199,7 @@ export async function agentReply({ session, text, base, jobIds = [] }) {
       if (pending.length) {
         if (lines.length) lines.push('');
         lines.push(`*AI interview waiting for you* (${pending.map((p) => p.title).join(', ')})`,
-          `Open ${base}/#/candidate/home and tap *Attend AI Interview* under Action Required. You can take it any time before the deadline.`);
+          `Open ${base}/#/candidate/home and tap *Attend AI Interview* under Action Required. You can take it any time while the job is open (before its last date, if it has one).`);
       }
       if (!lines.length) lines.push('You have no interview scheduled or waiting right now.',
         'Interviews are set up by the recruiter once your application is shortlisted, and I\'ll show them here as soon as they exist.');
