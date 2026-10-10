@@ -311,7 +311,7 @@ export default function availabilityRoutes() {
     const out = await withUser(req.session, async (c) => {
       const base = `with ${FACTS},
         la as (
-          select distinct on (a.candidate_id) a.candidate_id, a.id application_id, a.stage, a.recruiter_id, a.applied_at, j.title job_title
+          select distinct on (a.candidate_id) a.candidate_id, a.id application_id, a.stage, coalesce(a.recruiter_id, j.recruiter_id) recruiter_id, a.applied_at, j.title job_title
             from applications a join jobs j on j.id = a.job_id
            where not a.is_demo
            order by a.candidate_id, a.updated_at desc nulls last, a.id
