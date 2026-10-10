@@ -77,6 +77,10 @@ services:
     depends_on:
       db:      { condition: service_healthy }
       migrate: { condition: service_completed_successfully }
+    # Every setting in .env reaches the API (email SMTP / EmailJS, INTEGRATION_SECRET_KEY,
+    # INTERNAL_HR_EMAIL, interview settings ...). The entries under `environment:` below
+    # still win - the database URL, the port and the production flags are always these.
+    env_file: .env
     environment:
       NODE_ENV: production
       PORT: 8080

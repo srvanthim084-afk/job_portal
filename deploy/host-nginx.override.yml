@@ -1,0 +1,14 @@
+# For a server that ALREADY runs its own nginx on ports 80/443 (teamlink.teamlinks.in, 72.61.233.104).
+#
+# Start only the database, the migration step and the API - never the bundled nginx/certbot, which
+# would fight the server's nginx for ports 80/443 - and publish the API on the server's own
+# 127.0.0.1:4323 for the server's nginx to proxy to. Nothing is reachable from outside except
+# through that nginx.
+#
+#   docker compose -f docker-compose.yml -f deploy/host-nginx.override.yml up -d --build db migrate api
+#
+# See docs/DEPLOY-TEAMLINKS-SERVER.md.
+services:
+  api:
+    ports:
+      - "127.0.0.1:4323:8080"
