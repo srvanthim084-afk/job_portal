@@ -2,7 +2,7 @@
    TEAMLINK - the Admin panel: seven modules, and Admin posts jobs
 
    THE SIDEBAR. Exactly these, in this order:
-     1 Users              Users · Candidates · Clients · Shared candidates · Privacy requests
+     1 Users              Users
      2 Recruiters & Teams Recruiters · Teams
      3 Jobs               Jobs · Applications · Interviews · Quick Filters
      4 Reports & Audit Log Reports · Analytics · Audit Log
@@ -11,7 +11,11 @@
      7 Integrations       Integrations · Naukri & Shine Email Import · AI Settings · Notification Settings
    with the Admin profile and Exit at the bottom, as before.
 
-   NOTHING IS REMOVED. Every page that had its own sidebar entry is still
+   REMOVED FROM USERS (owner, 2026-10-10): Candidates, Clients, Shared
+   candidates and Privacy requests. Their old addresses land on Users. The
+   candidates themselves are listed in Availability (the four cards).
+
+   Every other page that had its own sidebar entry is still
    there, at the same address, reached by a tab inside its module - the
    other modules keep adding their entries to NAV_CONFIG.admin as they always
    did (so their titles and pages work); this script only decides what the
@@ -32,7 +36,7 @@
   window.__tlAdminConsole = true;
 
   var GROUPS = [
-    { key: 'users', label: 'Users', icon: '👥', tabs: [['users', 'Users'], ['candidates', 'Candidates'], ['clients', 'Clients'], ['shared-candidates', 'Shared candidates'], ['privacy-requests', 'Privacy requests']] },
+    { key: 'users', label: 'Users', icon: '👥', tabs: [['users', 'Users']] },
     { key: 'recruiters', label: 'Recruiters & Teams', icon: '🧑‍💼', tabs: [['recruiters', 'Recruiters'], ['teams', 'Teams']] },
     { key: 'jobs', label: 'Jobs', icon: '💼', tabs: [['jobs', 'Jobs'], ['applications', 'Applications'], ['interviews', 'Interviews'], ['quick-filters', 'Quick Filters']] },
     { key: 'reports', label: 'Reports & Audit Log', icon: '📊', tabs: [['reports', 'Reports'], ['analytics', 'Analytics'], ['audit-log', 'Audit Log']] },
@@ -40,6 +44,12 @@
     { key: 'job-sources', label: 'Job Sources', icon: '🌐', tabs: [['job-sources', 'Job Sources']] },
     { key: 'integrations', label: 'Integrations', icon: '🔌', tabs: [['integrations', 'Integrations'], ['email-import', 'Naukri & Shine Email Import'], ['ai-settings', 'AI Settings'], ['notification-settings', 'Notification Settings']] },
   ];
+  /* taken out of the Admin panel: an old link or bookmark opens Users instead */
+  var REMOVED = ['candidates', 'clients', 'shared-candidates', 'privacy-requests'];
+  function removedSection() {
+    var m = /^#\/admin\/([a-z-]+)/.exec(location.hash || '');
+    return !!(m && REMOVED.indexOf(m[1]) >= 0);
+  }
   var GROUP_OF = {};
   GROUPS.forEach(function (g) { g.tabs.forEach(function (t) { GROUP_OF[t[0]] = g; }); });
 
@@ -448,6 +458,7 @@
       var r = function () {
         /* a module that wraps dashShell AFTER this one does not hide the seven: wrap again, outermost */
         if (window.dashShell && !window.dashShell.__tlac) wrapShell();
+        if (isAdmin() && removedSection()) { location.replace('#/admin/users'); return; }
         var out = prevRender.apply(this, arguments);
         setTimeout(function () { try { decorateJobsTable(); } catch (e) { /* cosmetic */ } }, 0);
         return out;
@@ -461,5 +472,5 @@
   if (document.readyState === 'complete') setTimeout(install, 0);
   else window.addEventListener('load', function () { setTimeout(install, 0); });
 
-  window.TLAdminConsole = { groups: GROUPS, groupOf: function (k) { return GROUP_OF[k] || null; } };
+  window.TLAdminConsole = { groups: GROUPS, removed: REMOVED, groupOf: function (k) { return GROUP_OF[k] || null; } };
 })();
