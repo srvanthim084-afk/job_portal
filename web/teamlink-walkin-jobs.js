@@ -989,7 +989,7 @@
       ['Job location', job.location || ''],
       ['Submitted', when],
       ['Application source', app.sourceChannel || SOURCE_LABEL[String(app.source || '').toLowerCase()] || 'TeamLink Job Portal'],
-      ['Application status', 'Applied' + (isWalkin(job) ? ' - registered for the walk-in' : '')],
+      ['Application status', 'Applied Successfully' + (isWalkin(job) ? ' - registered for the walk-in' : '')],
       ['AI interview', ai],
     ];
     return '<div class="tlaf-facts">' + rows.filter(function (r) { return r[1]; })
@@ -1003,7 +1003,7 @@
     resultShell('<div class="fcr-jd-body tlaf"><div class="tlaf-done" id="tlafDone">'
       + '<div class="tick">✓</div>'
       + '<h3>Application Submitted Successfully!</h3>'
-      + '<p>Your application has been submitted successfully. Please keep your Application ID for future reference.</p>'
+      + '<p>Your application has been submitted successfully! Your application ID is <b>' + h(ref) + '</b>. You can track your application status from your candidate dashboard.</p>'
       + '<p style="margin-top:12px">Application ID:</p><div class="ref" id="tlafRef">' + h(ref) + '</div>'
       + savedFacts(job, app)
       + (walkin ? walkinBlockHtml(job, { title: 'Walk-in Interview Details', only: ['Date', 'Time', 'Venue', 'Address', 'Documents to carry', 'Contact', 'Instructions'], calendar: calendarButtons(job, ref) }) : '')
