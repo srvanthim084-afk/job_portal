@@ -3,9 +3,9 @@
 
    WHAT IT IS. "Total Registered Candidates", with "New this week" and
    "Active jobs" beside it, at the top of Admin -> Availability (drawn by
-   teamlink-availability.js with cards() below - no longer on the candidate
-   dashboard, at the owner's request); and "X+ candidates registered" under
-   the job portal's "Find your next role".
+   teamlink-availability.js with cards() below). Nothing of it is shown in
+   the candidate portal any more - not the dashboard cards, not the
+   "X+ candidates registered" line (owner's request).
 
    WHERE THE NUMBERS COME FROM. GET /api/public/candidate-stats - three
    integers counted in the database (candidates with an active portal
@@ -39,11 +39,6 @@
       var text = fmt(S.data[k]) + (els[i].getAttribute('data-tlcs-suffix') || '');
       if (els[i].textContent !== text) els[i].textContent = text;
     }
-    var line = document.querySelectorAll('[data-tlcs-line]');
-    for (var j = 0; j < line.length; j++) {
-      var hide = !S.data.registeredCandidates;
-      if (line[j].hidden !== hide) line[j].hidden = hide;
-    }
   }
   function load(force) {
     if (S.loading || (!force && Date.now() - S.at < 15000)) { paint(); return; }
@@ -67,31 +62,12 @@
       + tile('Active jobs', 'activeJobs')
       + '</div>';
   }
-  /* ---- the line under "Find your next role" -------------------------------- */
-  function line() {
-    /* hidden until the number is known, and while it is zero */
-    return '<span data-tlcs-line' + (!S.data || !S.data.registeredCandidates ? ' hidden' : '') + '> · '
-      + '<b>' + slot('registeredCandidates', '+') + '</b> candidates registered</span>';
-  }
-
   function install() {
     var done = true;
     /* The three cards are no longer added to the candidate's dashboard (cpHome): they are on
        Admin -> Availability. */
-    if (typeof window.jobsPageBody === 'function' && !window.jobsPageBody.__tlcs) {
-      var prevBody = window.jobsPageBody;
-      var body = function () {
-        var html = prevBody.apply(this, arguments);
-        var mark = 'powered by TeamLink AI ranking';
-        var at = typeof html === 'string' ? html.indexOf(mark) : -1;
-        if (at < 0) return html;
-        var end = html.indexOf('</p>', at);
-        if (end < 0) return html;
-        soon();
-        return html.slice(0, end) + line() + html.slice(end);
-      };
-      body.__tlcs = true; window.jobsPageBody = body;
-    } else if (typeof window.jobsPageBody !== 'function') done = false;
+    /* The "X+ candidates registered" line under the job portal's "Find your next role" was removed
+       (owner's request): the counts are on Admin -> Availability only. */
     return done;
   }
 
@@ -101,7 +77,6 @@
   /* Other modules wrap cpHome after this file is parsed; stay outermost. */
   var tries = 0;
   var t = setInterval(function () {
-    if (window.jobsPageBody && !window.jobsPageBody.__tlcs) install();
     if (++tries > 60) clearInterval(t);
   }, 500);
 
