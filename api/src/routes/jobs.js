@@ -43,7 +43,7 @@ const jobSchema = z.object({
    * a question nobody asked when it was posted. The form requires it for
    * anything new; the API refuses a value that is neither.
    */
-  gender: z.union([z.enum(['Female', 'Male']), z.literal(''), z.null()]).optional()
+  gender: z.union([z.enum(['Female', 'Male', 'All', 'Other']), z.literal(''), z.null()]).optional()
     .transform((v) => (v === '' || v === null ? null : v)),
   accommodation: z.union([z.boolean(), z.string().max(8)]).optional()
     .transform((v) => (v === undefined ? undefined
