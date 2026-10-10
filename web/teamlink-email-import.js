@@ -130,12 +130,14 @@
     if (body.provider === 'other') { body.host = String(f.host || '').trim(); if (f.port) body.port = Number(f.port); }
     api().post('/intake/source-connections', body).then(function (r) {
       S.busy['connect_' + src] = false;
+      ['recruiterId', 'address', 'provider', 'username', 'appPassword', 'host', 'port'].forEach(function (k) { var el = $('tlei_' + src + '_' + k); if (el) el.value = ''; });
       S.forms[src] = {};                 // the password leaves the page
       S.msg[src] = { ok: true, text: r.message || 'Connected.' };
       say(r.message || 'Connected.', '✅');
       load(true);
     }, function (e) {
       S.busy['connect_' + src] = false;
+      var pwEl = $('tlei_' + src + '_appPassword'); if (pwEl) pwEl.value = '';
       S.forms[src].appPassword = '';
       var d = errDetails(e); var fe = {};
       Object.keys(d).forEach(function (k) { fe[k] = d[k]; });
@@ -198,7 +200,8 @@
         S.busy[id] = false;
         say(r.error ? ('Sync failed: ' + r.error)
           : ('Sync done: ' + r.emailsRead + ' read, ' + r.imported + ' imported, ' + r.duplicates + ' duplicates skipped, '
-            + r.pendingReview + ' for review' + (r.failed ? ', ' + r.failed + ' failed' : '')), r.error ? '⚠️' : '✅');
+            + r.pendingReview + ' for review' + (r.failed ? ', ' + r.failed + ' failed' : '')
+            + (r.alreadyRead ? ' (' + r.alreadyRead + ' already read before)' : '')), r.error ? '⚠️' : '✅');
         load(true);
       }, function (e) { S.busy[id] = false; say(errMsg(e), '⚠️'); load(true); });
     } else if (act === 'disconnect') {
@@ -269,7 +272,7 @@
           + ((m.events || []).length ? '<ul class="tlei-events">' + m.events.map(function (ev) {
             var d = ev.detail || {};
             var extra = ev.action === 'intake.mailbox_reassigned' ? ' - from ' + recName(d.from) + ' to ' + recName(d.to)
-              : ev.action === 'intake.mailbox_synced' ? ' - ' + (d.seen || 0) + ' read, ' + (d.imported || 0) + ' imported, ' + (d.duplicates || 0) + ' duplicates, ' + (d.review || 0) + ' for review, ' + (d.failed || 0) + ' failed'
+              : ev.action === 'intake.mailbox_synced' ? ' - ' + (d.seen || 0) + ' read, ' + (d.imported || 0) + ' imported, ' + (d.duplicates || 0) + ' duplicates, ' + (d.review || 0) + ' for review, ' + (d.failed || 0) + ' failed' + (d.alreadyRead ? ', ' + d.alreadyRead + ' already read before' : '')
               : ev.action === 'intake.mailbox_connected' && d.recruiterId ? ' - to ' + recName(d.recruiterId) : '';
             return '<li><b>' + h(EVENT[ev.action] || ev.action) + '</b>' + h(extra) + ' <span>' + h(when(ev.at)) + '</span></li>';
           }).join('') + '</ul>' : '<div class="tlei-empty">Nothing yet.</div>');
@@ -345,6 +348,7 @@
       + '.tlei-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px}'
       + '.tlei-f{display:flex;flex-direction:column;gap:4px;margin-bottom:10px;min-width:0}.tlei-f label{font-size:12px;font-weight:700;color:#41506a}'
       + '.tlei-f input,.tlei-f select{border:1px solid #d7dfea;border-radius:8px;padding:8px 10px;font:inherit;font-size:13.5px;min-width:0;background:#fff}'
+      + '.tlei-f input,.tlei-f select,.tlei-f .tl-eye-wrap{width:100%;box-sizing:border-box}'
       + '.tlei-f.bad input,.tlei-f.bad select{border-color:#d4342c}'
       + '.tlei-fixed{font-size:13px;color:#41506a;padding:8px 0}'
       + '.tlei-req{color:#d4342c}.tlei-err{font-size:11.5px;color:#b42318;font-weight:600}.tlei-hint{font-size:11.5px;color:#5f7183}'
@@ -393,6 +397,9 @@
       var prev = window.pageAdminDash;
       var next = function (section) {
         if (section !== SECTION) return prev.apply(this, arguments);
+        /* the app redraws whole pages (a refresh, a background update): what is being typed survives it */
+        if ($('tlei_naukri_address')) keep('naukri');
+        if ($('tlei_shine_address')) keep('shine');
         setTimeout(function () { load(!!S.data); }, 0);
         return window.dashShell('admin', SECTION, 'Naukri &amp; Shine Email Import', 'Admin · Integrations', pageHtml());
       };

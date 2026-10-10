@@ -1503,7 +1503,8 @@ export async function syncMailbox(session, mailboxId,
   if (mailbox.source) {
     await withUser(session || ENGINE, (c) => c.query(`select source_mailbox_synced_audit($1,$2::jsonb)`, [mailboxId, JSON.stringify({
       seen: fetched.length, imported, review: results.filter((r) => r.status === 'needs_review' || r.status === 'needs_mapping').length,
-      duplicates: results.filter((r) => r.status === 'duplicate' || r.status === 'already_processed').length,
+      duplicates: results.filter((r) => r.status === 'duplicate').length,
+      alreadyRead: results.filter((r) => r.status === 'already_processed').length,
       failed: results.filter((r) => r.status === 'failed').length,
     })])).catch(() => {});
   }
