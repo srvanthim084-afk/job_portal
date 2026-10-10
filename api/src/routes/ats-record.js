@@ -216,10 +216,14 @@ export const ACTIONS = {
   'contact.override_denied': 'Override Denied', 'contact.override_used': 'Override Used',
   /* 0127: single sign-on from HRMS, once per HRMS session */
   'auth.login_hrms': 'Login (via HRMS)',
+  /* 0135: the Naukri & Shine mailboxes Admin connects to a recruiter */
+  'intake.mailbox_connected': 'Mailbox Connected', 'intake.mailbox_reconnected': 'Mailbox Reconnected',
+  'intake.mailbox_disconnected': 'Mailbox Disconnected', 'intake.mailbox_reassigned': 'Mailbox Reassigned',
+  'intake.mailbox_synced': 'Mailbox Synced',
 };
 /* 0125: sign-in, sign-out and job lifecycle rows, named the same here. */
 for (const a of ACTIVITY) if (!ACTIONS[a.code]) ACTIONS[a.code] = a.label;
-const ENTITIES = ['candidate', 'application', 'recruiter', 'setting', 'interview', 'document', 'job', 'session', 'user'];
+const ENTITIES = ['candidate', 'application', 'recruiter', 'setting', 'interview', 'document', 'job', 'session', 'user', 'mailbox'];
 
 /* The filters of the audit page, as SQL over admin_audit_events (alias e) and users (alias u). */
 function auditFilters(q) {
@@ -719,6 +723,65 @@ export default function atsRecordRoutes() {
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="audit-log-${new Date().toISOString().slice(0, 10)}.csv"`);
     res.send('\uFEFF' + lines.join('\r\n'));
+  }));
+
+  /* The Admin Reports funnel: how many applications REACHED each step, from the records
+     that prove it - not only where each one stands now. An application the AI screened and
+     sent back to Applied was still screened; a walk-in (whose stages cannot be AI stages)
+     whose candidate finished the AI interview still attended it. Counts only; sample rows
+     (is_demo) are left out. */
+  r.get('/admin/pipeline-funnel', requireAuth(), requireRole('admin'), wrap(async (req, res) => {
+    const out = await withUser(req.session, async (c) => {
+      const reached = (await c.query(`
+        with a as (select * from applications where not is_demo),
+             h as (select application_id, array_agg(distinct to_stage) st from application_stage_history group by 1),
+             ai as (select distinct application_id from ai_interviews
+                     where application_id is not null and status in ('completed', 'evaluating', 'evaluated')),
+             ivs as (select application_id, bool_or(status = 'Completed') done from interviews
+                      where application_id is not null and not is_demo group by 1),
+             off as (select distinct application_id from offers)
+        select count(*)::int applied,
+               count(*) filter (where a.ai_screened_at is not null or a.stage = 'ai_screening' or 'ai_screening' = any(h.st))::int ai_screened,
+               count(*) filter (where a.stage = 'shortlisted' or 'shortlisted' = any(h.st))::int shortlisted,
+               count(*) filter (where ai.application_id is not null
+                                   or a.stage in ('ai_interview_done', 'ai_evaluation_done')
+                                   or h.st && array['ai_interview_done', 'ai_evaluation_done'])::int ai_interview_attended,
+               count(*) filter (where ivs.application_id is not null
+                                   or a.stage in ('interview_scheduled', 'client_interview')
+                                   or h.st && array['interview_scheduled', 'client_interview'])::int interview_scheduled,
+               count(*) filter (where ivs.done)::int interview_completed,
+               count(*) filter (where a.attended_at is not null or a.interviewed_at is not null
+                                   or a.stage in ('attended', 'interviewed') or h.st && array['attended', 'interviewed'])::int walkin_attended,
+               count(*) filter (where a.stage = 'client_review' or 'client_review' = any(h.st))::int client_review,
+               count(*) filter (where off.application_id is not null or a.stage = 'offer_extended' or 'offer_extended' = any(h.st))::int offer,
+               count(*) filter (where a.stage in ('selected', 'joined') or h.st && array['selected', 'joined'])::int selected,
+               count(*) filter (where a.stage = 'joined' or 'joined' = any(h.st))::int joined,
+               count(*) filter (where a.stage = 'rejected')::int rejected,
+               count(*) filter (where a.stage = 'no_show')::int no_show
+          from a
+          left join h on h.application_id = a.id
+          left join ai on ai.application_id = a.id
+          left join ivs on ivs.application_id = a.id
+          left join off on off.application_id = a.id`)).rows[0];
+      const now = (await c.query(`
+        select a.stage, coalesce(s.label, a.stage) label, count(*)::int n
+          from applications a left join stages s on s.id = a.stage
+         where not a.is_demo
+         group by a.stage, s.label, s.sort_order order by s.sort_order nulls last, a.stage`)).rows;
+      return { reached, now };
+    });
+    const R = out.reached;
+    res.json({
+      reached: [
+        ['applied', 'Applied', R.applied], ['ai_screened', 'AI Screening done', R.ai_screened],
+        ['shortlisted', 'Shortlisted', R.shortlisted], ['ai_interview_attended', 'AI Interview attended', R.ai_interview_attended],
+        ['interview_scheduled', 'Interview scheduled', R.interview_scheduled], ['interview_completed', 'Interview completed', R.interview_completed],
+        ['walkin_attended', 'Walk-in attended', R.walkin_attended], ['client_review', 'With client', R.client_review],
+        ['offer', 'Offer released', R.offer], ['selected', 'Selected', R.selected], ['joined', 'Joined', R.joined],
+      ].map(([key, label, n]) => ({ key, label, count: n })),
+      closed: { rejected: R.rejected, noShow: R.no_show },
+      current: out.now.map((x) => ({ stage: x.stage, label: x.label, count: x.n })),
+    });
   }));
 
   r.get('/admin/portal-analytics', requireAuth(), requireRole('admin'), wrap(async (req, res) => {

@@ -673,6 +673,30 @@
     var out = '<div class="panel tly2-panel" id="' + id + '" data-at="' + h(stamp) + '" style="margin-top:16px">' + html + '</div>';
     if (el) el.outerHTML = out; else body.insertAdjacentHTML('beforeend', out);
   }
+  /* The "Pipeline funnel" panel, from the server: every application counted at each step it
+     REACHED (AI screening, the AI interview, a walk-in...), then where they all are now. The
+     page's own rows counted only each candidate's current stage, so an application screened
+     and sent back to Applied, or a walk-in whose candidate finished the AI interview, showed
+     nowhere. Same rows, same styling. */
+  function funnelRow(label, n, max, color) {
+    return '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px"><div style="width:170px;font-size:12.5px;color:var(--text-soft)">' + h(label) + '</div>'
+      + '<div style="flex:1;background:var(--paper-100);border-radius:99px;height:10px;overflow:hidden"><div style="width:' + (max ? Math.round((n / max) * 1000) / 10 : 0) + '%;background:' + (color || 'var(--brand-500)') + ';height:100%"></div></div>'
+      + '<div class="mono" style="width:34px;text-align:right;font-size:12.5px">' + n + '</div></div>';
+  }
+  function paintFunnel(d, stamp) {
+    var head = [].slice.call(document.querySelectorAll('.dash-body .panel-head h2')).filter(function (x) { return /Pipeline funnel/.test(x.textContent); })[0];
+    var panel = head && head.closest('.panel');
+    var body = panel && panel.querySelector('.panel-body');
+    if (!body || body.getAttribute('data-at') === stamp) return;
+    var max = (d.reached[0] && d.reached[0].count) || 0;
+    var cur = d.current.reduce(function (m, x) { return Math.max(m, x.count); }, 0);
+    body.setAttribute('data-at', stamp);
+    body.innerHTML = '<div class="tly2-h" style="margin-top:0">Reached each step <span style="font-weight:400;color:var(--text-soft)">- every application counted at each step it got to</span></div>'
+      + d.reached.map(function (x) { return funnelRow(x.label, x.count, max); }).join('')
+      + funnelRow('Rejected', d.closed.rejected, max, 'var(--bad-600)') + funnelRow('No-show (walk-in)', d.closed.noShow, max, 'var(--bad-600)')
+      + '<div class="tly2-h">Where applications are now</div>'
+      + (d.current.map(function (x) { return funnelRow(x.label, x.count, cur, 'var(--ai-500)'); }).join('') || '<p class="empty-note">No applications yet.</p>');
+  }
   function paintAdmin() {
     if (role() !== 'admin') return;
     if (/^#\/admin\/reports/.test(hash())) {
@@ -685,6 +709,8 @@
       }
       var hq = load('handoffs', '/admin/employee-handoffs', paintAdmin);
       if (hq.data) mountPanel('tlY2Handoffs', handoffPanel(hq.data), String(hq.at));
+      var fu = load('funnel', '/admin/pipeline-funnel', paintAdmin);
+      if (fu.data) paintFunnel(fu.data, String(fu.at));
     } else if (/^#\/admin\/analytics/.test(hash())) {
       var pa = '/admin/portal-analytics?days=' + ANA.days;
       var ea = load('analytics', pa, paintAdmin);
