@@ -435,7 +435,7 @@ export default function walkinAtsRoutes() {
         updatedAt: a.updatedAt, updatedBy: a.updatedBy, rating: out.nr.rating,
         source: out.ai.source_channel || out.ai.source || null,
       },
-      /* 0138: the AI interview and, for a walk-in, the eligibility decided from its final score */
+      /* 0139: the AI interview and, for a walk-in, the eligibility decided from its final score */
       aiInterview: {
         status: out.ai.iv_status || null,
         score: out.ai.walkin_ai_score == null ? (out.ai.iv_score == null ? null : Number(out.ai.iv_score)) : Number(out.ai.walkin_ai_score),
@@ -912,7 +912,7 @@ export default function walkinAtsRoutes() {
         return {
           applicationId: x.id, reference: x.reference || x.id, jobId: x.job_id, jobTitle: x.title,
           jobType: walkin ? 'Walk-in' : 'Regular', applicationDate: iso(x.applied_at), status: x.cstatus,
-          /* 0138: the walk-in eligibility the final AI interview score gave (never attendance) */
+          /* 0139: the walk-in eligibility the final AI interview score gave (never attendance) */
           walkinEligibility: walkin && x.walkin_ai_eligibility ? {
             result: x.walkin_ai_eligibility === 'eligible' ? 'Eligible'
               : x.walkin_ai_eligibility === 'not_eligible' ? 'Not Eligible' : 'No valid score',

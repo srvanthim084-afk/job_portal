@@ -1,5 +1,5 @@
 /**
- * Walk-in AI eligibility and the HR notices (0138), against a real Postgres with RLS on.
+ * Walk-in AI eligibility and the HR notices (0139), against a real Postgres with RLS on.
  *
  *   - the HR email goes when a walk-in application is SAVED - before any AI interview -
  *     to INTERNAL_HR_EMAIL, whether or not a recruiter is assigned; never for a regular job

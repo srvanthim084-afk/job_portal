@@ -131,7 +131,7 @@ function startBackgroundWork(logger) {
   try {
     backgroundStops.push(startDeadlineSweep());
     backgroundStops.push(startInterviewNoticeSweep());
-    /* 0138: HR's walk-in notices (application saved, applicant eligible) - once each, retried */
+    /* 0139: HR's walk-in notices (application saved, applicant eligible) - once each, retried */
     backgroundStops.push(startApplicationNoticeSweep());
     backgroundStops.push(startIntakeSync());
     backgroundStops.push(startScreeningSweep());

@@ -88,7 +88,7 @@
       /* 0133: closed when the job is (closed, last date passed, walk-in over) or the interview's own date
          passed - the server says which. Shown, not counted: there is nothing left to do. */
       if (a.aiInterviewOpen === false) {
-        if (a.aiInterviewClosedReason === 'not_required') return;     // 0138: this walk-in has no AI interview
+        if (a.aiInterviewClosedReason === 'not_required') return;     // 0139: this walk-in has no AI interview
         out.push({ kind: 'ai_closed', appId: a.id, jobId: a.jobId, title: title, due: Infinity });
         return;
       }

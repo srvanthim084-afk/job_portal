@@ -77,7 +77,7 @@ const jobSchema = z.object({
   walkinInstructions: z.string().trim().max(2000).optional().or(z.literal('')),
   walkinCapacity:     z.union([z.coerce.number().int().min(1).max(100000), z.literal(''), z.null()]).optional()
     .transform((v) => (v === '' ? null : v)),
-  /* 0138: the contact's designation; whether the AI interview is part of this walk-in, and the
+  /* 0139: the contact's designation; whether the AI interview is part of this walk-in, and the
      final score that makes an applicant eligible (50 unless the job says otherwise) */
   walkinContactDesignation: z.string().trim().max(120).optional().or(z.literal('')),
   walkinAiRequired:  z.boolean().optional(),

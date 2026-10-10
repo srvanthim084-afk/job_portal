@@ -160,7 +160,7 @@
       if (info) {
         extra += '<div class="tlwa-cand"><span>Application ID: <b>' + h(info.reference) + '</b></span>'
           + '<span class="tlwa-cstatus">' + h(info.status) + '</span>'
-          /* 0138: the walk-in eligibility the final AI interview score gave - not attendance */
+          /* 0139: the walk-in eligibility the final AI interview score gave - not attendance */
           + (info.walkinEligibility ? '<span class="tlwa-cstatus">AI interview: ' + h(info.walkinEligibility.result)
             + (info.walkinEligibility.score != null ? ' (' + h(info.walkinEligibility.score) + '%)' : '') + '</span>' : '')
           + '</div>';
@@ -508,7 +508,7 @@
     if (!d || (!d.data && !d.err)) return back + '<div class="empty-note">Loading…</div>';
     if (d.err) return back + '<div class="empty-note">' + h(d.err) + '</div>';
     var o = d.data, c = o.candidate, j = o.job, a = o.application, w = o.walkin;
-    /* 0138: the AI interview and the walk-in eligibility the database decided from its final score */
+    /* 0139: the AI interview and the walk-in eligibility the database decided from its final score */
     var ai = o.aiInterview || {};
     var ELIG = { eligible: '<span class="badge badge-good">Eligible</span>', not_eligible: '<span class="badge badge-bad">Not Eligible</span>',
       score_invalid: '<span class="badge badge-neutral">No valid score</span>' };

@@ -106,7 +106,7 @@
       instructions: job.walkinInstructions || '',
       capacity: job.walkinSlotCapacity != null && job.walkinSlotCapacity !== '' ? Number(job.walkinSlotCapacity) : null,
       designation: job.walkinContactDesignation || '',
-      /* 0138: whether the AI interview is part of this walk-in, and the final score that makes an applicant eligible */
+      /* 0139: whether the AI interview is part of this walk-in, and the final score that makes an applicant eligible */
       aiRequired: job.walkinAiRequired !== false,
       threshold: job.walkinAiThreshold != null && job.walkinAiThreshold !== '' ? Number(job.walkinAiThreshold) : 50,
     };
@@ -134,7 +134,7 @@
     return isWalkin(job) && (job.walkinFull === true || job.walkinSlotsLeft === 0);
   }
   function safeUrl(u) { return /^https:\/\/\S+$/i.test(String(u || '').trim()) ? String(u).trim() : ''; }
-  /* 0138: the same rule as the server (api/src/portal/walkin-jobs.js isGoogleMapsUrl) - the venue QR opens this link */
+  /* 0139: the same rule as the server (api/src/portal/walkin-jobs.js isGoogleMapsUrl) - the venue QR opens this link */
   function isGoogleMaps(u) {
     var url;
     try { url = new URL(String(u || '').trim()); } catch (e) { return false; }
@@ -147,7 +147,7 @@
     return false;
   }
 
-  /* 0138: THE VENUE QR CODE - it encodes the saved Google Maps link itself (scanning opens that venue in
+  /* 0139: THE VENUE QR CODE - it encodes the saved Google Maps link itself (scanning opens that venue in
      Google Maps), drawn with the same library the walk-in ATS uses for the Application ID QR. A missing or
      non-Google link gets a sentence, never a QR code that would open somewhere else. */
   var QR_SRC = 'https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js';
@@ -971,7 +971,7 @@
     });
   }
 
-  /* 0138: what the success screen states - every value from the application the server saved */
+  /* 0139: what the success screen states - every value from the application the server saved */
   var SOURCE_LABEL = { teamlink: 'TeamLink Job Portal', portal: 'TeamLink Job Portal', website: 'TeamLink Website', walkin: 'Walk-in' };
   function savedFacts(job, app) {
     app = app || {};
@@ -1473,7 +1473,7 @@
     open: openForm,
     isWalkin: isWalkin,
     closed: walkinClosed,
-    /* 0138: "Application Submitted Successfully!" with the saved application's details - the one
+    /* 0139: "Application Submitted Successfully!" with the saved application's details - the one
        screen every Apply ends on (the form, and one-click, which passes its Undo) */
     success: function (job, app, opts) {
       if (!job || !app) return false;

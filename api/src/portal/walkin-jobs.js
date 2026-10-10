@@ -12,7 +12,7 @@ import { walkinEndsAt, walkinStartsAt } from '../shapes.js';
 const IST_MS = 330 * 60 * 1000;
 
 /**
- * A Google Maps link (0138): what the venue QR code encodes and a phone opens in Maps.
+ * A Google Maps link (0139): what the venue QR code encodes and a phone opens in Maps.
  * google.<tld>/maps..., maps.google.<tld>/..., maps.app.goo.gl/..., goo.gl/maps/...
  */
 export function isGoogleMapsUrl(u) {
@@ -181,7 +181,7 @@ export function checkWalkin(body, before, now = Date.now()) {
       && hhmm(s(v.from)) && hhmm(s(v.to)) && s(v.to) <= s(v.from)) errs.walkinTo = 'End time must be after the start time.';
   if (changed('walkinPhone', 'walkin_phone') && s(v.phone) && !tenDigits(v.phone)) errs.walkinPhone = 'Contact number must be a valid 10-digit number.';
   if (changed('walkinMapLink', 'walkin_map_link') && s(v.map) && !/^https:\/\/\S+$/i.test(s(v.map))) errs.walkinMapLink = 'The map link must start with https://';
-  /* 0138: the QR code a candidate scans opens this link - so it must be a Google Maps link */
+  /* 0139: the QR code a candidate scans opens this link - so it must be a Google Maps link */
   else if (changed('walkinMapLink', 'walkin_map_link') && s(v.map) && !isGoogleMapsUrl(s(v.map))) {
     errs.walkinMapLink = 'Please paste the Google Maps link of the venue (google.com/maps, maps.app.goo.gl or goo.gl/maps).';
   }

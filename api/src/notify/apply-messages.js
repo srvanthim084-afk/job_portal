@@ -37,7 +37,7 @@ export async function sendApplyMessages(session, { applicationId, candidateId, j
      */
     const sent = Object.values((notify && notify.delivery_status) || {})
       .some((st) => st === 'sent' || st === 'delivered');
-    /* 0138: ONE confirmation per application, whatever retries or replays this path - the
+    /* 0139: ONE confirmation per application, whatever retries or replays this path - the
        claim is a row with a unique key (application_notices), and its outcome is recorded. */
     const claimed = await withUser(ENGINE, async (c) => (await c.query(
       `select application_notice_claim_one($1,'APPLICATION_SUBMITTED_CANDIDATE') as ok`, [applicationId])).rows[0].ok)
@@ -74,7 +74,7 @@ export async function sendApplyMessages(session, { applicationId, candidateId, j
   // never repeats it.
   let aiInterview = null;
   try {
-    /* 0138: a walk-in that does not use the AI interview sends no invitation */
+    /* 0139: a walk-in that does not use the AI interview sends no invitation */
     const notRequired = await withUser(ENGINE, async (c) => (await c.query(
       `select (reason = 'not_required') as nr from ai_interview_window($1)`, [applicationId])).rows[0]);
     if (notRequired && notRequired.nr) return { notify, aiInterview: { skipped: 'not_required' } };

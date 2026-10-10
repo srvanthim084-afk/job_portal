@@ -1,5 +1,5 @@
 -- ---------------------------------------------------------------------
--- 0138 - walk-in AI eligibility, and the HR / candidate notices that
+-- 0139 - walk-in AI eligibility, and the HR / candidate notices that
 --        must go out exactly once
 --
 -- ELIGIBILITY. A walk-in applicant is ELIGIBLE when the FINAL AI interview

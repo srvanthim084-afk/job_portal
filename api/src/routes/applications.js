@@ -270,7 +270,7 @@ export default function applicationRoutes() {
     // invitation (notify/apply-messages.js). Sent now, after the commit,
     // unless this is a one-click application inside its Undo window: then
     // they go when the hold falls due, and only if it was not undone.
-    /* 0138: HR hears about a walk-in application now - not after the AI interview, and not only
+    /* 0139: HR hears about a walk-in application now - not after the AI interview, and not only
        when a recruiter is assigned. The notice row was made with the application; this sends it. */
     kickApplicationNotices();
 
