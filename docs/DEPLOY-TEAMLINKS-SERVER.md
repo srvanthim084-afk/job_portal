@@ -1,125 +1,120 @@
-# Deploying the Job Portal to teamlink.teamlinks.in (server 72.61.233.104)
+# Putting the real Job Portal on teamlink.teamlinks.in
 
-This guide is for whoever manages the TeamLink server.
+There are two parts: the owner prepares a data package on the office PC (one click), then whoever manages
+the server runs three commands. TeamLink Enterprise (port 4010) and HRMS (port 4000) on the same server are
+not touched.
 
 ## What is there today
 
 `https://teamlink.teamlinks.in/jobs/` serves a single static HTML file. It is the original prototype from
-19 Sep 2026 (`baseline/prototype.html`, 1,587,110 bytes, identical byte for byte):
+19 Sep 2026 (`baseline/prototype.html`, identical byte for byte):
 
 - It has no server and no database.
 - Data lives in each visitor's browser.
-- None of the portal's features since then are in it: registration with a real database, applications
-  into the ATS, the AI interview, the admin panel, emails, the Naukri/Shine import, and so on.
+- None of the real portal is in it: registration and applications stored in a database, the ATS, the AI
+  interview, the admin panel, emails, the Naukri/Shine import, and so on.
 
-The same server runs TeamLink Enterprise (port 4010) and HRMS (port 4000). Nothing in this guide touches
-either of them.
-
-## The plan
+## What it will be
 
 ```
-https://jobs.teamlinks.in            ──►  server nginx  ──►  127.0.0.1:4323  (job portal, Docker: api + Postgres)
-https://teamlink.teamlinks.in/jobs/  ──►  302 redirect to https://jobs.teamlinks.in/
+https://jobs.teamlinks.in            ──►  server nginx  ──►  127.0.0.1:4323  (job portal in Docker: API + PostgreSQL)
+https://teamlink.teamlinks.in/jobs/  ──►  redirect to https://jobs.teamlinks.in/
 ```
 
-The portal gets its own subdomain. It uses `/api`, `/job/<id>` and `/feeds/...` at the root of its domain,
-and on teamlink.teamlinks.in, `/api` already belongs to Enterprise. The old `/jobs/` link keeps working
-through the redirect.
+The portal gets its own subdomain, because it uses `/api`, `/job/<id>` and `/feeds/...` at the root of its
+domain, and on teamlink.teamlinks.in, `/api` is Enterprise's. The old `/jobs/` link keeps working through
+the redirect.
 
-## Steps
+---
 
-### 1. DNS
+## Part 1 - on the office PC (the owner)
 
-Add an **A record** `jobs.teamlinks.in → 72.61.233.104`, and wait until `ping jobs.teamlinks.in` answers
-with that IP.
+Double-click **`EXPORT-DATA-FOR-SERVER.bat`** in the portal folder.
 
-### 2. Get the code onto the server
+- It stops the local portal for about a minute to take a clean copy, then starts it again.
+- It leaves one file on the Desktop: **`teamlink-data-for-server-<date>.zip`**. Inside:
+  - `teamlink-data.ndjson.gz`: every candidate, application, job and setting. It holds only the rows,
+    so it is small.
+  - `uploads.tar.gz`: resumes, documents and interview recordings.
+  - `env-from-pc.txt`: the PC's settings. It **contains passwords** (email, AI, integration key).
+- Send the zip to the server administrator **privately**, for example on a USB stick or through a
+  password-protected share. Do not send it by public chat or email.
+
+Make the package right before the switch, so it has the latest data. Anything added on the PC after the
+export is not on the server.
+
+## Part 2 - on the server (the administrator)
+
+**0. DNS:** add an A record `jobs.teamlinks.in → 72.61.233.104`, and wait until it resolves.
+
+**1. Code, the package, install**
 
 ```bash
 sudo mkdir -p /opt/teamlink-jobs && cd /opt/teamlink-jobs
-git clone https://github.com/srvanthim084-afk/job_portal.git .
+sudo git clone https://github.com/srvanthim084-afk/job_portal.git .
+# copy the zip to /root/, then put the PC's settings next to the code:
+sudo unzip -j /root/teamlink-data-for-server-*.zip env-from-pc.txt -d /opt/teamlink-jobs
+sudo bash deploy/install-teamlinks.sh
 ```
 
-Docker with the compose plugin must be installed (`docker compose version`).
+`install-teamlinks.sh`:
 
-### 3. Settings: `/opt/teamlink-jobs/.env`
+- Checks Docker and nginx.
+- Builds `.env` from `env-from-pc.txt`. It sets `PUBLIC_ORIGIN=https://jobs.teamlinks.in`, generates the
+  database passwords and `AUTH_SECRET`, and keeps the PC's `INTEGRATION_SECRET_KEY` and email settings.
+- Starts the portal: database, migrations and API only, with the API on `127.0.0.1:4323`. The project's
+  bundled nginx is not started, because the server's nginx already owns ports 80/443.
+- Adds the nginx site `jobs.teamlinks.in` and gets the free HTTPS certificate with certbot.
+- Changes nothing else. If anything is missing, it stops with a clear message.
 
-Start from the owner's working `.env` on the office PC (`C:\Users\user\Desktop\job portal\.env`).
-Copy it over securely, for example with `scp`; never through chat or email. Then set or add:
-
-| Setting | Value |
-|---|---|
-| `PUBLIC_ORIGIN` | `https://jobs.teamlinks.in` |
-| `POSTGRES_PASSWORD` | a new strong password (the database superuser) |
-| `APP_DB_PASSWORD` | a new strong password (the portal's own database login) |
-| `AUTH_SECRET` | a long random string, e.g. `openssl rand -hex 32` |
-| `INTEGRATION_SECRET_KEY` | **keep the PC's value unchanged**: saved integration passwords (Naukri/Shine mailboxes, partners) are encrypted with it |
-
-Keep the email settings from the PC's `.env` as they are (`EMAIL_SMTP_*`, `EMAIL_FROM*`, `EMAILJS_*`), and
-likewise `AI_API_KEY`. The compose file passes every `.env` setting to the API.
-
-### 4. Start the portal, without its own nginx
+**2. Load the data**
 
 ```bash
-docker compose -f docker-compose.yml -f deploy/host-nginx.override.yml up -d --build db migrate api
-docker compose ps                          # api: healthy
-curl -s http://127.0.0.1:4323/api/health   # {"ok":true,...}
+sudo bash deploy/import-data.sh /root/teamlink-data-for-server-<date>.zip
 ```
 
-- The `migrate` step creates the schema.
-- The bundled nginx/certbot are **not** started, because the server's own nginx already owns ports 80/443.
-- The API listens on the server's `127.0.0.1:4323` only.
+1. It rehearses first (a dry run that writes nothing).
+2. It asks you to type `COPY`.
+3. It loads everything in one transaction: all or nothing, with the row counts checked table by table.
+   Then it copies the uploaded files and restarts the portal.
+4. Users sign in with the same email and password they used on the PC.
 
-### 5. nginx: the new subdomain, and the redirect
+**3. Point the old link at the portal:** in the **existing** teamlink.teamlinks.in nginx site, comment out
+the block that serves `/jobs/` today and add:
 
-```bash
-sudo cp deploy/nginx/jobs.teamlinks.in.conf /etc/nginx/sites-available/jobs.teamlinks.in
-sudo ln -s /etc/nginx/sites-available/jobs.teamlinks.in /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
-sudo certbot --nginx -d jobs.teamlinks.in          # free HTTPS certificate
+```nginx
+location /jobs/ { return 302 https://jobs.teamlinks.in/; }
+location = /jobs { return 302 https://jobs.teamlinks.in/; }
 ```
 
-Then, in the existing **teamlink.teamlinks.in** server block, comment out whatever serves `/jobs/` today and
-add the redirect from the bottom of `deploy/nginx/jobs.teamlinks.in.conf`. Reload:
-`sudo nginx -t && sudo systemctl reload nginx`.
+Then run `sudo nginx -t && sudo systemctl reload nginx`.
 
-### 6. Bring over today's data (candidates, applications, jobs, settings, resumes)
-
-The data is on the owner's office PC. Follow **"2. Copy today's data from this PC to the server"** in
-`docs/WEBSITE-JOBS.md`, which uses `tools/copy-live-to-postgres.mjs` with a dry run first, plus an SSH
-tunnel. Two server-specific details:
-
-- **Open the database port** for the copy:
-  ```bash
-  docker compose -f docker-compose.yml -f deploy/host-nginx.override.yml -f deploy/db-tunnel.override.yml up -d db
-  ```
-  Close it again afterwards with the same command without the tunnel file.
-- **Copy the uploads:** `docker compose cp <copied var/uploads folder>/. api:/app/var/uploads/`
-
-The copy refuses to run unless the server's code is the same version as the PC's (the same migrations).
-Deploy first, copy second.
-
-Without the copy, the portal starts empty. Create the first administrator as in `docs/DEPLOYMENT.md`, step 6.
-
-### 7. Check
+**4. Check**
 
 - `https://jobs.teamlinks.in` opens the portal.
-- `https://teamlink.teamlinks.in/jobs/` redirects there.
-- Sign in as an existing user. If the data was copied, the same passwords work.
-- Post a test job, apply as a test candidate, and check that it appears under Applications in the ATS.
-- Enterprise (`https://teamlink.teamlinks.in`) and HRMS still work as before.
+- `https://teamlink.teamlinks.in/jobs/#/` lands there.
+- Sign in as an existing user.
+- Post a test job and apply as a test candidate. It appears under Applications in the ATS.
+- Enterprise and HRMS still work.
 
 ## Rollback
 
-1. Put the old `/jobs/` block back in the teamlink.teamlinks.in server block and reload nginx. The old page
-   is back.
-2. Stop the portal with `cd /opt/teamlink-jobs && docker compose stop api`. Its data stays in the Docker volumes.
+1. Put the old `/jobs/` block back and reload nginx. The old page is back.
+2. Run `cd /opt/teamlink-jobs && sudo docker compose stop api`. The portal's data stays in its Docker volume.
 
-## Updating later
+## Updating later (new versions from GitHub)
 
 ```bash
-cd /opt/teamlink-jobs && git pull
-docker compose -f docker-compose.yml -f deploy/host-nginx.override.yml up -d --build db migrate api
+cd /opt/teamlink-jobs && sudo git pull && sudo bash deploy/install-teamlinks.sh
 ```
 
-`migrate` runs before the API restarts.
+Migrations run before the API restarts. The data is kept.
+
+## How this was tested
+
+| Area | What was checked |
+|---|---|
+| Data package | `EXPORT-DATA-FOR-SERVER.bat` was run against a throwaway portal on another port. It stopped the portal, copied the data, restarted the portal (which answered again), and produced the zip with the data file and the uploads. |
+| Data file | A file exported from a test database (13 KB for a 68 MB folder) was loaded into a separately migrated PostgreSQL-protocol target, with a dry run and then a commit. Every table matched row for row, and the login hash, settings JSON, candidate codes and counters were identical. |
+| Scripts | `install-teamlinks.sh` and `import-data.sh` pass a shell syntax check. |
+| Not tested | They have not been run on the real server. There was no access to it from the office PC. |

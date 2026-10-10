@@ -39,6 +39,8 @@ issuing the certificate.
 
 ## 2. Copy today's data from this PC to the server (once)
 
+> **Simplest way:** double-click `EXPORT-DATA-FOR-SERVER.bat` on this PC and give the zip to the server administrator, who loads it with `deploy/import-data.sh`. See `docs/DEPLOY-TEAMLINKS-SERVER.md`. The SSH-tunnel method below is for when this PC can reach the server's database directly.
+
 Your candidates, applications, jobs and settings live in this PC's built-in database (`var/dev-db`).
 
 1. **Stop the local portal** (close `START-TeamLink.bat`'s window), then take a copy:
