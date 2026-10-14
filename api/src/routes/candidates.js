@@ -251,6 +251,16 @@ export default function candidateRoutes() {
                          where rs.candidate_id = candidates.id and rs.status = 'scored'
                            and rs.total_score >= $${params.length})`);
         }
+        /* Overall score: the best overall score of any of the candidate's applications - the screening
+           score the 65% auto-ATS rule reads (skills, experience, location, education, and the screening
+           answers when they are in). A candidate who has not applied has none, so the filter leaves
+           them out. Sample rows are not counted. */
+        if (q.overallScoreMin !== undefined && q.overallScoreMin !== '' && Number.isFinite(Number(q.overallScoreMin))) {
+          params.push(Math.max(0, Math.min(100, Number(q.overallScoreMin))));
+          push(`exists (select 1 from applications oa
+                         where oa.candidate_id = candidates.id and not oa.is_demo
+                           and coalesce(oa.screening_combined_score, oa.ai_score, oa.match_score) >= $${params.length})`);
+        }
         /* Assessment score (0111 extension point): a completed assessment
            whose name matches, at or above a percentage of its maximum. */
         if ((q.assessment && String(q.assessment).trim()) || (q.assessmentMin !== undefined && q.assessmentMin !== '')) {
