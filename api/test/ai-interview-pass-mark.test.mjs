@@ -77,10 +77,15 @@ test('at or above the pass mark: Shortlisted (ATS); below it: AI Interview Done 
   const r72 = await record(a72, 72);
   assert.equal(r72.passed, true);
   assert.equal(await stage(a72), 'shortlisted');
+  const pu = (await raw(`select ats_pushed_via v, ats_pushed_score s, ats_pushed_at at from applications where id = $1`, [a72])).rows[0];
+  assert.equal(pu.v, 'auto_ai_interview', 'pushed by the interview result');
+  assert.equal(Number(pu.s), 72);
+  assert.ok(pu.at);
   assert.equal((await record(a65, 65)).passed, true, '65 is the pass mark itself');
   assert.equal(await stage(a65), 'shortlisted');
   assert.equal((await record(a64, 64.4)).passed, false, '64 does not pass');
   assert.equal(await stage(a64), 'ai_interview_done');
+  assert.equal((await raw(`select ats_pushed_at from applications where id = $1`, [a64])).rows[0].ats_pushed_at, null, 'below the pass mark: not pushed');
 
   /* recorded with the score and the pass mark */
   const h = (await raw(`select note from application_stage_history where application_id = $1 and to_stage = 'shortlisted' order by created_at desc limit 1`, [a72])).rows[0];

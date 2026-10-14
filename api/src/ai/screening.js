@@ -313,9 +313,14 @@ export async function screenApplication(applicationId, { actor = 'system', force
               ai_screened_at = now(),
               -- Resume and answers together (0097); null until answered.
               screening_combined_score = $4,
+              /* 0145: moved INTO the ATS by the screening score: remembered as "Pushed to ATS" (the first
+                 push stands; a move back and a second screening do not rewrite it) */
+              ats_pushed_at    = case when $3::text = 'shortlisted' and stage <> 'shortlisted' and ats_pushed_at is null then now() else ats_pushed_at end,
+              ats_pushed_via   = case when $3::text = 'shortlisted' and stage <> 'shortlisted' and ats_pushed_at is null then 'auto_screening' else ats_pushed_via end,
+              ats_pushed_score = case when $3::text = 'shortlisted' and stage <> 'shortlisted' and ats_pushed_at is null then $5::numeric else ats_pushed_score end,
               updated_at = now()
         where id = $1`,
-      [applicationId, result.score, nextStage, answers.combined]);
+      [applicationId, result.score, nextStage, answers.combined, answers.combined !== null ? answers.combined : result.score]);
 
     await c.query(
       `select app_event($1,$2,'screening.completed',$3,$4,$5::jsonb)`,

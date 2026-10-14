@@ -487,6 +487,10 @@ export function toApplication(r) {
     walkinEligibility: nz(r.walkin_ai_eligibility),
     sourceChannel: nz(r.source_channel),
     postingType: nz(r.posting_type),
+    /* 0145: moved INTO the ATS by a rule or by "Send to ATS" - shown as "Pushed to ATS" (null: not pushed) */
+    atsPushedAt: r.ats_pushed_at ? new Date(r.ats_pushed_at).toISOString() : undefined,
+    atsPushedVia: nz(r.ats_pushed_via),
+    atsPushedScore: numOrU(r.ats_pushed_score),
     // date columns arrive as 'YYYY-MM-DD' strings (see the type parser in
     // db.js); the Date branch is a fallback for any caller that bypasses it
     appliedOn: r.applied_on

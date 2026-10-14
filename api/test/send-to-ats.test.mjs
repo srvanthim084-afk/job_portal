@@ -93,6 +93,9 @@ test('added, moved up, left where it is - at Shortlisted, recorded, and nobody m
   const a = await appOf(C.a.id, 'j_sa');
   const b = await appOf(C.b.id, 'j_sa');
   const c = await appOf(C.c.id, 'j_sa');
+  assert.equal(a.ats_pushed_via, 'send_to_ats', 'moved up by the button: pushed');
+  assert.equal(b.ats_pushed_via, 'send_to_ats', 'added by the button: pushed');
+  assert.equal(c.ats_pushed_via, null, 'left where it was: not pushed');
   assert.equal(a.stage, 'shortlisted');
   assert.equal(b.stage, 'shortlisted');
   assert.equal(b.source, 'rediscovery');
@@ -163,6 +166,17 @@ test('Applications page: moved to Shortlisted; further along left; walk-in refus
   assert.equal(h.note, 'Sent to ATS from Applications');
   assert.equal((await raw(`select count(*)::int n from notifications where type = 'APPLICATION_STATUS'`)).rows[0].n, before, 'nobody messaged');
 
+  assert.equal((await raw(`select ats_pushed_via from applications where id = $1`, [e.id])).rows[0].ats_pushed_via, 'send_to_ats');
+  /* a recruiter moving an application to Shortlisted by hand is not a push - and moving it back and
+     pushing again does not rewrite the first push */
+  const hand = await mk('applied');
+  const mv = await rec.put(`/api/applications/${hand.id}/status`, { stage: 'shortlisted' });
+  assert.equal(mv.status, 200, JSON.stringify(mv.body));
+  assert.equal((await raw(`select ats_pushed_at from applications where id = $1`, [hand.id])).rows[0].ats_pushed_at, null, 'by hand: no badge');
+  const firstPush = (await raw(`select ats_pushed_at from applications where id = $1`, [e.id])).rows[0].ats_pushed_at;
+  await raw(`update applications set stage = 'applied' where id = $1`, [e.id]);
+  await rec.post('/api/ats/send-applications', { applicationIds: [e.id] });
+  assert.equal(new Date((await raw(`select ats_pushed_at from applications where id = $1`, [e.id])).rows[0].ats_pushed_at).getTime(), new Date(firstPush).getTime(), 'the first push stands');
   /* again: nothing moves twice */
   const again = await rec.post('/api/ats/send-applications', { applicationIds: [e.id, f.id] });
   assert.deepEqual([again.body.moved, again.body.already], [0, 2]);

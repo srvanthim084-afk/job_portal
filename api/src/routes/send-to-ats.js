@@ -35,6 +35,9 @@ const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36
 const MOVABLE = ['applied', 'ai_screening', 'ai_interview_pending', 'ai_interview_in_progress', 'ai_interview_done'];
 const NOTE = 'Sent to ATS from the Talent Pool';
 const NOTE_APPS = 'Sent to ATS from Applications';
+/* 0145: the push is remembered ("Pushed to ATS"); the first one stands */
+const PUSHED = `ats_pushed_at  = coalesce(ats_pushed_at, now()),
+                ats_pushed_via = coalesce(ats_pushed_via, 'send_to_ats')`;
 
 const body = z.object({
   jobId: z.string().trim().min(1).max(64),
@@ -87,7 +90,7 @@ export default function sendToAtsRoutes() {
             continue;
           }
           await c.query(`select set_config('app.stage_note', $1, true)`, [NOTE]);
-          app = (await c.query(`update applications set stage = 'shortlisted' where id = $1 returning *`, [app.id])).rows[0];
+          app = (await c.query(`update applications set stage = 'shortlisted', ${PUSHED} where id = $1 returning *`, [app.id])).rows[0];
           await c.query(`select app_event($1, $2, 'ats.sent', $3, 'recruiter', $4::jsonb)`,
             [app.id, candidateId, NOTE, JSON.stringify({ outcome, jobId, by: req.session.userId || null })]).catch(() => {});
           if (notify && shortlisted.notify_candidate !== false) {
@@ -156,7 +159,7 @@ export default function sendToAtsRoutes() {
           if (a.posting_type === 'walkin') { results.push({ ...who, outcome: 'refused', reason: 'a walk-in registration - managed from the walk-in screen' }); await c.query('release savepoint one'); continue; }
           if (!MOVABLE.includes(a.stage)) { results.push({ ...who, outcome: 'already', stage: a.stage }); await c.query('release savepoint one'); continue; }
           await c.query(`select set_config('app.stage_note', $1, true)`, [NOTE_APPS]);
-          await c.query(`update applications set stage = 'shortlisted' where id = $1`, [id]);
+          await c.query(`update applications set stage = 'shortlisted', ${PUSHED} where id = $1`, [id]);
           await c.query(`select app_event($1, $2, 'ats.sent', $3, 'recruiter', $4::jsonb)`,
             [id, a.candidate_id, NOTE_APPS, JSON.stringify({ outcome: 'moved', from: a.stage, by: req.session.userId || null })]).catch(() => {});
           if (notify && shortlisted.notify_candidate !== false) {

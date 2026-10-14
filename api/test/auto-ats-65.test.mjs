@@ -96,6 +96,13 @@ test('a well-matched candidate is shortlisted at 65 or more, with the score and 
   assert.equal(ev.metadata.verdict, 'shortlist');
   const h = (await raw(`select note from application_stage_history where application_id = $1 and to_stage = 'shortlisted'`, [id])).rows[0];
   assert.match(h.note, /AI screening \d+% .*threshold 65/);
+  /* "Pushed to ATS": remembered, with how and with what score */
+  const pushed = (await raw(`select ats_pushed_at, ats_pushed_via, ats_pushed_score from applications where id = $1`, [id])).rows[0];
+  assert.ok(pushed.ats_pushed_at);
+  assert.equal(pushed.ats_pushed_via, 'auto_screening');
+  assert.ok(Number(pushed.ats_pushed_score) >= 65);
+  const shown = (await c.get('/api/bootstrap')).body.data.applications.find((a) => a.id === id);
+  assert.equal(shown.atsPushedVia, 'auto_screening', 'the screen is told');
   assert.equal((await raw(`select count(*)::int n from notifications where recipient_id = $1 and type = 'APPLICATION_STATUS'`, [c.id])).rows[0].n, 0, 'the candidate is not messaged by the screening');
 });
 
@@ -105,6 +112,7 @@ test('already at Applied above 65: screened once more - moved, and never picked 
   const first = await screening.screenPending({ limit: 50 });
   assert.ok(first.screened >= 1, JSON.stringify(first));
   assert.equal(await stage(id), 'shortlisted', 'the new rule reaches an application that was already there');
+  assert.equal((await raw(`select ats_pushed_via from applications where id = $1`, [id])).rows[0].ats_pushed_via, 'auto_screening', 'the catch-up is a push too');
   const evs = await events(id);
   assert.equal(Number(evs[evs.length - 1].metadata.threshold), 65);
   const n = evs.length;
@@ -121,6 +129,7 @@ test('a requirement that names no skills is left for a recruiter - and is not re
   const id = await oldApplication(c, 'j_au_noskills', 90);
   await screening.screenPending({ limit: 50 });
   assert.equal(await stage(id), 'applied', 'no skills were compared, so nothing moves it by itself');
+  assert.equal((await raw(`select ats_pushed_at from applications where id = $1`, [id])).rows[0].ats_pushed_at, null, 'not pushed: no badge');
   const n = (await events(id)).length;
   assert.equal(Number((await events(id)).pop().metadata.threshold), 65);
   await screening.screenPending({ limit: 50 });
@@ -138,6 +147,34 @@ test('further along is never touched; below the threshold stays put', async () =
   assert.equal(await stage(far), 'interview_scheduled');
   assert.equal(await stage(low), 'applied');
   assert.equal((await events(low)).length, 1, 'a score below the threshold is not re-screened');
+});
+
+test('what is already on file is read back from the stage history; the first push stands', async () => {
+  const fs = await import('node:fs');
+  const sql = fs.readFileSync(new URL('../../supabase/migrations/0145_ats_pushed.sql', import.meta.url), 'utf8');
+  const backfill = sql.slice(sql.indexOf('/* what is already on file'));
+  const c = await candidate();
+  const mk = async (note, ago) => {
+    const id = `app_au_bf_${++seq}`;
+    const cc = await candidate();
+    await raw(`insert into applications (id, job_id, candidate_id, recruiter_id, stage, source) values ($1, 'j_au', $2, 'r_au', 'applied', 'portal')`, [id, cc.id]);
+    await raw(`update applications set stage = 'shortlisted' where id = $1`, [id]);
+    await raw(`update application_stage_history set note = $2, created_at = now() - $3::interval where application_id = $1 and to_stage = 'shortlisted'`, [id, note, ago]);
+    return id;
+  };
+  const scr = await mk('AI screening 67% (threshold 65) - recommend shortlist: matches Sourcing', '3 days');
+  const aiv = await mk('AI interview 72% - at or above the 65% pass mark: moved to Shortlisted (ATS)', '2 days');
+  const btn = await mk('Sent to ATS from Applications', '1 day');
+  const hand = await mk('moved by the recruiter', '1 day');
+  await raw(backfill);
+  const row = async (id) => (await raw(`select ats_pushed_via v, ats_pushed_score s, ats_pushed_at at from applications where id = $1`, [id])).rows[0];
+  assert.deepEqual([(await row(scr)).v, Number((await row(scr)).s)], ['auto_screening', 67]);
+  assert.deepEqual([(await row(aiv)).v, Number((await row(aiv)).s)], ['auto_ai_interview', 72]);
+  assert.equal((await row(btn)).v, 'send_to_ats');
+  assert.equal((await row(hand)).v, null, 'a hand-made move is not a push');
+  const first = (await row(scr)).at;
+  await raw(backfill);
+  assert.equal(new Date((await row(scr)).at).getTime(), new Date(first).getTime(), 'run again: nothing is rewritten');
 });
 
 test('shutdown', async () => {

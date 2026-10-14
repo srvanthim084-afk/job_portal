@@ -5513,7 +5513,7 @@ function pageRecruiterDash(section, params){
     <div class="panel-body pad0"><div class="tbl-wrap tl-apps-wrap"><table class="data">
       <thead><tr><th>Candidate<span class="th-sub">Location · Experience · Ref ID</span></th><th>Applied for<span class="th-sub">Job · Client</span></th>${typeof window.tlAppSortHead==='function'?tlAppSortHead():'<th>Applied on<span class="th-sub">Date · Source</span></th>'}<th>AI Match<span class="th-sub">Match · Interview score</span></th><th>Stage</th><th>Actions</th></tr></thead>
       <tbody>${(typeof window.tlAppSortRows==='function'?tlAppSortRows(apps):typeof window.sortAppsNewestFirst==='function'?sortAppsNewestFirst(apps):apps).map(a=>{ const c=DATA.candidateById(a.candidateId), j=DATA.jobById(a.jobId);
-        return `<tr data-app-id="${esc(a.id)}"><td class="clickable" onclick="navigate('/recruiter/candidate-profile?id=${c.id}')">${personCell(c)}</td><td>${esc(j.title)}${(typeof window.tlCoTag==='function')?tlCoTag(j):''}</td><td style="font-size:12px;white-space:nowrap">${typeof window.appliedOnHtml==='function'?appliedOnHtml(a,c):esc(a.appliedAt||'—')}</td><td><span class="score ${scoreClass(a.matchScore)}">${a.matchScore}%</span>${typeof window.tlInterviewTag==='function'?tlInterviewTag(a,typeof c!=='undefined'?c:null):''}</td><td>${stageBadge(a.stage)}</td>
+        return `<tr data-app-id="${esc(a.id)}"><td class="clickable" onclick="navigate('/recruiter/candidate-profile?id=${c.id}')">${personCell(c)}</td><td>${esc(j.title)}${(typeof window.tlCoTag==='function')?tlCoTag(j):''}</td><td style="font-size:12px;white-space:nowrap">${typeof window.appliedOnHtml==='function'?appliedOnHtml(a,c):esc(a.appliedAt||'—')}</td><td><span class="score ${scoreClass(a.matchScore)}">${a.matchScore}%</span>${typeof window.tlInterviewTag==='function'?tlInterviewTag(a,typeof c!=='undefined'?c:null):''}</td><td>${stageBadge(a.stage)}${typeof window.tlAtsPushBadge==='function'?tlAtsPushBadge(a):''}</td>
         <td class="row-actions">${(typeof window.tlNeedsScreening==='function'?tlNeedsScreening(a):(a.stage==='applied'||a.stage==='ai_screening')) ? `<button class="btn btn-ai btn-sm" onclick="runAIScreeningForApp('${a.id}')">Run AI Screening</button>` : (typeof window.tlScreenedTag==='function'?tlScreenedTag(a):'')}${(()=>{
             /* THE HANDOVER. A recruiter at Recruiter Review is not
                "advancing" anything - they are giving the file to the BDE,
@@ -5634,7 +5634,7 @@ function pageRecruiterDash(section, params){
       <div class="panel"><div class="panel-head"><h2>Applications at ${esc(co.name)}</h2></div><div class="panel-body pad0"><div class="tbl-wrap"><table class="data">
         <thead><tr><th>Applied for</th><th>AI Match</th><th>Stage</th><th>Applied</th><th>Action</th></tr></thead>
         <tbody>${candApps.length ? candApps.map(a=>{ const j=DATA.jobById(a.jobId);
-          return `<tr><td>${esc(j.title)}</td><td><span class="score ${scoreClass(a.matchScore)}">${a.matchScore}%</span>${typeof window.tlInterviewTag==='function'?tlInterviewTag(a,typeof c!=='undefined'?c:null):''}</td><td>${stageBadge(a.stage)}</td><td style="font-size:12px;color:var(--text-soft);white-space:nowrap">${typeof window.appliedOnHtml==='function'?appliedOnHtml(a,c):esc(a.appliedAt)}</td>
+          return `<tr><td>${esc(j.title)}</td><td><span class="score ${scoreClass(a.matchScore)}">${a.matchScore}%</span>${typeof window.tlInterviewTag==='function'?tlInterviewTag(a,typeof c!=='undefined'?c:null):''}</td><td>${stageBadge(a.stage)}${typeof window.tlAtsPushBadge==='function'?tlAtsPushBadge(a):''}</td><td style="font-size:12px;color:var(--text-soft);white-space:nowrap">${typeof window.appliedOnHtml==='function'?appliedOnHtml(a,c):esc(a.appliedAt)}</td>
           <td class="row-actions">${(typeof window.tlNeedsScreening==='function'?tlNeedsScreening(a):(a.stage==='applied'||a.stage==='ai_screening')) ? `<button class="btn btn-ai btn-sm" onclick="runAIScreeningForApp('${a.id}')">Run AI Screening</button>` : (typeof window.tlScreenedTag==='function'?tlScreenedTag(a):'')+`${(()=>{ const h=(typeof handoverLabel==='function')?handoverLabel(a.stage):null; const out=[];
               if(h) out.push(`<button class="btn btn-primary btn-sm" onclick="moveApplicationStage('${a.id}','${h.to}')">${esc(h.text)}</button>`);
               if(a.stage==='client_interview'){
@@ -6191,7 +6191,7 @@ function pageAdminDash(section){
     <div class="panel"><div class="panel-head"><h2>All applications platform-wide</h2></div><div class="panel-body pad0"><div class="tbl-wrap"><table class="data">
       <thead><tr><th>Candidate</th><th>Role</th><th>Company</th><th>AI Match</th><th>Stage</th></tr></thead>
       <tbody>${allApps.map(a=>{ const c=DATA.candidateById(a.candidateId), j=DATA.jobById(a.jobId);
-        return `<tr><td>${personCell(c)}</td><td>${esc(j.title)}</td><td>${esc(DATA.companyById(j.companyId).name)}</td><td><span class="score ${scoreClass(a.matchScore)}">${a.matchScore}%</span>${typeof window.tlInterviewTag==='function'?tlInterviewTag(a,typeof c!=='undefined'?c:null):''}</td><td>${stageBadge(a.stage)}</td></tr>`; }).join('')}
+        return `<tr><td>${personCell(c)}</td><td>${esc(j.title)}</td><td>${esc(DATA.companyById(j.companyId).name)}</td><td><span class="score ${scoreClass(a.matchScore)}">${a.matchScore}%</span>${typeof window.tlInterviewTag==='function'?tlInterviewTag(a,typeof c!=='undefined'?c:null):''}</td><td>${stageBadge(a.stage)}${typeof window.tlAtsPushBadge==='function'?tlAtsPushBadge(a):''}</td></tr>`; }).join('')}
       </tbody></table></div></div></div>`;
   }
 
@@ -11034,7 +11034,7 @@ mark.fcr-hl{background:#fff3a3;color:inherit;border-radius:3px;padding:0 1px}
           const idx=stageIds.indexOf(a.stage);
           const nxt=idx>=0&&idx<stageIds.length-2?stageIds[idx+1]:null; /* stop before selected/rejected pair */
           return `<div class="fcr-modal-row" style="align-items:flex-start;gap:12px">
-            <div style="min-width:0;flex:1"><b>${esc(c.name)}</b> <span style="color:var(--text-soft);font-size:12px">· ${esc(c.email||'no email')} · ${esc(c.phone||'no phone')}</span>
+            <div style="min-width:0;flex:1"><b>${esc(c.name)}</b>${typeof window.tlAtsPushBadge==='function'?' '+tlAtsPushBadge(a):''} <span style="color:var(--text-soft);font-size:12px">· ${esc(c.email||'no email')} · ${esc(c.phone||'no phone')}</span>
               <div class="mj-sub">Applied: ${typeof window.appliedOnLabel==='function'?esc(appliedOnLabel(a,c)):esc(a.appliedOn||a.appliedAt||'—')} · ${c.resumeFile?'📄 '+esc(c.resumeFile):'No resume'} · ${stageBadge(a.stage)}</div>
               <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:7px">
                 <button class="btn btn-ghost btn-sm" onclick="fcrCloseModal();navigate('/recruiter/candidate-profile?id=${c.id}')">Profile</button>
@@ -30568,6 +30568,8 @@ table.data td .tl-af b{white-space:normal}
 <script src="teamlink-availability.js"></script>
 <!-- Talent Pool: "Send to ATS" - candidates into a job's pipeline at Shortlisted. -->
 <script src="teamlink-send-to-ats.js"></script>
+<!-- "Pushed to ATS": the badge on an application the rules (or Send to ATS) moved into the ATS. -->
+<script src="teamlink-ats-pushed.js"></script>
 <!-- Candidate Home: Action Required from server data, directly under Search Jobs. -->
 <script src="teamlink-action-required.js"></script>
 <!-- Preferred language (English / Telugu / Hindi): profile card and registration (0102). -->
