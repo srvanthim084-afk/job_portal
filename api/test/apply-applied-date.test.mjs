@@ -103,6 +103,10 @@ test('boot', async () => {
   });
   raw = (sql, params) => dbh.db.query(sql, params);
   await raw(`insert into companies (id, name) values ('co_ad', 'Acme Clinics')`);
+  /* these tests are about the Applied date, not screening: pin the auto-shortlist threshold at 80 (it was
+     the default until 0144 made it 65), so a well-matched test applicant stays at "Applied" as the
+     assertions below expect */
+  await raw(`update app_settings set value = jsonb_set(value, '{autoShortlistThreshold}', '80'::jsonb) where key = 'ai'`);
 
   const { createApp } = await import('../src/app.js');
   const app = createApp({ serveStatic: WEB, logger: { error() {}, log() {} } });

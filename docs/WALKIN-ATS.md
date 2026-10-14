@@ -27,11 +27,24 @@ no second ATS, no walk-in database and no new navigation item.
 * **Candidate → My Applications** (existing screen, minimal change): a walk-in application's rail
   reads *Registered → Attended → Under review → Selected* with neutral banners for *Not selected*
   and *Missed*; while the drive is upcoming it shows the Application ID, date, time, venue,
-  address, contact, documents, map link and a **QR code of the Application ID**. The QR code is
+  address, contact, documents, map link and a **QR code**. The QR code is
   drawn by `qrcode-generator@1.4.4` loaded lazily from `cdn.jsdelivr.net` (the one CDN the CSP
-  already allows); if it cannot load, only the ID text is shown. The same QR code is added under the
-  Application ID on W1's walk-in success screen (`#tlafRef`, by an observer - W1's file is untouched);
-  `TLWalkinAts.qrDataUrl(ref)` is exposed for any other screen.
+  already allows); if it cannot load, only the ID text is shown.
+  * **What scanning it gives.** The code holds the walk-in's *details and location* as plain
+    text, which any phone camera or scanner app shows: job, date and time, venue, address, the contact
+    (name, designation, phone), what to bring, the Google Maps link, and last the **Application ID**.
+    The text is built in one place, `TLWalkinAts.qrText({ title, when, venue, address, contact,
+    designation, phone, docs, map, ref })`, only from what is known, and capped (~560 characters; the
+    recruiter's instructions are never in it) so the code stays easy to scan. Text, not a link, so it
+    works whether or not the phone can reach the portal.
+  * **Where it is shown.** Under the Application ID on the walk-in *Application Submitted
+    Successfully* screen (and on "You have already applied"), drawn at 260 px by W1
+    (`teamlink-walkin-jobs.js`, `passQrHtml` / `paintPassQr`); and on My Applications (210 px). The
+    success screen shows this one code only - the venue's Maps-only code stays on the job page.
+  * **At the venue.** The recruiter's check-in box (`POST /api/jobs/:id/check-in/quick`) accepts the
+    whole scanned text and finds the `TL-APP-…` ID inside it; typing or pasting just the ID works as
+    before. Text without an Application ID matches nobody.
+  `TLWalkinAts.qrDataUrl(text)` is exposed for any other screen.
 
 ## 23.21 Deliverables
 
