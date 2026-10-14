@@ -8971,9 +8971,9 @@ mark.fcr-hl{background:#fff3a3;color:inherit;border-radius:3px;padding:0 1px}
         r.errors.push('Status must be Active or Inactive, not "'+r.status+'"');
 
       var gd=String(r.gender||'').trim().toLowerCase();
-      if(!gd) r.errors.push('Gender is missing (Female or Male)');
-      else if(gd!=='female' && gd!=='male')
-        r.errors.push('Gender must be Female or Male, not "'+r.gender+'"');
+      if(!gd) r.errors.push('Gender is missing (All, Female, Male or Other)');
+      else if(['all','female','male','other'].indexOf(gd)<0)
+        r.errors.push('Gender must be All, Female, Male or Other, not "'+r.gender+'"');
 
       var ac=String(r.accommodation||'').trim().toLowerCase();
       if(!ac) r.errors.push('Accommodation is missing (Yes or No)');
@@ -9294,7 +9294,7 @@ mark.fcr-hl{background:#fff3a3;color:inherit;border-radius:3px;padding:0 1px}
           responsibilities: r.jd ? r.jd.responsibilities : undefined,
           requirements: r.jd ? r.jd.qualifications : undefined,
           status: String(r.status).trim().toLowerCase()==='inactive' ? 'closed' : 'open',
-          gender: String(r.gender).trim().toLowerCase()==='male' ? 'Male' : 'Female',
+          gender: ({ all:'All', female:'Female', male:'Male', other:'Other' })[String(r.gender).trim().toLowerCase()] || 'Female',
           accommodation: String(r.accommodation).trim().toLowerCase()==='yes',
           extra: { postingKind:'bulkHiring', openings:Number(r.openings)||1,
                    requiredQualification:r.qualification }
@@ -9430,7 +9430,7 @@ mark.fcr-hl{background:#fff3a3;color:inherit;border-radius:3px;padding:0 1px}
       + '<option value="closed">Inactive - hidden</option></select></div>'
       + '<div class="fcr-jd-row"><label>Gender<span class="req">*</span></label>'
       + '<select id="twGender"><option value="">Select...</option>'
-      + '<option value="Female">Female</option><option value="Male">Male</option></select></div>'
+      + '<option value="All">All</option><option value="Female">Female</option><option value="Male">Male</option><option value="Other">Other</option></select></div>'
       + '<div class="fcr-jd-row"><label>Accommodation<span class="req">*</span></label>'
       + '<select id="twAccom"><option value="no">No</option>'
       + '<option value="yes">Yes</option></select></div>'
@@ -9662,7 +9662,7 @@ mark.fcr-hl{background:#fff3a3;color:inherit;border-radius:3px;padding:0 1px}
       + '<option value="closed">Inactive - hidden</option></select></div>'
       + '<div class="fcr-jd-row"><label>Gender<span class="req">*</span></label>'
       + '<select id="tiGender"><option value="">Select...</option>'
-      + '<option value="Female">Female</option><option value="Male">Male</option></select></div>'
+      + '<option value="All">All</option><option value="Female">Female</option><option value="Male">Male</option><option value="Other">Other</option></select></div>'
       + '<div class="fcr-jd-row"><label>Accommodation<span class="req">*</span></label>'
       + '<select id="tiAccom"><option value="no">No</option>'
       + '<option value="yes">Yes</option></select></div>'
@@ -14200,7 +14200,7 @@ a.rec-nav-link{text-decoration:none}
       <div class="cap-jm">📍 ${esc(j.location||'—')} · ${esc(j.exp||'—')}</div>
       <div class="cap-jm">💰 ${esc(j.pay||'Not disclosed')}</div>
       ${(j.gender||j.accommodation)?`<div style="margin-top:6px;display:flex;gap:5px;flex-wrap:wrap">
-        ${j.gender?`<span class="cap-tag">${esc(j.gender)}</span>`:''}
+        ${j.gender?`<span class="cap-tag">${esc(j.gender==='All' ? 'All genders' : j.gender)}</span>`:''}
         ${j.accommodation?'<span class="cap-tag">🏠 Accommodation</span>':''}</div>`:''}
       <div class="cap-jm">🧑‍💼 ${Number(j.applicants)||0} applicant${(Number(j.applicants)||0)===1?'':'s'} so far</div>
       <button class="cap-apply ${applied?'done':''}" ${applied?'disabled':''} onclick="${applied?'':`capApply('${j.id}')`}">${applied?'✓ Applied':'Apply'}</button>
