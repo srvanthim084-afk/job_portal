@@ -582,10 +582,13 @@ export default function walkinAtsRoutes() {
   }));
 
   r.post('/jobs/:id/check-in/quick', requireAuth(), requireRole(...STAFF), wrap(async (req, res) => {
-    const b = parse(checkInSchema.extend({ code: z.string().trim().min(3).max(80) }), req.body);
+    /* up to a page of text: the candidate's QR code carries the walk-in's details and ends with the
+       Application ID, so a scan arrives as that whole text, not just the ID */
+    const b = parse(checkInSchema.extend({ code: z.string().trim().min(3).max(2000) }), req.body);
     const app = await withUser(req.session, async (c) => {
       const job = await myJob(c, req.params.id);
-      const code = b.code.replace(/^.*[?&#]app(?:lication)?=/i, '').trim();
+      const inText = /\bTL-APP-\d{4}-\d{3,}\b/i.exec(b.code);
+      const code = inText ? inText[0] : b.code.replace(/^.*[?&#]app(?:lication)?=/i, '').trim().slice(0, 80);
       const found = (await c.query(
         `select a.id from applications a where a.job_id = $1 and (a.id = $2 or upper(a.reference) = upper($2))`,
         [job.id, code])).rows[0];

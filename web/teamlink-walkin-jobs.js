@@ -177,6 +177,34 @@
       }, function () { el.innerHTML = '<span>QR code unavailable - use View on Map</span>'; });
     });
   }
+  /* THE CANDIDATE'S WALK-IN CODE. Under the Application ID on "Application Submitted Successfully" (and on
+     "you have already applied"): ONE code that, scanned with a phone, shows the walk-in's details and its
+     location - job, date and time, venue, address, who to ask for, what to bring, the Google Maps link -
+     and the Application ID the recruiter's check-in reads at the venue. The text is built in one place
+     (TLWalkinAts.qrText); nothing is typed here. */
+  function passFields(job, ref) {
+    var w = wk(job);
+    var when = [dateLabel(w.date), timeRange(w.from, w.to)].filter(Boolean).join(', ');
+    return { title: job.title, when: when, venue: w.venue, address: w.address, contact: w.contact, designation: w.designation,
+      phone: w.phone, docs: w.docs, map: safeUrl(w.map), ref: ref || '' };
+  }
+  function passQrHtml(job) {
+    return '<div class="tlwk-pass" data-tlwk-pass="1"><div class="tlwk-pass-qr" aria-live="polite"></div>'
+      + '<p><b>Scan this code with your phone</b> for the walk-in details and the location. '
+      + 'Show it at the venue for a quick check-in.</p></div>';
+  }
+  function paintPassQr(job, ref) {
+    var host = document.querySelector('[data-tlwk-pass]:not([data-done]) .tlwk-pass-qr');
+    if (!host) return;
+    host.parentNode.setAttribute('data-done', '1');
+    var ats = window.TLWalkinAts;
+    if (!ats || typeof ats.qrText !== 'function' || typeof ats.qrDataUrl !== 'function') { host.parentNode.remove(); return; }
+    var text = ats.qrText(passFields(job, ref));
+    ats.qrDataUrl(text).then(function (url) {
+      host.innerHTML = '<img alt="QR code: the walk-in details, the location and your Application ID" src="' + url + '" data-qr-text="' + h(text) + '">';
+    }, function () { host.innerHTML = '<span class="tlwk-qrnote">The QR code could not be drawn - your Application ID above is enough at the venue.</span>'; });
+  }
+
   function mapQrHtml(job) {
     var m = String(wk(job).map || '').trim();
     if (!m) return '<div class="tlwk-qrnote">No Google Maps link was given for this venue.</div>';
@@ -230,6 +258,9 @@
       '.tlwk-qr{display:flex;align-items:center;gap:10px;margin-top:10px;font-size:12px;color:#42505f}',
       '.tlwk-qr img{width:112px;height:112px;border:1px solid #bfe3ee;border-radius:8px;background:#fff;padding:4px}',
       '.tlwk-qrnote{margin-top:8px;font-size:12px;color:#7a8798}',
+      '.tlwk-pass{margin:12px auto 4px;text-align:center}',
+      '.tlwk-pass-qr img{width:260px;max-width:100%;height:auto;aspect-ratio:1;image-rendering:pixelated;background:#fff;padding:6px;border:1px solid var(--line,#dde3ec);border-radius:10px}',
+      '.tlwk-pass p{margin:8px auto 0;max-width:300px;font-size:12.5px;line-height:1.45;color:#42505f}',
       '.tlaf-facts{text-align:left;margin:12px auto 4px;max-width:440px;border:1px solid #e6ebf2;border-radius:10px;padding:8px 12px}',
       '.tlaf-facts div{display:flex;justify-content:space-between;gap:12px;padding:4px 0;font-size:13px;border-bottom:1px dashed #eef1f5}',
       '.tlaf-facts div:last-child{border-bottom:0}',
@@ -1005,8 +1036,9 @@
       + '<h3>Application Submitted Successfully!</h3>'
       + '<p>Your application has been submitted successfully! Your application ID is <b>' + h(ref) + '</b>. You can track your application status from your candidate dashboard.</p>'
       + '<p style="margin-top:12px">Application ID:</p><div class="ref" id="tlafRef">' + h(ref) + '</div>'
+      + (walkin ? passQrHtml(job) : '')
       + savedFacts(job, app)
-      + (walkin ? walkinBlockHtml(job, { title: 'Walk-in Interview Details', only: ['Date', 'Time', 'Venue', 'Address', 'Documents to carry', 'Contact', 'Instructions'], calendar: calendarButtons(job, ref) }) : '')
+      + (walkin ? walkinBlockHtml(job, { title: 'Walk-in Interview Details', only: ['Date', 'Time', 'Venue', 'Address', 'Documents to carry', 'Contact', 'Instructions'], calendar: calendarButtons(job, ref), qr: false }) : '')
       + '<p style="font-size:12px;margin-top:10px">Keep this Application ID for any question about this application - it is also under My Applications.</p>'
       + '</div></div>'
       + '<div class="fcr-jd-actions" style="justify-content:center;flex-wrap:wrap">'
@@ -1017,6 +1049,7 @@
       + (opts.undo ? '<button type="button" class="btn btn-ghost" id="tlafUndo">Undo</button>' : '')
       + '<button type="button" class="btn btn-ghost" data-tlaf-close>Close</button></div>');
     paintMapQrs();
+    if (walkin) paintPassQr(job, ref);
     /* One-click: Undo stays for its few seconds, as it did on the old confirmation toast */
     if (opts.undo) {
       var u = document.getElementById('tlafUndo');
@@ -1033,11 +1066,13 @@
       + '<h3>You have already applied for this position.</h3>'
       + '<p>' + h(job.title) + '</p>'
       + (ref ? '<p style="margin-top:12px">Application ID:</p><div class="ref">' + h(ref) + '</div>' : '')
-      + (walkin ? walkinBlockHtml(job, { title: 'Your walk-in interview', calendar: walkinClosed(job) ? '' : calendarButtons(job, ref) }) : '')
+      + (walkin && ref && !walkinClosed(job) ? passQrHtml(job) : '')
+      + (walkin ? walkinBlockHtml(job, { title: 'Your walk-in interview', calendar: walkinClosed(job) ? '' : calendarButtons(job, ref), qr: false }) : '')
       + '</div></div>'
       + '<div class="fcr-jd-actions" style="justify-content:center;flex-wrap:wrap">'
       + '<button type="button" class="btn btn-primary" onclick="fcrCloseModal();navigate(\'/candidate/applications\')">Go to My Applications</button>'
       + '<button type="button" class="btn btn-ghost" data-tlaf-close>Close</button></div>');
+    if (walkin && ref && !walkinClosed(job)) paintPassQr(job, ref);
   }
 
   /* The wrappers. Installed at window load, after the screening questions,

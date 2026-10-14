@@ -172,8 +172,11 @@
             + (w.contactPerson || w.contactNumber ? '<div>☎ ' + h([w.contactPerson + (w.contactDesignation ? ' (' + w.contactDesignation + ')' : ''), w.contactNumber].filter(Boolean).join(', ')) + '</div>' : '')
             + (w.documents && w.documents.length ? '<div>📄 Bring: ' + h(w.documents.join(', ')) + '</div>' : '')
             + (w.mapLink && /^https:\/\//.test(w.mapLink) ? '<div><a href="' + h(w.mapLink) + '" target="_blank" rel="noopener">View on Map</a></div>' : '')
-            + '<div class="tlwa-small">Show this Application ID (or the QR code) at the venue for a quick check-in.</div></div>'
-            + '<div class="tlwa-qr" data-tlwa-qr="' + h(info.reference) + '"></div></div>';
+            + '<div class="tlwa-small">Scan the code for the details and the location. Show it (or the Application ID) at the venue for a quick check-in.</div></div>'
+            + '<div class="tlwa-qr" data-tlwa-qr="' + h(qrText({
+              title: app.jobTitle || (info.walkin && info.walkin.title) || '', when: w.when, venue: w.venue, address: w.address,
+              contact: w.contactPerson, designation: w.contactDesignation, phone: w.contactNumber, docs: w.documents, map: w.mapLink,
+              ref: info.reference })) + '"></div></div>';
         }
       } else {
         loadCandidateStatus();
@@ -221,16 +224,53 @@
   /** A data: URL of a QR code that encodes `text`. Rejects when the library cannot load. */
   function qrDataUrl(text) {
     return loadQr().then(function (qrcode) {
-      var q = qrcode(0, 'M'); q.addData(String(text)); q.make();
-      return q.createDataURL(4, 2);
+      /* the text may carry a name or an address in any script: bytes as UTF-8, not Latin-1 */
+      if (qrcode.stringToBytesFuncs && qrcode.stringToBytesFuncs['UTF-8']) qrcode.stringToBytes = qrcode.stringToBytesFuncs['UTF-8'];
+      /* level L: the code holds a whole page of details, and fewer error-correction modules means bigger,
+         easier-to-scan squares at the same size on the screen */
+      var q = qrcode(0, 'L'); q.addData(String(text)); q.make();
+      return q.createDataURL(5, 4);
     });
+  }
+
+  /* WHAT SCANNING THE CANDIDATE'S CODE GIVES: the walk-in's details and its location, as plain text any
+     phone camera or scanner app shows - job, date, time, venue, address, who to ask for, what to bring and
+     the Google Maps link - ending with the Application ID, which is what the recruiter's check-in reads
+     (the quick check-in finds TL-APP-... inside the text). `f`: { title, when, venue, address, contact,
+     designation, phone, docs[], map, ref }. Only what is known is written; the length is kept in check so
+     the code stays easy to scan (instructions are never in it - they are on the page). */
+  function qrText(f) {
+    f = f || {};
+    var oneLine = function (s) { return String(s == null ? '' : s).replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim(); };
+    var contact = [oneLine(f.contact) + (f.designation ? ' (' + oneLine(f.designation) + ')' : ''), oneLine(f.phone)].filter(function (x) { return x && x !== ' '; }).join(', ');
+    var map = /^https:\/\/\S+$/i.test(String(f.map || '').trim()) ? String(f.map).trim() : '';
+    var docs = (f.docs || []).map(oneLine).filter(Boolean);
+    function build(withDocs, addrMax) {
+      var addr = oneLine(f.address);
+      if (addr.length > addrMax) addr = addr.slice(0, addrMax - 1).trim() + '…';
+      return [
+        'TeamLink Walk-in Interview',
+        oneLine(f.title),
+        f.when ? 'When: ' + oneLine(f.when) : '',
+        f.venue ? 'Venue: ' + oneLine(f.venue) : '',
+        addr ? 'Address: ' + addr : '',
+        contact ? 'Contact: ' + contact : '',
+        withDocs && docs.length ? 'Bring: ' + docs.join(', ') : '',
+        map ? 'Location: ' + map : '',
+        f.ref ? 'Application ID: ' + oneLine(f.ref) : '',
+      ].filter(Boolean).join('\n');
+    }
+    var out = build(true, 160);
+    if (out.length > 560) out = build(false, 160);
+    if (out.length > 560) out = build(false, 90);
+    return out;
   }
   function paintQr() {
     var els = document.querySelectorAll('[data-tlwa-qr]:not([data-done])');
     Array.prototype.forEach.call(els, function (el) {
       el.setAttribute('data-done', '1');
       qrDataUrl(el.getAttribute('data-tlwa-qr')).then(function (url) {
-        el.innerHTML = '<img alt="QR code of your Application ID" src="' + url + '">';
+        el.innerHTML = '<img alt="QR code: the walk-in details, the location and your Application ID" src="' + url + '">';
       }, function () { el.remove(); });
     });
   }
@@ -653,6 +693,7 @@
 
   var A = window.TLWalkinAts = {
     qrDataUrl: qrDataUrl,
+    qrText: qrText,
     tab: function (t) { S.tab = t; saveF(); if (t === 'history') S.hist = null; rerender(); },
     setF: function (k, v) { S.f[k] = v; S.f.page = 1; S.sel = {}; saveF(); load(); rerender(); },
     search: function () { var el = document.getElementById('tlwaQ'); S.f.q = el ? el.value.trim() : ''; S.f.page = 1; S.sel = {}; saveF(); load(); rerender(); },
@@ -915,24 +956,8 @@
     return out;
   };
 
-  /* The walk-in success screen (teamlink-walkin-jobs.js, W1) gets a QR code of
-     the Application ID under the ID, for a quick check-in at the venue. */
-  try {
-    new MutationObserver(function () {
-      var ref = document.getElementById('tlafRef');
-      var done = document.getElementById('tlafDone');
-      if (!ref || !done || ref.getAttribute('data-tlwa') || !/Walk-in Interview/.test(done.textContent)) return;
-      ref.setAttribute('data-tlwa', '1');
-      var code = ref.textContent.trim();
-      qrDataUrl(code).then(function (u) {
-        var d = document.createElement('div');
-        d.className = 'tlwa-qr';
-        d.style.cssText = 'margin:8px auto 0;text-align:center';
-        d.innerHTML = '<img alt="QR code of your Application ID" src="' + u + '"><div class="tlwa-small">Show this at the venue for a quick check-in.</div>';
-        ref.parentNode.insertBefore(d, ref.nextSibling);
-      }, function () { /* the ID text is enough */ });
-    }).observe(document.body, { childList: true, subtree: true });
-  } catch (e) { /* no observer, no QR */ }
+  /* The walk-in success screen draws its own code now (teamlink-walkin-jobs.js: it knows the whole job):
+     the walk-in's details, the location and the Application ID in one code, from qrText() above. */
 
   var css = document.createElement('style');
   css.textContent = [
@@ -954,7 +979,7 @@
     '.tlwa-cand{display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:12px;margin-top:8px;color:#42505f}',
     '.tlwa-cstatus{background:#e7f0ff;color:#1b4f9e;border-radius:10px;padding:2px 9px;font-weight:700;font-size:11px}',
     '.tlwa-cwalk{display:flex;gap:12px;align-items:flex-start;justify-content:space-between;margin-top:8px;background:#f7fafd;border-radius:8px;padding:9px 11px;font-size:12.5px;color:#26313f}',
-    '.tlwa-cwalk-body div{margin-top:2px}.tlwa-small{font-size:11px;color:#7b8794;margin-top:4px}.tlwa-qr img{width:96px;height:96px;image-rendering:pixelated}',
+    '.tlwa-cwalk-body div{margin-top:2px}.tlwa-small{font-size:11px;color:#7b8794;margin-top:4px}.tlwa-qr img{width:210px;height:210px;image-rendering:pixelated;background:#fff;border-radius:6px}.tlwa-cwalk{flex-wrap:wrap}.tlwa-qr{margin:0 auto}',
     '@media(max-width:600px){.tlwa-grid{grid-template-columns:1fr}.tlwa-cwalk{flex-direction:column}}',
   ].join('\n');
   document.head.appendChild(css);

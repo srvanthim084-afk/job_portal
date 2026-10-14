@@ -351,6 +351,18 @@ test('23.20 #10 / #11 check-in by name, mobile, Candidate ID, Application ID; tw
   assert.equal(q.body.result.stage, 'attended');
   const twice = await RA.post(`/api/jobs/${WALK}/check-in/quick`, { code: ref3, action: 'both' });
   assert.equal(twice.body.result.already, true);
+
+  // the candidate's QR code is the walk-in's details as text, ending with the Application ID:
+  // scanning the WHOLE text checks the candidate in; a text with no Application ID matches nobody
+  const scanned = ['TeamLink Walk-in Interview', 'Software Engineer Walk-in', 'When: Sat, 17 Oct 2026, 10:00 AM – 4:00 PM',
+    'Venue: TeamLink Office, 3rd floor', 'Address: Road No. 1, Banjara Hills, Hyderabad 500034', 'Contact: Ravi Kumar (HR Executive), 9876500011',
+    'Location: https://maps.google.com/?q=17.4126,78.4482', `Application ID: ${ref3}`].join('\n');
+  const qt = await RA.post(`/api/jobs/${WALK}/check-in/quick`, { code: scanned, action: 'both' });
+  assert.equal(qt.status, 200, JSON.stringify(qt.body));
+  assert.equal(qt.body.applicationId, aW3.id, 'the ID inside the text was found');
+  assert.equal(qt.body.result.already, true, 'that applicant was checked in just above - nothing changes');
+  const noId = await RA.post(`/api/jobs/${WALK}/check-in/quick`, { code: 'TeamLink Walk-in Interview\nVenue: TeamLink Office\nLocation: https://maps.google.com/?q=1,2', action: 'both' });
+  assert.equal(noId.status, 404, 'a text without an Application ID matches nobody');
   const row = (await raw(`select checked_in_at, checked_in_by, attended_at, attended_by from applications where id=$1`, [aW3.id])).rows[0];
   assert.ok(row.checked_in_at && row.checked_in_by === RA.userId && row.attended_at && row.attended_by === RA.userId);
 
