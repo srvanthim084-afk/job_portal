@@ -66,6 +66,25 @@ export function classify(message, rules = DEFAULT_RULES) {
     score += 3; reasons.push('has a labelled candidate block');
   }
 
+  /*
+   * TEAMLINK'S OWN "New application" ALERT, READ BACK FROM THE INBOX.
+   *
+   * When a candidate applies through the portal, TeamLink emails the recruiter: "New application:
+   * Pharmacology" - "Akanksha reddy. G applied for Pharmacology (Job ID j_...). Application ID
+   * TL-APP-2026-01026". If that recruiter's mailbox is the one email import reads, the portal reads its
+   * own alert, finds no candidate block, and parks it as "No candidate name could be read" - 113 of them
+   * in one week, each a person who had already applied and already has an Application ID. An email that
+   * carries an Application ID of ours is about an application we ALREADY HOLD, never a new one. Matched on
+   * the reference itself ("TL-APP-2026-01026"), which nothing outside this system writes.
+   */
+  if (/\btl-app-\d{4}-\d{3,}\b/.test(body) && (/^new application\b/.test(subject) || /\bapplication id\b/.test(body))) {
+    return {
+      isApplication: false,
+      confidence: 0,
+      why: "TeamLink's own new-application alert - the candidate already applied through the portal and has an Application ID",
+    };
+  }
+
   // Things that are definitely NOT applications, however they score.
   if (/\b(unsubscribe|newsletter|invoice|receipt|payment due|webinar|out of office)\b/.test(subject)) {
     return { isApplication: false, confidence: 0, why: 'looks like a bulk or administrative email' };
