@@ -79,7 +79,10 @@
 
     /* ---- lips against the voice (0148): while the candidate answers and a voice is heard, the mouth must
        move. Sound for lipStillMs with the mouth shape varying by less than lipMoveRange over lipWindowMs. ---- */
-    lipVoiceLevel:    function () { return n('lipVoiceLevel', 0.06); },
+    /* the page's own "is this a voice" line is 0.045 and a quiet laptop microphone often stays under it, so this is lower */
+    lipVoiceLevel:    function () { return n('lipVoiceLevel', 0.025); },
+    /* speech has gaps between words; a voice heard this recently still counts as "speaking" */
+    lipVoiceHoldMs:   function () { return n('lipVoiceHoldMs', 900); },
     lipStillMs:       function () { return n('lipStillMs', 5000); },
     lipMoveRange:     function () { return n('lipMoveRange', 0.06); },
     lipWindowMs:      function () { return n('lipWindowMs', 1500); },
@@ -105,7 +108,7 @@
       face: { available: null, why: '', detector: null, timer: null,
               sustainedMs: 0, samples: 0, lastAt: 0, seen: 0 },
       cam: { hiddenMs: 0 },
-      lip: { speakMs: 0, stillMs: 0, win: [], range: null, level: 0 },
+      lip: { speakMs: 0, stillMs: 0, win: [], range: null, level: 0, peak: 0, clock: 0, lastVoiceAt: -1e9 },
       voice: { baseline: [], baselineHz: 0, sustainedMs: 0, samples: 0,
                lastHz: 0, lastAt: 0 },
 
@@ -270,8 +273,12 @@
     var enough = S.lip.win.length >= 5 && (now - S.lip.win[0].t) >= T.lipWindowMs() * 0.8;
     S.lip.range = enough ? (hi - lo) : null;
 
-    S.lip.level = levelOf(A.analyser);
-    var speaking = !!A.listening && S.lip.level >= T.lipVoiceLevel();
+    /* the loudest the microphone was since the last look (sampled every 120 ms, not just at this instant), and a
+       short hold-over, so the gaps between words do not read as silence */
+    S.lip.level = Math.max(S.lip.peak, levelOf(A.analyser));
+    S.lip.peak = 0;
+    if (A.listening && S.lip.level >= T.lipVoiceLevel()) S.lip.lastVoiceAt = now;
+    var speaking = !!A.listening && (now - S.lip.lastVoiceAt) <= T.lipVoiceHoldMs();
     if (speaking) {
       S.lip.speakMs += dt;
       if (enough && (hi - lo) < T.lipMoveRange()) S.lip.stillMs += dt;
@@ -638,6 +645,8 @@
           if (A.phase !== 'interview' && A.phase !== 'briefing') return;
           var now = performance.now();
           var dt = now - last; last = now;
+          /* the loudest sound since the lip check last looked */
+          if (A.listening) { var lv = levelOf(A.analyser); if (lv > S.lip.peak) S.lip.peak = lv; }
           /* The interviewer's own voice, the gap after Submit and the tail of
              the candidate's last words are not "another voice". Judged only
              in a stretch the page itself says is quiet (or while the
