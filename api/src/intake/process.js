@@ -76,6 +76,35 @@ async function fieldsFromAttachedCv(message) {
 
 const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 
+/**
+ * The address a candidate WROTE FROM, for an application that carries no email of its own.
+ *
+ * A person who applies by emailing the recruiter (or replies to a job mail) has told us their address by
+ * sending it: the Reply-To if there is one, else the From. This is only used when nothing else supplied
+ * an email - the resume, the form and the board's own fields all win. It is never used when the sender
+ * is not the candidate: a job board's alert (Naukri, Shine), a no-reply/system sender, the mailbox's own
+ * address, or a recruiter/admin/client of this portal forwarding a CV.
+ *
+ * @returns {Promise<string>} a lower-case address, or '' when the sender is not the candidate
+ */
+export async function senderEmail(message, mailbox, source) {
+  if (source) return '';
+  const headers = String(message.raw || '').split(/\r?\n\r?\n/)[0].replace(/\r?\n[ \t]+/g, ' ');
+  const pick = (v) => {
+    const m = /<([^<>\s]+@[^<>\s]+)>/.exec(v || '') || /([^\s<>",;]+@[^\s<>",;]+)/.exec(v || '');
+    return m ? m[1].trim().toLowerCase() : '';
+  };
+  const reply = pick((/^reply-to:\s*(.+)$/im.exec(headers) || [])[1]);
+  const addr = reply || pick(message.from);
+  if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/.test(addr)) return '';
+  if (/(^|[._-])(no-?reply|do-?not-?reply|mailer-daemon|postmaster|bounce|notifications?|alerts?)([._+-]|@)/.test(addr)) return '';
+  if (/@([a-z0-9-]+\.)*(naukri|infoedge|resdex|shine|shinemail|monster|indeed|linkedin|foundit|apna)\./.test(addr)) return '';
+  if (addr === String(mailbox.address || '').toLowerCase()) return '';
+  const staff = await withUser(ENGINE, (cl) => cl.query(
+    `select 1 from users where lower(email) = $1 and role <> 'candidate' limit 1`, [addr])).catch(() => ({ rows: [] }));
+  return staff.rows.length ? '' : addr;
+}
+
 /** The identity the importer runs as: it must see every candidate. */
 const ENGINE = { userId: '', role: 'admin', profileId: null };
 
@@ -490,6 +519,11 @@ export async function processMessage(session, { mailbox, message, rowId, provide
    * ever going to be reached.
    */
   const warnings = [];
+  /* No email in the mail or the resume: the address it was sent from is the candidate's. */
+  if (!c.email) {
+    const from = await senderEmail(message, mailbox, source);
+    if (from) c.email = from;
+  }
   if (!c.email && !c.phone) {
     warnings.push('No email address or mobile number could be read from this email or the '
       + 'attached CV, so this candidate cannot be contacted automatically. Their resume is '
