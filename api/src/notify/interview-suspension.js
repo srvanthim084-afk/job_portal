@@ -37,11 +37,11 @@ const oneLine = (s) => String(s == null ? '' : s).replace(/[\r\n\t]+/g, ' ').tri
 
 async function load(interviewId) {
   return withUser(ENGINE, async (c) => (await c.query(
-    `select i.id, i.application_id, i.attempt_number, i.suspended_at, i.suspension_message, i.suspension_code,
+    `select i.id, i.candidate_id, i.application_id, i.attempt_number, i.suspended_at, i.suspension_message, i.suspension_code,
             i.retake_available_at, i.retake_blocked, i.retake_open_notified_at, i.status,
             c.name as candidate_name, c.email as candidate_email,
             j.id as job_id, j.title as job_title, j.recruiter_id as job_recruiter, co.name as company_name,
-            a.recruiter_id as app_recruiter, a.ai_interview_due_at
+            a.recruiter_id as app_recruiter, a.ai_interview_due_at, a.extra_interview_attempts
        from ai_interviews i
        join candidates c on c.id = i.candidate_id
        join jobs j on j.id = i.job_id
@@ -105,19 +105,34 @@ export function buildRetakeOpenEmail(row) {
   const name = oneLine(row.candidate_name) || 'there';
   const job = oneLine(row.job_title) || 'your application';
   const company = companyLabel(row.company_name);
-  const due = row.ai_interview_due_at ? formatWhen(row.ai_interview_due_at) : '';
+  /* the job's closing date, when it has one: the interview is open until then (0133); none = no deadline */
+  const closes = row.ai_interview_due_at ? formatWhen(row.ai_interview_due_at) : '';
+  const opened = row.retake_available_at ? formatWhen(row.retake_available_at) : '';
+  const suspendedOn = row.suspended_at ? formatWhen(row.suspended_at) : '';
+  const policy = retakePolicy();
+  /* the last attempt is said to be the last: the same count the start route uses (INTERVIEW_MAX_ATTEMPTS + any extra) */
+  const allowed = policy.maxAttempts + Number(row.extra_interview_attempts || 0);
+  const lastChance = Number(row.attempt_number || 1) + 1 >= allowed;
   const url = `${base()}/#/candidate/home`;
-  const subject = oneLine(`Your AI interview for ${job} is open again`);
+  const subject = oneLine(`Your AI interview for ${job} is open again - you can attend now`);
   const lines = [
-    `Your AI interview for ${job} at ${company} is open again. You can start your retake now from your TeamLink dashboard.`,
-    due ? `Please complete it by ${due}.` : '',
-    'Before you start: attend from a quiet place, use headphones, keep your camera on, and make sure only you are speaking. You will do the same camera and microphone check first, and the questions start again from Question 1.',
+    `Your AI interview for ${job} at ${company}${suspendedOn ? `, which was suspended on ${suspendedOn},` : ''} is open again. The wait is over and you can attend it now.`,
+    ['Interview details:',
+      `- Role: ${job}`,
+      opened ? `- Open from: ${opened}` : '',
+      closes
+        ? `- When: any time before ${closes} (the date this job closes). Once you start, you have ${policy.deadlineHours} hours to finish.`
+        : `- When: any time - this job has no closing date. Once you start, you have ${policy.deadlineHours} hours to finish.`,
+      '- How: sign in to TeamLink and open the interview from your dashboard. You will do the camera and microphone check first, and the questions start again from Question 1.',
+    ].filter(Boolean).join('\n'),
+    lastChance ? 'This is your last attempt. If it is suspended again, a recruiter will review it and contact you.' : '',
+    'Before you start: sit in a quiet place, use headphones, keep your camera on, and make sure only you are speaking. Each question has its own time limit.',
   ].filter(Boolean);
   return {
     subject,
     text: [`Hi ${name},`, '', ...lines.flatMap((l) => [l, '']), `Open TeamLink: ${url}`, '', 'Regards,', 'TeamLink Consultants'].join('\n'),
     html: emailLayout({
-      title: subject, preheader: 'Your retake is open.', greeting: `Hi ${name},`,
+      title: subject, preheader: `Your AI interview for ${job} is open - attend ${closes ? 'before ' + closes : 'any time'}.`, greeting: `Hi ${name},`,
       body: lines.join('\n\n'), cta: { label: 'Start my interview', url },
     }),
   };
@@ -171,6 +186,18 @@ export async function sendRetakeOpenEmail(interviewId) {
     if (!claimed) return { status: 'duplicate' };
     const row = await load(interviewId);
     if (!row) return { status: 'skipped' };
+    /* in the portal too (the bell): once, with the email - the claim above is the guard */
+    try {
+      const closes = row.ai_interview_due_at ? ` Attend any time before ${formatWhen(row.ai_interview_due_at)}.` : ' Attend any time - this job has no closing date.';
+      await withUser(ENGINE, (c) => c.query(
+        `select notify_create($1,$2,'candidate','AI_INTERVIEW_RETAKE_OPEN',$3,$4,$5,$6,$7,null,$8)`,
+        [`ntf_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`, row.candidate_id,
+         'Your AI interview is open again',
+         `Your AI interview for ${oneLine(row.job_title) || 'your application'} is open again - you can attend it now.${closes}`,
+         row.job_id, row.application_id, row.candidate_id, JSON.stringify({ aiInterviewId: row.id, attempt: row.attempt_number })]));
+    } catch (err) {
+      console.error('[interview] retake-open notification failed:', err && err.message);
+    }
     const r = await deliver(row, buildRetakeOpenEmail(row), 'retake_open');
     const ok = sentOk(r);
     await withUser(ENGINE, (c) => c.query(`select ai_interview_notice_done($1,'retake_open',$2)`, [interviewId, ok ? 'sent' : 'failed']));

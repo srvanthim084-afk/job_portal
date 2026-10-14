@@ -309,6 +309,75 @@ test('recruiter block beats the clock; unblock opens it, with the "open again" e
   assert.equal((await candB.post('/api/ai-interviews/session', { applicationId: appB })).status, 201);
 });
 
+test('after the wait: the candidate is mailed AND notified once - role, when it opened, and the timing', async () => {
+  for (const [jid, title, expires] of [['j_sx_dated', 'Dated Nurse Role', "now() + interval '9 days'"], ['j_sx_open', 'Open Ended Nurse Role', 'null']]) {
+    await raw(`insert into jobs (id, title, company_id, location, mode, exp_label, skills, status, recruiter_id, description, published_at, expires_at)
+               values ($1, $2, 'co_sx', 'Hyderabad', 'Onsite', '1-3 yrs', $3, 'open', 'r_sx1', 'Nursing.', now(), ${expires})`,
+      [jid, title, ['Nursing']]);
+  }
+  const pairs = [];
+  for (const [i, jid] of [[1, 'j_sx_dated'], [2, 'j_sx_open']]) {
+    const email = `retake.open.${i}@tl-sink.local`;
+    const c = await candidate(`Retake Open ${i}`, email, `94000010${i}0`);
+    const appId = (await c.post('/api/applications', { jobId: jid })).body.application.id;
+    const s = await c.post('/api/ai-interviews/session', { applicationId: appId });
+    assert.equal(s.status, 201, JSON.stringify(s.body));
+    /* two confirmed detections: the second suspends */
+    await c.post(`/api/ai-interviews/${s.body.interviewId}/integrity`, { type: 'additional_voice', confidence: 0.9, evidence: { questionSeq: 2, detector: 'browser' } });
+    const x = await c.post(`/api/ai-interviews/${s.body.interviewId}/integrity`, { type: 'additional_voice', confidence: 0.9, evidence: { questionSeq: 3, detector: 'browser' } });
+    assert.equal(x.body.action, 'suspend', JSON.stringify(x.body));
+    pairs.push({ c, email, appId, id: s.body.interviewId });
+  }
+  await tick(400);
+  /* 0143: a suspension makes up no deadline - the interview's date stays the JOB's date */
+  const dueOf = async (appId) => (await raw(`select ai_interview_due_at from applications where id = $1`, [appId])).rows[0].ai_interview_due_at;
+  const jobExp = (await raw(`select expires_at from jobs where id = 'j_sx_dated'`)).rows[0].expires_at;
+  assert.equal(new Date(await dueOf(pairs[0].appId)).getTime(), new Date(jobExp).getTime(), 'a dated job: the date of the job');
+  assert.equal(await dueOf(pairs[1].appId), null, 'a job with no date: no deadline');
+  /* the wait is 12 hours (720 minutes here): stored, and not over yet */
+  const r0 = (await raw(`select suspended_at, retake_available_at from ai_interviews where id = $1`, [pairs[0].id])).rows[0];
+  assert.equal(Math.round((new Date(r0.retake_available_at) - new Date(r0.suspended_at)) / 60000), 720);
+  const early = await notice.runInterviewNoticeSweep();
+  assert.equal(early.retakeOpened, 0, 'nothing is sent before the time');
+  assert.equal(sent.filter((m) => /open again/.test(m.subject) && /retake\.open\./.test(m.to)).length, 0);
+
+  /* the 12 hours pass */
+  for (const p of pairs) await raw(`update ai_interviews set suspended_at = now() - interval '12 hours 1 minute', retake_available_at = now() - interval '1 minute' where id = $1`, [p.id]);
+  const s1 = await notice.runInterviewNoticeSweep();
+  assert.equal(s1.retakeOpened, 2);
+  /* and the no-date job is still open days later: nothing closes it behind the candidate's back */
+  const third = pairs[1];
+  await raw(`update ai_interviews set suspended_at = now() - interval '5 days', retake_available_at = now() - interval '4 days 12 hours' where id = $1`, [third.id]);
+  assert.equal((await raw(`select open from ai_interview_window($1)`, [third.appId])).rows[0].open, true, 'still open 4 days after the retake opened');
+  assert.equal((await notice.runInterviewNoticeSweep()).retakeOpened, 0, 'once each');
+  const mail = (e) => sent.filter((m) => m.to === e && /open again/.test(m.subject));
+  for (const p of pairs) assert.equal(mail(p.email).length, 1, p.email);
+
+  const dated = mail(pairs[0].email)[0];
+  assert.match(dated.subject, /Dated Nurse Role is open again - you can attend now/);
+  assert.match(dated.text, /Role: Dated Nurse Role/);
+  assert.match(dated.text, /Open from: .*(am|pm) IST/i);
+  assert.match(dated.text, /any time before .* \(the date this job closes\)/);
+  assert.match(dated.text, /you have 48 hours to finish/);
+  assert.match(dated.text, /which was suspended on/);
+  assert.match(dated.text, /Question 1/);
+  const open = mail(pairs[1].email)[0];
+  assert.match(open.text, /Role: Open Ended Nurse Role/);
+  assert.match(open.text, /any time - this job has no closing date/);
+  for (const m of [dated, open]) assert.doesNotMatch(m.text + m.html, /reject|failed|disqualif/i);
+
+  /* the portal bell says it too, once, and the candidate can really start */
+  for (const p of pairs) {
+    const n = (await raw(`select title, message from notifications where recipient_id = $1 and type = 'AI_INTERVIEW_RETAKE_OPEN'`, [p.c.id])).rows;
+    assert.equal(n.length, 1);
+    assert.match(n[0].message, /open again - you can attend it now/);
+    const go = await p.c.post('/api/ai-interviews/session', { applicationId: p.appId });
+    assert.equal(go.status, 201, JSON.stringify(go.body));
+    assert.equal((await rows(p.appId)).map((r) => r.attempt_number).join(','), '1,2');
+  }
+  assert.match((await raw(`select message from notifications where recipient_id = $1 and type = 'AI_INTERVIEW_RETAKE_OPEN'`, [pairs[1].c.id])).rows[0].message, /no closing date/);
+});
+
 test('the ATS score is the latest COMPLETED attempt; a suspended attempt never counts', async () => {
   const all = await rows(appA);
   // attempt 3 completes with a score; attempts 1 and 2 stay suspended
