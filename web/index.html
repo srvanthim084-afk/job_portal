@@ -29354,6 +29354,8 @@ table.data td .tl-af b{white-space:normal}
     if(s.overallScore) p.push('overallScoreMin='+encodeURIComponent(s.overallScore));
     /* who was moved to the ATS: any push, the portal's own (overall score), or a recruiter's Send to ATS */
     if(s.ats) p.push('ats='+encodeURIComponent(s.ats));
+    /* the Source chips count under the filters above, so they agree with the count at the top */
+    p.push('withSourceCounts=1');
     if(s.addedFrom) p.push('addedFrom='+s.addedFrom, 'addedTo='+(s.addedTo||s.addedFrom));
     if(s.appliedFrom) p.push('appliedFrom='+s.appliedFrom, 'appliedTo='+(s.appliedTo||s.appliedFrom));
     if(s.contacted === 'never') p.push('neverContacted=true');
@@ -29376,7 +29378,6 @@ table.data td .tl-af b{white-space:normal}
      */
     /* The pool-wide counts behind the source chips. Asked for once; the
        loader returns immediately on every later call. */
-    if(typeof tpLoadSourceCounts === 'function') tpLoadSourceCounts();
 
     var mine = (tpReq += 1);
 
@@ -29385,6 +29386,10 @@ table.data td .tl-af b{white-space:normal}
       s.rows = r.candidates || [];
       s.total = Number(r.total || s.rows.length);
       s.apps = r.applications || [];
+      if(r.sourceCounts){
+        s.sourceCounts = {}; s.sourceTotal = 0;
+        r.sourceCounts.forEach(function(x){ s.sourceCounts[x.source] = x.n; s.sourceTotal += x.n; });
+      }
       s.loading = false;
       tpPaint();
       tpLoadCalls(s.rows.map(function(c){ return c.id; }));
@@ -29618,7 +29623,9 @@ table.data td .tl-af b{white-space:normal}
 
   window.tpSourceChips = function(){
     var s = st();
-    var counts = s.sourceCounts || {};
+    var counts = Object.assign({}, s.sourceCounts || {});
+    /* a source that is picked stays on the bar even when the other filters leave it nobody */
+    (s.sources||[]).forEach(function(x){ if(counts[x] === undefined) counts[x] = 0; });
     var names = Object.keys(counts);
     if(!names.length) return '';
     names.sort(function(a,b){ return (counts[b]||0) - (counts[a]||0) || a.localeCompare(b); });

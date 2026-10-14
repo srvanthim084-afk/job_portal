@@ -185,6 +185,23 @@ test('combined with the resume score, the source, a name search and the ATS filt
   assert.deepEqual(await nameSet('overallScoreMin=70&ats=auto'), [], 'a pushed candidate below the option is not shown');
 });
 
+test('the Source chips count under the other filters, so they agree with the total at the top', async () => {
+  const counts = (b) => Object.fromEntries(b.sourceCounts.map((x) => [x.source, x.n]));
+  const sum = (b) => b.sourceCounts.reduce((a, x) => a + x.n, 0);
+  /* no filter: every Scorer, by source (nobody here has a source set except the Naukri / Shine ones) */
+  const none = await get('limit=5&withSourceCounts=1');
+  assert.equal(sum(none), none.total);
+  /* Overall 65+: the chips add up to the total shown, and the ones that dropped out are not counted */
+  const o65 = await get('limit=5&overallScoreMin=65&withSourceCounts=1');
+  assert.equal(sum(o65), o65.total); assert.equal(o65.total, expectedFor('65').length);
+  assert.equal(counts(o65).Naukri, 5, 'S65, S69, S79, S89 and Scorer Two'); assert.equal(counts(o65).Shine, 4);
+  /* a source picked: the total narrows, the chips still show every source under the OTHER filters */
+  const picked = await get('limit=5&overallScoreMin=65&source=Shine&withSourceCounts=1');
+  assert.equal(picked.total, 4); assert.deepEqual(counts(picked), counts(o65));
+  /* without the flag nothing changes */
+  assert.equal((await get('limit=5&overallScoreMin=65')).sourceCounts, undefined);
+});
+
 test('a value that is not a number is ignored, like an empty one', async () => {
   const all = (await nameSet('')).length;
   assert.equal((await nameSet('overallScoreMin=banana')).length, all);

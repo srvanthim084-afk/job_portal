@@ -375,7 +375,9 @@ export default function candidateRoutes() {
          * null`, rather than a gap the filter cannot express.
          */
         const sources = list(q.source);
+        let sourceFrag = -1;          // where the source condition sits, so the source counts can leave it out
         if (sources.length) {
+          sourceFrag = where.length;
           const named = sources.filter((x) => x !== 'Unknown');
           const wantsUnknown = sources.length !== named.length;
           if (named.length && wantsUnknown) {
@@ -520,6 +522,18 @@ export default function candidateRoutes() {
 
         const total = await c.query(`select count(*)::int n from candidates ${clause}`, params);
 
+        /* withSourceCounts=1: how many candidates each source has UNDER THE OTHER FILTERS - so the chips beside
+           the list agree with the count at the top (the source condition itself is left out, or picking one
+           chip would zero the others). The condition stays in the SQL as (true or ...) so its parameter is used. */
+        let sourceCounts = null;
+        if (String(q.withSourceCounts || '') === '1') {
+          const w2 = where.map((f, i) => (i === sourceFrag ? `(true or ${f})` : f));
+          const clause2 = w2.length ? `where ${w2.join(' and ')}` : '';
+          const sc = await c.query(
+            `select coalesce(source, 'Unknown') as source, count(*)::int as n from candidates ${clause2} group by 1 order by 2 desc, 1`, params);
+          sourceCounts = sc.rows.map((x) => ({ source: x.source, n: x.n }));
+        }
+
         params.push(limit, offset);
         const rows = await c.query(
           `select *, app_candidate_editable(candidates.id) as _editable from candidates ${clause}
@@ -545,7 +559,7 @@ export default function candidateRoutes() {
           : { rows: [] };
         const overall = new Map(ov.rows.map((x) => [x.candidate_id, Number(x.s)]));
 
-        return { total: total.rows[0].n, rows: rows.rows, apps: apps.rows, overall };
+        return { total: total.rows[0].n, rows: rows.rows, apps: apps.rows, overall, sourceCounts };
       });
 
       /* Find Candidates is recruiter/admin/client only at the route
@@ -566,6 +580,7 @@ export default function candidateRoutes() {
       res.json({
         candidates: cands,
         applications: extra,
+        ...(out.sourceCounts ? { sourceCounts: out.sourceCounts } : {}),
         total: out.total,
         limit, offset,
         hasMore: offset + cands.length < out.total,
