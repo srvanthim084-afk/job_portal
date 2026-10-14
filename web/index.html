@@ -29591,6 +29591,17 @@ table.data td .tl-af b{white-space:normal}
   /* Counted by the DATABASE over the whole pool, not over the page that
      happens to be loaded - "3 from Job Board" must not quietly mean
      "3 on this screen". Fetched once and kept. */
+  /* A mail sync (Naukri / Shine import) adds candidates behind this page's back. The pool and its source
+     counts are fetched once per session, so without this the new people stay invisible - and the total
+     stays put - until the browser is reloaded. Called after every sync: the next visit reads again, and
+     a pool that is open right now reads again at once. */
+  window.tpInvalidate = function(){
+    var s = st();
+    s.loadedOnce = false;
+    s.sourceCountsLoaded = false;
+    if(document.getElementById('tpResults') || document.querySelector('.tp-bar')){ s.loadedOnce = true; s.offset = 0; tpLoad(); }
+  };
+
   window.tpLoadSourceCounts = function(){
     var s = st();
     if(s.sourceCountsLoaded) return;

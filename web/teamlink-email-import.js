@@ -202,6 +202,9 @@
           : ('Sync done: ' + r.emailsRead + ' read, ' + r.imported + ' imported, ' + r.duplicates + ' duplicates skipped, '
             + r.pendingReview + ' for review' + (r.failed ? ', ' + r.failed + ' failed' : '')
             + (r.alreadyRead ? ' (' + r.alreadyRead + ' already read before)' : '')), r.error ? '⚠️' : '✅');
+        /* the Talent Pool and its counts are read once per session: tell it new people have arrived */
+        if (typeof window.tpInvalidate === 'function') window.tpInvalidate();
+        if (window.TL && typeof TL.refresh === 'function') TL.refresh();
         load(true);
       }, function (e) { S.busy[id] = false; say(errMsg(e), '⚠️'); load(true); });
     } else if (act === 'disconnect') {

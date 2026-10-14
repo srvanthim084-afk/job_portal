@@ -5087,6 +5087,7 @@
         if (typeof window.toast === 'function' && r.imported) {
           window.toast(r.imported + ' application' + (r.imported === 1 ? '' : 's') + ' imported', '📥');
         }
+        if (typeof window.tpInvalidate === 'function') window.tpInvalidate();
         return refresh().then(function () { return TL.intake.refresh(); });
       })
       .catch(function (err) {
@@ -5102,6 +5103,7 @@
       .then(function (r) {
         intakeOut('<div class="req-note" style="background:var(--ok-100);color:var(--ok-600)">' +
           esc(r.reference ? 'Application ' + r.reference + ' created.' : (r.reason || 'Mapped.')) + '</div>');
+        if (typeof window.tpInvalidate === 'function') window.tpInvalidate();
         return refresh().then(function () { return TL.intake.refresh(); });
       })
       .catch(function (err) {
