@@ -34,7 +34,7 @@ import { providers } from '../notify/providers.js';
 import { buildEventMessages } from '../notify/templates.js';
 import { parseMessage, matchRequirement, DEFAULT_RULES } from './parse.js';
 import { matchCandidate } from '../ai/match.js';
-import { screenApplication } from '../ai/screening.js';
+import { screenNow } from '../ai/screening.js';
 import { mailboxProvider, mailboxReadiness, newMessageId,
          mailboxSecrets, credentialFingerprint, isAuthFailure } from './mailbox.js';
 import { looksLikeDigest, parseNaukriDigest } from './naukri.js';
@@ -855,7 +855,7 @@ export async function processMessage(session, { mailbox, message, rowId, provide
 
   /* ---- screen it, like any other application ----------------------- */
   try {
-    await screenApplication(applicationId, { actor: 'system' });
+    await screenNow(applicationId, candidateId);
   } catch (err) {
     console.error('[intake] screening failed:', err.message);
   }
@@ -1107,7 +1107,7 @@ async function importDigest(session, { mailbox, message, rowId, digest, finish, 
 
     // Screened like any other application, so the recruiter sees a score
     // rather than a row that says only where it came from.
-    try { await screenApplication(applicationId, { actor: 'system' }); }
+    try { await screenNow(applicationId, candidateId); }
     catch (err) { console.error('[intake] screening failed:', err.message); }
   }
 

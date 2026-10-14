@@ -62,7 +62,7 @@ const rows = async (appId) => (await raw(
 /** Make the retake time already past, as the clock would. */
 const openRetake = (id) => raw(`update ai_interviews set retake_available_at = now() - interval '1 minute' where id=$1`, [id]);
 const voice = (c, id, seq) => c.post(`/api/ai-interviews/${id}/integrity`, {
-  type: 'additional_voice', confidence: 0.9, evidence: { questionSeq: seq, detector: 'browser' } });
+  type: 'additional_person', confidence: 0.9, evidence: { questionSeq: seq, detector: 'browser' } });
 
 test('boot', async () => {
   dbh = await startTestDb(DB_PORT);
@@ -124,12 +124,12 @@ test('two confirmed detections suspend: reason, question, retake time, one sente
   assert.equal(w.body.mayContinue, true);
   const x = await voice(candA, first, 3);
   assert.equal(x.body.action, 'suspend', JSON.stringify(x.body));
-  assert.equal(x.body.message, 'Another voice was detected during your answer to Question 3.');
+  assert.equal(x.body.message, 'Another person was detected during your answer to Question 3.');
   assert.ok(x.body.retakeAvailableAt, 'a retake time is given');
 
   const r = (await rows(appA))[0];
   assert.equal(r.status, 'suspended');
-  assert.equal(r.suspension_code, 'additional_voice');
+  assert.equal(r.suspension_code, 'additional_person');
   assert.equal(r.suspension_message, x.body.message);
   assert.equal(r.suspension_question_no, 3);
   assert.equal(r.detection_count, 2);
@@ -149,7 +149,7 @@ test('the email: once, after the save, the same reason, escaped, no rejection wo
   assert.equal(mails.length, 1, 'exactly one suspension email');
   const m = mails[0];
   assert.match(m.subject, /^Your AI interview for HR Recruiter was suspended - you can attend again on .*(am|pm) IST$/i);
-  assert.match(m.text, /Reason: Another voice was detected during your answer to Question 3\./);
+  assert.match(m.text, /Reason: Another person was detected during your answer to Question 3\./);
   assert.match(m.text, /You can attend the interview again on .*(am|pm).* \(Asia\/Kolkata\), which is 12 hours after the suspension/i);
   assert.match(m.text, /Before you attend again:\n- Sit in a quiet place and use headphones\./);
   assert.match(m.text, /Each question has its own time limit/);
@@ -226,7 +226,7 @@ test('retake: refused early with the time, opens after the wait as a NEW attempt
   assert.equal(ok.body.questions[0].seq, 1, 'questions start again from Question 1');
   const all = await rows(appA);
   assert.deepEqual(all.map((r) => [r.attempt_number, r.status]), [[1, 'suspended'], [2, 'in_progress']]);
-  assert.equal(all[0].suspension_message, 'Another voice was detected during your answer to Question 3.', 'the first attempt is untouched');
+  assert.equal(all[0].suspension_message, 'Another person was detected during your answer to Question 3.', 'the first attempt is untouched');
   assert.equal(all[1].integrity_strikes, 0, 'the retake starts clean');
 });
 
@@ -323,8 +323,8 @@ test('after the wait: the candidate is mailed AND notified once - role, when it 
     const s = await c.post('/api/ai-interviews/session', { applicationId: appId });
     assert.equal(s.status, 201, JSON.stringify(s.body));
     /* two confirmed detections: the second suspends */
-    await c.post(`/api/ai-interviews/${s.body.interviewId}/integrity`, { type: 'additional_voice', confidence: 0.9, evidence: { questionSeq: 2, detector: 'browser' } });
-    const x = await c.post(`/api/ai-interviews/${s.body.interviewId}/integrity`, { type: 'additional_voice', confidence: 0.9, evidence: { questionSeq: 3, detector: 'browser' } });
+    await c.post(`/api/ai-interviews/${s.body.interviewId}/integrity`, { type: 'additional_person', confidence: 0.9, evidence: { questionSeq: 2, detector: 'browser' } });
+    const x = await c.post(`/api/ai-interviews/${s.body.interviewId}/integrity`, { type: 'additional_person', confidence: 0.9, evidence: { questionSeq: 3, detector: 'browser' } });
     assert.equal(x.body.action, 'suspend', JSON.stringify(x.body));
     pairs.push({ c, email, appId, id: s.body.interviewId });
   }

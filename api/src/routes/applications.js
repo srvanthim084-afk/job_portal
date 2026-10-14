@@ -22,7 +22,7 @@ import { sendApplyMessages } from '../notify/apply-messages.js';
 import { kickApplicationNotices } from '../notify/application-notices.js';
 import { holdSeconds, scheduleHold } from '../notify/apply-hold.js';
 import { matchCandidate } from '../ai/match.js';
-import { screenApplication } from '../ai/screening.js';
+import { screenApplication, screenNow } from '../ai/screening.js';
 import { applyScreeningAnswers, storeApplyScreening } from '../screening/apply.js';
 import { hiddenError } from '../scope.js';
 import { istDateTime, appliedRangeSql, sourceLabel } from '../applied-date.js';
@@ -296,7 +296,7 @@ export default function applicationRoutes() {
     // score.
     let screening = null;
     try {
-      screening = await screenApplication(out.application.id, { actor: 'system' });
+      screening = await screenNow(out.application.id, out.application.candidateId);
     } catch (err) {
       console.error('[applications] screening failed:', err.message);
     }

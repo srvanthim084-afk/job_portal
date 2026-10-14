@@ -44,6 +44,7 @@ export function questionSeconds() {
 
 export const SUSPENSION_CODES = Object.freeze([
   'additional_person', 'additional_voice', 'camera_off', 'left_interview', 'background_noise', 'repeated_violations',
+  'lip_sync',
 ]);
 
 /**
@@ -71,6 +72,8 @@ export function stopMessage(code, questionNo) {
     case 'camera_off':
       return q ? `Your camera was off for too long during${q}.`
                : 'Your camera was off for too long during the interview.';
+    case 'lip_sync':
+      return q ? `Your lip movement did not match your voice during${q}.` : 'Your lip movement did not match your voice during the interview.';
     case 'additional_person':
       return q ? `Another person was detected during your answer to${q}.` : 'Another person was detected during the interview.';
     case 'additional_voice':

@@ -346,6 +346,21 @@ export async function screenApplication(applicationId, { actor = 'system', force
 }
 
 /**
+ * Everything that is worked out about a resume the moment somebody applies: the profile's Resume score
+ * (the badge in the Talent Pool - it used to wait for a sweep of up to five minutes) and then the AI screening
+ * of this application. Each step is guarded, so one failing does not stop the other or the apply.
+ */
+export async function screenNow(applicationId, candidateId, opts = {}) {
+  if (candidateId) {
+    try {
+      const { computeAndStore } = await import('../resume/score.js');
+      await computeAndStore(candidateId);
+    } catch (err) { console.error('[resume-score] could not score on apply:', err.message); }
+  }
+  return screenApplication(applicationId, { actor: 'system', ...opts });
+}
+
+/**
  * The screening-answer side of a result: the combined score (null when
  * the job asks nothing or the answers have not arrived) and whether a
  * must-have was failed. Read from the application row itself, which the
@@ -394,7 +409,7 @@ export async function screenPending({ limit = 200 } = {}) {
 
 /** The background pass. Returns a stop function. */
 export function startScreeningSweep() {
-  const every = Number(process.env.SCREENING_SWEEP_MS || 10 * 60 * 1000);
+  const every = Number(process.env.SCREENING_SWEEP_MS || 60 * 1000);
   let stopped = false;
   let running = false;
 

@@ -52,7 +52,7 @@
 
   var T = {
     /* ---- another person ---- */
-    faceEveryMs:      function () { return n('faceEveryMs', 700); },
+    faceEveryMs:      function () { return n('faceEveryMs', 200); },
     /* A single frame with two faces is a frame, not a person. Two faces
        must hold for this long AND across this many agreeing samples. */
     facePersistMs:    function () { return n('facePersistMs', 3000); },
@@ -74,6 +74,16 @@
        outside it. */
     baselineSamples:  function () { return n('baselineSamples', 25); },
 
+    /* ---- the camera hidden: no face in view for this long suspends at once (0148) ---- */
+    noFaceMs:         function () { return n('noFaceMs', 10000); },
+
+    /* ---- lips against the voice (0148): while the candidate answers and a voice is heard, the mouth must
+       move. Sound for lipStillMs with the mouth shape varying by less than lipMoveRange over lipWindowMs. ---- */
+    lipVoiceLevel:    function () { return n('lipVoiceLevel', 0.06); },
+    lipStillMs:       function () { return n('lipStillMs', 5000); },
+    lipMoveRange:     function () { return n('lipMoveRange', 0.06); },
+    lipWindowMs:      function () { return n('lipWindowMs', 1500); },
+
     /* One report per this long, whatever fires. Two detectors both
        screaming must not spend both strikes in the same second. */
     cooldownMs:       function () { return n('cooldownMs', 12000); },
@@ -94,6 +104,8 @@
 
       face: { available: null, why: '', detector: null, timer: null,
               sustainedMs: 0, samples: 0, lastAt: 0, seen: 0 },
+      cam: { hiddenMs: 0 },
+      lip: { speakMs: 0, stillMs: 0, win: [], range: null, level: 0 },
       voice: { baseline: [], baselineHz: 0, sustainedMs: 0, samples: 0,
                lastHz: 0, lastAt: 0 },
 
@@ -112,8 +124,64 @@
   function loadFaceDetector() {
     if (S.face.detector || S.face.available === false) return Promise.resolve(S.face.detector);
 
-    /* 1. the browser's own, when it is really there. Chrome ships the
-          constructor behind a flag, so it is CALLED rather than tested
+    /* 1. MediaPipe Face Landmarker, SELF-HOSTED (web/vendor/mediapipe): the page's CSP only lets the page talk to
+          its own origin, and the model the old code asked the CDN for does not exist there, so the detector never
+          loaded. It gives the number of faces AND the mouth shape (blendshapes) the lip check needs. */
+    return loadLandmarker().catch(function (err) {
+      S.face.why = (err && err.message) ? String(err.message).slice(0, 120) : 'could not be loaded';
+      return loadNativeCounter();
+    });
+  }
+
+  var BASE = (function () {
+    try { var cs = document.currentScript; if (cs && cs.src) return new URL('vendor/mediapipe/', cs.src).href; } catch (e) {}
+    return '/vendor/mediapipe/';
+  })();
+
+  function loadLandmarker() {
+    return import(BASE + 'vision_bundle.mjs').then(function (vision) {
+      return vision.FilesetResolver.forVisionTasks(BASE + 'wasm').then(function (files) {
+        return vision.FaceLandmarker.createFromOptions(files, {
+          baseOptions: { modelAssetPath: BASE + 'models/face_landmarker.task' },
+          runningMode: 'VIDEO',
+          numFaces: 3,
+          outputFaceBlendshapes: true,
+          minFaceDetectionConfidence: T.faceMinScore(),
+          minFacePresenceConfidence: 0.5,
+          minTrackingConfidence: 0.5,
+        });
+      });
+    }).then(function (fl) {
+      function shape(res, name) {
+        var cats = res && res.faceBlendshapes && res.faceBlendshapes[0] && res.faceBlendshapes[0].categories;
+        if (!cats) return 0;
+        for (var i = 0; i < cats.length; i++) if (cats[i].categoryName === name) return cats[i].score || 0;
+        return 0;
+      }
+      S.face.detector = {
+        kind: 'mediapipe-landmarker',
+        analyze: function (video) {
+          var res = fl.detectForVideo(video, performance.now());
+          var faces = (res && res.faceLandmarks && res.faceLandmarks.length) || 0;
+          var mouth = null;
+          if (faces >= 1 && res.faceBlendshapes && res.faceBlendshapes.length) {
+            /* one number for "how the mouth looks": jaw, lips pushed out / drawn back, lower lip */
+            mouth = shape(res, 'jawOpen')
+              + 0.5 * (shape(res, 'mouthFunnel') + shape(res, 'mouthPucker'))
+              + 0.3 * (shape(res, 'mouthStretchLeft') + shape(res, 'mouthStretchRight')) / 2
+              + 0.3 * (shape(res, 'mouthLowerDownLeft') + shape(res, 'mouthLowerDownRight')) / 2;
+          }
+          return { faces: faces, mouth: mouth };
+        },
+      };
+      S.face.available = true;
+      return S.face.detector;
+    });
+  }
+
+  function loadNativeCounter() {
+    /* 2. the browser's own FaceDetector, when it is really there: it can count faces but cannot see a mouth.
+          Chrome ships the constructor behind a flag, so it is CALLED rather than tested
           for - a constructor that throws is not a detector. */
     try {
       if (typeof window.FaceDetector === 'function') {
@@ -121,58 +189,105 @@
         if (native && typeof native.detect === 'function') {
           S.face.detector = {
             kind: 'native',
-            count: function (video) {
-              return native.detect(video).then(function (fs) { return (fs || []).length; });
+            analyze: function (video) {
+              return native.detect(video).then(function (fs) { return { faces: (fs || []).length, mouth: null }; });
             },
           };
           S.face.available = true;
           return Promise.resolve(S.face.detector);
         }
       }
-    } catch (e) { /* fall through to MediaPipe */ }
+    } catch (e) { /* no native detector either */ }
 
-    /* 2. MediaPipe Tasks Vision, from cdn.jsdelivr.net - the origin the
-          application's Content-Security-Policy already permits for
-          scripts. Loaded once, when an interview starts, not on boot. */
-    return import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14')
-      .then(function (vision) {
-        return vision.FilesetResolver.forVisionTasks(
-          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
-        ).then(function (files) {
-          return vision.FaceDetector.createFromOptions(files, {
-            baseOptions: {
-              modelAssetPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/'
-                + 'models/blaze_face_short_range.tflite',
-            },
-            runningMode: 'VIDEO',
-            minDetectionConfidence: T.faceMinScore(),
-          });
-        });
-      })
-      .then(function (fd) {
-        S.face.detector = {
-          kind: 'mediapipe',
-          count: function (video) {
-            var out = fd.detectForVideo(video, performance.now());
-            var list = (out && out.detections) || [];
-            var min = T.faceMinScore();
-            return Promise.resolve(list.filter(function (d) {
-              var c = d.categories && d.categories[0];
-              return !c || c.score === undefined || c.score >= min;
-            }).length);
-          },
-        };
-        S.face.available = true;
-        return S.face.detector;
-      })
-      .catch(function (err) {
-        /* NO DETECTOR MEANS NO DETECTION, and the panel says so. It does
-           not mean "assume one person" and it certainly does not mean
-           raising a violation on some other signal instead. */
-        S.face.available = false;
-        S.face.why = (err && err.message) ? String(err.message).slice(0, 120) : 'could not be loaded';
-        return null;
-      });
+    /* NO DETECTOR MEANS NO DETECTION, and the panel says so. It does
+       not mean "assume one person" and it certainly does not mean
+       raising a violation on some other signal instead. */
+    S.face.available = false;
+    return Promise.resolve(null);
+  }
+
+  /* ------------------------------------------------------------------ *
+   * the camera hidden, and lips against the voice (0148)
+   *
+   * Camera: no face in view for noFaceMs (10 s) while the interview is running -> 'camera_off', and the server
+   * suspends AT ONCE (no warning first).
+   *
+   * Lips: while the candidate is answering and a voice is heard, the mouth has to move. Sound for lipStillMs
+   * with the mouth shape (jaw, lips) varying by less than lipMoveRange over the last lipWindowMs -> 'lip_sync',
+   * suspended at once. Judged only with exactly one face in view, so a second person is not blamed on the
+   * candidate's lips (that is the other check's job), and only while the interviewer is silent.
+   * ------------------------------------------------------------------ */
+  function levelOf(analyser) {
+    try {
+      if (!analyser) return 0;
+      var N = analyser.fftSize, buf = new Float32Array(N);
+      if (analyser.getFloatTimeDomainData) analyser.getFloatTimeDomainData(buf);
+      else {
+        var b8 = new Uint8Array(N); analyser.getByteTimeDomainData(b8);
+        for (var k = 0; k < N; k++) buf[k] = (b8[k] - 128) / 128;
+      }
+      var e = 0; for (var i = 0; i < N; i++) e += buf[i] * buf[i];
+      return Math.sqrt(e / N);
+    } catch (e2) { return 0; }
+  }
+
+  function cameraAndLips(seen, dt, video) {
+    var A = window.AIIV;
+    var live = A && A.started && A.phase === 'interview' && !A.paused && !A.ending && !document.hidden
+               && video && !video.paused && video.readyState >= 2;
+    if (!live) {
+      S.cam.hiddenMs = 0; S.lip.speakMs = 0; S.lip.stillMs = 0; S.lip.win = [];
+      return;
+    }
+
+    /* ---- the camera ---- */
+    if (seen.faces === 0) {
+      S.cam.hiddenMs += dt;
+      if (S.cam.hiddenMs >= T.noFaceMs()) {
+        var held = S.cam.hiddenMs;
+        S.cam.hiddenMs = 0;
+        report('camera_off', Math.min(0.97, 0.9 + Math.min(0.07, (held - T.noFaceMs()) / 100000)),
+          { detector: S.face.detector.kind, sustainedMs: Math.round(held),
+            note: 'no face in view for ' + Math.round(held / 1000) + ' s - the camera was hidden or covered' });
+      }
+    } else {
+      S.cam.hiddenMs = 0;
+    }
+
+    /* ---- the lips ---- */
+    if (seen.faces !== 1 || seen.mouth === null || seen.mouth === undefined) {
+      S.lip.stillMs = Math.max(0, S.lip.stillMs - dt * 2);
+      S.lip.win = []; S.lip.range = null;
+      return;
+    }
+    /* the window runs on the time the samples stand for (dt), not the wall clock */
+    S.lip.clock = (S.lip.clock || 0) + dt;
+    var now = S.lip.clock;
+    S.lip.win.push({ t: now, m: seen.mouth });
+    while (S.lip.win.length && now - S.lip.win[0].t > T.lipWindowMs()) S.lip.win.shift();
+    var lo = Infinity, hi = -Infinity;
+    S.lip.win.forEach(function (p) { if (p.m < lo) lo = p.m; if (p.m > hi) hi = p.m; });
+    var enough = S.lip.win.length >= 5 && (now - S.lip.win[0].t) >= T.lipWindowMs() * 0.8;
+    S.lip.range = enough ? (hi - lo) : null;
+
+    S.lip.level = levelOf(A.analyser);
+    var speaking = !!A.listening && S.lip.level >= T.lipVoiceLevel();
+    if (speaking) {
+      S.lip.speakMs += dt;
+      if (enough && (hi - lo) < T.lipMoveRange()) S.lip.stillMs += dt;
+      else S.lip.stillMs = Math.max(0, S.lip.stillMs - dt * 3);
+    } else {
+      S.lip.speakMs = 0;
+      S.lip.stillMs = Math.max(0, S.lip.stillMs - dt * 2);
+    }
+    if (S.lip.stillMs >= T.lipStillMs()) {
+      var held2 = S.lip.stillMs, range = S.lip.range;
+      S.lip.stillMs = 0; S.lip.speakMs = 0; S.lip.win = [];
+      report('lip_sync', Math.min(0.97, 0.9 + Math.min(0.07, (held2 - T.lipStillMs()) / 60000)),
+        { detector: S.face.detector.kind + '-blendshapes', sustainedMs: Math.round(held2),
+          note: 'a voice was heard for ' + Math.round(held2 / 1000) + ' s while the mouth did not move (range '
+              + (range === null ? 'n/a' : range.toFixed(3)) + ')' });
+    }
   }
 
   /* ------------------------------------------------------------------ *
@@ -188,8 +303,10 @@
     var dt = S.face.lastAt ? (now - S.face.lastAt) : T.faceEveryMs();
     S.face.lastAt = now;
 
-    Promise.resolve(det.count(video)).then(function (count) {
+    Promise.resolve(det.analyze(video)).then(function (seen) {
+      var count = seen.faces;
       S.face.seen = count;
+      cameraAndLips(seen, dt, video);
       if (count >= 2) {
         S.face.sustainedMs += dt;
         S.face.samples += 1;
@@ -340,7 +457,7 @@
        submitted and scored, on the "completed" screen, or before the first question */
     if (!window.AIIV || window.AIIV.phase !== 'interview' || window.AIIV.ending) return;
     var now = Date.now();
-    if (now - S.lastReportAt < T.cooldownMs()) return;
+    if (type !== 'camera_off' && type !== 'lip_sync' && now - S.lastReportAt < T.cooldownMs()) return;
     S.lastReportAt = now;
     S.busy = true;
 
@@ -440,6 +557,15 @@
   };
 
   window.tlIntegrityStop = stop;
+  /* tests feed the camera/lip logic synthetic frames (no real face needed): only with TL_INTEGRITY_CONFIG.testHooks */
+  if (CFG.testHooks) {
+    window.tlIntegrityTest = {
+      feed: function (seen, dt) {
+        if (!S.face.detector) S.face.detector = { kind: 'test' };
+        cameraAndLips(seen, dt, { paused: false, readyState: 4 });
+      },
+    };
+  }
   function stop() {
     S.running = false;
     if (S.face.timer) { clearInterval(S.face.timer); S.face.timer = null; }
@@ -454,11 +580,14 @@
       suspended: S.suspended,
       person: S.face.available === null ? 'starting'
             : S.face.available === false ? 'unavailable'
-            : (S.face.seen >= 2 ? 'another person in view' : 'you are alone in view'),
+            : (S.face.seen >= 2 ? 'another person in view' : S.face.seen === 0 ? 'no face in view' : 'you are alone in view'),
       personWhy: S.face.why,
       personDetector: S.face.detector ? S.face.detector.kind : null,
       voice: S.voice.baseline.length < T.baselineSamples()
         ? 'learning your voice' : 'watching for another voice',
+      cameraHiddenMs: Math.round(S.cam.hiddenMs),
+      lips: S.face.detector && S.face.detector.kind === 'mediapipe-landmarker' ? 'watching lips' : 'lip check unavailable',
+      lipStillMs: Math.round(S.lip.stillMs), lipRange: S.lip.range,
     };
   };
 

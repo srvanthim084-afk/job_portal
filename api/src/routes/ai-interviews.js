@@ -1132,7 +1132,7 @@ export default function aiInterviewRoutes() {
    */
   r.post('/ai-interviews/:id/integrity', requireAuth(), wrap(async (req, res) => {
     const b = parse(z.object({
-      type: z.enum(['additional_person', 'additional_voice', 'left_interview', 'background_noise', 'camera_off']),
+      type: z.enum(['additional_person', 'additional_voice', 'left_interview', 'background_noise', 'camera_off', 'lip_sync']),
       confidence: z.number().min(0).max(1),
       evidence: z.record(z.any()).optional(),
     }), req.body);
@@ -1456,7 +1456,7 @@ export default function aiInterviewRoutes() {
         no: f.strike_no,
         type: ({ additional_person: 'Additional Person', additional_voice: 'Additional Voice',
                  left_interview: 'Left the interview window', background_noise: 'Continuous background noise',
-                 camera_off: 'Camera off' })[f.flag_type] || 'Integrity flag',
+                 camera_off: 'Camera off', lip_sync: 'Lips did not match the voice' })[f.flag_type] || 'Integrity flag',
         at: f.occurred_at,
         /* The word, and the number behind it. A recruiter reads "High";
            an argument about whether the threshold is right needs 0.91. */

@@ -493,7 +493,7 @@ export function startResumeScoreSweep() {
     } finally { running = false; }
   };
   const first = setTimeout(run, Number(process.env.RESUME_SCORE_FIRST_MS || 45_000));
-  const timer = setInterval(run, Number(process.env.RESUME_SCORE_SWEEP_MS || 5 * 60 * 1000));
+  const timer = setInterval(run, Number(process.env.RESUME_SCORE_SWEEP_MS || 30 * 1000));
   first.unref?.(); timer.unref?.();
   return () => { clearTimeout(first); clearInterval(timer); };
 }

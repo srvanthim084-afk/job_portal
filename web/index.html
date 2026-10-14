@@ -26268,7 +26268,7 @@ table.data td .tl-af b{white-space:normal}
   var PROCTOR = {
     noiseLevel: 0.075,        /* RMS that counts as loud while nobody should be speaking */
     noiseMs: 4000,            /* how long it must stay there */
-    camLostMs: 5000,          /* how long the camera may be gone */
+    camLostMs: 10000,         /* how long the camera may be hidden: past this the interview is suspended at once (0148) */
     blackFrameLuma: 8,        /* mean brightness that counts as a covered lens */
   };
 

@@ -218,7 +218,9 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
         // The prototype loads exactly one external script — the EmailJS
         // browser SDK — and blocking it silently breaks email notifications.
         // Allowed explicitly rather than by opening up script-src.
-        scriptSrc: ["'self'", "'unsafe-inline'", 'https://cdn.jsdelivr.net'],
+        // 'wasm-unsafe-eval' lets the page compile WebAssembly (the self-hosted face model that watches the AI
+        // interview camera: web/vendor/mediapipe). It does not allow eval() or new Function().
+        scriptSrc: ["'self'", "'unsafe-inline'", "'wasm-unsafe-eval'", 'https://cdn.jsdelivr.net'],
 
         // REQUIRED, and easy to miss.
         //

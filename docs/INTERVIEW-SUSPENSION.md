@@ -63,3 +63,21 @@ Known limits: a late **Submit** (after the deadline) is still saved as the candi
 server marks timeouts it sees, but cannot know what was said after the deadline); questions with no
 expected points (a job listing no skills) are not scored by the rules engine and are flagged for a
 person instead of counted as 0.
+
+## Camera hidden, background voices, lips against the voice (migration 0148)
+
+| Concern | Behaviour |
+|---|---|
+| Camera hidden / covered | the page reports `camera_off` after **10 s** with no face in view (or a black / lost camera). The server suspends **at once** - no warning first. Never "the same moment" as an earlier warning. |
+| Background voice | another voice, or continuous noise in a quiet stretch (`additional_voice`, `background_noise`) has its **own counter** (`ai_interviews.voice_strikes`): **warning 1 of 2, warning 2 of 2, the third suspends**. A tab warning or a second person does not use one up. |
+| Lips against the voice | while the candidate is answering and a voice is heard (mic level >= 0.06), the mouth shape (jaw / lips, from the face landmarker) must vary. Sound for **5 s** with the shape moving less than 0.06 over 1.5 s -> `lip_sync` -> suspended at once, reason "Your lip movement did not match your voice during Question N." Judged with exactly one face in view and only while the interviewer is silent. A still mouth with no sound is not a violation. |
+| Unchanged | a person / tab leaving keep their two strikes; a low-confidence detection never suspends (it only warns); nothing is counted once every question is answered; reopening clears the strikes (now the voice strikes too). |
+| Detector | MediaPipe Face Landmarker, **self-hosted** in `web/vendor/mediapipe` (see its README). The old code asked the CDN for a model file that does not exist and the CSP forbade the fetch anyway, so the second-person check never loaded in Chrome; it does now. CSP gained `'wasm-unsafe-eval'` (WebAssembly only, not eval). |
+| Knobs | `TL_INTEGRITY_CONFIG`: `noFaceMs` (10000), `lipVoiceLevel` (0.06), `lipStillMs` (5000), `lipMoveRange` (0.06), `lipWindowMs` (1500). |
+
+Tests: `api/test/interview-camera-voice-lipsync.test.mjs` (the rules, against Postgres). The page side was run in a
+real browser with a fake camera: the landmarker loads under the CSP, a camera with no face suspends at 10 s, a voice with
+a still mouth suspends, a voice with a moving mouth and a still mouth with no sound do not.
+
+Known limit: the lip thresholds were set from how the blendshapes behave, not from a set of real candidates; watch the
+first real interviews and tune `lipStillMs` / `lipMoveRange` through the config if people are caught wrongly.
