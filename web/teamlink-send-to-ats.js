@@ -95,4 +95,119 @@
       if (err) err.textContent = (e && e.message) || 'Could not send - please try again.';
     });
   };
+
+  /* ------------------------------------------------------------------ *
+   * Recruiter -> Applications: the same button, on every row that can
+   * still be moved and beside "Send screening questions" for the ticked
+   * ones. POST /api/ats/send-applications - to Shortlisted; anything
+   * already there or further along is left where it is.
+   * ------------------------------------------------------------------ */
+  var MOVABLE = ['applied', 'ai_screening', 'ai_interview_pending', 'ai_interview_in_progress', 'ai_interview_done'];
+  var APP_IDS = [];
+
+  window.tlSendAtsApps = function (ids) {
+    APP_IDS = (ids || []).filter(Boolean);
+    if (!APP_IDS.length) { say('Tick at least one application first', '☑️'); return; }
+    if (typeof window.fcrModal !== 'function') return;
+    var n = APP_IDS.length;
+    window.fcrModal('<div class="fcr-jd-head"><h3>Send to ATS</h3>'
+      + '<button class="fcr-jd-x" onclick="fcrCloseModal()">✕</button></div>'
+      + '<div class="fcr-jd-body" id="tlsaBody">'
+      + '<p style="font-size:12.5px;color:var(--text-soft);margin:0 0 12px">'
+      +   (n === 1 ? 'This application' : n + ' applications') + ' will move to <b>Shortlisted</b> in the ATS. '
+      +   'Anything already Shortlisted or further along is left where it is; walk-in registrations are skipped.</p>'
+      + '<label style="display:flex;gap:8px;align-items:flex-start;margin:0;font-size:13px">'
+      + '<input type="checkbox" id="tlsaNotify" style="margin-top:3px"> <span>Let the candidates know <span style="color:var(--text-soft)">'
+      + '(one “your application is now Shortlisted” message each)</span></span></label>'
+      + '<div id="tlsaErr" style="color:var(--bad-600);font-size:12.5px;margin-top:10px"></div>'
+      + '<div class="iw-bar"><button class="btn btn-ghost" onclick="fcrCloseModal()">Cancel</button>'
+      + '<div class="sp"><button class="btn btn-primary" id="tlsaGo" onclick="tlSendAtsAppsGo()">Send to ATS</button></div></div>'
+      + '</div>');
+  };
+
+  window.tlSendAtsAppsGo = function () {
+    var err = document.getElementById('tlsaErr');
+    var btn = document.getElementById('tlsaGo');
+    var notify = !!(document.getElementById('tlsaNotify') || {}).checked;
+    if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+    window.TL.api.post('/ats/send-applications', { applicationIds: APP_IDS, notify: notify }).then(function (r) {
+      var rows = (r.results || []).map(function (x) {
+        var what = x.outcome === 'moved' ? '<span class="badge badge-ok">Moved · Shortlisted</span>'
+          : x.outcome === 'already' ? '<span class="badge badge-neutral">Already in the pipeline</span>'
+          : '<span class="badge badge-bad">Not moved</span>';
+        return '<tr><td>' + h(x.name || x.applicationId) + '<div style="font-size:11.5px;color:var(--text-soft)">' + h(x.job || '') + '</div></td><td>' + what
+          + (x.reason ? ' <span style="color:var(--text-soft);font-size:12px">' + h(x.reason) + '</span>' : '')
+          + '</td><td style="font-size:12px">' + h(x.reference || '') + '</td></tr>';
+      }).join('');
+      var body = document.getElementById('tlsaBody');
+      if (body) body.innerHTML = '<p style="margin:0 0 10px"><b>' + (r.moved || 0) + '</b> moved to Shortlisted, ' + (r.already || 0) + ' already in the pipeline'
+        + (r.refused ? ', ' + r.refused + ' not moved' : '') + '.' + (notify ? ' ' + (r.notified || 0) + ' told.' : ' Nobody was messaged.') + '</p>'
+        + '<div class="tbl-wrap"><table class="data"><thead><tr><th>Candidate</th><th>Result</th><th>Application ID</th></tr></thead><tbody>' + rows + '</tbody></table></div>'
+        + '<div class="iw-bar"><div class="sp"><button class="btn btn-primary" onclick="fcrCloseModal()">Close</button></div></div>';
+      say((r.moved || 0) + ' sent to ATS', '✅');
+      try { if (window.TLAppSelection && TLAppSelection.clear) TLAppSelection.clear(); } catch (e) { /* */ }
+      try { if (window.TL && typeof TL.refresh === 'function') TL.refresh(); } catch (e) { /* */ }
+    }, function (e) {
+      if (btn) { btn.disabled = false; btn.textContent = 'Send to ATS'; }
+      if (err) err.textContent = (e && e.message) || 'Could not send - please try again.';
+    });
+  };
+
+  function appsById() {
+    var by = {};
+    ((window.DATA && DATA.applications) || []).forEach(function (a) { by[a.id] = a; });
+    return by;
+  }
+  function bulkIds() {
+    var sel = window.TLAppSelection;
+    if (sel && typeof sel.active === 'function' && sel.active() && typeof sel.get === 'function') return sel.get();
+    var ids = [];
+    [].forEach.call(document.querySelectorAll('.tl-apps-wrap tbody tr[data-app-id]'), function (tr) {
+      var cb = tr.querySelector('input[type=checkbox]');
+      if (cb && cb.checked && tr.style.display !== 'none') ids.push(tr.getAttribute('data-app-id'));
+    });
+    return ids;
+  }
+
+  var painting = false;
+  function paintApplications() {
+    if (painting) return;
+    if (!/^#\/recruiter\/applications/.test(location.hash || '')) return;
+    var table = document.querySelector('.tl-apps-wrap table');
+    if (!table) return;
+    painting = true;
+    try {
+      /* the bulk button: beside "Send screening questions" when that bar is there */
+      var bar = document.querySelector('.tlsq-bar');
+      if (bar && !bar.querySelector('[data-tlsa-bulk]')) {
+        var b = document.createElement('button');
+        b.type = 'button'; b.className = 'btn btn-ghost btn-sm'; b.setAttribute('data-tlsa-bulk', '1'); b.textContent = '→ Send to ATS';
+        b.addEventListener('click', function () { window.tlSendAtsApps(bulkIds()); });
+        var first = bar.querySelector('[data-bulk]');
+        if (first) first.parentNode.insertBefore(b, first); else bar.appendChild(b);
+      }
+      /* the row button: only where the application can still be moved */
+      var by = appsById();
+      [].forEach.call(table.querySelectorAll('tbody tr[data-app-id]'), function (tr) {
+        var id = tr.getAttribute('data-app-id');
+        var a = by[id];
+        var has = tr.querySelector('[data-tlsa-row]');
+        var want = !!(a && MOVABLE.indexOf(a.stage) >= 0 && a.postingType !== 'walkin');
+        if (want && !has) {
+          var cell = tr.lastElementChild;
+          if (!cell) return;
+          var x = document.createElement('button');
+          x.type = 'button'; x.className = 'btn btn-ghost btn-sm'; x.setAttribute('data-tlsa-row', '1'); x.textContent = 'Send to ATS';
+          x.addEventListener('click', function (ev) { ev.stopPropagation(); window.tlSendAtsApps([id]); });
+          cell.appendChild(x);
+        } else if (!want && has) {
+          has.remove();
+        }
+      });
+    } finally { painting = false; }
+  }
+  var queued = false;
+  function soon() { if (queued) return; queued = true; setTimeout(function () { queued = false; try { paintApplications(); } catch (e) { /* cosmetic */ } }, 60); }
+  try { new MutationObserver(soon).observe(document.getElementById('app') || document.body, { childList: true, subtree: true }); } catch (e) { /* hashchange covers it */ }
+  window.addEventListener('hashchange', soon);
 })();

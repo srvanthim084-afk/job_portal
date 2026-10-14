@@ -383,9 +383,14 @@ test('share: the link moves to PUBLIC_SHARE_URL (path and ?ref kept); blank fiel
   }
 });
 
+/* a walk-in five days from today (IST) - a fixed date goes stale: once it has passed, the portal rightly refuses to share it (0137) */
+const WALKIN_DATE = new Date(Date.now() + 330 * 60000 + 5 * 86400000);
+const WALKIN_DAY = WALKIN_DATE.toISOString().slice(0, 10);
+const WALKIN_LABEL = `${WALKIN_DATE.getUTCDate()} ${WALKIN_DATE.toLocaleString('en-GB', { month: 'long', timeZone: 'UTC' })} ${WALKIN_DATE.getUTCFullYear()}`;
+
 test('share: a walk-in job carries its walk-in block; a regular job never does; empty fields are left out', async () => {
   const w = await job({ title: 'HR Recruiter', location: 'KPHB, Hyderabad', pay: '₹3 LPA', exp: '0-Any', kind: 'walkin',
-    type: 'Walk-in', urgent: true, walkinDate: '2026-10-10' });
+    type: 'Walk-in', urgent: true, walkinDate: WALKIN_DAY });
   await raw(`update jobs set education='Any Degree', requirements=$2, walkin_from='10:00', walkin_to='16:00',
              walkin_venue='TeamLink Consultants (OPC) Pvt. Ltd.', walkin_contact='HR Desk', walkin_phone='9032321414'
              where id=$1`, [w, ['Good Communication Skills', 'Telugu & English are Mandatory']]);
@@ -398,7 +403,7 @@ test('share: a walk-in job carries its walk-in block; a regular job never does; 
     'Hi! 👋 We found a job opportunity that could be a great match for your profile!',
     '🏥 *HR Recruiter*', '🎓 Qualification: Any Degree', '💼 Experience: *0-Any*',
     '💰 Salary: *₹3 LPA*', '📍 Location: *KPHB, Hyderabad*', "*⭐ What We're Looking For*", '✅ Telugu & English are Mandatory',
-    '*🚶 Walk-In Interview*', '📅 Walk-In Date: 10 October 2026', '⏰ Interview Time: 10:00 AM – 4:00 PM',
+    '*🚶 Walk-In Interview*', `📅 Walk-In Date: ${WALKIN_LABEL}`, '⏰ Interview Time: 10:00 AM – 4:00 PM',
     '📄 Please carry:', '• Updated Resume – Hard Copy', '• A copy of this Job Post',
     '⚠️ Important: The job post copy must be shown at the main gate entrance.', '📍 Venue:',
     'TeamLink Consultants (OPC) Pvt. Ltd.', '📞 Contact: HR Desk – 9032321414',

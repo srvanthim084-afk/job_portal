@@ -31,8 +31,10 @@ import { dispatchEvent } from '../notify/events.js';
 import { matchCandidate } from '../ai/match.js';
 
 const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
-const MOVABLE = ['applied', 'ai_screening'];
+/* the stages "Send to ATS" lifts to Shortlisted - the same ones a finished AI interview / screening may move (0140) */
+const MOVABLE = ['applied', 'ai_screening', 'ai_interview_pending', 'ai_interview_in_progress', 'ai_interview_done'];
 const NOTE = 'Sent to ATS from the Talent Pool';
+const NOTE_APPS = 'Sent to ATS from Applications';
 
 const body = z.object({
   jobId: z.string().trim().min(1).max(64),
@@ -121,6 +123,68 @@ export default function sendToAtsRoutes() {
       notified,
       results: out.results,
     });
+  }));
+
+  /**
+   * POST /api/ats/send-applications   { applicationIds: [..], notify?: boolean }
+   *
+   * The Applications page: applications that already exist, to Shortlisted. At Applied / AI Screening /
+   * AI Interview: moved up. Already Shortlisted or further along (or closed): left exactly as they are.
+   * A walk-in registration has its own stages and is not moved from here. Same message rule as above:
+   * none unless notify is true, and then one ordinary "now Shortlisted" each.
+   */
+  r.post('/ats/send-applications', requireAuth(), requireRole('recruiter', 'admin'), wrap(async (req, res) => {
+    const p = z.object({
+      applicationIds: z.array(z.string().trim().min(1).max(64)).min(1).max(200),
+      notify: z.boolean().optional(),
+    }).safeParse(req.body || {});
+    if (!p.success) throw new ApiError(422, 'VALIDATION_FAILED', 'Choose at least one application (at most 200 at a time).');
+    const ids = [...new Set(p.data.applicationIds)];
+    const notify = !!p.data.notify;
+
+    const out = await withUser(req.session, async (c) => {
+      const shortlisted = (await c.query(`select label, candidate_label, notify_candidate from stages where id = 'shortlisted'`)).rows[0] || {};
+      const results = [];
+      for (const id of ids) {
+        await c.query('savepoint one');
+        try {
+          const a = (await c.query(
+            `select a.*, c.name as candidate_name, j.title as job_title from applications a
+               join candidates c on c.id = a.candidate_id join jobs j on j.id = a.job_id where a.id = $1`, [id])).rows[0];
+          if (!a) { results.push({ applicationId: id, outcome: 'refused', reason: 'not found, or not yours' }); await c.query('release savepoint one'); continue; }
+          const who = { applicationId: id, name: a.candidate_name, job: a.job_title, reference: a.reference || null };
+          if (a.posting_type === 'walkin') { results.push({ ...who, outcome: 'refused', reason: 'a walk-in registration - managed from the walk-in screen' }); await c.query('release savepoint one'); continue; }
+          if (!MOVABLE.includes(a.stage)) { results.push({ ...who, outcome: 'already', stage: a.stage }); await c.query('release savepoint one'); continue; }
+          await c.query(`select set_config('app.stage_note', $1, true)`, [NOTE_APPS]);
+          await c.query(`update applications set stage = 'shortlisted' where id = $1`, [id]);
+          await c.query(`select app_event($1, $2, 'ats.sent', $3, 'recruiter', $4::jsonb)`,
+            [id, a.candidate_id, NOTE_APPS, JSON.stringify({ outcome: 'moved', from: a.stage, by: req.session.userId || null })]).catch(() => {});
+          if (notify && shortlisted.notify_candidate !== false) {
+            const label = shortlisted.candidate_label || shortlisted.label || 'Shortlisted';
+            await c.query(`select notify_create($1,$2,'candidate','APPLICATION_STATUS',$3,$4,$5,$6,$7,null,$8)`,
+              [newId('ntf'), a.candidate_id, `Application ${label}`, `Your application for ${a.job_title} is now ${label}.`,
+               a.job_id, id, a.candidate_id, JSON.stringify({ stage: 'shortlisted', label })]);
+          }
+          results.push({ ...who, outcome: 'moved', stage: 'shortlisted' });
+          await c.query('release savepoint one');
+        } catch (err) {
+          await c.query('rollback to savepoint one');
+          results.push({ applicationId: id, outcome: 'refused', reason: 'could not be moved' });
+        }
+      }
+      return { results, label: shortlisted.candidate_label || shortlisted.label || 'Shortlisted', tell: shortlisted.notify_candidate !== false };
+    });
+
+    let notified = 0;
+    if (notify && out.tell) {
+      for (const x of out.results) {
+        if (x.outcome !== 'moved') continue;
+        await dispatchEvent(req.session, 'STAGE_CHANGED', { applicationId: x.applicationId, stage: 'shortlisted', stageLabel: out.label, note: null })
+          .then(() => { notified += 1; }).catch(() => {});
+      }
+    }
+    const count = (k) => out.results.filter((x) => x.outcome === k).length;
+    res.json({ moved: count('moved'), already: count('already'), refused: count('refused'), notified, results: out.results });
   }));
 
   return r;

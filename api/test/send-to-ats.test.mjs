@@ -134,6 +134,55 @@ test('walk-in, closed and other recruiters\' jobs are refused; candidates cannot
   assert.equal((await send(rec, { jobId: 'j_sa', candidateIds: [] })).status, 422);
 });
 
+test('Applications page: moved to Shortlisted; further along left; walk-in refused; nobody messaged unless asked', async () => {
+  await job('j_sa2', 'r_sa', 'co_sa');
+  const mk = async (stage) => {
+    const c = await candidate();
+    const r = await c.post('/api/applications', { jobId: 'j_sa2' });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    const id = r.body.application.id;
+    if (stage !== 'applied') await raw(`update applications set stage = $2 where id = $1`, [id, stage]);
+    return { c, id };
+  };
+  const e = await mk('applied');
+  const f = await mk('ai_interview_done');
+  const g = await mk('offer_extended');
+  const w = await candidate();
+  await raw(`insert into applications (id, job_id, candidate_id, recruiter_id, posting_type, source) values ('app_sa_walk', 'j_sa_walk', $1, 'r_sa', 'walkin', 'walkin')`, [w.id]);
+
+  const before = (await raw(`select count(*)::int n from notifications where type = 'APPLICATION_STATUS'`)).rows[0].n;
+  const r = await rec.post('/api/ats/send-applications', { applicationIds: [e.id, f.id, g.id, 'app_sa_walk', 'app_does_not_exist'] });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual([r.body.moved, r.body.already, r.body.refused], [2, 1, 2], JSON.stringify(r.body.results));
+  const st = async (id) => (await raw(`select stage from applications where id = $1`, [id])).rows[0].stage;
+  assert.equal(await st(e.id), 'shortlisted');
+  assert.equal(await st(f.id), 'shortlisted');
+  assert.equal(await st(g.id), 'offer_extended', 'further along: untouched');
+  assert.equal(await st('app_sa_walk'), 'registered', 'a walk-in registration is not moved from here');
+  const h = (await raw(`select note from application_stage_history where application_id = $1 and to_stage = 'shortlisted'`, [e.id])).rows[0];
+  assert.equal(h.note, 'Sent to ATS from Applications');
+  assert.equal((await raw(`select count(*)::int n from notifications where type = 'APPLICATION_STATUS'`)).rows[0].n, before, 'nobody messaged');
+
+  /* again: nothing moves twice */
+  const again = await rec.post('/api/ats/send-applications', { applicationIds: [e.id, f.id] });
+  assert.deepEqual([again.body.moved, again.body.already], [0, 2]);
+
+  /* asked: one message each, only for those moved */
+  const h2 = await mk('applied');
+  const told = await rec.post('/api/ats/send-applications', { applicationIds: [h2.id], notify: true });
+  assert.equal(told.body.moved, 1);
+  assert.equal(told.body.notified, 1);
+  assert.equal((await raw(`select count(*)::int n from notifications where recipient_id = $1 and type = 'APPLICATION_STATUS'`, [h2.c.id])).rows[0].n, 1);
+
+  /* who may: another company's recruiter reaches nothing; a candidate is refused; an empty list is a 422 */
+  const k = await mk('applied');
+  const other = await rec2.post('/api/ats/send-applications', { applicationIds: [k.id] });
+  assert.ok(other.status === 200 && other.body.moved === 0 && other.body.refused === 1, JSON.stringify(other.body));
+  assert.equal(await st(k.id), 'applied');
+  assert.equal((await k.c.post('/api/ats/send-applications', { applicationIds: [k.id] })).status, 403);
+  assert.equal((await rec.post('/api/ats/send-applications', { applicationIds: [] })).status, 422);
+});
+
 test('Admin -> Availability counts them as Moved to ATS', async () => {
   const s = await admin.get('/api/admin/availability/summary');
   assert.equal(s.status, 200, JSON.stringify(s.body));
