@@ -251,15 +251,23 @@ export default function candidateRoutes() {
                          where rs.candidate_id = candidates.id and rs.status = 'scored'
                            and rs.total_score >= $${params.length})`);
         }
-        /* Overall score: the best overall score of any of the candidate's applications - the screening
-           score the 65% auto-ATS rule reads (skills, experience, location, education, and the screening
-           answers when they are in). A candidate who has not applied has none, so the filter leaves
-           them out. Sample rows are not counted. */
+        /* Overall score (0147): the resume score and the AI interview score together - the number the move
+           to the ATS is decided on. The best of the candidate's applications. A candidate who has not done
+           an AI interview has none, so the filter leaves them out. Sample rows are not counted. */
         if (q.overallScoreMin !== undefined && q.overallScoreMin !== '' && Number.isFinite(Number(q.overallScoreMin))) {
           params.push(Math.max(0, Math.min(100, Number(q.overallScoreMin))));
           push(`exists (select 1 from applications oa
                          where oa.candidate_id = candidates.id and not oa.is_demo
-                           and coalesce(oa.screening_combined_score, oa.ai_score, oa.match_score) >= $${params.length})`);
+                           and oa.overall_score >= $${params.length})`);
+        }
+        /* Moved to the ATS (0145/0147): ats=pushed any push, ats=auto the portal's own (the overall-score
+           rule), ats=manual a recruiter's Send to ATS. Sample rows are not counted. */
+        const atsQ = String(q.ats || '').trim().toLowerCase();
+        if (['pushed', 'auto', 'manual'].includes(atsQ)) {
+          const cond = atsQ === 'auto' ? `oa.ats_pushed_via like 'auto\_%'`
+            : atsQ === 'manual' ? `oa.ats_pushed_via = 'send_to_ats'`
+            : `oa.ats_pushed_at is not null`;
+          push(`exists (select 1 from applications oa where oa.candidate_id = candidates.id and not oa.is_demo and ${cond})`);
         }
         /* Assessment score (0111 extension point): a completed assessment
            whose name matches, at or above a percentage of its maximum. */
@@ -528,7 +536,16 @@ export default function candidateRoutes() {
             [forJobId, ids])).rows.map((x) => x.candidate_id) : []);
         }
 
-        return { total: total.rows[0].n, rows: rows.rows, apps: apps.rows };
+        /* each row's Overall score: the best of its (non-sample) applications - the number the Overall
+           score filter compared, so what is shown and what was filtered on are the same */
+        const ov = ids.length
+          ? await c.query(`select candidate_id, max(overall_score) as s from applications
+                            where candidate_id = any($1) and not is_demo and overall_score is not null
+                            group by candidate_id`, [ids])
+          : { rows: [] };
+        const overall = new Map(ov.rows.map((x) => [x.candidate_id, Number(x.s)]));
+
+        return { total: total.rows[0].n, rows: rows.rows, apps: apps.rows, overall };
       });
 
       /* Find Candidates is recruiter/admin/client only at the route
@@ -541,6 +558,7 @@ export default function candidateRoutes() {
         const c = toCandidate(x, { staff: true });
         const shaped = staffView ? { ...forViewer(c, !!x._editable), availabilityStatus: availabilityOf(x) } : c;
         if (forJobSet) shaped.appliedForJob = forJobSet.has(x.id);
+        if (out.overall.has(x.id)) shaped.overallScore = out.overall.get(x.id);
         return shaped;
       });
       const extra = attachPrimary(cands, out.apps.map(toApplication));

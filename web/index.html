@@ -29215,7 +29215,7 @@ table.data td .tl-af b{white-space:normal}
 
   function st(){
     STATE.talentPool = STATE.talentPool || {
-      q:'', skills:'', location:'', noticePeriod:'', exp:'', status:'', jobId:'', contacted:'', resumeScore:'', overallScore:'',
+      q:'', skills:'', location:'', noticePeriod:'', exp:'', status:'', jobId:'', contacted:'', resumeScore:'', overallScore:'', ats:'',
       /* Kept for the reset below; each maps to a server parameter. */
       offset:0, rows:[], total:0, apps:[], calls:{}, loading:false, picked:{}, loadedOnce:false,
     };
@@ -29266,7 +29266,7 @@ table.data td .tl-af b{white-space:normal}
   window.tpClear = function(){
     var s = st();
     ['q','skills','location','noticePeriod','exp','status','jobId','contacted','applied','stage',
-     'resumeScore','overallScore','addedFrom','addedTo','appliedFrom','appliedTo']
+     'resumeScore','overallScore','ats','addedFrom','addedTo','appliedFrom','appliedTo']
       .forEach(function(k){ s[k]=''; });
     if(typeof tlLocState==='function'){ var tl=tlLocState('tpLoc'); tl.tags=[]; tl.km=''; tl.q=''; }
     s.offset = 0; s.picked = {};
@@ -29283,7 +29283,7 @@ table.data td .tl-af b{white-space:normal}
   function anyFilter(){
     var s = st();
     return !!(s.q||s.skills||s.location||s.noticePeriod||s.exp||s.status||s.jobId||s.contacted
-      ||s.applied||s.stage||s.resumeScore||s.overallScore||s.addedFrom||s.appliedFrom);
+      ||s.applied||s.stage||s.resumeScore||s.overallScore||s.ats||s.addedFrom||s.appliedFrom);
   }
 
   /* 0130: "Added on" and "Applied on" - the shared calendar, India days. */
@@ -29352,6 +29352,8 @@ table.data td .tl-af b{white-space:normal}
        application - both run in SQL, so they page and count like the rest */
     if(s.resumeScore) p.push('resumeScoreMin='+encodeURIComponent(s.resumeScore));
     if(s.overallScore) p.push('overallScoreMin='+encodeURIComponent(s.overallScore));
+    /* who was moved to the ATS: any push, the portal's own (overall score), or a recruiter's Send to ATS */
+    if(s.ats) p.push('ats='+encodeURIComponent(s.ats));
     if(s.addedFrom) p.push('addedFrom='+s.addedFrom, 'addedTo='+(s.addedTo||s.addedFrom));
     if(s.appliedFrom) p.push('appliedFrom='+s.appliedFrom, 'appliedTo='+(s.appliedTo||s.appliedFrom));
     if(s.contacted === 'never') p.push('neverContacted=true');
@@ -29713,6 +29715,8 @@ table.data td .tl-af b{white-space:normal}
           [['','Any'],['90','90 or more'],['80','80 or more'],['70','70 or more'],['60','60 or more'],['50','50 or more']]))
       + fld('overallScore','Overall score','', sel('overallScore', s.overallScore,
           [['','Any'],['90','90% or more'],['80','80% or more'],['70','70% or more'],['65','65% or more (ATS)'],['50','50% or more']]))
+      + fld('ats','Moved to ATS','', sel('ats', s.ats,
+          [['','Any'],['pushed','Moved to ATS'],['auto','Automatically (overall score)'],['manual','By a recruiter (Send to ATS)']]))
       + dateFld('added','Added on')
       + dateFld('applied','Applied on')
       + '</div>' + dateChips() + '</div>';
@@ -29791,7 +29795,9 @@ table.data td .tl-af b{white-space:normal}
               + '<td>'+(c.currentCompany?E(c.currentCompany):'<span class="mut">—</span>')+'</td>'
               + '<td>'+(c.noticePeriod?E(c.noticePeriod):'<span class="mut">—</span>')+'</td>'
               + '<td>'+tpSourceCell(c)+'</td>'
-              + '<td><span class="tp-pill '+stat[0]+'">'+stat[1]+'</span></td>'
+              + '<td><span class="tp-pill '+stat[0]+'">'+stat[1]+'</span>'
+              +   (c.overallScore!=null?'<div class="mut" style="font-size:11px;margin-top:3px">Overall '+E(c.overallScore)+'%</div>':'')
+              +   tpAtsBadge(apps)+'</td>'
               + '<td>'+(call
                   ? E(ago(call.at)||'—')+(call.outcome?'<div class="mut" style="font-size:11px">'+E(call.outcome)+'</div>':'')
                   : '<span class="mut">Never</span>')+'</td>'
@@ -29819,6 +29825,14 @@ table.data td .tl-af b{white-space:normal}
     }
 
     return bar + selbar + '<div class="tp-tbl">'+body+'</div>';
+  }
+
+  /* "Pushed to ATS" under the status: the first application that was moved into the ATS, how, and when */
+  function tpAtsBadge(apps){
+    if(typeof window.tlAtsPushBadge!=='function') return '';
+    var hit = (apps||[]).filter(function(a){ return a && a.atsPushedAt && a.atsPushedVia; })
+      .sort(function(a,b){ return String(a.atsPushedAt)<String(b.atsPushedAt)?-1:1; })[0];
+    return hit ? tlAtsPushBadge(hit) : '';
   }
 
   function fld(key, label, cls, inner){

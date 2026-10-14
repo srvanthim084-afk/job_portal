@@ -278,10 +278,12 @@ export async function screenApplication(applicationId, { actor = 'system', force
   }
   if (answers.knockedOut && result.verdict === 'shortlist') result.verdict = 'review';
 
+  /* THE SCREENING SCORE DOES NOT MOVE ANYBODY (0147). The move to the ATS is decided by the OVERALL score -
+     the resume score and the AI interview score together - when the interview is recorded
+     (ai_interview_recorded). Screening is the recommendation shown on the badge; an application still at
+     Applied stays there. */
   const movable = ['applied', 'ai_screening'].includes(ctx.app.stage);
-  const nextStage = movable
-    ? (result.verdict === 'shortlist' ? 'shortlisted' : 'applied')
-    : ctx.app.stage;
+  const nextStage = movable ? 'applied' : ctx.app.stage;
 
   const note = `AI screening ${result.score}%`
     + (answers.combined !== null ? ` (with screening answers ${answers.combined}%)` : '')
@@ -313,14 +315,9 @@ export async function screenApplication(applicationId, { actor = 'system', force
               ai_screened_at = now(),
               -- Resume and answers together (0097); null until answered.
               screening_combined_score = $4,
-              /* 0145: moved INTO the ATS by the screening score: remembered as "Pushed to ATS" (the first
-                 push stands; a move back and a second screening do not rewrite it) */
-              ats_pushed_at    = case when $3::text = 'shortlisted' and stage <> 'shortlisted' and ats_pushed_at is null then now() else ats_pushed_at end,
-              ats_pushed_via   = case when $3::text = 'shortlisted' and stage <> 'shortlisted' and ats_pushed_at is null then 'auto_screening' else ats_pushed_via end,
-              ats_pushed_score = case when $3::text = 'shortlisted' and stage <> 'shortlisted' and ats_pushed_at is null then $5::numeric else ats_pushed_score end,
               updated_at = now()
         where id = $1`,
-      [applicationId, result.score, nextStage, answers.combined, answers.combined !== null ? answers.combined : result.score]);
+      [applicationId, result.score, nextStage, answers.combined]);
 
     await c.query(
       `select app_event($1,$2,'screening.completed',$3,$4,$5::jsonb)`,
@@ -378,26 +375,6 @@ export async function screenPending({ limit = 200 } = {}) {
     `select id from applications
       where ai_score is null and stage in ('applied','ai_screening')
       order by applied_at desc limit $1`, [limit])).rows);
-
-  /* THE THRESHOLD WAS LOWERED (or set for the first time): applications still at Applied whose score is
-     already at or above it, and that were never screened AT this threshold, are screened once more - so
-     the new rule reaches them and not only the applications that come in afterwards. Once screened at
-     this threshold they are not picked again, whatever the verdict (a requirement without skills, a failed
-     must-have: those stay for a recruiter), so there is no loop and nobody is moved or notified twice. */
-  try {
-    const thr = Number((await loadAiSettings()).autoShortlistThreshold) || 65;
-    const catchUp = await withUser(ENGINE, async (c) => (await c.query(
-      `select a.id from applications a
-        where a.stage in ('applied','ai_screening') and a.ai_score >= $1
-          and coalesce(a.posting_type, '') <> 'walkin'
-          and not exists (select 1 from application_events e
-                           where e.application_id = a.id and e.type = 'screening.completed'
-                             and (e.metadata->>'threshold') ~ '^[0-9.]+$' and (e.metadata->>'threshold')::numeric = $1)
-        order by a.applied_at desc limit $2`, [thr, limit])).rows);
-    for (const r of catchUp) rows.push({ id: r.id, force: true });
-  } catch (err) {
-    console.error('[screening] the threshold catch-up could not be listed:', err.message);
-  }
 
   const out = { considered: rows.length, screened: 0, shortlisted: 0, failed: 0 };
   for (const r of rows) {

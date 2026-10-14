@@ -78,7 +78,7 @@ test('at or above the pass mark: Shortlisted (ATS); below it: AI Interview Done 
   assert.equal(r72.passed, true);
   assert.equal(await stage(a72), 'shortlisted');
   const pu = (await raw(`select ats_pushed_via v, ats_pushed_score s, ats_pushed_at at from applications where id = $1`, [a72])).rows[0];
-  assert.equal(pu.v, 'auto_ai_interview', 'pushed by the interview result');
+  assert.equal(pu.v, 'auto_overall', 'pushed by the overall score (no resume score on file: the interview alone)');
   assert.equal(Number(pu.s), 72);
   assert.ok(pu.at);
   assert.equal((await record(a65, 65)).passed, true, '65 is the pass mark itself');
@@ -89,7 +89,7 @@ test('at or above the pass mark: Shortlisted (ATS); below it: AI Interview Done 
 
   /* recorded with the score and the pass mark */
   const h = (await raw(`select note from application_stage_history where application_id = $1 and to_stage = 'shortlisted' order by created_at desc limit 1`, [a72])).rows[0];
-  assert.match(h.note, /72% - at or above the 65% pass mark: moved to Shortlisted \(ATS\)/);
+  assert.match(h.note, /Overall 72% \(AI interview 72%\) - at or above the 65% mark: moved to Shortlisted \(ATS\)/);
   const ev = (await raw(`select metadata from application_events where application_id = $1 and type = 'interview.completed'`, [a72])).rows[0];
   assert.equal(ev.metadata.passed, true);
   assert.equal(Number(ev.metadata.passMark), 65);
@@ -97,7 +97,7 @@ test('at or above the pass mark: Shortlisted (ATS); below it: AI Interview Done 
   const n = (await raw(`select message from notifications where application_id = $1 and type = 'AI_INTERVIEW_COMPLETED' order by created_at desc limit 1`, [a72])).rows[0];
   assert.match(n.message, /72%.*moved to Shortlisted/);
   const n64 = (await raw(`select message from notifications where application_id = $1 and type = 'AI_INTERVIEW_COMPLETED' order by created_at desc limit 1`, [a64])).rows[0];
-  assert.match(n64.message, /Below the 65% pass mark/);
+  assert.match(n64.message, /Below the 65% mark/);
 });
 
 test('the pass mark comes from the settings', async () => {

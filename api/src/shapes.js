@@ -491,6 +491,9 @@ export function toApplication(r) {
     atsPushedAt: r.ats_pushed_at ? new Date(r.ats_pushed_at).toISOString() : undefined,
     atsPushedVia: nz(r.ats_pushed_via),
     atsPushedScore: numOrU(r.ats_pushed_score),
+    overallScore: numOrU(r.overall_score),
+    overallResumeScore: numOrU(r.overall_resume_score),
+    overallInterviewScore: numOrU(r.overall_interview_score),
     // date columns arrive as 'YYYY-MM-DD' strings (see the type parser in
     // db.js); the Date branch is a fallback for any caller that bypasses it
     appliedOn: r.applied_on

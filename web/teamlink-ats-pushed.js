@@ -34,6 +34,7 @@
   }
   function how(a) {
     var sc = a.atsPushedScore != null && isFinite(a.atsPushedScore) ? ' ' + Math.round(a.atsPushedScore) + '%' : '';
+    if (a.atsPushedVia === 'auto_overall') return 'Automatically · overall score' + sc;
     if (a.atsPushedVia === 'auto_screening') return 'Automatically · screening score' + sc;
     if (a.atsPushedVia === 'auto_ai_interview') return 'Automatically · AI interview' + sc;
     if (a.atsPushedVia === 'send_to_ats') return 'By a recruiter · Send to ATS';

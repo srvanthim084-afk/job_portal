@@ -295,7 +295,8 @@ test('a failed must-have: normal success for the candidate, red flag for the rec
   assert.notEqual(rowKo.stage, 'shortlisted', 'a knocked-out application is never shortlisted automatically');
   assert.notEqual(rowKo.stage, 'rejected', 'and never rejected automatically');
   assert.equal(rowPass.screening_status, 'answered');
-  assert.equal(rowPass.stage, 'shortlisted');
+  /* 0147: screening recommends, it does not move anybody - the move to the ATS waits for the interview */
+  assert.equal(rowPass.stage, 'applied');
 
   // The resume score is untouched; the combined score mixes in the answers at 20%.
   const { scoreApplication, loadAiSettings } = await import('../src/ai/screening.js');
