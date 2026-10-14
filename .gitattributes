@@ -1,3 +1,5 @@
 # Windows batch files need CRLF to run reliably; shell scripts must be LF on the Linux server.
 *.bat text eol=crlf
 *.sh  text eol=lf
+# vendored third-party files are byte-exact (hashes in web/vendor/mediapipe/README.md): never convert line endings
+web/vendor/** -text
