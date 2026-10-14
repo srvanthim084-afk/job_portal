@@ -444,6 +444,8 @@
   var fetchTimer = null;
   var rsMin = '';
   try { rsMin = sessionStorage.getItem('tlrs_min_v1') || ''; } catch (e) { rsMin = ''; }
+  var rsOverall = '';
+  try { rsOverall = sessionStorage.getItem('tlrs_overall_v1') || ''; } catch (e) { rsOverall = ''; }
 
   function badgeHtml(id) {
     var b = badges[id];
@@ -509,29 +511,43 @@
   }
 
   /* the filter, on Talent Pool and Find Candidates */
-  window.tlrsSetMin = function (on) {
-    rsMin = on ? '70' : '';
-    try { sessionStorage.setItem('tlrs_min_v1', rsMin); } catch (e) { /* per-tab convenience */ }
+  /* The Talent Pool has both dropdowns of its own (Resume score, Overall score - part of its filters, so
+     "Clear filters" resets them). Find Candidates' sidebar gets the same two here. */
+  function refetchFind() {
     var hash = location.hash || '';
-    if (/talent-pool|\/candidates\b/.test(hash) && typeof window.tpLoad === 'function') {
-      try { if (STATE.talentPool) STATE.talentPool.offset = 0; } catch (e) { /* */ }
-      tpLoad();
-    } else if (/find-candidates/.test(hash) && window.TL && typeof TL.fcrFetch === 'function') {
+    if (/find-candidates/.test(hash) && window.TL && typeof TL.fcrFetch === 'function') {
       TL.fcrFetch(true).then(function () { if (typeof window.fcrRepaint === 'function') fcrRepaint(); else rerender(); });
     } else rerender();
+  }
+  window.tlrsSetMin = function (v) {
+    rsMin = v === true ? '70' : v === false || v == null ? '' : String(v);
+    try { sessionStorage.setItem('tlrs_min_v1', rsMin); } catch (e) { /* per-tab convenience */ }
+    refetchFind();
   };
+  window.tlrsSetOverall = function (v) {
+    rsOverall = v == null ? '' : String(v);
+    try { sessionStorage.setItem('tlrs_overall_v1', rsOverall); } catch (e) { /* per-tab convenience */ }
+    refetchFind();
+  };
+  function selectHtml(id, label, title, handler, value, opts) {
+    return '<label style="display:block;font-size:12px;font-weight:700;margin:0 0 3px" for="' + id + '">' + label + '</label>'
+      + '<select id="' + id + '" title="' + title + '" onchange="' + handler + '(this.value)" '
+      + 'style="width:100%;border:1px solid #dde4ec;border-radius:8px;padding:7px 9px;font:inherit;font-size:13px;background:#fff">'
+      + opts.map(function (o) { return '<option value="' + o[0] + '"' + (String(value) === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('')
+      + '</select>';
+  }
   function filterHtml() {
-    return '<label class="tlrs-flt" id="tlrsFilter" title="Only candidates whose latest resume score is 70 or more">'
-      + '<input type="checkbox" ' + (rsMin ? 'checked ' : '') + 'onchange="tlrsSetMin(this.checked)"> Resume score 70+</label>';
+    return '<div id="tlrsFilter">'
+      + selectHtml('tlrsResume', 'Resume score', 'Only candidates whose latest resume score is at least this', 'tlrsSetMin', rsMin,
+        [['', 'Any'], ['90', '90 or more'], ['80', '80 or more'], ['70', '70 or more'], ['60', '60 or more'], ['50', '50 or more']])
+      + '<div style="height:8px"></div>'
+      + selectHtml('tlrsOverall', 'Overall score', 'Only candidates with an application whose overall score is at least this', 'tlrsSetOverall', rsOverall,
+        [['', 'Any'], ['90', '90% or more'], ['80', '80% or more'], ['70', '70% or more'], ['65', '65% or more (ATS)'], ['50', '50% or more']])
+      + '</div>';
   }
   function placeFilter() {
     if (!['recruiter', 'admin', 'bde'].includes(role())) return;
     if (document.getElementById('tlrsFilter')) return;
-    var tpRow = document.querySelector('#tpHost .tp-bar .row') || document.querySelector('.tp-bar .row');
-    if (tpRow) {
-      tpRow.insertAdjacentHTML('beforeend', '<div class="tp-f' + (rsMin ? ' on' : '') + '"><i>Resume score</i>' + filterHtml() + '</div>');
-      return;
-    }
     var side = document.querySelector('.fcr-side');
     if (side && /find-candidates/.test(location.hash || '')) {
       side.insertAdjacentHTML('afterbegin', '<div style="padding:10px 12px;border-bottom:1px solid #eef1f5">' + filterHtml() + '</div>');
@@ -543,10 +559,9 @@
     var get = TL.api.get;
     TL.api.get = function (path) {
       var args = Array.prototype.slice.call(arguments);
-      if (rsMin && typeof path === 'string' && path.indexOf('/candidates?') === 0
-          && /talent-pool|find-candidates|\/recruiter\/candidates\b/.test(location.hash || '')
-          && path.indexOf('resumeScoreMin=') < 0) {
-        args[0] = path + '&resumeScoreMin=' + encodeURIComponent(rsMin);
+      if (typeof path === 'string' && path.indexOf('/candidates?') === 0 && /find-candidates/.test(location.hash || '')) {
+        if (rsMin && path.indexOf('resumeScoreMin=') < 0) args[0] = args[0] + '&resumeScoreMin=' + encodeURIComponent(rsMin);
+        if (rsOverall && path.indexOf('overallScoreMin=') < 0) args[0] = args[0] + '&overallScoreMin=' + encodeURIComponent(rsOverall);
       }
       return get.apply(this, args);
     };

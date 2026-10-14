@@ -3576,7 +3576,7 @@ const NAV_CONFIG = {
        /recruiter/candidates, which is how long the two had been the same
        thing in everything but the menu. */
     ['talent-pool','Talent Pool','🗂️'],
-    ['notification-settings','Notification Settings','🔔'],['reports','Reports','📊'],
+    ['reports','Reports','📊'],
   ],
   client: [
     ['jobs','Jobs','💼'],['candidates','Candidates','🧑‍🤝‍🧑'],['shortlisted','Shortlisted','⭐'],
@@ -11251,7 +11251,7 @@ mark.fcr-hl{background:#fff3a3;color:inherit;border-radius:3px;padding:0 1px}
    nav entries deleted; any stray route lands on AI Copilot. */
 (function(){
   'use strict';
-  const REMOVED=['pipeline','ai-screening','ai-matching','rediscovery','ranking','comparison','followups','interviews','ai-interview'];
+  const REMOVED=['pipeline','ai-screening','ai-matching','rediscovery','ranking','comparison','followups','interviews','ai-interview','notification-settings'];
   /* Candidates was MERGED, not removed, so it does not land on AI Copilot
      with everything else - it lands on the screen that now does its job.
      `candidate-profile` is deliberately NOT in here: that is the profile
@@ -18394,8 +18394,7 @@ body .cap-feedbar{bottom:0}
               <div class="rh-bar"><i style="width:${Math.round(r.applied/maxApp*100)}%"></i></div></td>
             <td class="num">${r.applied}</td><td class="num">${r.viewed}</td></tr>`).join('')}
           </tbody></table>`:'<p style="font-size:12.5px;color:#8a94a6;margin:0">No job posts yet — publish one to start collecting applications.</p>'}</div></div>
-      <div class="panel"><div class="panel-head"><div><h2>Channel breakdown</h2><div class="desc">Delivery by channel</div></div>
-        <button class="btn btn-ghost btn-sm" onclick="navigate('/recruiter/notification-settings')">Settings</button></div>
+      <div class="panel"><div class="panel-head"><div><h2>Channel breakdown</h2><div class="desc">Delivery by channel</div></div></div>
         <div class="panel-body">
           <div class="rh-ch" style="border-bottom:1px solid #eef1f6;padding-bottom:6px">
             <span class="ic" style="background:transparent"></span><span class="nm sub" style="font-weight:800;font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:#8a94a6">Channel</span>
@@ -29216,7 +29215,7 @@ table.data td .tl-af b{white-space:normal}
 
   function st(){
     STATE.talentPool = STATE.talentPool || {
-      q:'', skills:'', location:'', noticePeriod:'', exp:'', status:'', jobId:'', contacted:'',
+      q:'', skills:'', location:'', noticePeriod:'', exp:'', status:'', jobId:'', contacted:'', resumeScore:'', overallScore:'',
       /* Kept for the reset below; each maps to a server parameter. */
       offset:0, rows:[], total:0, apps:[], calls:{}, loading:false, picked:{}, loadedOnce:false,
     };
@@ -29267,7 +29266,7 @@ table.data td .tl-af b{white-space:normal}
   window.tpClear = function(){
     var s = st();
     ['q','skills','location','noticePeriod','exp','status','jobId','contacted','applied','stage',
-     'addedFrom','addedTo','appliedFrom','appliedTo']
+     'resumeScore','overallScore','addedFrom','addedTo','appliedFrom','appliedTo']
       .forEach(function(k){ s[k]=''; });
     if(typeof tlLocState==='function'){ var tl=tlLocState('tpLoc'); tl.tags=[]; tl.km=''; tl.q=''; }
     s.offset = 0; s.picked = {};
@@ -29284,7 +29283,7 @@ table.data td .tl-af b{white-space:normal}
   function anyFilter(){
     var s = st();
     return !!(s.q||s.skills||s.location||s.noticePeriod||s.exp||s.status||s.jobId||s.contacted
-      ||s.applied||s.stage||s.addedFrom||s.appliedFrom);
+      ||s.applied||s.stage||s.resumeScore||s.overallScore||s.addedFrom||s.appliedFrom);
   }
 
   /* 0130: "Added on" and "Applied on" - the shared calendar, India days. */
@@ -29349,6 +29348,10 @@ table.data td .tl-af b{white-space:normal}
     if(s.applied) p.push('applied='+encodeURIComponent(s.applied));
     if(s.stage) p.push('stage='+encodeURIComponent(s.stage));
     if(s.jobId) p.push('jobId='+encodeURIComponent(s.jobId));
+    /* the two score dropdowns: the latest resume score, and the best overall (screening) score of any
+       application - both run in SQL, so they page and count like the rest */
+    if(s.resumeScore) p.push('resumeScoreMin='+encodeURIComponent(s.resumeScore));
+    if(s.overallScore) p.push('overallScoreMin='+encodeURIComponent(s.overallScore));
     if(s.addedFrom) p.push('addedFrom='+s.addedFrom, 'addedTo='+(s.addedTo||s.addedFrom));
     if(s.appliedFrom) p.push('appliedFrom='+s.appliedFrom, 'appliedTo='+(s.appliedTo||s.appliedFrom));
     if(s.contacted === 'never') p.push('neverContacted=true');
@@ -29695,6 +29698,10 @@ table.data td .tl-af b{white-space:normal}
       + fld('contacted','Last contacted','', sel('contacted', s.contacted,
           [['','Any'],['never','Never contacted'],['7','In the last 7 days'],
            ['30','In the last 30 days'],['cold30','Not for 30 days'],['cold90','Not for 90 days']]))
+      + fld('resumeScore','Resume score','', sel('resumeScore', s.resumeScore,
+          [['','Any'],['90','90 or more'],['80','80 or more'],['70','70 or more'],['60','60 or more'],['50','50 or more']]))
+      + fld('overallScore','Overall score','', sel('overallScore', s.overallScore,
+          [['','Any'],['90','90% or more'],['80','80% or more'],['70','70% or more'],['65','65% or more (ATS)'],['50','50% or more']]))
       + dateFld('added','Added on')
       + dateFld('applied','Applied on')
       + '</div>' + dateChips() + '</div>';
