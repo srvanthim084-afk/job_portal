@@ -35,6 +35,8 @@ const NAUKRI_BOX = 'naukri.responses@tl-mailbox-test.in';
 const SHINE_BOX = 'shine.responses@tl-mailbox-test.in';
 const NAUKRI_APP_PW = 'abcd efgh ijkl mnop';
 const SHINE_APP_PW = 'shine-app-pass-9921';
+const PERSONAL_BOX = 'personal.box@tl-mailbox-test.in';
+const PERSONAL_PW = 'personal-pass-4417';
 
 let dbh, server, raw, imap, mock, admin, recA, recB;
 const seen = [];            // every response body, to prove no password ever comes back
@@ -195,6 +197,7 @@ test('boot', async () => {
     shine('Chitra Shine-In-Naukri', mailS1),         // the wrong board, in the Naukri mailbox
     naukriNoRole('Farhan Review', mailR),             // cannot be placed -> review
   ] });
+  accounts.set(PERSONAL_BOX, { password: PERSONAL_PW, messages: [] });
   accounts.set(SHINE_BOX, { password: SHINE_APP_PW, messages: [
     shine('Deepak Shine', mailS2),
     naukri('Bhavya Naukri-In-Shine', mailA2),        // the wrong board, in the Shine mailbox
@@ -313,6 +316,44 @@ test('the same address cannot be the other board, nor quietly change recruiter',
   });
   assert.equal(owned.status, 409);
   assert.equal(owned.body.error.code, 'MAILBOX_OWNED');
+});
+
+test('a recruiter PERSONAL mailbox: Admin is told who has it, and may take it over on purpose (0150)', async () => {
+  /* recruiter A connected this address for themselves in the Recruiter Portal: no board, so it is not in the Naukri / Shine table */
+  const mine = await recA.post('/api/intake/mailboxes', { address: PERSONAL_BOX, provider: 'imap' });
+  assert.equal(mine.status, 201, JSON.stringify(mine.body));
+  assert.equal((await admin.get('/api/intake/source-connections')).body.connections.some((c) => c.address === PERSONAL_BOX), false, 'not in the table');
+
+  const body = { source: 'shine', recruiterId: 'r_mB', address: PERSONAL_BOX, provider: 'other', appPassword: PERSONAL_PW, host: '127.0.0.1', port: IMAP_PORT };
+  const asked = await admin.post('/api/intake/source-connections', body);
+  assert.equal(asked.status, 409);
+  assert.equal(asked.body.error.code, 'MAILBOX_PERSONAL');
+  assert.match(asked.body.error.message, /personal mailbox by .* in the Recruiter Portal/);
+  assert.match(asked.body.error.message, /not in the list/);
+  assert.ok(asked.body.error.details.ownerName, 'it names who has it');
+  assert.equal((await raw(`select recruiter_id, source from email_mailboxes where address=$1`, [PERSONAL_BOX])).rows[0].recruiter_id, 'r_mA', 'nothing moved without the confirmation');
+
+  const took = await admin.post('/api/intake/source-connections', { ...body, takeOver: true });
+  assert.equal(took.status, 201, JSON.stringify(took.body));
+  assert.equal(took.body.connection.source, 'shine');
+  assert.equal(took.body.connection.recruiterId, 'r_mB');
+  const row = (await raw(`select recruiter_id, source, id from email_mailboxes where address=$1`, [PERSONAL_BOX])).rows[0];
+  assert.deepEqual([row.recruiter_id, row.source], ['r_mB', 'shine']);
+  assert.equal((await raw(`select count(*)::int n from email_mailboxes where address=$1`, [PERSONAL_BOX])).rows[0].n, 1, 'the same row, not a copy');
+  assert.ok((await admin.get('/api/intake/source-connections')).body.connections.some((c) => c.address === PERSONAL_BOX), 'now in the table');
+  assert.equal((await recA.get('/api/intake/mailboxes')).body.mailboxes.some((m) => m.address === PERSONAL_BOX), false, 'no longer the previous owner mailbox');
+  const audit = (await raw(`select detail from audit_log where action='intake.mailbox_taken_over' order by id desc limit 1`)).rows[0];
+  assert.ok(audit, 'the take-over is in the audit log');
+  assert.equal(audit.detail.previousRecruiterId, 'r_mA');
+  assert.equal(audit.detail.recruiterId, 'r_mB');
+
+  /* taking it over does not open the door to Naukri / Shine mailboxes that already belong to somebody: that is still Reassign */
+  const still = await admin.post('/api/intake/source-connections', { ...body, recruiterId: 'r_mA', takeOver: true });
+  assert.equal(still.status, 409);
+  assert.equal(still.body.error.code, 'MAILBOX_OWNED');
+
+  /* leave the other tests the two mailboxes they expect */
+  await raw(`delete from email_mailboxes where address = $1`, [PERSONAL_BOX]);
 });
 
 test('syncing again creates nothing twice (same mailbox + message id)', async () => {

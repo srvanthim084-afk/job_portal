@@ -112,7 +112,7 @@
   }
   window.tleiProvider = function (src) { keep(src); S.errs[src] = {}; paint(); };
 
-  window.tleiConnect = function (src) {
+  window.tleiConnect = function (src, takeOver) {
     var f = keep(src);
     var errs = {};
     if (!f.recruiterId) errs.recruiterId = 'Select a recruiter.';
@@ -128,6 +128,7 @@
     };
     if (String(f.username || '').trim()) body.username = String(f.username).trim();
     if (body.provider === 'other') { body.host = String(f.host || '').trim(); if (f.port) body.port = Number(f.port); }
+    if (takeOver === true) body.takeOver = true;
     api().post('/intake/source-connections', body).then(function (r) {
       S.busy['connect_' + src] = false;
       ['recruiterId', 'address', 'provider', 'username', 'appPassword', 'host', 'port'].forEach(function (k) { var el = $('tlei_' + src + '_' + k); if (el) el.value = ''; });
@@ -137,6 +138,14 @@
       load(true);
     }, function (e) {
       S.busy['connect_' + src] = false;
+      /* a recruiter's own mailbox (not in this list): ask, and on a yes connect again taking it over. The server
+         stopped BEFORE trying any login, so nothing was sent anywhere and the form is left as it was. */
+      if (e && e.code === 'MAILBOX_PERSONAL') {
+        paint();
+        if (window.confirm(errMsg(e) + '\n\nTake it over?')) { window.tleiConnect(src, true); }
+        else { S.msg[src] = { ok: false, text: errMsg(e) }; paint(); }
+        return;
+      }
       var pwEl = $('tlei_' + src + '_appPassword'); if (pwEl) pwEl.value = '';
       S.forms[src].appPassword = '';
       var d = errDetails(e); var fe = {};

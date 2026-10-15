@@ -55,6 +55,15 @@ function parse(schema, body) {
   return out.data;
 }
 
+/** A recruiter's own mailbox (no board): it is not in the Naukri / Shine table, so say who has it and let the admin take it over. */
+function personalMailbox(ownerName) {
+  const who = ownerName ? ownerName : 'another recruiter';
+  return new ApiError(409, 'MAILBOX_PERSONAL',
+    `This mailbox is already connected as a personal mailbox by ${who} in the Recruiter Portal, which is why it is not in the list below. `
+    + 'You can take it over for the recruiter you selected: it becomes the mailbox of this job board (what it already imported stays) and is no longer '
+    + `${who}'s own mailbox.`, { ownerName: ownerName || null });
+}
+
 /* The database's refusals, as the screen should say them. */
 function dbError(err) {
   const m = String((err && err.message) || '');
@@ -65,6 +74,7 @@ function dbError(err) {
     return new ApiError(409, 'MAILBOX_OTHER_SOURCE', 'This mailbox is already connected for the other job board. '
       + 'Naukri and Shine need separate mailboxes.');
   }
+  if (/MAILBOX_PERSONAL/.test(m)) return personalMailbox(err && err.detail);
   if (/MAILBOX_OWNED/.test(m)) {
     return new ApiError(409, 'MAILBOX_OWNED', 'This mailbox is already connected to another recruiter. '
       + 'Use Reassign on that row to change its recruiter on purpose.');
@@ -191,6 +201,7 @@ export default function sourceMailboxRoutes() {
       appPassword: z.string({ required_error: 'Enter the app password.' }).min(1, 'Enter the app password.').max(256),
       host: z.string().trim().max(200).optional(),
       port: z.coerce.number().int().min(1).max(65535).optional(),
+      takeOver: z.boolean().optional(),      // the admin confirmed taking over a recruiter's personal mailbox (0150)
     }), req.body);
 
     if (!secretKeyConfigured()) {
@@ -206,7 +217,14 @@ export default function sourceMailboxRoutes() {
     const existing = await withUser(req.session, async (c) => (await c.query(
       `select id, source, recruiter_id from email_mailboxes where address = $1`, [b.address])).rows[0]);
     if (existing && existing.source && existing.source !== b.source) throw dbError(new Error('MAILBOX_OTHER_SOURCE'));
-    if (existing && existing.recruiter_id && existing.recruiter_id !== b.recruiterId) throw dbError(new Error('MAILBOX_OWNED'));
+    if (existing && existing.recruiter_id && existing.recruiter_id !== b.recruiterId) {
+      if (existing.source) throw dbError(new Error('MAILBOX_OWNED'));
+      if (b.takeOver !== true) {
+        const owner = await withUser(req.session, async (c) => (await c.query(
+          `select name from recruiters where id = $1`, [existing.recruiter_id])).rows[0]);
+        throw personalMailbox(owner && owner.name);
+      }
+    }
 
     const { host, port } = settingsFor(b, b.address);
     if (!host) {
@@ -226,8 +244,8 @@ export default function sourceMailboxRoutes() {
     let id;
     try {
       id = await withUser(req.session, async (c) => (await c.query(
-        `select source_mailbox_save($1,$2,$3,$4,'imap',$5::jsonb,$6,'app_password') as id`,
-        [newId('mbx'), b.address, b.source, b.recruiterId, JSON.stringify(cfg), sealed])).rows[0].id);
+        `select source_mailbox_save($1,$2,$3,$4,'imap',$5::jsonb,$6,'app_password',$7) as id`,
+        [newId('mbx'), b.address, b.source, b.recruiterId, JSON.stringify(cfg), sealed, b.takeOver === true])).rows[0].id);
     } catch (err) { throw dbError(err); }
 
     syncInBackground(req.session, id);
