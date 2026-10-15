@@ -82,6 +82,17 @@ function dbError(err) {
   return err;
 }
 
+/**
+ * What Google shows is "abcd efgh ijkl mnop" - four groups of four with spaces - and people paste it (often with a
+ * trailing space or a line break) exactly like that. The spaces are not part of the password, and Gmail's IMAP login
+ * can refuse a password that still has them, so a Gmail app password is sent with every space and line break removed.
+ * Any other provider: only the ends are trimmed (a space in the middle of a real password is a real space).
+ */
+export function cleanAppPassword(provider, password) {
+  const p = String(password == null ? '' : password);
+  return provider === 'gmail' ? p.replace(/\s+/g, '') : p.trim();
+}
+
 /** Why a login did not work, in words somebody can act on. */
 export function explainLoginFailure(out, { provider, host }) {
   const raw = String(out.error || '');
@@ -90,8 +101,10 @@ export function explainLoginFailure(out, { provider, host }) {
       return 'IMAP is switched off for this mailbox. Turn it on (Gmail: Settings -> Forwarding and POP/IMAP -> Enable IMAP) and connect again.';
     }
     return provider === 'gmail'
-      ? 'Gmail refused the login. Use a Google App Password (Google Account -> Security -> 2-Step Verification -> App passwords), '
-        + 'not the account password, and check that IMAP is enabled in Gmail settings.'
+      ? 'Gmail refused the login. Check, in order: (1) the app password was created while signed in to THIS Gmail address (an app password '
+        + 'only works for the account that made it); (2) the Username box is empty or holds the full email address; (3) 2-Step Verification is on '
+        + 'for the account (Google Account -> Security -> 2-Step Verification -> App passwords) - the normal account password does not work; '
+        + '(4) IMAP is enabled in Gmail settings. If the account is a company (Google Workspace) one, its admin may have blocked app passwords.'
       : 'The mail server refused the username or password. Check them (an app password if the account uses two-step sign-in) and connect again.';
   }
   if (/did not answer|stopped responding|timed? ?out|ETIMEDOUT/i.test(raw)) {
@@ -226,6 +239,7 @@ export default function sourceMailboxRoutes() {
       }
     }
 
+    b.appPassword = cleanAppPassword(b.provider, b.appPassword);
     const { host, port } = settingsFor(b, b.address);
     if (!host) {
       throw new ApiError(422, 'VALIDATION_FAILED', 'Enter the incoming mail (IMAP) server for this mailbox.',
@@ -272,7 +286,7 @@ export default function sourceMailboxRoutes() {
     const host = cfg.host || stored.host;
     const port = Number(cfg.port || 993);
     const user = b.username || (stored.sealed ? stored.user : box.address);
-    const password = b.appPassword || (stored.sealed ? stored.password : '');
+    const password = b.appPassword ? cleanAppPassword(cfg.kind, b.appPassword) : (stored.sealed ? stored.password : '');
     if (!password) {
       throw new ApiError(422, 'VALIDATION_FAILED', 'This mailbox has no saved password (it was disconnected). Enter the app password to reconnect.',
         { appPassword: 'Enter the app password.' });

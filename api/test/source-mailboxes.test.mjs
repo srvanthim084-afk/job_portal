@@ -505,6 +505,16 @@ test('an import that ends with no requirement emails the mailbox owner, once, ho
   assert.equal(mailsSent.filter((x) => /^Action needed:/.test(x.subject)).length, notices.length, 'no second email');
 });
 
+test('a pasted Gmail app password loses its spaces and line breaks; other providers only lose the ends', async () => {
+  const { cleanAppPassword } = await import('../src/routes/source-mailboxes.js');
+  assert.equal(cleanAppPassword('gmail', 'abcd efgh ijkl mnop'), 'abcdefghijklmnop');
+  assert.equal(cleanAppPassword('gmail', '  abcd efgh ijkl mnop \n'), 'abcdefghijklmnop');
+  assert.equal(cleanAppPassword('gmail', 'abcd\u00a0efgh ijkl\tmnop'), 'abcdefghijklmnop');
+  assert.equal(cleanAppPassword('other', '  pass word 1 \n'), 'pass word 1');
+  assert.equal(cleanAppPassword('outlook', 'x y'), 'x y');
+  assert.equal(cleanAppPassword('gmail', undefined), '');
+});
+
 test('shutdown', async () => {
   await new Promise((r) => server.close(r));
   const { stopBackgroundWork } = await import('../src/app.js');
