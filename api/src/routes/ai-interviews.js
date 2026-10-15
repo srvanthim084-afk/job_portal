@@ -31,6 +31,7 @@ import { speechModes, sttEnabled, ttsEnabled, transcribe, synthesise } from '../
 import { retakePolicy, questionSeconds, PAGE_STOPS, formatWhen } from '../interview/policy.js';
 import { afterSuspension, sendRetakeChangedEmail } from '../notify/interview-suspension.js';
 import { kickApplicationNotices } from '../notify/application-notices.js';
+import { verificationEnabled, verificationMinutes } from '../interview/verification.js';
 
 /* Recordings are inspected in memory before anything is written, exactly
    like a resume (routes/uploads.js). */
@@ -259,6 +260,10 @@ export default function aiInterviewRoutes() {
 
       if (!app) throw badRequest('You have no application to interview for.');
 
+      /* ONE SESSION PER CLICK, however many arrive: requests for the same application take turns here, so the
+         second one finds the interview the first created (and is handed it) instead of making another. */
+      await c.query(`select pg_advisory_xact_lock(hashtext($1))`, ['aiv-session:' + app.id]);
+
       /*
        * A SUSPENDED INTERVIEW CANNOT BE WALKED AROUND, BUT IT IS NOT THE END.
        *
@@ -383,6 +388,29 @@ export default function aiInterviewRoutes() {
       const job = (await c.query(`select * from jobs where id=$1`, [app.job_id])).rows[0];
       if (!job) throw notFound('That job no longer exists.');
 
+      /*
+       * 0149: NO PHOTO, NO INTERVIEW. A new interview (the questions, the deadline, every timer) is made only
+       * from a READY verification - a confirmed photo, the instructions acknowledged, the consent given - and
+       * that is decided HERE, from the database, whatever the page did or did not show. Asked before a single
+       * question is generated. An interview already under way (above) is handed back without this: it was
+       * created behind this same check.
+       */
+      let verificationId = null;
+      if (verificationEnabled()) {
+        verificationId = (await c.query(`select ai_verification_ready($1,$2,$3) as id`,
+          [req.session.profileId, app.id, verificationMinutes()])).rows[0].id;
+        if (!verificationId) {
+          const lastV = (await c.query(
+            `select status, method from ai_interview_verifications
+              where application_id=$1 and candidate_id=$2 order by created_at desc limit 1`,
+            [app.id, req.session.profileId])).rows[0];
+          const step = !lastV || ['used', 'expired', 'cancelled', 'pending'].includes(lastV.status) ? 'photo'
+            : lastV.status === 'photo_captured' ? 'confirm' : 'instructions';
+          throw new ApiError(403, 'VERIFICATION_REQUIRED',
+            'Please take and confirm your photo and accept the interview instructions before you start the interview.', { step });
+        }
+      }
+
       const cand = (await c.query(`select * from candidates where id=$1`,
         [req.session.profileId])).rows[0];
 
@@ -408,6 +436,14 @@ export default function aiInterviewRoutes() {
            meta: JSON.stringify({ expects: q.expects || [], source: q.source || null }),
          }))),
          DEADLINE_HOURS]);
+
+      /* the verification is used by THIS interview, once: if another request got there first the whole
+         transaction - this interview included - is rolled back */
+      if (verificationId) {
+        const claimed = (await c.query(`select ai_verification_claim($1,$2,$3) as ok`,
+          [verificationId, req.session.profileId, id])).rows[0].ok;
+        if (!claimed) throw new ApiError(409, 'VERIFICATION_ALREADY_USED', 'This verification has already started an interview.');
+      }
 
       const row = (await c.query(
         `select expires_at, started_at from ai_interviews where id=$1`, [id])).rows[0];

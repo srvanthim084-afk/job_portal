@@ -3676,6 +3676,14 @@
         return ses;
       })
       .catch(function (err) {
+        /* 0149: the server wants the photo verification (it was never done, it expired, or it was already used):
+           the wizard opens again with the reason - never the old "could not be planned" fallback. */
+        if (err && (err.code === 'VERIFICATION_REQUIRED' || err.code === 'VERIFICATION_ALREADY_USED')
+            && typeof window.tlInterviewVerifyReopen === 'function') {
+          TL.__aiivSession = null;
+          try { window.tlInterviewVerifyReopen(appId, err); } catch (e2) { console.error(e2); }
+          return null;
+        }
         // Never strand the candidate on a blank screen: the prototype's
         // own generator still works, and the result is still recorded.
         var blockedStart = err && (err.code === 'INTERVIEW_RETAKE_WAIT' || err.code === 'INTERVIEW_UNDER_REVIEW' || err.code === 'INTERVIEW_ALREADY_COMPLETED' || err.code === 'INTERVIEW_EXPIRED' || err.code === 'INTERVIEW_CLOSED');

@@ -564,6 +564,10 @@
   };
 
   window.tlIntegrityStop = stop;
+  /* the face model, for the pre-interview photo screen's "we can see one face" hint (never blocks anything) */
+  window.tlFaceAnalyzer = function () {
+    return loadFaceDetector().then(function (d) { return d && d.analyze ? d : null; }).catch(function () { return null; });
+  };
   /* tests feed the camera/lip logic synthetic frames (no real face needed): only with TL_INTEGRITY_CONFIG.testHooks */
   if (CFG.testHooks) {
     window.tlIntegrityTest = {
@@ -841,6 +845,7 @@
           + '<button class="fcr-jd-x" onclick="fcrCloseModal()">✕</button></div>'
           + '<div class="fcr-jd-body" style="padding-bottom:20px">'
           + suspensionBlock(interviewId, r)
+          + '<div id="tligVerif"></div>'
           + answersBlock(r)
           + '<div class="tlig-st">Status: ' + statusPill(r.integrityStatus)
             + ' &nbsp;·&nbsp; Strikes: <b>' + r.strikes + ' of 2</b>'
@@ -867,12 +872,71 @@
               + '</div>'
             : '')
           + '</div>');
+        loadVerification(interviewId);
       })
       .catch(function (e) {
         if (typeof window.toast === 'function') {
           window.toast((e && e.message) || 'The integrity record could not be loaded', '⚠️');
         }
       });
+  };
+
+  /* The photo taken before the interview, and what the candidate agreed to (0149). Opening the photo is logged. */
+  function loadVerification(interviewId) {
+    var api = API(), host = document.getElementById('tligVerif');
+    if (!api || !host) return;
+    api.get('/ai-interviews/verification/by-interview/' + encodeURIComponent(interviewId)).then(function (r) {
+      var v = (r.verifications || [])[0];
+      var h = '<div class="tlig-sec"><h4>Photo verification</h4>';
+      if (!v) {
+        host.innerHTML = h + '<p class="tlig-ev">No photo verification is recorded for this interview (it was started before this check existed).</p></div>';
+        return;
+      }
+      var photo = v.method === 'staff_waiver'
+        ? '<div class="tlig-ev">No photo was taken: the photo step was waived' + (v.waiveReason ? ' — ' + esc(v.waiveReason) : '') + '.</div>'
+        : v.photoUrl
+          ? '<a href="' + esc(v.photoUrl) + '" target="_blank" rel="noopener"><img src="' + esc(v.photoUrl)
+            + '" alt="Candidate photo taken before the interview" style="width:140px;height:105px;object-fit:cover;border-radius:8px;border:1px solid #dde2ea"></a>'
+          : '<div class="tlig-ev">' + (v.photoDeleted ? 'The photo was deleted when its retention period ended.' : 'No photo is stored.') + '</div>';
+      host.innerHTML = h + '<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">' + photo
+        + '<div class="tlig-ev" style="line-height:1.7">'
+        + (v.capturedAt ? 'Photo taken: ' + when(v.capturedAt) + '<br>' : '')
+        + (v.photoConfirmedAt ? 'Confirmed by the candidate: ' + when(v.photoConfirmedAt) + '<br>' : '')
+        + (v.instructionsAcknowledgedAt ? 'Instructions acknowledged: ' + when(v.instructionsAcknowledgedAt) + '<br>' : '')
+        + (v.consentGiven ? 'Consent to the image processing: ' + when(v.consentAt) + ' (notice ' + esc(v.noticeVersion || '—') + ')<br>' : '')
+        + (v.sessionStartedAt ? 'Interview started: ' + when(v.sessionStartedAt) + '<br>' : '')
+        + (v.retentionUntil ? 'Photo kept until: ' + when(v.retentionUntil) + '<br>' : '')
+        + 'Opening the photo is recorded in the audit log. A photo shows that a picture was submitted; it does not prove identity.'
+        + '</div></div></div>';
+    }).catch(function () { host.innerHTML = ''; });
+  }
+
+  /* Candidates who cannot use a camera and are waiting for the recruiter to waive the photo (0149). */
+  function paintHelp() {
+    var host = document.getElementById('tlvHelpHost'), api = API();
+    if (!host || !api) return;
+    api.get('/ai-interviews/verification/help-requests').then(function (r) {
+      var list = r.requests || [];
+      var panel = document.getElementById('tlvHelpPanel');
+      if (!list.length) { if (panel) panel.style.display = 'none'; return; }
+      if (panel) panel.style.display = '';
+      host.innerHTML = '<table class="tlig-tbl"><thead><tr><th>Candidate</th><th>Role</th><th>Asked</th><th>What they said</th><th>Waive the photo</th></tr></thead><tbody>'
+        + list.map(function (x) {
+          return '<tr><td>' + esc(x.candidateName || '—') + '</td><td>' + esc(x.jobTitle || '—') + '</td><td>' + when(x.requestedAt) + '</td>'
+            + '<td style="max-width:240px">' + esc(x.note || '—') + '</td>'
+            + '<td><input class="tlig-note" id="tlvWhy' + esc(x.verificationId) + '" placeholder="Reason (recorded)" value="Camera unavailable">'
+            + '<button class="btn btn-ghost btn-sm" style="margin-top:5px" onclick="tlVerifyWaive(\'' + esc(x.applicationId) + '\',\'' + esc(x.verificationId) + '\')">Waive photo</button></td></tr>';
+        }).join('') + '</tbody></table>';
+    }).catch(function () { var p = document.getElementById('tlvHelpPanel'); if (p) p.style.display = 'none'; });
+  }
+  window.tlVerifyWaive = function (applicationId, verificationId) {
+    var api = API(), why = ((document.getElementById('tlvWhy' + verificationId) || {}).value || '').trim();
+    if (!api) return;
+    if (why.length < 3) { if (typeof window.toast === 'function') window.toast('Please give a reason — it is recorded', '⚠️'); return; }
+    api.post('/ai-interviews/verification/waive', { applicationId: applicationId, reason: why }).then(function () {
+      if (typeof window.toast === 'function') window.toast('Photo waived. The candidate can continue with the instructions.', '✅');
+      paintHelp();
+    }).catch(function (e) { if (typeof window.toast === 'function') window.toast((e && e.message) || 'That could not be saved', '⚠️'); });
   };
 
   window.tlIntegrityReview = function (interviewId, flagId, verdict) {
@@ -959,7 +1023,15 @@
       + 'here rejects anybody.</div></div></div>'
       + '<div class="panel-body"><div id="tligListHost"></div></div>';
     body.appendChild(panel);
+    var help = document.createElement('div');
+    help.className = 'panel'; help.id = 'tlvHelpPanel'; help.style.marginTop = '14px'; help.style.display = 'none';
+    help.innerHTML = '<div class="panel-head"><div><h2>Candidates who cannot use a camera</h2>'
+      + '<div class="desc">These candidates were asked for a photo before their AI interview and said their camera is not available. '
+      + 'Waiving the photo lets them carry on with the instructions only. The reason is recorded.</div></div></div>'
+      + '<div class="panel-body"><div id="tlvHelpHost"></div></div>';
+    body.appendChild(help);
     paintList();
+    paintHelp();
   }
 
   (function hookRecruiterPage() {

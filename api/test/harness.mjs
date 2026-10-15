@@ -134,6 +134,9 @@ export function applyTestEnv(dbUrl, extra = {}) {
     STORAGE_LOCAL_DIR: UPLOAD_DIR,
     BCRYPT_ROUNDS: '4',            // keep the suite fast; production uses 12
     LOGIN_RATE_LIMIT_MAX: '1000',
+    // 0149: the photo verification before an interview is OFF here so the many tests that start an interview
+    // directly keep working; interview-photo-verification.test.mjs switches it on and tests the requirement.
+    INTERVIEW_PHOTO_VERIFICATION: 'off',
     RATE_LIMIT_MAX: '100000',
     // All three delivery states are exercised:
     //   sms       -> a mock provider that answers 200        => 'sent'

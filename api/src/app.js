@@ -31,6 +31,8 @@ import applicationRoutes from './routes/applications.js';
 import miscRoutes from './routes/misc.js';
 import uploadRoutes from './routes/uploads.js';
 import aiInterviewRoutes from './routes/ai-interviews.js';
+import interviewVerificationRoutes from './routes/interview-verification.js';
+import { startVerificationRetentionSweep } from './interview/verification-retention.js';
 import aiCallingRoutes from './routes/ai-calling.js';
 import spreadsheetRoutes from './routes/spreadsheet.js';
 import placesRoutes from './routes/places.js';
@@ -160,6 +162,8 @@ function startBackgroundWork(logger) {
        cleanup (0093). Resume scores for profiles that changed (0094). */
     backgroundStops.push(startProfileViewDigest());
     backgroundStops.push(startResumeScoreSweep());
+    /* 0149: interview photos are deleted when their retention period ends. */
+    backgroundStops.push(startVerificationRetentionSweep());
     /* Screening questions (0097): answer links, the one 48h reminder. */
     backgroundStops.push(startScreeningQuestionSweep());
     /* Interview prep kit (0098): day-before / 2-hour reminders, status nudge. */
@@ -453,6 +457,8 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', miscRoutes());
   app.use('/api', uploadRoutes());
   app.use('/api', profileOnboardingRoutes());
+  /* 0149: the photo verification routes go BEFORE the interview's, whose /ai-interviews/:id/... patterns would otherwise read "verification" as an id */
+  app.use('/api', interviewVerificationRoutes());
   app.use('/api', aiInterviewRoutes());
   app.use('/api', aiCallingRoutes());
   app.use('/api', sourceMailboxRoutes());
