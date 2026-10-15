@@ -39,6 +39,7 @@ const PERSONAL_BOX = 'personal.box@tl-mailbox-test.in';
 const PERSONAL_PW = 'personal-pass-4417';
 
 let dbh, server, raw, imap, mock, admin, recA, recB;
+const mailsSent = [];
 const seen = [];            // every response body, to prove no password ever comes back
 
 /* ------------------------------------------------------------------ *
@@ -182,6 +183,8 @@ test('boot', async () => {
   });
   raw = (sql, params) => dbh.db.query(sql, params);
   await raw(`insert into companies (id, name) values ('co_m', 'Mailbox Co')`);
+  const { providers } = await import('../src/notify/providers.js');
+  providers.email.send = async (m) => { mailsSent.push(m); return { status: 'sent', provider: 'test' }; };
   const { createApp } = await import('../src/app.js');
   const app = createApp({ logger: { error() {}, log() {} } });
   await new Promise((r) => { server = app.listen(API_PORT, r); });
@@ -486,6 +489,20 @@ test('no response ever carried an app password', async () => {
   const all = seen.join('\n');
   for (const secret of [NAUKRI_APP_PW, SHINE_APP_PW]) assert.ok(!all.includes(secret), 'a password came back in a response');
   assert.ok(!/secrets_sealed|secretsSealed/.test(all));
+});
+
+test('an import that ends with no requirement emails the mailbox owner, once, however often it is read again (0151)', async () => {
+  await new Promise((r) => setTimeout(r, 400));          // the notice is sent in the background after the import
+  const waiting = (await raw(`select m.id, m.mapping_notified_at, b.recruiter_id from email_messages m join email_mailboxes b on b.id = m.mailbox_id
+                               where m.status = 'needs_mapping' and b.source is not null`)).rows;
+  const notices = mailsSent.filter((x) => /^Action needed:/.test(x.subject));
+  if (!waiting.length) { console.log('  (no message ended as needs_mapping in this run; the notice itself is covered by intake-unmapped-notice.test.mjs)'); return; }
+  assert.equal(notices.length, waiting.filter((w) => w.recruiter_id).length, 'one email per waiting message');
+  assert.ok(waiting.every((w) => w.mapping_notified_at), 'every one was claimed');
+  /* a sync reads the same messages again: nobody is emailed twice */
+  for (const id of [naukriId, shineId]) await admin.post(`/api/intake/source-connections/${id}/sync`, {});
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(mailsSent.filter((x) => /^Action needed:/.test(x.subject)).length, notices.length, 'no second email');
 });
 
 test('shutdown', async () => {

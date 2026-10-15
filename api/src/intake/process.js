@@ -35,6 +35,7 @@ import { buildEventMessages } from '../notify/templates.js';
 import { parseMessage, matchRequirement, DEFAULT_RULES } from './parse.js';
 import { matchCandidate } from '../ai/match.js';
 import { screenNow } from '../ai/screening.js';
+import { notifyUnmapped } from '../notify/unmapped-import.js';
 import { mailboxProvider, mailboxReadiness, newMessageId,
          mailboxSecrets, credentialFingerprint, isAuthFailure } from './mailbox.js';
 import { looksLikeDigest, parseNaukriDigest } from './naukri.js';
@@ -352,6 +353,9 @@ export async function processMessage(session, { mailbox, message, rowId, provide
       `select email_message_result($1,$2,$3,$4::jsonb,$5,$6)`,
       [rowId, status, reason, JSON.stringify({ ...parsed, ...(extra.parsed || {}) }),
        extra.candidateId || null, extra.applicationId || null]));
+    /* 0151: no requirement to go on -> the recruiter who owns the mailbox is emailed, once per message. Not awaited:
+       a slow mail server never holds up the import, and a failed send is retried on a later sync. */
+    if (status === 'needs_mapping') notifyUnmapped(rowId).catch(() => {});
     return { status, reason, ...extra };
   };
 
