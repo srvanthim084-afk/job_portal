@@ -329,3 +329,28 @@ const stop = async () => {
 };
 process.on('SIGINT', stop);
 process.on('SIGTERM', stop);
+
+/* ------------------------------------------------------------------ *
+ * WHY DID IT STOP?  A server that vanishes without a word cannot be fixed, so this one says what it can:
+ *   - a line every minute (memory, free disk) - the last one in the log is when it stopped
+ *   - a loud warning, once, when the disk gets low (a full disk is what stops it)
+ *   - the reason when it ends itself: an uncaught error, a rejected promise, or a normal exit code
+ * A process killed from outside (the window closed, Task Manager) cannot log anything - its silence IS the clue.
+ * ------------------------------------------------------------------ */
+import { statfsSync as __statfs } from 'node:fs';
+const __stamp = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
+const __freeGB = () => { try { const s = __statfs(process.cwd()); return (s.bavail * s.bsize) / 1024 ** 3; } catch { return null; } };
+let __warned = false;
+const __beat = setInterval(() => {
+  const free = __freeGB();
+  console.log(`[alive ${__stamp()}] memory ${Math.round(process.memoryUsage().rss / 1048576)} MB, free disk ${free === null ? '?' : free.toFixed(1) + ' GB'}`);
+  if (free !== null && free < 2 && !__warned) {
+    __warned = true;
+    console.error(`[WARNING ${__stamp()}] only ${free.toFixed(1)} GB of disk is free - the server may stop. Run: node tools/compress-old-backups.mjs`);
+  }
+  if (free !== null && free >= 3) __warned = false;
+}, 60_000);
+__beat.unref();
+process.on('uncaughtException', (err) => { console.error(`[CRASH ${__stamp()}] uncaught error:`, err && err.stack || err); process.exit(1); });
+process.on('unhandledRejection', (err) => { console.error(`[ERROR ${__stamp()}] unhandled rejection:`, err && err.stack || err); });
+process.on('exit', (code) => { console.error(`[EXIT ${__stamp()}] the server process ended with code ${code}`); });
