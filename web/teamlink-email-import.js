@@ -47,8 +47,12 @@
     if (!api()) return;
     if (!quiet) { S.loading = true; S.error = ''; paint(); }
     return api().get('/intake/source-connections').then(function (r) {
+      /* the poll while a sync runs asks again every few seconds: when nothing changed, leave the screen alone
+         (repainting it rebuilt the table and threw the sideways scroll back to the start) */
+      var same = quiet && S.data && JSON.stringify(S.data) === JSON.stringify(r) && !S.error;
       S.data = r; S.loading = false; S.error = '';
-      paint(); schedulePoll();
+      if (!same) paint();
+      schedulePoll();
     }, function (e) {
       S.loading = false; S.error = errMsg(e); paint();
     });
@@ -338,13 +342,39 @@
   }
   window.tleiReload = function () { load(); };
 
+  /* where the person was looking: the table's sideways scroll, the page's scroll, and the box they were typing in */
+  function viewState(root) {
+    var wraps = [].map.call(root.querySelectorAll('.tlei-tablewrap'), function (el) { return el.scrollLeft; });
+    var ups = [];
+    for (var el = root.parentNode; el && el !== document; el = el.parentNode) {
+      if (el.scrollTop > 0 || el.scrollLeft > 0) ups.push({ el: el, top: el.scrollTop, left: el.scrollLeft });
+    }
+    var ae = document.activeElement;
+    var focus = ae && ae.id && root.contains(ae)
+      ? { id: ae.id, start: ae.selectionStart, end: ae.selectionEnd } : null;
+    return { wraps: wraps, ups: ups, focus: focus };
+  }
+  function restoreView(root, v) {
+    [].forEach.call(root.querySelectorAll('.tlei-tablewrap'), function (el, i) { if (v.wraps[i]) el.scrollLeft = v.wraps[i]; });
+    v.ups.forEach(function (u) { u.el.scrollTop = u.top; u.el.scrollLeft = u.left; });
+    if (v.focus) {
+      var f = document.getElementById(v.focus.id);
+      if (f && f !== document.activeElement) {
+        try { f.focus({ preventScroll: true }); if (v.focus.start != null && f.setSelectionRange) f.setSelectionRange(v.focus.start, v.focus.end); } catch (e) { /* not a text box */ }
+      }
+    }
+  }
+
   function paint() {
     if (!onPage()) return;
     /* keep what is typed in the forms across a repaint */
     if ($('tlei_naukri_address')) keep('naukri');
     if ($('tlei_shine_address')) keep('shine');
-    var root = $('tleiRoot'); if (root) root.innerHTML = bodyHtml();
+    var root = $('tleiRoot');
+    var view = root ? viewState(root) : null;
+    if (root) root.innerHTML = bodyHtml();
     var mod = $('tleiModal'); if (mod) mod.innerHTML = modalHtml();
+    if (root && view) restoreView(root, view);
   }
 
   function css() {
