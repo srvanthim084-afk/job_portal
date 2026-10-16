@@ -351,6 +351,17 @@ export default function candidateRoutes() {
         }
 
         /*
+         * IMPORTED ONLY - the Talent Pool's own question (0153).
+         *
+         * The Talent Pool lists the candidates brought in by an import (a spreadsheet, a Naukri / Shine mail, or recorded
+         * before sources were noted); Find Candidates leaves this off and shows everybody, applied or not. The test is a
+         * database function so it sees the evidence across every recruiter's mailbox, not just the caller's.
+         */
+        if (String(q.imported || '').trim().toLowerCase() === 'true') {
+          push('candidate_is_imported(candidates.id)');
+        }
+
+        /*
          * THE THREE THE TALENT POOL ASKS FOR.
          *
          * All in SQL, like everything above, because the pool is paged -

@@ -7567,7 +7567,7 @@ mark.fcr-hl{background:#fff3a3;color:inherit;border-radius:3px;padding:0 1px}
 
   /* ---------- state ---------- */
   function freshRefinements(){
-    return { active:false, hide:'none', hideSel:'all', hideBy:'me', hideEmailDays:'', show:'all', duration:'180', sortBy:'Relevance',
+    return { active:false, hide:'none', hideSel:'all', hideBy:'me', hideEmailDays:'', show:'all', duration:'all', sortBy:'Relevance',
       searchIn:'full', anyKw:'', allKw:'', skills:[], expMin:'', expMax:'', salMin:'', salMax:'',
       locs:[], states:[], inds:[], fas:[], degs:[], edus:[], viewAll:{},
       hideNoComments:false, commentTag:'', includeZeroSalary:true, hidePrivate:false,
@@ -29337,6 +29337,9 @@ table.data td .tl-af b{white-space:normal}
       if(b[1]) p.push('expMax='+b[1]);
     }
     if(s.status) p.push('poolStatus='+encodeURIComponent(s.status));
+    /* 0153. The Talent Pool is the candidates an IMPORT brought in (files and Naukri / Shine mails). Everybody else,
+       applied or not, is in Find Candidates. */
+    p.push('imported=true');
     /* 0075. Several sources at once, and 'Unknown' is one of them - a
        candidate imported before anybody recorded a source is exactly who
        a recruiter tidying up the pool is looking for. */
@@ -30419,8 +30422,9 @@ table.data td .tl-af b{white-space:normal}
   window.tpPage_ = function(){
     return '<div class="tp-head"><div class="t">'
       + '<h2>Talent Pool</h2>'
-      + '<div class="d">Everyone sourced, imported or referred — searchable for every future requirement, '
-      + 'whether or not they applied.</div></div>'
+      + '<div class="d">The candidates brought in by an import — from files and from Naukri / Shine emails — '
+      + 'whether or not they applied. Everyone else, including people who registered themselves, is in '
+      + '<a href="#/recruiter/find-candidates">Find Candidates</a>.</div></div>'
       + '<div class="acts">'
       + '<button class="btn btn-primary" onclick="tpImport()">Import Data</button>'
       + '<button class="btn btn-ghost" onclick="tpExport()">⭳ Export</button>'
@@ -30481,6 +30485,7 @@ table.data td .tl-af b{white-space:normal}
       if(b[1]) p.push('expMax=' + b[1]);
     }
     if(s.status) p.push('poolStatus=' + encodeURIComponent(s.status));
+    p.push('imported=true');          /* the export is of the Talent Pool, which is the imported candidates (0153) */
     if(s.jobId) p.push('jobId=' + encodeURIComponent(s.jobId));
     if(s.addedFrom) p.push('addedFrom='+s.addedFrom, 'addedTo='+(s.addedTo||s.addedFrom));
     if(s.appliedFrom) p.push('appliedFrom='+s.appliedFrom, 'appliedTo='+(s.appliedTo||s.appliedFrom));

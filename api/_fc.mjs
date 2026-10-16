@@ -1,0 +1,15 @@
+import { chromium } from 'playwright';
+const B = 'http://127.0.0.1:4505', OUT = process.argv[2];
+const b = await chromium.launch();
+const mk = async () => { const p = await (await b.newContext({ viewport: { width: 1400, height: 1000 } })).newPage(); await p.goto(B + '/'); await p.waitForFunction(() => window.TL && TL.ready === true); return p; };
+const c = await mk();
+for (let i = 0; i < 3; i++) await c.evaluate(async (i) => { await TL.api.post('/auth/register', { name: 'Self Registered ' + i, email: 'self' + i + '.' + Date.now() + '@tl-sink.local', password: 'SelfReg123interview', phone: '9' + String(Math.floor(100000000 + Math.random() * 899999999)), preferredLocation: 'Hyderabad', expectedCtc: 4, noticePeriod: 'Immediate', preferredWorkModes: ['Hybrid'] }); await TL.api.post('/auth/logout', {}).catch(() => {}); }, i);
+const r = await mk();
+const seen = [];
+r.on('request', (q) => { if (/\/api\/candidates\?/.test(q.url())) seen.push(q.url().split('?')[1]); });
+await r.evaluate(async () => { await TL.api.post('/auth/login', { email: 'recruiter@teamlink.com', password: 'TeamLink@2026', role: 'recruiter' }); await TL.refresh(); location.hash = '#/recruiter/find-candidates'; });
+await r.waitForTimeout(4000);
+await r.screenshot({ path: OUT + '/fc-1.png' });
+console.log('queries sent by the Find Candidates page:', seen.length, seen.slice(0, 2).join(' || '));
+console.log('page text start:', (await r.locator('body').innerText()).replace(/\s+/g, ' ').slice(0, 420));
+await b.close();
