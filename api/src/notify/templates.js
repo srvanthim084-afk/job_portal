@@ -352,6 +352,24 @@ const BODIES = {
       lines.push('', 'You already have a TeamLink account - sign in with your existing password.');
     }
 
+    /* The AI interview is part of this application: say so, with the deadline and the steps, so the login above
+       is clearly "how you attend it". Only when the interview is applicable and its window is still open. */
+    if (c.aiInterview) {
+      lines.push(
+        '',
+        'Attend your AI interview:',
+        `  Your application includes a short AI interview - ${c.aiQuestions || 15} questions about your background, `
+          + 'this role and your resume, taken in your browser with your camera and microphone '
+          + `(about ${c.aiMinutes || 35} minutes).`,
+        c.aiDueAt
+          ? `  Please complete it by ${human(c.aiDueAt)} (the last date of this job).`
+          : '  There is no closing date: you can attend it at any time while this job is open.',
+        '',
+        '  1. Sign in to the candidate portal with the email and password above.',
+        '  2. Open "Applied Jobs" and press "Attend AI Interview" for this role.',
+        '  3. Before it starts you will take a photo and accept the interview instructions.');
+    }
+
     lines.push(
       '',
       'Please verify and complete:',

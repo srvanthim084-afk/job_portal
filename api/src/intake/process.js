@@ -36,6 +36,7 @@ import { parseMessage, matchRequirement, DEFAULT_RULES } from './parse.js';
 import { matchCandidate } from '../ai/match.js';
 import { screenNow } from '../ai/screening.js';
 import { notifyUnmapped } from '../notify/unmapped-import.js';
+import { interviewInfoFor } from './interview-info.js';
 import { mailboxProvider, mailboxReadiness, newMessageId,
          mailboxSecrets, credentialFingerprint, isAuthFailure } from './mailbox.js';
 import { looksLikeDigest, parseNaukriDigest } from './naukri.js';
@@ -1246,8 +1247,18 @@ async function notifyCandidate({ candidate, job, applicationId, reference, crede
       paused: reason,
     };
   }
+  /* ONE LOGIN EMAIL PER APPLICATION, whatever re-reads the mailbox or retries this path: the claim is taken in the
+     database (applications.import_login_notified_at, 0152) before anything is sent. */
+  const claimed = await withUser(ENGINE, async (c) => (await c.query(
+    `select intake_login_notice_claim($1) as ok`, [applicationId])).rows[0].ok)
+    .catch(() => true);       // the claim unreachable: send as before rather than not at all
+  if (!claimed) {
+    return { email: 'skipped', sms: 'skipped', whatsapp: 'skipped', paused: 'the registration message for this application was already sent' };
+  }
+
   const base = config.publicOrigin.replace(/\/$/, '');
   const portalUrl = `${base}/#/login/candidate`;
+  const ai = await interviewInfoFor(applicationId);
 
   const messages = buildEventMessages('APPLICATION_IMPORTED', {
     candidateName: candidate.name,
@@ -1260,8 +1271,10 @@ async function notifyCandidate({ candidate, job, applicationId, reference, crede
     linkLabel: 'Open the candidate portal',
     loginEmail: credentials ? credentials.email : null,
     tempPassword: credentials ? credentials.password : null,
-    smsLead: `Your application for ${job.title} is registered. Ref ${reference}. `
-           + 'Log in to complete your profile:',
+    ...ai,
+    smsLead: ai.aiInterview
+      ? `Your application for ${job.title} is registered (Ref ${reference}). Your AI interview login is in your email:`
+      : `Your application for ${job.title} is registered. Ref ${reference}. Log in to complete your profile:`,
   });
 
   const status = {};
@@ -1302,6 +1315,12 @@ async function notifyCandidate({ candidate, job, applicationId, reference, crede
       [applicationId, candidate.id, job.id, channel, result.status, to || null,
        result.provider || null, result.ref || null, result.error || null]))
       .catch((err) => console.error('[intake] delivery not recorded:', err.message));
+  }
+
+  /* an email that went out WAS the AI interview invitation */
+  const emailOk = status.email === 'sent' || status.email === 'delivered';
+  if (emailOk && ai.aiInterview) {
+    await withUser(ENGINE, (c) => c.query(`select ai_interview_reminder_sent($1,'invited')`, [applicationId])).catch(() => {});
   }
 
   // The in-app notification, so it is on their portal the moment they

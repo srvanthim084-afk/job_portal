@@ -174,6 +174,7 @@ test('boot', async () => {
     DISABLE_BACKGROUND_WORK: 'true',
     AI_API_KEY: '',
     MAILBOX_TLS_INSECURE: 'true',
+    INTAKE_NOTIFY_CANDIDATES: 'true',        // the imported candidate is emailed their login (and the AI interview)
     INTEGRATION_SECRET_KEY: 'test-integration-key-0135-long-enough',
     STORAGE_LOCAL_DIR: resolve(HERE, '../var/test-uploads-mailboxes'),
     EMAIL_API_KEY: 'test-key', EMAIL_FROM: 'noreply@teamlink.example', EMAIL_API_URL: `http://127.0.0.1:${MOCK_PORT}/email`,
@@ -513,6 +514,31 @@ test('a pasted Gmail app password loses its spaces and line breaks; other provid
   assert.equal(cleanAppPassword('other', '  pass word 1 \n'), 'pass word 1');
   assert.equal(cleanAppPassword('outlook', 'x y'), 'x y');
   assert.equal(cleanAppPassword('gmail', undefined), '');
+});
+
+test('an imported candidate is emailed their login AND the AI interview invitation, once (0151b)', async () => {
+  const [a1] = await cand(mailA1);
+  const mails = mailsSent.filter((m) => m.to === mailA1);
+  assert.equal(mails.length, 1, `exactly one email to the imported candidate, got ${mails.length}`);
+  const m = mails[0];
+  assert.match(m.text, /Candidate Portal login:/);
+  assert.match(m.text, new RegExp(`Email: ${mailA1.replace(/[.]/g, '\\.')}`));
+  assert.match(m.text, /Temporary password: \S{8,}/, 'the temporary password is in the email');
+  assert.match(m.text, /Attend your AI interview:/);
+  assert.match(m.text, /15 questions/);
+  assert.match(m.text, /There is no closing date: you can attend it at any time while this job is open\./);
+  assert.match(m.text, /press "Attend AI Interview"/);
+  assert.match(m.text, /take a photo and accept the interview instructions/);
+  /* the password is not kept anywhere in plain text */
+  const u = (await raw(`select u.password_hash, u.must_change_password from users u join candidates c on c.user_id = u.id where c.id = $1`, [a1.id])).rows[0];
+  assert.equal(u.must_change_password, true);
+  assert.ok(!u.password_hash.includes(m.text.match(/Temporary password: (\S+)/)[1]));
+  /* the invitation is marked sent, and the one-email claim is recorded */
+  const inv = await raw(`select 1 from ai_interview_reminders r join applications a on a.id = r.application_id
+                          where a.candidate_id = $1 and r.kind = 'invited'`, [a1.id]);
+  assert.equal(inv.rowCount, 1);
+  const claimed = (await raw(`select import_login_notified_at from applications where candidate_id = $1`, [a1.id])).rows;
+  assert.ok(claimed.length === 1 && claimed[0].import_login_notified_at, 'the once-only claim is recorded');
 });
 
 test('shutdown', async () => {

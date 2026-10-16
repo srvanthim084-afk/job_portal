@@ -20,6 +20,7 @@ import { mailboxReadiness, verifyMailbox, SAMPLE_EMAILS } from '../intake/mailbo
 import { hashPassword } from '../auth.js';
 import { providers } from '../notify/providers.js';
 import { buildEventMessages } from '../notify/templates.js';
+import { interviewInfoFor } from '../intake/interview-info.js';
 import { config } from '../config.js';
 
 const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
@@ -667,6 +668,7 @@ export default function intakeRoutes() {
         }
       }
 
+      const ai = await interviewInfoFor(ctx.id);
       const messages = buildEventMessages('APPLICATION_IMPORTED', {
         candidateName: ctx.name,
         jobTitle: ctx.job_title,
@@ -678,7 +680,10 @@ export default function intakeRoutes() {
         linkLabel: 'Open the candidate portal',
         loginEmail: ctx.email || null,
         tempPassword: credentials ? credentials.password : null,
-        smsLead: `Your application for ${ctx.job_title} is registered. Ref ${ctx.reference}. Log in:`,
+        ...ai,
+        smsLead: ai.aiInterview
+          ? `Your application for ${ctx.job_title} is registered (Ref ${ctx.reference}). Your AI interview login is in your email:`
+          : `Your application for ${ctx.job_title} is registered. Ref ${ctx.reference}. Log in:`,
       });
 
       const status = {};
@@ -714,6 +719,9 @@ export default function intakeRoutes() {
            result.provider || null, result.ref || null, result.error || null])).catch(() => {});
       }
 
+      if ((status.email === 'sent' || status.email === 'delivered') && ai.aiInterview) {
+        await withUser(ENGINE, (c) => c.query(`select ai_interview_reminder_sent($1,'invited')`, [ctx.id])).catch(() => {});
+      }
       await withUser(ENGINE, (c) => c.query(
         `select app_event($1,$2,'candidate.notified',$3,$4,$5::jsonb)`,
         [ctx.id, ctx.candidate_id,
