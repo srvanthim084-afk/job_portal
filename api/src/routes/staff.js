@@ -287,6 +287,30 @@ export default function staffRoutes() {
     }));
 
   /**
+   * POST /api/staff/recruiters/:id/email   { email }
+   *
+   * Corrects the address a recruiter signs in with (0155) - for a typo made when the account was created. The same
+   * account moves to the new address: password, company, team, jobs and applications are untouched. Refused when
+   * somebody else already uses the address.
+   */
+  r.post('/staff/recruiters/:id/email', requireAuth(), requireRole('admin'),
+    wrap(async (req, res) => {
+      const b = parse(z.object({
+        email: z.string().trim().email('That is not a valid email address.').max(160),
+      }), req.body);
+      const out = await withUser(req.session, async (c) => (await c.query(
+        `select staff_recruiter_email($1,$2) as r`, [req.params.id, b.email])).rows[0].r)
+        .catch((err) => {
+          if (err && err.code === '23505') {
+            throw new ApiError(409, 'EMAIL_TAKEN', 'That address already signs in. Use another, or reset the existing account.');
+          }
+          throw err;
+        });
+      if (out === 'no_account') throw notFound('That recruiter has no login account.');
+      res.json({ ok: true, email: b.email.toLowerCase() });
+    }));
+
+  /**
    * POST /api/staff/recruiters/:id/login-as
    *
    * Open that recruiter's portal, as them.

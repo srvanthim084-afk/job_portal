@@ -127,6 +127,38 @@ test('an account created for a person (as when an admin adds an HRMS recruiter) 
   assert.equal((await login('hrms.person@tl-sink.local', 'HrmsTemp#2026')).r.status, 401);
 });
 
+test('a mistyped login email is corrected on the SAME account: same password, new address, old address gone (0155)', async () => {
+  const typo = (await admin.post('/api/staff/recruiters', {
+    name: 'Typo Person', email: 'typo.p@tmllink.in', password: GIVEN, confirmPassword: GIVEN, companyId: 'co_sp' })).body.recruiter;
+  await admin.post(`/api/staff/recruiters/${typo.id}/password`, { password: GIVEN, mustChange: false });
+  assert.equal((await login('typo.p@tmllink.in', GIVEN)).r.status, 200);
+  assert.equal((await login('typo.p@tmlink.in', GIVEN)).r.status, 401, 'the corrected address does not exist yet');
+  const hashBefore = (await raw(`select u.password_hash h from users u join recruiters r on r.user_id = u.id where r.id=$1`, [typo.id])).rows[0].h;
+
+  /* another account already uses it -> refused, nothing changes */
+  const clash = await admin.post(`/api/staff/recruiters/${typo.id}/email`, { email: 'rec2.sp@tl-sink.local' });
+  assert.equal(clash.status, 409, JSON.stringify(clash.body));
+  assert.equal(clash.body.error.code, 'EMAIL_TAKEN');
+  assert.equal((await admin.post(`/api/staff/recruiters/${typo.id}/email`, { email: 'not an address' })).status, 422);
+  assert.equal((await admin.post('/api/staff/recruiters/no_such/email', { email: 'x.y@tmlink.in' })).status, 404);
+  /* a recruiter cannot do it */
+  const rec = (await login('rec2.sp@tl-sink.local', 'TempFirst#123')).c;
+  assert.equal((await rec.post(`/api/staff/recruiters/${typo.id}/email`, { email: 'typo.p@tmlink.in' })).status, 403);
+
+  const ok = await admin.post(`/api/staff/recruiters/${typo.id}/email`, { email: 'Typo.P@tmlink.in' });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(ok.body.email, 'typo.p@tmlink.in');
+  const l = await login('typo.p@tmlink.in', GIVEN);
+  assert.equal(l.r.status, 200, 'signs in at the corrected address with the SAME password');
+  assert.equal(l.r.body.session.mustChangePassword, false);
+  assert.equal((await login('typo.p@tmllink.in', GIVEN)).r.status, 401, 'the mistyped address no longer signs in');
+  const row = (await raw(`select r.email re, u.email ue, u.password_hash h, r.company_id from recruiters r join users u on u.id = r.user_id where r.id=$1`, [typo.id])).rows[0];
+  assert.deepEqual([row.re, row.ue, row.company_id], ['typo.p@tmlink.in', 'typo.p@tmlink.in', 'co_sp']);
+  assert.equal(row.h, hashBefore, 'the password was not touched');
+  const audit = (await raw(`select detail from audit_log where action='staff.email_corrected' order by id desc limit 1`)).rows[0];
+  assert.deepEqual([audit.detail.from, audit.detail.to], ['typo.p@tmllink.in', 'typo.p@tmlink.in']);
+});
+
 test('shutdown', async () => {
   await new Promise((r) => server.close(r));
   const { stopBackgroundWork } = await import('../src/app.js');
