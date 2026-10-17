@@ -89,6 +89,44 @@ test('only an administrator can do it, and the audit log never holds the passwor
   assert.doesNotMatch(JSON.stringify(log), /Teamlink@2026|AdminChose|TempFirst|Hacked/i);
 });
 
+test('after that the password changes ONLY when the recruiter changes it themself - and then THEIR choice stays', async () => {
+  const mine = await login('rec1.sp@tl-sink.local', GIVEN);
+  assert.equal(mine.r.status, 200);
+  const hBefore = (await raw(`select password_hash from users where email='rec1.sp@tl-sink.local'`)).rows[0].password_hash;
+
+  // nothing but the recruiter's own action touches it: repeated sign-ins, a second session, the background sweeps
+  for (let i = 0; i < 3; i++) await login('rec1.sp@tl-sink.local', GIVEN);
+  const sweeps = await import('../src/notify/interview-deadline.js');
+  await sweeps.sweepInterviewDeadlines().catch(() => {});
+  assert.equal((await raw(`select password_hash from users where email='rec1.sp@tl-sink.local'`)).rows[0].password_hash, hBefore);
+
+  // the recruiter's own Change Password
+  const wrong = await mine.c.post('/api/auth/password', { current: 'NotMyPassword#1', next: 'MyOwnChoice#2026' });
+  assert.ok(wrong.status >= 400, 'the current password must be right');
+  const ch = await mine.c.post('/api/auth/password', { current: GIVEN, next: 'MyOwnChoice#2026' });
+  assert.equal(ch.status, 200, JSON.stringify(ch.body));
+  assert.equal((await login('rec1.sp@tl-sink.local', 'MyOwnChoice#2026')).r.status, 200, 'their new password works');
+  assert.equal((await login('rec1.sp@tl-sink.local', GIVEN)).r.status, 401, 'the given one is replaced because THEY changed it');
+  const hOwn = (await raw(`select password_hash from users where email='rec1.sp@tl-sink.local'`)).rows[0].password_hash;
+  for (let i = 0; i < 2; i++) await login('rec1.sp@tl-sink.local', 'MyOwnChoice#2026');
+  assert.equal((await raw(`select password_hash from users where email='rec1.sp@tl-sink.local'`)).rows[0].password_hash, hOwn, 'their choice is not touched again');
+});
+
+test('an account created for a person (as when an admin adds an HRMS recruiter) keeps the temporary-password rule: first sign-in, then they choose their own', async () => {
+  const made = await admin.post('/api/staff/recruiters', {
+    name: 'From Hrms', email: 'hrms.person@tl-sink.local', password: 'HrmsTemp#2026', confirmPassword: 'HrmsTemp#2026', companyId: 'co_sp' });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const first = await login('hrms.person@tl-sink.local', 'HrmsTemp#2026');
+  assert.equal(first.r.status, 200);
+  assert.equal(first.r.body.session.mustChangePassword, true, 'asked to choose their own at the first sign-in');
+  const ch = await first.c.post('/api/auth/password', { current: 'HrmsTemp#2026', next: 'TheirOwn#2026x' });
+  assert.equal(ch.status, 200, JSON.stringify(ch.body));
+  const again = await login('hrms.person@tl-sink.local', 'TheirOwn#2026x');
+  assert.equal(again.r.status, 200);
+  assert.equal(again.r.body.session.mustChangePassword, false);
+  assert.equal((await login('hrms.person@tl-sink.local', 'HrmsTemp#2026')).r.status, 401);
+});
+
 test('shutdown', async () => {
   await new Promise((r) => server.close(r));
   const { stopBackgroundWork } = await import('../src/app.js');
