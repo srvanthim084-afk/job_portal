@@ -271,16 +271,19 @@ export default function staffRoutes() {
       const b = parse(z.object({
         password: z.string().min(8, 'At least 8 characters.').max(200),
         confirmPassword: z.string().optional(),
+        /* 0154: false = the password stays exactly as the administrator set it (no forced change at first sign-in) */
+        mustChange: z.boolean().optional(),
       }), req.body);
       if (b.confirmPassword != null && b.confirmPassword !== b.password) {
         throw badRequest('The two passwords do not match.');
       }
+      const mustChange = b.mustChange !== false;
       const ok = await withUser(req.session, async (c) => (await c.query(
-        `select staff_recruiter_password($1,$2) as ok`,
-        [req.params.id, await hashPassword(b.password)])).rows[0].ok);
+        `select staff_recruiter_password($1,$2,$3) as ok`,
+        [req.params.id, await hashPassword(b.password), mustChange])).rows[0].ok);
       if (!ok) throw notFound('That recruiter has no login account.');
       // Says it happened. Never what it is.
-      res.json({ ok: true, mustChangePassword: true });
+      res.json({ ok: true, mustChangePassword: mustChange });
     }));
 
   /**
