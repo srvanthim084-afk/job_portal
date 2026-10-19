@@ -185,7 +185,7 @@
     if (!rows.length) {
       var any = S.channel || S.dept || S.approval || S.q;
       return '<div class="tc-state">' + (any ? 'Nothing matches these filters.<br><button type="button" class="tc-btn" style="margin-top:10px" onclick="tcClear()">Clear filters</button>'
-        : (S.tab === 'campaigns' ? 'No campaigns yet. AI calling campaigns started from the Talent Pool appear here.' : 'No templates yet.')) + '</div>';
+        : (S.tab === 'campaigns' ? 'No campaigns yet. AI calling campaigns and WhatsApp sends appear here.' : 'No templates yet.')) + '</div>';
     }
     var camp = S.tab === 'campaigns';
     var head = COLS.filter(function (c) { return S.cols[c[0]]; }).map(function (c) {
@@ -234,6 +234,16 @@
 
   function detailHtml() {
     var v = S.view, t = v.item;
+    if (v.type === 'campaign' && t.channel === 'whatsapp') {
+      return '<div class="tc-body"><button type="button" class="tc-btn" onclick="tcBack()">← Back</button>'
+        + '<h3 style="margin:14px 0 4px">' + esc(t.name) + '</h3><div class="tc-sub">WhatsApp campaign</div>'
+        + '<div class="tc-kv"><div><b>Channel</b>WhatsApp</div><div><b>Status</b>' + esc(CAMP_STATUS[t.status] || t.status) + '</div>'
+        + '<div><b>Template</b>' + esc((t.usedIn || []).join(', ') || '—') + '</div><div><b>Sent by</b>' + esc(t.owner || '—') + '</div>'
+        + '<div><b>Messages</b>' + esc(t.messages) + '</div><div><b>Sent</b>' + esc(t.sent) + '</div><div><b>Delivered</b>' + esc(t.delivered) + '</div>'
+        + '<div><b>Read</b>' + esc(t.read) + '</div><div><b>Failed</b>' + esc(t.failed) + '</div><div><b>Pending</b>' + esc(t.pending) + '</div>'
+        + '<div><b>Started</b>' + esc(t.createdAt ? new Date(t.createdAt).toLocaleString() : '—') + '</div></div>'
+        + '<div class="tc-act"><button type="button" onclick="tcOpenWa(\'' + esc(t.batchId) + '\')">Open results</button></div></div>';
+    }
     if (v.type === 'campaign') {
       return '<div class="tc-body"><button type="button" class="tc-btn" onclick="tcBack()">← Back</button>'
         + '<h3 style="margin:14px 0 4px">' + esc(t.name) + '</h3><div class="tc-sub">AI calling campaign</div>'
@@ -381,6 +391,7 @@
     if (t.wa && typeof window.tlWaTemplateForm === 'function') { window.tlWaTemplateForm(t.id, function () { S.view = null; load(true); }); return; }
     S.view = { type: 'edit', item: t }; paint();
   };
+  window.tcOpenWa = function (batchId) { if (typeof window.tlWhatsApp === 'function') { window.tcClose(); window.tlWhatsApp({ batchId: batchId }); } };
   window.tcNewWa = function () { if (typeof window.tlWaTemplateForm === 'function') window.tlWaTemplateForm(null, function () { S.view = null; load(true); }); };
   window.tcSyncWa = function () { if (typeof window.tlWaSync === 'function') window.tlWaSync(function () { load(true); }); };
   window.tcChannelChanged = function () {

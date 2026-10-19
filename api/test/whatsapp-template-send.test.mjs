@@ -190,10 +190,11 @@ test('a fallback fills a missing field; choosing the job fills the rest', async 
 let batch;
 test('send: one personalised template message per candidate, in the template\'s parameter order, through the shared queue', async () => {
   graph.clear();
-  const r = await recA.post('/api/whatsapp/send', { templateId: T.id, candidateIds: ['c_rahul', 'c_sita', 'c_nophone', 'c_dnc'], sendKey: 'send-key-0001-aaaa' });
+  const r = await recA.post('/api/whatsapp/send', { templateId: T.id, candidateIds: ['c_rahul', 'c_sita', 'c_nophone', 'c_dnc'], sendKey: 'send-key-0001-aaaa', campaignName: 'Nellore walk-in reminder' });
   assert.equal(r.status, 202, JSON.stringify(r.body));
   batch = r.body.batchId;
   assert.equal(r.body.queued, 2);
+  assert.equal(r.body.campaignName, 'Nellore walk-in reminder');
   assert.deepEqual(r.body.skipped.map((s) => s.id).sort(), ['c_dnc', 'c_nophone']);
   assert.equal(graph.sent.length, 0, 'nothing is sent inside the request');
   const early = (await recA.get(`/api/whatsapp/batches/${batch}`)).body;
@@ -312,6 +313,24 @@ test('history: a recruiter sees their own sends; an administrator sees everyone\
   assert.ok(all.byRecruiter.some((x) => x.recruiter === 'Priya Sharma' && x.sent >= 4));
   const first = mine.batches.find((b) => b.batchId === batch);
   assert.equal(first.total, 2); assert.equal(first.sent, 2);
+  assert.equal(first.campaignName, 'Nellore walk-in reminder');
+});
+
+test('a WhatsApp send is a named campaign: it is listed under Templates & Campaigns -> Campaigns, to the people who may see it', async () => {
+  const mine = (await recA.get('/api/comm/campaigns')).body.campaigns.filter((c) => c.channel === 'whatsapp');
+  const c = mine.find((x) => x.batchId === batch);
+  assert.ok(c, JSON.stringify(mine));
+  assert.equal(c.name, 'Nellore walk-in reminder');
+  assert.deepEqual([c.messages, c.sent, c.pending, c.failed], [2, 2, 0, 0]);
+  assert.deepEqual(c.usedIn, ['Another']);
+  assert.equal(c.status, 'completed');
+  assert.equal((await recB.get('/api/comm/campaigns')).body.campaigns.filter((x) => x.channel === 'whatsapp' && x.batchId === batch).length, 0);
+  assert.ok((await admin.get('/api/comm/campaigns?channel=whatsapp')).body.campaigns.some((x) => x.batchId === batch));
+  assert.equal((await recA.get('/api/comm/campaigns?channel=call')).body.campaigns.filter((x) => x.channel === 'whatsapp').length, 0);
+  assert.ok((await recA.get('/api/comm/campaigns?q=walk-in')).body.campaigns.some((x) => x.batchId === batch));
+  // an unnamed send gets a name from its template
+  const un = await admin.post('/api/whatsapp/send', { templateId: T.id, candidateIds: ['c_noopt'], sendKey: 'send-key-0009-iiii', includeNoOptIn: true });
+  assert.match(un.body.campaignName, /^Another - /);
 });
 
 test('opt-in: only an administrator or team lead may include candidates with no opt-in on record, and it is recorded in the same queue', async () => {

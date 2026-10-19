@@ -151,7 +151,7 @@ const batchIdFor = (session, key) =>
 async function batchState(session, batchId) {
   const rows = await withUser(session, async (c) => (await c.query(
     `select id, candidate_id, candidate_name, to_address, status, error, provider_ref, template_name, recruiter_name, sent_by,
-            attempts, queued_at, sent_at, delivered_at, read_at, credits, body, application_id
+            attempts, queued_at, sent_at, delivered_at, read_at, credits, body, application_id, campaign_name
        from message_logs
       where batch_id = $1 and channel = 'whatsapp' order by candidate_name, id`, [batchId])).rows);
   const by = (s) => rows.filter((r) => r.status === s).length;
@@ -163,6 +163,7 @@ async function batchState(session, batchId) {
     failed, pending, skipped: by('skipped_no_contact'),
     finished: rows.length > 0 && pending === 0,
     templateName: rows[0] ? rows[0].template_name : null,
+    campaignName: rows[0] ? rows[0].campaign_name : null,
     recruiter: rows[0] ? rows[0].recruiter_name : null,
     rows: rows.map((r) => ({
       id: Number(r.id), candidateId: r.candidate_id, name: r.candidate_name, to: r.to_address,
@@ -257,6 +258,8 @@ export default function whatsappSendRoutes() {
   /* ---------------------------------------------------------------- send */
   const sendSchema = previewSchema.extend({
     sendKey: z.string().trim().min(8).max(80),
+    /* the send is a named campaign (shown in History and Templates & Campaigns -> Campaigns) */
+    campaignName: z.string().trim().max(120).optional(),
     override: z.boolean().optional(),
     overrideReason: z.string().trim().max(500).optional(),
   });
@@ -286,6 +289,8 @@ export default function whatsappSendRoutes() {
     if (items.length > MAX_PEOPLE) throw badRequest(`At most ${MAX_PEOPLE} candidates in one send.`);
 
     const actor = await who(req.session);
+    const campaign = (b.campaignName || '').trim()
+      || `${tpl.name} - ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`;
     const queued = [], skipped = [], cooldown = [];
     for (const it of items) {
       if (!it.sendable) { skipped.push({ id: it.candidateId, name: it.name, reasons: it.blocked.map((x) => x.reason), kinds: it.blocked.map((x) => x.kind) }); continue; }
@@ -310,9 +315,9 @@ export default function whatsappSendRoutes() {
       const payload = buildPayload(tpl, it._fill);
       const text = [it._fill.header && it._fill.header.text, it._fill.body, it._fill.footer].filter(Boolean).join('\n\n');
       const row = await withUser(ENGINE, async (c) => (await c.query(
-        `select * from message_log_queue_wa($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+        `select * from message_log_queue_wa($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
         [batchId, it.candidateId, it.name, it.number, tpl.id, tpl.name, text, JSON.stringify(payload), it.applicationId || null,
-         req.session.userId || null, req.session.role, actor])).rows[0]);
+         req.session.userId || null, req.session.role, actor, campaign])).rows[0]);
       if (row.status === 'skipped_no_contact') {
         skipped.push({ id: it.candidateId, name: it.name, reasons: ['no mobile number'], kinds: ['number'] });
         await finishContact(req.session, began.id, 'failed');
@@ -327,7 +332,7 @@ export default function whatsappSendRoutes() {
     }
 
     res.status(202).json({
-      batchId, template: { id: tpl.id, name: tpl.name, waName: tpl.wa_name, language: tpl.wa_language },
+      batchId, campaignName: campaign, template: { id: tpl.id, name: tpl.name, waName: tpl.wa_name, language: tpl.wa_language },
       queued: queued.length, skipped, cooldownSkipped: cooldown.length,
       note: 'Queued. Each message shows as sent only when WhatsApp confirms it.',
     });
@@ -354,7 +359,7 @@ export default function whatsappSendRoutes() {
     const admin = req.session.role === 'admin';
     const mineOnly = !admin || String(req.query.mine) === 'true';
     const batches = await withUser(req.session, async (c) => (await c.query(
-      `select batch_id, max(template_name) as template_name, max(recruiter_name) as recruiter_name, min(queued_at) as at,
+      `select batch_id, max(template_name) as template_name, max(campaign_name) as campaign_name, max(recruiter_name) as recruiter_name, min(queued_at) as at,
               count(*)::int as total,
               count(*) filter (where status in ('sent','delivered'))::int as sent,
               count(*) filter (where status = 'delivered')::int as delivered,
@@ -377,7 +382,7 @@ export default function whatsappSendRoutes() {
           group by 1 order by 2 desc limit 100`)).rows));
     }
     res.json({
-      batches: batches.map((x) => ({ batchId: x.batch_id, templateName: x.template_name, recruiter: x.recruiter_name, at: x.at,
+      batches: batches.map((x) => ({ batchId: x.batch_id, campaignName: x.campaign_name, templateName: x.template_name, recruiter: x.recruiter_name, at: x.at,
         total: x.total, sent: x.sent, delivered: x.delivered, read: x.read, failed: x.failed, pending: x.pending, credits: Number(x.credits) || null })),
       ...(byRecruiter ? { byRecruiter } : {}),
     });

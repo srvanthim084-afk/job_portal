@@ -140,7 +140,7 @@
       tab: 'send', phase: 'compose',              // compose | confirm | results
       ids: [], picked: {}, info: {}, pre: {}, names: {},
       templates: [], tplId: '', tplQ: '', canManage: false, connected: true, hiddenNote: '',
-      jobId: opts.jobId || '', jobs: [], applicationIds: opts.applicationIds || [],
+      jobId: opts.jobId || '', jobs: [], applicationIds: opts.applicationIds || [], campaign: '', campaignTyped: false,
       cur: '', filter: '', poolQ: '', pool: [], poolBusy: false,
       ticks: { includeNoOptIn: false, includeWarned: false, includeNotLooking: false }, canBypass: false,
       loading: true, previewing: false, sending: false, error: '', sendKey: uid(), seq: 0,
@@ -155,6 +155,7 @@
     root.addEventListener('click', function (e) { if (S && e.target === root.firstChild && S.downOnBackdrop && S.phase !== 'confirm') wxClose(); });
     document.addEventListener('keydown', onKey);
     window.addEventListener('hashchange', wxClose);
+    if (opts.batchId) { S.phase = 'results'; S.loading = false; paint(); startPoll(opts.batchId); return; }
     paint();
     load();
   };
@@ -339,10 +340,13 @@
       + '<div class="wx-list">' + (list || '<div class="wx-state" style="padding:18px">' + (S.ids.length ? 'No candidate matches that search.' : 'No candidates yet. Search your pool below and add them.') + '</div>') + '</div>'
       + '<div class="wx-row" style="margin-top:9px"><input id="wxPoolQ" class="wx-in" type="search" placeholder="Add someone else from your pool (name, phone, skill)…" value="' + esc(S.poolQ) + '" oninput="wxPoolQ(this.value)"></div>' + pool + '</div>'
       + '</div><div>'
-      + '<div class="wx-card"><h3><span class="wx-num">2</span>Select WhatsApp Template' + (S.canManage ? ' <a href="javascript:void(0)" style="margin-left:auto;font-size:12px" onclick="wxManage()">Manage templates</a>' : '') + '</h3>'
+      + '<div class="wx-card"><h3><span class="wx-num">2</span>Campaign name</h3>'
+      + '<input id="wxCampaign" class="wx-in" style="width:100%" maxlength="120" placeholder="e.g. Nellore nurses - walk-in reminder" value="' + esc(S.campaign) + '" oninput="wxCampaign(this.value)">'
+      + '<div class="wx-cs" style="margin-top:4px">Names this send. It appears in History and under Templates &amp; Campaigns → Campaigns.</div></div>'
+      + '<div class="wx-card"><h3><span class="wx-num">3</span>Select WhatsApp Template' + (S.canManage ? ' <a href="javascript:void(0)" style="margin-left:auto;font-size:12px" onclick="wxManage()">Manage templates</a>' : '') + '</h3>'
       + '<input id="wxTplQ" class="wx-in" style="width:100%" type="search" placeholder="Search templates…" value="' + esc(S.tplQ) + '" oninput="wxTplQ(this.value)">'
       + '<div class="wx-tpls">' + (tplHtml || (S.templates.length ? '<div class="wx-state" style="padding:12px">No template matches that search.</div>' : '')) + '</div>' + noTpl + jobSel + '</div>'
-      + '<div class="wx-card" id="wxPrevBox"><h3><span class="wx-num">3</span>WhatsApp Message Preview</h3>' + switcher + preview + '</div>'
+      + '<div class="wx-card" id="wxPrevBox"><h3><span class="wx-num">4</span>WhatsApp Message Preview</h3>' + switcher + preview + '</div>'
       + '</div></div></div>' + footHtml();
   }
 
@@ -383,7 +387,7 @@
     var tpl = S.curTemplate || {};
     return '<div class="wx-body"><div class="wx-card" style="max-width:640px;margin:16px auto"><h3 style="font-size:16px">Send WhatsApp messages?</h3>'
       + '<p style="font-size:14.5px;margin:6px 0 10px">You are about to send WhatsApp messages to <b>' + t.ready + ' selected candidate' + (t.ready === 1 ? '' : 's') + '</b>.</p>'
-      + '<p class="wx-cs" style="font-size:13px">Template: <b>' + esc(tpl.name || '') + '</b> (' + esc(tpl.waName || '') + ', ' + esc(tpl.language || '') + '). Each candidate receives their own message, with their own details filled in.</p>'
+      + '<p class="wx-cs" style="font-size:13px">Campaign: <b>' + esc((S.campaign || '').trim() || tpl.name || '') + '</b><br>Template: <b>' + esc(tpl.name || '') + '</b> (' + esc(tpl.waName || '') + ', ' + esc(tpl.language || '') + '). Each candidate receives their own message, with their own details filled in.</p>'
       + (t.skip.length ? '<div class="wx-miss">' + t.skip.length + ' selected candidate' + (t.skip.length === 1 ? ' is' : 's are') + ' not sent: '
         + esc(t.skip.slice(0, 4).map(function (p) { return p.name; }).join(', ')) + (t.skip.length > 4 ? ' and ' + (t.skip.length - 4) + ' more' : '') + '.</div>' : '')
       + (S.error ? '<div class="wx-err" style="margin-top:10px">' + esc(S.error) + '</div>' : '')
@@ -410,7 +414,8 @@
       return '<tr><td><b>' + esc(s.name) + '</b></td><td></td><td><span class="wx-chip wx-warn">Not sent</span><div class="wx-cs">' + esc((s.reasons || []).join('; ')) + '</div></td><td></td></tr>';
     }).join('');
     return '<div class="wx-body">' + (S.error ? '<div class="wx-err">' + esc(S.error) + '</div>' : '')
-      + '<div class="wx-row" style="margin-bottom:10px"><b style="font-size:15px">' + esc(b.templateName || 'WhatsApp send') + '</b>'
+      + '<div class="wx-row" style="margin-bottom:10px"><b style="font-size:15px">' + esc(b.campaignName || b.templateName || 'WhatsApp send') + '</b>'
+      + (b.campaignName && b.templateName ? '<span class="wx-chip">' + esc(b.templateName) + '</span>' : '')
       + '<span class="wx-cs">' + (b.finished ? 'Finished' : 'Sending… this updates by itself') + '</span></div>'
       + '<div class="wx-kv"><div><b>' + b.total + '</b><span>Messages</span></div><div><b>' + b.pending + '</b><span>Pending</span></div><div><b>' + (b.sent + b.delivered) + '</b><span>Sent</span></div>'
       + '<div><b>' + b.delivered + '</b><span>Delivered</span></div><div><b>' + b.read + '</b><span>Read</span></div><div><b>' + b.failed + '</b><span>Failed</span></div></div>'
@@ -425,13 +430,13 @@
     if (!S.hist) return '<div class="wx-body"><div class="wx-state">Loading…</div></div>';
     var h = S.hist;
     var rows = (h.batches || []).map(function (b) {
-      return '<tr style="cursor:pointer" onclick="wxOpenBatch(\'' + esc(b.batchId) + '\')"><td><b>' + esc(b.templateName || '') + '</b><div class="wx-cs">' + esc(b.recruiter || '') + '</div></td>'
+      return '<tr style="cursor:pointer" onclick="wxOpenBatch(\'' + esc(b.batchId) + '\')"><td><b>' + esc(b.campaignName || b.templateName || '') + '</b><div class="wx-cs">' + esc(b.templateName || '') + ' · ' + esc(b.recruiter || '') + '</div></td>'
         + '<td class="wx-cs">' + esc(when(b.at)) + '</td><td>' + b.total + '</td><td>' + b.sent + '</td><td>' + b.delivered + '</td><td>' + b.read + '</td>'
         + '<td>' + (b.failed ? '<span class="wx-chip wx-bad">' + b.failed + ' failed</span>' : '0') + (b.pending ? ' <span class="wx-chip wx-warn">' + b.pending + ' pending</span>' : '') + '</td></tr>';
     }).join('');
     var by = h.byRecruiter ? '<h3 style="margin:18px 0 8px;font-size:14px">By recruiter</h3><table class="wx-tbl"><thead><tr><th>Recruiter</th><th>Messages</th><th>Sent</th><th>Delivered</th><th>Failed</th></tr></thead><tbody>'
       + h.byRecruiter.map(function (r) { return '<tr><td><b>' + esc(r.recruiter) + '</b></td><td>' + r.messages + '</td><td>' + r.sent + '</td><td>' + r.delivered + '</td><td>' + r.failed + '</td></tr>'; }).join('') + '</tbody></table>' : '';
-    return '<div class="wx-body">' + (rows ? '<table class="wx-tbl"><thead><tr><th>Template / sent by</th><th>When</th><th>Messages</th><th>Sent</th><th>Delivered</th><th>Read</th><th>Problems</th></tr></thead><tbody>' + rows + '</tbody></table>'
+    return '<div class="wx-body">' + (rows ? '<table class="wx-tbl"><thead><tr><th>Campaign / template · sent by</th><th>When</th><th>Messages</th><th>Sent</th><th>Delivered</th><th>Read</th><th>Problems</th></tr></thead><tbody>' + rows + '</tbody></table>'
       : '<div class="wx-state">No WhatsApp messages have been sent yet.</div>') + by + '</div>';
   }
 
@@ -471,8 +476,14 @@
   window.wxTplQ = function (v) { if (!S) return; S.tplQ = v; paint(); };
   window.wxTpl = function (id) {
     if (!S) return;
-    S.tplId = id; S.pre = {}; S.templateOk = undefined; S.templateWhy = []; paint(); refreshPreview(true);
+    S.tplId = id; S.pre = {}; S.templateOk = undefined; S.templateWhy = [];
+    if (!S.campaignTyped) {
+      var t = S.templates.filter(function (x) { return x.id === id; })[0];
+      S.campaign = t ? t.name + ' - ' + new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+    }
+    paint(); refreshPreview(true);
   };
+  window.wxCampaign = function (v) { if (!S) return; S.campaign = v; S.campaignTyped = true; };
   window.wxJob = function (v) { if (!S) return; S.jobId = v; S.pre = {}; reloadRecipients(); refreshPreview(true); };
   window.wxTick = function (k, on) { if (!S) return; S.ticks[k] = !!on; refreshPreview(true); paint(); };
   window.wxPreviewNow = function () {
@@ -530,7 +541,7 @@
     var chosen = pickedIds();
     var apps = S.applicationIds.filter(function (aid) { return chosen.some(function (id) { var i = infoOf(id); return i && i.applicationId === aid; }); });
     b.applicationIds = apps.length ? apps : undefined;
-    b.templateId = S.tplId; b.sendKey = S.sendKey;
+    b.templateId = S.tplId; b.sendKey = S.sendKey; b.campaignName = (S.campaign || '').trim() || undefined;
     b.includeNoOptIn = S.ticks.includeNoOptIn; b.includeWarned = S.ticks.includeWarned; b.includeNotLooking = S.ticks.includeNotLooking;
     api().post('/whatsapp/send', b).then(function (r) {
       if (S !== mine) return;

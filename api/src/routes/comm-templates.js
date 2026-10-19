@@ -219,12 +219,38 @@ export default function commTemplateRoutes() {
           order by c.created_at desc limit 300`, params)).rows;
     });
     const channelOk = !q.channel || q.channel === 'call';
+
+    /* 0159: WhatsApp sends are campaigns too - one per send, named by the recruiter (row-level security decides whose are visible) */
+    let wa = [];
+    if (!q.channel || q.channel === 'whatsapp') {
+      wa = await withUser(req.session, async (c) => {
+        const where = [`m.channel = 'whatsapp'`, `m.wa_payload is not null`], params = [];
+        if (q.department) { params.push(String(q.department)); where.push(`coalesce(r.department, 'All departments') = $${params.length}`); }
+        if (q.q) { params.push(`%${String(q.q).trim()}%`); where.push(`(m.campaign_name ilike $${params.length} or m.template_name ilike $${params.length})`); }
+        return (await c.query(
+          `select m.batch_id, max(m.campaign_name) as campaign_name, max(m.template_name) as template_name, max(m.recruiter_name) as recruiter,
+                  coalesce(max(r.department), 'All departments') as department, min(m.queued_at) as at,
+                  count(*)::int as total,
+                  count(*) filter (where m.status in ('sent','delivered'))::int as sent,
+                  count(*) filter (where m.status = 'delivered')::int as delivered,
+                  count(*) filter (where m.read_at is not null)::int as read,
+                  count(*) filter (where m.status in ('failed','not_configured'))::int as failed,
+                  count(*) filter (where m.status in ('queued','sending'))::int as pending
+             from message_logs m left join recruiters r on r.user_id = m.sent_by
+            where ${where.join(' and ')}
+            group by m.batch_id order by min(m.queued_at) desc limit 300`, params)).rows;
+      });
+    }
     res.json({
-      campaigns: channelOk ? rows.map((x) => ({
+      campaigns: wa.map((x) => ({
+        id: x.batch_id, name: x.campaign_name || x.template_name || 'WhatsApp send', channel: 'whatsapp', usedIn: x.template_name ? [x.template_name] : [],
+        department: x.department, status: x.pending ? 'running' : 'completed', owner: x.recruiter || null, createdAt: x.at,
+        messages: x.total, sent: x.sent, delivered: x.delivered, read: x.read, failed: x.failed, pending: x.pending, batchId: x.batch_id,
+      })).concat(channelOk ? rows.map((x) => ({
         id: x.id, name: x.name, channel: 'call', usedIn: [x.job_title], department: x.department || 'All departments',
         status: x.status, objective: x.objective, language: x.language_mode, maxCalls: x.max_calls, calls: x.calls,
         owner: x.recruiter_name || null, createdAt: x.created_at, scheduledAt: x.scheduled_at || null,
-      })) : [],
+      })) : []),
     });
   }));
 
