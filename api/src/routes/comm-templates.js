@@ -53,8 +53,10 @@ const shape = (t, who) => {
     approval: t.approval_state, approvalNote: t.approval_note || null,
     version: t.version, source: t.source, archived: !!t.archived,
     createdBy: t.created_by_name || null, updatedAt: t.updated_at, approvedAt: t.approved_at || null,
+    /* 0158: a WhatsApp Business template (sent through the WhatsApp API); edited in its own form by an administrator */
+    wa: t.wa_name ? { waName: t.wa_name, language: t.wa_language, status: t.wa_status } : null,
     /* what THIS person may do with it (the database checks again) */
-    canEdit: portal && (who.role === 'admin' || (who.role === 'recruiter' && mine)),
+    canEdit: t.wa_name ? who.role === 'admin' : portal && (who.role === 'admin' || (who.role === 'recruiter' && mine)),
     canArchive: portal && (who.role === 'admin' || (who.role === 'recruiter' && mine)),
     canReview: portal && t.approval_state !== 'approved' && (who.role === 'admin' || (who.teamLead && !mine)),
     canDuplicate: who.role === 'admin' || who.role === 'recruiter',
@@ -158,6 +160,8 @@ export default function commTemplateRoutes() {
   r.put('/comm/templates/:id', requireAuth(), requireRole('recruiter', 'admin'), wrap(async (req, res) => {
     const b = parse(templateSchema.omit({ channel: true }), req.body);
     const who = await whoIs(req.session);
+    const cur = await withUser(req.session, async (c) => (await c.query(`select wa_name from comm_templates where id = $1`, [req.params.id])).rows[0]);
+    if (cur && cur.wa_name) throw new ApiError(422, 'VALIDATION_FAILED', 'A WhatsApp Business template is edited in its own form (administrators only).');
     const t = await withUser(req.session, async (c) => (await c.query(
       `select * from comm_template_update($1,$2,$3,$4,$5,$6)`,
       [req.params.id, b.name, b.subject || null, b.body, b.department || null, b.usedIn || []])).rows[0])

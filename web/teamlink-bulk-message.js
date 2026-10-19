@@ -75,6 +75,13 @@
     var rows = selected();
     if (!rows.length) { toast('Select at least one candidate first', '☑️'); return; }
 
+    /* 0158: WhatsApp has its own popup (approved templates, a personalised message per candidate, tracking) */
+    if (channel === 'whatsapp' && typeof window.tlWhatsApp === 'function') {
+      window.tlWhatsApp({ candidateIds: rows.map(function (c) { return c.id; }),
+        rows: rows.map(function (c) { return { id: c.id, name: c.name, phone: c.phone, title: c.title || c.preferredRole || '' }; }) });
+      return;
+    }
+
     M = { channel: channel, rows: rows, templates: [], variables: [], batchId: null,
           poll: null, sending: false };
 

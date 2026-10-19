@@ -521,7 +521,7 @@ export function whatsappBody(text, cfg = {}) {
 export const whatsappProvider = {
   channel: 'whatsapp',
   configured: () => !!(config.whatsappApiKey && config.whatsappPhoneId),
-  async send({ to, text, purpose, vars }) {
+  async send({ to, text, purpose, vars, waTemplate }) {
     if (!this.configured()) {
       return NOT_CONFIGURED('whatsapp', 'WHATSAPP_API_KEY / WHATSAPP_PHONE_ID are not set');
     }
@@ -543,6 +543,25 @@ export const whatsappProvider = {
      * template name configured this still sends text, because inside the
      * window that is correct and it is what a reply needs.
      */
+    /* 0158: an approved Business template with its own header / body / buttons and parameters, exactly as the
+       recruiter previewed it. Nothing is rewritten and there is no free-text fallback. */
+    if (waTemplate) {
+      try {
+        const url = `${config.whatsappApiUrl.replace(/\/$/, '')}/${config.whatsappPhoneId}/messages`;
+        const res = await postJson(url, {
+          headers: { authorization: `Bearer ${config.whatsappApiKey}` },
+          body: { messaging_product: 'whatsapp', to: String(to).replace(/[^\d]/g, ''), type: 'template', template: waTemplate },
+        });
+        if (!res.ok) {
+          const reason = String((res.json && res.json.error && res.json.error.message) || res.text || '').slice(0, 300);
+          return { status: 'failed', provider: 'whatsapp', error: `WhatsApp ${res.status}: ${reason}` };
+        }
+        return { status: 'sent', provider: 'whatsapp', ref: res.json?.messages?.[0]?.id || null };
+      } catch (err) {
+        return { status: 'failed', provider: 'whatsapp', error: err.message };
+      }
+    }
+
     let cfg = await channelSettings('whatsapp');
     /* The administrator's approved templates (Administration -> Integrations), by purpose. A recruiter's
        own template name on the channels screen still wins. */

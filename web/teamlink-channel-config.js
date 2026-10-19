@@ -177,7 +177,12 @@
       + 'Credentials are encrypted on the server and never shown again.</div></div></div>'
       + '<div class="panel-body">'
       + (S.keyOk ? '' : '<div class="tljp-why" role="alert"><b>INTEGRATION_SECRET_KEY is not set on the server.</b> Credentials cannot be saved until it is set in the server environment and the server is restarted.</div>')
-      + '<div class="tlcc-grid">' + ORDER.map(card).join('') + '</div></div></section>';
+      + '<div class="tlcc-grid">' + ORDER.map(card).join('') + '</div>'
+      + (typeof window.tlWaTemplates === 'function'
+        ? '<div class="tljp-note" style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span style="flex:1;min-width:220px"><b>WhatsApp message templates.</b> '
+          + 'The approved WhatsApp Business templates recruiters send to candidates: add them, edit their fields, or pull the approved ones in from WhatsApp.</span>'
+          + '<button type="button" class="tlcc-prim" onclick="tlWaTemplates()">Manage WhatsApp templates</button></div>' : '')
+      + '</div></section>';
   }
 
   /* ------------------------------------------------------------------ modal helpers */

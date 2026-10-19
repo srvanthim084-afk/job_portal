@@ -241,6 +241,7 @@
       b.setAttribute('aria-atomic', 'true');
       b.hidden = true;
       b.innerHTML = '<span class="tlas-n"></span><span class="tlas-h"></span>'
+        + '<button type="button" class="btn btn-ghost btn-sm tlas-wa" title="Send a WhatsApp template message to the selected applicants">WhatsApp</button>'
         + '<button type="button" class="btn btn-ghost btn-sm tlas-clear">Clear selection</button>';
     }
     /* Directly above the table, under whatever filter bar is there. */
@@ -313,6 +314,14 @@
       visibleIds().forEach(function (vid) { if (on) set.add(vid); else set.delete(vid); });
       changed();
     }
+  });
+
+  /* WhatsApp: the one send popup (teamlink-whatsapp-send.js), given the selected APPLICATIONS so each message uses that application's own job and status. */
+  document.addEventListener('click', function (e) {
+    var w = e.target && e.target.closest && e.target.closest('.tlas-wa');
+    if (!w) return;
+    e.preventDefault();
+    if (typeof window.tlWhatsApp === 'function') window.tlWhatsApp({ applicationIds: api.get(), candidateIds: api.candidateIds() });
   });
 
   document.addEventListener('click', function (e) {

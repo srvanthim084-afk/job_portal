@@ -161,6 +161,10 @@
             + 'onchange="tcCol(\'' + c[0] + '\',this.checked)"> ' + esc(c[1] === 'Template' && camp ? 'Campaign' : c[1]) + '</label>'; }).join('') + '</div>' : '')
       + '</div>'
       + (!camp && S.perms.canCreate ? '<button type="button" class="tc-btn p" onclick="tcNew()">+ New template</button>' : '')
+      /* 0158: an administrator manages the WhatsApp Business templates (the ones that can be sent through the WhatsApp API) */
+      + (!camp && S.perms.role === 'admin' && S.channel === 'whatsapp' && typeof window.tlWaTemplateForm === 'function'
+          ? '<button type="button" class="tc-btn p" onclick="tcNewWa()">+ WhatsApp Business template</button>'
+            + '<button type="button" class="tc-btn" onclick="tcSyncWa()" title="Pull the templates WhatsApp has approved into this list">Sync from WhatsApp Business</button>' : '')
       + '</div>';
   }
 
@@ -193,7 +197,8 @@
           + (camp ? '<div class="tc-sub">' + esc(CAMP_STATUS[t.status] || t.status) + (t.owner ? ' · ' + esc(t.owner) : '') + '</div>'
             : '<div class="tc-sub">' + (t.source === 'system' ? 'Built in' : 'By ' + esc(t.createdBy || '—')) + (t.archived ? ' · Archived' : '') + '</div>') + '</td>');
       }
-      if (S.cols.channel) cells.push('<td><span class="tc-chip">' + esc(CH_LABEL[t.channel] || t.channel) + '</span></td>');
+      if (S.cols.channel) cells.push('<td><span class="tc-chip">' + esc(CH_LABEL[t.channel] || t.channel) + '</span>'
+        + (t.wa ? '<div class="tc-sub">' + esc(t.wa.waName) + ' · ' + esc(t.wa.language) + '</div><span class="tc-chip ' + (t.wa.status === 'approved' ? 'tc-ok' : 'tc-wait') + '">WhatsApp: ' + esc(t.wa.status || 'not submitted') + '</span>' : '') + '</td>');
       if (S.cols.usedIn) cells.push('<td>' + usedInHtml(t.usedIn) + '</td>');
       if (S.cols.department) cells.push('<td>' + esc(t.department) + '</td>');
       if (S.cols.approval) cells.push('<td>' + (camp ? '<span class="tc-sub">—</span>' : approvalChip(t)) + '</td>');
@@ -242,7 +247,7 @@
       return '<tr><td>v' + esc(x.version) + '</td><td>' + esc(new Date(x.savedAt).toLocaleString()) + '</td><td>' + esc(x.name) + '</td></tr>'; }).join('');
     return '<div class="tc-body"><button type="button" class="tc-btn" onclick="tcBack()">← Back</button>'
       + '<h3 style="margin:14px 0 4px">' + esc(t.name) + '</h3>'
-      + '<div class="tc-sub">' + esc(CH_LABEL[t.channel]) + ' template · v' + esc(t.version) + (t.source === 'system' ? ' · Built in' : ' · By ' + esc(t.createdBy || '—')) + '</div>'
+      + '<div class="tc-sub">' + esc(CH_LABEL[t.channel]) + ' template' + (t.wa ? ' (WhatsApp Business: ' + esc(t.wa.waName) + ', ' + esc(t.wa.language) + ', ' + esc(t.wa.status || 'not submitted') + ')' : '') + ' · v' + esc(t.version) + (t.source === 'system' ? ' · Built in' : ' · By ' + esc(t.createdBy || '—')) + '</div>'
       + '<div class="tc-kv"><div><b>Approval</b>' + approvalChip(t) + '</div><div><b>Department</b>' + esc(t.department) + '</div>'
       + '<div><b>Used in</b>' + usedInHtml(t.usedIn) + '</div><div><b>Last changed</b>' + esc(t.updatedAt ? new Date(t.updatedAt).toLocaleString() : '—') + '</div></div>'
       + (t.subject ? '<div class="tc-sub" style="margin-bottom:4px">Subject</div><div class="tc-pre" style="margin-bottom:10px">' + esc(t.subject) + '</div>' : '')
@@ -312,10 +317,11 @@
   /* ------------------------------------------------------------------ *
    * open / close - one instance only
    * ------------------------------------------------------------------ */
-  window.tcOpen = function () {
+  window.tcOpen = function (opts) {
     if (S.open || root()) return;
     addStyle();
     S.open = true; S.view = null; S.colsOpen = false; S.error = '';
+    if (opts && typeof opts === 'object' && opts.channel) { S.channel = String(opts.channel); S.tab = 'templates'; }
     S.lastFocus = document.activeElement;
     var ov = document.createElement('div');
     ov.className = 'tc-ov'; ov.id = 'tcRoot';
@@ -369,7 +375,14 @@
     }, function (e) { toast(errText(e), '⚠️'); });
   };
   window.tcNew = function () { S.view = { type: 'edit', item: null }; paint(); var n = document.getElementById('tcfName'); if (n) n.focus(); };
-  window.tcEdit = function (id) { var t = find(id) || (S.view && S.view.item); if (!t) return; S.view = { type: 'edit', item: t }; paint(); };
+  window.tcEdit = function (id) {
+    var t = find(id) || (S.view && S.view.item); if (!t) return;
+    /* a WhatsApp Business template has its own form (name and language as in WhatsApp Manager, header, buttons, fields) */
+    if (t.wa && typeof window.tlWaTemplateForm === 'function') { window.tlWaTemplateForm(t.id, function () { S.view = null; load(true); }); return; }
+    S.view = { type: 'edit', item: t }; paint();
+  };
+  window.tcNewWa = function () { if (typeof window.tlWaTemplateForm === 'function') window.tlWaTemplateForm(null, function () { S.view = null; load(true); }); };
+  window.tcSyncWa = function () { if (typeof window.tlWaSync === 'function') window.tlWaSync(function () { load(true); }); };
   window.tcChannelChanged = function () {
     var ch = document.getElementById('tcfChannel'), w = document.getElementById('tcfSubjWrap');
     if (ch && w) w.style.display = ch.value === 'email' ? '' : 'none';

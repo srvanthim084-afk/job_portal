@@ -114,6 +114,37 @@ export async function handleIncoming(msg, base) {
   return { status: res.status, error: res.error };
 }
 
+/** A delivery receipt from WhatsApp for a message we sent. Exported so tests drive it directly. */
+export async function recordReceipt(st) {
+  const status = String(st && st.status || '').toLowerCase();
+  if (!['delivered', 'read', 'failed'].includes(status)) return 0;
+  const at = st.timestamp ? new Date(Number(st.timestamp) * 1000) : new Date();
+  const err = st.errors && st.errors[0] ? [st.errors[0].title, st.errors[0].message || (st.errors[0].error_data && st.errors[0].error_data.details)].filter(Boolean).join(': ') : null;
+  return withUser(ENGINE, async (c) => (await c.query(
+    `select message_log_delivery($1,$2,$3,$4,$5) as n`,
+    [String(st.id || ''), status, err, at, st.pricing ? JSON.stringify(st.pricing) : null])).rows[0].n);
+}
+
+/**
+ * "STOP" and "START" on a TeamLink WhatsApp thread: the candidate's opt-out and opt-in, honoured at once.
+ * @returns true when the message was one of those and has been dealt with (it is not given to the agent).
+ */
+export async function handleOptReply(msg) {
+  if (!msg || msg.type !== 'text' || !msg.text) return false;
+  const t = String(msg.text.body || '').trim().toLowerCase().replace(/[.!]+$/, '');
+  const out = /^(stop|stop all|unsubscribe|opt ?out|cancel messages)$/.test(t);
+  const back = /^(start|subscribe|opt ?in)$/.test(t);
+  if (!out && !back) return false;
+  const phone10 = String(msg.from || '').replace(/\D/g, '').slice(-10);
+  const n = await withUser(ENGINE, async (c) => (await c.query(`select candidate_whatsapp_opt($1,$2) as n`, [phone10, back])).rows[0].n);
+  const text = out
+    ? 'You will no longer receive WhatsApp messages from TeamLink Consultants. Reply START any time to receive them again.'
+    : 'Thank you - you will receive WhatsApp messages from TeamLink Consultants again. Reply STOP to opt out.';
+  const res = await whatsappProvider.send({ to: String(msg.from || ''), text });
+  console.log(`[whatsapp-agent] ${out ? 'opt-out' : 'opt-in'} recorded for ${n} candidate(s), reply ${res.status}`);
+  return true;
+}
+
 const chatLimiter = rateLimit({
   windowMs: 60_000,
   max: Number(process.env.WHATSAPP_CHAT_RATE_MAX || 20),
@@ -179,13 +210,22 @@ export default function whatsappAgentRoutes() {
     res.sendStatus(200);              // Meta wants a quick answer; the work follows
     const base = publicBase(req);
     const msgs = [];
+    const receipts = [];
     for (const e of (req.body && req.body.entry) || []) {
       for (const ch of (e && e.changes) || []) {
         for (const m of (ch && ch.value && ch.value.messages) || []) msgs.push(m);
+        for (const st of (ch && ch.value && ch.value.statuses) || []) receipts.push(st);
       }
     }
+    /* 0158: delivery receipts for the template messages recruiters sent: sent -> delivered -> read, or failed */
+    for (const st of receipts) {
+      try { await recordReceipt(st); } catch (err) { console.error('[whatsapp-agent] receipt failed:', err && err.message); }
+    }
     for (const m of msgs) {
-      try { await handleIncoming(m, base); } catch (err) { console.error('[whatsapp-agent] handling failed:', err && err.message); }
+      try {
+        if (await handleOptReply(m)) continue;
+        await handleIncoming(m, base);
+      } catch (err) { console.error('[whatsapp-agent] handling failed:', err && err.message); }
     }
   }));
 

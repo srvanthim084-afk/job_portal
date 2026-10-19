@@ -8243,6 +8243,8 @@ mark.fcr-hl{background:#fff3a3;color:inherit;border-radius:3px;padding:0 1px}
   function waDigits(ph){ return String(ph||'').replace(/\D/g,''); }
   window.fcrWhatsappModal=function(){
     const sel=needSelection(); if(!sel) return;
+    /* 0158: the one WhatsApp send popup - approved templates, a message per candidate, tracked */
+    if(typeof window.tlWhatsApp==='function') return tlWhatsApp({ candidateIds: sel.map(c=>c.id), rows: sel.map(c=>({id:c.id,name:c.name,phone:c.phone,title:c.title})) });
     const configured=!!waSettings().apiUrl;
     fcrModal(`<div class="fcr-modal-head"><h3>WhatsApp ${sel.length} candidate${sel.length===1?'':'s'}</h3><button class="btn btn-ghost btn-sm" onclick="fcrCloseModal()">✕</button></div>
       <div class="fcr-modal-body">
@@ -30557,6 +30559,7 @@ table.data td .tl-af b{white-space:normal}
 <script src="teamlink-interview-integrity.js"></script>
 <script src="teamlink-interview-verification.js"></script>
 <script src="teamlink-templates-campaigns.js"></script>
+<script src="teamlink-whatsapp-send.js"></script>
 <!-- The AI video interview screen (#/ai-interview/<ref>): the owner's layout,
      live transcript, per-question recordings, reconnect. The interview
      itself is still the AIIV module above. -->
