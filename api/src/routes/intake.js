@@ -14,13 +14,11 @@ import { z } from 'zod';
 import { withUser } from '../db.js';
 import { wrap, badRequest, notFound, forbidden, ApiError } from '../errors.js';
 import { requireAuth, requireRole } from '../auth.js';
-import { syncMailbox, syncAll, mapMessage, temporaryPassword } from '../intake/process.js';
+import { syncMailbox, syncAll, mapMessage } from '../intake/process.js';
 import { SOURCES } from '../intake/source.js';
 import { mailboxReadiness, verifyMailbox, SAMPLE_EMAILS } from '../intake/mailbox.js';
-import { hashPassword } from '../auth.js';
-import { providers } from '../notify/providers.js';
-import { buildEventMessages } from '../notify/templates.js';
-import { interviewInfoFor } from '../intake/interview-info.js';
+import { sendRegistrationMessage } from '../intake/login-mail.js';
+import { pendingSummary, startBulk as startBulkLogins, status as loginsStatus } from '../intake/bulk-logins.js';
 import { config } from '../config.js';
 
 const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
@@ -624,111 +622,41 @@ export default function intakeRoutes() {
    * password of somebody who already chose their own would lock them out
    * of an account they are using.
    */
+  /* ---- send the login to everyone imported who is still waiting (administrator, on purpose) ---------------------- */
+
+  /** GET /api/intake/send-logins/pending - how many are waiting, and of which kind (nothing is sent) */
+  r.get('/intake/send-logins/pending', requireAuth(), requireRole('admin'), wrap(async (_req, res) => {
+    res.json({ ...(await pendingSummary()), progress: loginsStatus() });
+  }));
+
+  /** POST /api/intake/send-logins { confirm: true, expected: N } - start; refused if the number is not the one that was shown */
+  r.post('/intake/send-logins', requireAuth(), requireRole('admin'), wrap(async (req, res) => {
+    const b = parse(z.object({ confirm: z.literal(true), expected: z.number().int().min(0).max(100000) }), req.body);
+    const out = await startBulkLogins({ expected: b.expected, actor: req.session.userId || 'admin' });
+    if (!out.started) throw new ApiError(409, 'BULK_NOT_STARTED', out.reason);
+    res.status(202).json({ started: true, total: out.total });
+  }));
+
+  /** GET /api/intake/send-logins/status - progress of the run */
+  r.get('/intake/send-logins/status', requireAuth(), requireRole('admin'), wrap(async (_req, res) => {
+    res.json(loginsStatus());
+  }));
+
   r.post('/intake/applications/:id/resend', requireAuth(), requireRole('recruiter', 'bde', 'admin'),
     wrap(async (req, res) => {
       const b = parse(z.object({
         channels: z.array(z.enum(['email', 'sms', 'whatsapp'])).optional(),
       }), req.body);
-      const channels = b.channels && b.channels.length ? b.channels : ['email', 'sms', 'whatsapp'];
 
-      const ctx = await withUser(req.session, async (c) => (await c.query(
-        `select a.id, a.reference, a.job_id, a.candidate_id,
-                c.name, c.email, c.phone, c.user_id,
-                j.title as job_title, co.name as company_name,
-                u.must_change_password, u.password_set_at
-           from applications a
-           join candidates c on c.id = a.candidate_id
-           join jobs j on j.id = a.job_id
-           left join companies co on co.id = j.company_id
-           left join users u on u.id = c.user_id
-          where a.id = $1`, [req.params.id])).rows[0]);
-      if (!ctx) throw notFound('That application could not be found.');
+      /* the caller must be able to see this application (row-level security answers that, not the shared sender below) */
+      const visible = await withUser(req.session, async (c) => (await c.query(
+        `select id from applications where id = $1`, [req.params.id])).rows[0]);
+      if (!visible) throw notFound('That application could not be found.');
 
-      let credentials = null;
-      // A fresh password only for somebody who has never set their own.
-      if (ctx.email && ctx.must_change_password) {
-        const password = temporaryPassword();
-        const hash = await hashPassword(password);
-
-        /*
-         * THROUGH THE DEFINER FUNCTION. The direct UPDATE here matched
-         * no policy on `users` and so affected zero rows without
-         * raising, which meant the credentials sent below had never been
-         * stored and could not sign anybody in. See 0070.
-         */
-        const stored = await withUser(ENGINE, async (c) => (await c.query(
-          `select auth_set_password($1,$2,true,null) as ok`,
-          [ctx.user_id, hash])).rows[0]);
-
-        /* Only claim a password exists if one was actually written. */
-        if (stored && stored.ok === true) {
-          credentials = { email: ctx.email, password };
-        } else {
-          console.error('[intake] the temporary password was not stored for user', ctx.user_id);
-        }
-      }
-
-      const ai = await interviewInfoFor(ctx.id);
-      const messages = buildEventMessages('APPLICATION_IMPORTED', {
-        candidateName: ctx.name,
-        jobTitle: ctx.job_title,
-        company: ctx.company_name || 'TeamLink Consultants',
-        jobId: ctx.job_id,
-        applicationId: ctx.id,
-        reference: ctx.reference,
-        portalUrl: `${config.publicOrigin.replace(/\/$/, '')}/#/login/candidate`,
-        linkLabel: 'Open the candidate portal',
-        loginEmail: ctx.email || null,
-        tempPassword: credentials ? credentials.password : null,
-        ...ai,
-        smsLead: ai.aiInterview
-          ? `Your application for ${ctx.job_title} is registered (Ref ${ctx.reference}). Your AI interview login is in your email:`
-          : `Your application for ${ctx.job_title} is registered. Ref ${ctx.reference}. Log in:`,
-      });
-
-      const status = {};
-      for (const channel of channels) {
-        const to = channel === 'email' ? ctx.email : ctx.phone;
-        let result;
-        if (!to) result = { status: 'skipped_no_address', provider: channel };
-        else {
-          try {
-            result = await providers[channel].send({
-              to,
-              vars: {
-                to_name: ctx.name,
-                candidate_name: ctx.name,
-                job_title: ctx.job_title,
-                company_name: ctx.company_name || '',
-                application_id: ctx.reference,
-                portal_link: `${config.publicOrigin.replace(/\/$/, '')}/#/login/candidate`,
-              },
-              subject: messages.email.subject,
-              html: messages.email.html,
-              text: channel === 'sms' ? messages.sms
-                  : channel === 'whatsapp' ? messages.whatsapp : messages.email.text,
-            });
-          } catch (err) {
-            result = { status: 'failed', provider: channel, error: err.message };
-          }
-        }
-        status[channel] = result.status;
-        await withUser(ENGINE, (c) => c.query(
-          `select record_delivery($1,$2,$3,$4,$5,$6,$7,$8,$9,now(),null)`,
-          [ctx.id, ctx.candidate_id, ctx.job_id, channel, result.status, to || null,
-           result.provider || null, result.ref || null, result.error || null])).catch(() => {});
-      }
-
-      if ((status.email === 'sent' || status.email === 'delivered') && ai.aiInterview) {
-        await withUser(ENGINE, (c) => c.query(`select ai_interview_reminder_sent($1,'invited')`, [ctx.id])).catch(() => {});
-      }
-      await withUser(ENGINE, (c) => c.query(
-        `select app_event($1,$2,'candidate.notified',$3,$4,$5::jsonb)`,
-        [ctx.id, ctx.candidate_id,
-         `Registration message resent - ${Object.entries(status).map(([k, v]) => `${k}: ${v}`).join(', ')}`,
-         req.session.profileId || req.session.role, JSON.stringify(status)]));
-
-      res.json({ sent: status, newPasswordIssued: !!credentials });
+      const out = await sendRegistrationMessage(req.params.id, {
+        channels: b.channels, actor: req.session.profileId || req.session.role });
+      if (out.notFound) throw notFound('That application could not be found.');
+      res.json({ sent: out.sent, newPasswordIssued: out.newPasswordIssued });
     }));
 
   /** The delivery log for one application - the communication history. */

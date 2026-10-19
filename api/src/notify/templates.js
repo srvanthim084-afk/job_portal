@@ -320,6 +320,23 @@ const BODIES = {
       lines.push('', 'You already have a TeamLink account - sign in with your existing password.');
     }
 
+    /* Somebody who has already applied for a job: their AI interview is waiting, so say which one, by when, and how. */
+    if (c.aiInterviews && c.aiInterviews.length) {
+      lines.push(
+        '',
+        c.aiInterviews.length === 1 ? 'Attend your AI interview:' : 'Attend your AI interviews:');
+      c.aiInterviews.forEach((x) => {
+        lines.push(`  - ${x.jobTitle}: `
+          + (x.dueAt ? `please complete it by ${human(x.dueAt)}.` : 'you can attend it at any time while the job is open.'));
+      });
+      lines.push(
+        '',
+        '  Each is a short interview (about 15 questions, about 35 minutes) taken in your browser with your camera and microphone.',
+        '  1. Sign in to the candidate portal.',
+        '  2. Open "Applied Jobs" and press "Attend AI Interview" for the role.',
+        '  3. Before it starts you will take a photo and accept the interview instructions.');
+    }
+
     lines.push(
       '',
       'If you would rather not hear from us, reply to this message and we will '

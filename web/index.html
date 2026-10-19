@@ -30028,14 +30028,14 @@ table.data td .tl-af b{white-space:normal}
   function iw(){
     STATE.importWiz = STATE.importWiz || {
       step:1, file:null, text:'', busy:false, error:'', result:null,
-      mapping:{}, decisions:{}, invite:false,
+      mapping:{}, decisions:{}, invite:true,
     };
     return STATE.importWiz;
   }
 
   window.tpImport = function(){
     STATE.importWiz = { step:1, file:null, text:'', busy:false, error:'', result:null,
-                        mapping:{}, decisions:{}, invite:false };
+                        mapping:{}, decisions:{}, invite:true };
     fcrModal('<div class="fcr-jd-head"><h3>Import Candidate Data</h3>'
       + '<p>Upload your existing candidate database. Nothing is saved until you confirm.</p>'
       + '<button class="fcr-jd-x" onclick="fcrCloseModal()">✕</button></div>'
@@ -30300,10 +30300,12 @@ table.data td .tl-af b{white-space:normal}
 
       + '<label style="display:flex;gap:8px;align-items:flex-start;margin-top:15px;font-size:12.5px">'
       +   '<input type="checkbox" '+(w.invite?'checked':'')+' onchange="iwInvite(this.checked)" style="margin-top:2px">'
-      +   '<span>Also invite these candidates to activate a TeamLink profile.'
+      +   '<span>Send each imported candidate their portal login by email, SMS and WhatsApp'
+      +   ' — with their AI interview if they have already applied to a job.'
       +   '<br><span style="color:var(--text-soft);font-size:11.5px">'
-      +   'Off by default. Importing somebody is not the same as contacting them — '
-      +   'ticking this emails and messages every person in the file.</span></span></label>'
+      +   'Ticked: every person in the file with an email or phone number is contacted once '
+      +   '(anyone already invited, or marked do-not-contact, is skipped). '
+      +   'Untick to import without contacting anybody.</span></span></label>'
 
       + '<div class="iw-bar"><button class="btn btn-ghost" onclick="iwBack(2)">Back</button>'
       + '<div class="sp"><button class="btn btn-primary" onclick="iwCommit()">'

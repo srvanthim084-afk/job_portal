@@ -22,6 +22,7 @@ import { hashPassword } from '../auth.js';
 import { providers } from './providers.js';
 import { buildEventMessages } from './templates.js';
 import { temporaryPassword } from '../intake/process.js';
+import { openInterviewsFor } from '../intake/interview-info.js';
 
 const ENGINE = { userId: '', role: 'admin', profileId: null };
 const CHANNELS = ['email', 'sms', 'whatsapp'];
@@ -111,6 +112,7 @@ export async function inviteCandidate(candidate, opts = {}) {
     linkLabel: 'Open the candidate portal',
     loginEmail: credentials ? credentials.email : (candidate.email || null),
     tempPassword: credentials ? credentials.password : null,
+    aiInterviews: await openInterviewsFor(candidate.id),      // somebody who already applied is told which interview to attend
     smsLead: `You have been added to the ${company} candidate database. `
            + 'Sign in to complete your profile:',
   });
@@ -220,6 +222,7 @@ export async function resendCredentials(candidate, opts = {}) {
     linkLabel: 'Open the candidate portal',
     loginEmail,
     tempPassword: password,
+    aiInterviews: await openInterviewsFor(candidate.id),
     smsLead: `Your ${company} candidate portal login:`,
   });
   if (!messages) { out.reason = 'no template'; return out; }

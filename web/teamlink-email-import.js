@@ -21,7 +21,7 @@
 
   var SECTION = 'email-import';
   var BOARD = { naukri: 'Naukri', shine: 'Shine' };
-  var S = { data: null, loading: false, error: '', forms: { naukri: {}, shine: {} }, busy: {}, msg: {}, errs: { naukri: {}, shine: {} }, modal: null, poll: null };
+  var S = { logins: null, loginsMsg: '', data: null, loading: false, error: '', forms: { naukri: {}, shine: {} }, busy: {}, msg: {}, errs: { naukri: {}, shine: {} }, modal: null, poll: null };
 
   function h(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -53,6 +53,7 @@
       S.data = r; S.loading = false; S.error = '';
       if (!same) paint();
       schedulePoll();
+      loadLogins(true);
     }, function (e) {
       S.loading = false; S.error = errMsg(e); paint();
     });
@@ -332,11 +333,54 @@
     if (!S.data) return '<div class="tlei-empty">Loading the mailbox connections…</div>';
     return (S.data.canStoreCredentials === false
       ? '<div class="tlei-msg bad">The server cannot store mailbox passwords yet: INTEGRATION_SECRET_KEY is not set (at least 16 characters). Set it in the server environment and restart; until then, Connect is refused.</div>' : '')
+      + loginsCardHtml()
       + '<div class="tlei-cards">' + formHtml('naukri') + formHtml('shine') + '</div>'
       + '<div class="tlei-tablehd"><b>Connected mailboxes</b><button class="btn btn-ghost btn-sm" onclick="tleiReload()">Refresh</button></div>'
       + tableHtml()
       + '<p class="tlei-foot">Each mailbox imports only its own job board\'s emails, and only into the recruiter chosen for it. Emails that cannot be matched safely are kept for review instead of being guessed. Syncing again never imports the same email twice.</p>';
   }
+  /* ------------------------------------------------------------------ *
+   * imported candidates who have not been given their login yet (administrator, on purpose)
+   * ------------------------------------------------------------------ */
+  function loginsCardHtml() {
+    var L = S.logins;
+    if (!L) return '';
+    var p = L.progress || {};
+    var body;
+    if (p.running) {
+      body = '<b>Sending…</b> ' + (p.done || 0) + ' of ' + (p.total || 0) + ' done · ' + (p.sent || 0) + ' sent'
+        + (p.skipped ? ' · ' + p.skipped + ' skipped' : '') + (p.failed ? ' · ' + p.failed + ' failed' : '');
+    } else if (L.total > 0) {
+      body = '<b>' + L.total + ' imported candidate' + (L.total === 1 ? ' is' : 's are') + ' still waiting for their login.</b> '
+        + (L.mail ? L.mail + ' from Naukri / Shine emails' : '') + (L.mail && L.sourced ? ' and ' : '') + (L.sourced ? L.sourced + ' imported from files or added by hand' : '') + '. '
+        + 'Each gets their portal login by email, SMS and WhatsApp, and the AI interview to attend if they have applied to a job. '
+        + 'Nobody marked do-not-contact, nobody without an address, and nobody who can already sign in is included. Staff logins are never touched.'
+        + '<div style="margin-top:8px"><button class="btn btn-primary btn-sm" onclick="tleiSendLogins()">Send login emails to ' + L.total + '</button></div>';
+    } else {
+      body = (p.finishedAt ? 'Last run: ' + (p.sent || 0) + ' sent' + (p.skipped ? ', ' + p.skipped + ' skipped' : '') + (p.failed ? ', ' + p.failed + ' failed' : '') + '. ' : '')
+        + 'Everybody imported has been given their login.';
+    }
+    return '<div class="tlei-msg ' + (p.running ? 'ok' : (L.total > 0 ? 'bad' : 'ok')) + '" style="margin:0 0 14px">'
+      + (S.loginsMsg ? h(S.loginsMsg) + '<br>' : '') + body + '</div>';
+  }
+  function loadLogins(quiet) {
+    if (!api()) return;
+    api().get('/intake/send-logins/pending').then(function (r) {
+      S.logins = r;
+      paint();
+      if (r.progress && r.progress.running) { clearTimeout(S.loginsPoll); S.loginsPoll = setTimeout(function () { if (onPage()) loadLogins(true); }, 2500); }
+    }, function () { if (!quiet) S.logins = null; });
+  }
+  window.tleiSendLogins = function () {
+    var L = S.logins; if (!L || !L.total) return;
+    if (!window.confirm('Send the portal login (and the AI interview invitation) to ' + L.total + ' imported candidate' + (L.total === 1 ? '' : 's') + '?\n\n'
+      + 'They are contacted by email, SMS and WhatsApp, once each. This cannot be undone once the messages have gone.')) return;
+    api().post('/intake/send-logins', { confirm: true, expected: L.total }).then(function () {
+      S.loginsMsg = 'Started. You can leave this page; it keeps going.';
+      loadLogins(true);
+    }, function (e) { S.loginsMsg = errMsg(e); loadLogins(true); });
+  };
+
   function pageHtml() {
     return '<div id="tleiRoot" class="tlei">' + bodyHtml() + '</div><div id="tleiModal">' + modalHtml() + '</div>';
   }

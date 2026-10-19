@@ -8,7 +8,7 @@
  */
 import { withUser } from '../db.js';
 import { BLUEPRINT_TOTAL } from '../ai/interview.js';
-import { questionSeconds } from '../interview/policy.js';
+import { questionSeconds, formatWhen } from '../interview/policy.js';
 
 const ENGINE = { userId: '', role: 'admin', profileId: null };
 
@@ -27,5 +27,31 @@ export async function interviewInfoFor(applicationId) {
   } catch (err) {
     console.error('[intake] could not read the interview window:', err.message);
     return { aiInterview: false };
+  }
+}
+
+/**
+ * The AI interviews a candidate can attend right now: their open applications whose interview is not done and whose window
+ * is still open. Used by the login emails (CANDIDATE_INVITED), so somebody who already applied for a job is told, in the same
+ * message that gives them their login, which interview to attend and by when.
+ *
+ * @returns {Promise<Array<{applicationId: string, jobTitle: string, dueAt: Date|null}>>} at most three, newest first
+ */
+export async function openInterviewsFor(candidateId) {
+  try {
+    const rows = await withUser(ENGINE, async (c) => (await c.query(
+      `select a.id, j.title, w.due_at
+         from applications a
+         join jobs j on j.id = a.job_id
+         cross join lateral ai_interview_window(a.id) w
+        where a.candidate_id = $1 and w.open
+          and a.stage in ('applied', 'ai_screening')
+          and not exists (select 1 from ai_interviews i
+                           where i.application_id = a.id and i.status in ('completed', 'evaluating', 'evaluated'))
+        order by a.applied_at desc nulls last limit 3`, [candidateId])).rows);
+    return rows.map((r) => ({ applicationId: r.id, jobTitle: r.title, dueAt: r.due_at || null, dueText: r.due_at ? formatWhen(r.due_at) : '' }));
+  } catch (err) {
+    console.error('[intake] could not read the open interviews:', err.message);
+    return [];
   }
 }

@@ -267,10 +267,19 @@ export const MESSAGES = {
        reads like marketing and gets skimmed past; somebody waiting to be
        let in is looking for the word "login". */
     subject: () => 'Your TeamLink login details',
-    body: () => 'Your TeamLink Candidate Portal account has been successfully created.\n\n'
+    body: (c) => 'Your TeamLink Candidate Portal account has been successfully created.\n\n'
       + 'You can use the portal to manage your profile, upload and update your resume, '
       + 'apply for jobs, track applications, view interview schedules, attend online '
-      + 'interviews and receive recruitment notifications.',
+      + 'interviews and receive recruitment notifications.'
+      /* somebody who has already applied for a job: their AI interview is waiting - which one, by when, and how to start it */
+      + (c.aiInterviews && c.aiInterviews.length
+        ? '\n\nYou have already applied, so your AI interview is waiting for you:\n'
+          + c.aiInterviews.map((x) => `  - ${x.jobTitle}: `
+            + (x.dueText ? `please complete it by ${x.dueText}.` : 'you can attend it at any time while the job is open.')).join('\n')
+          + '\n\nTo attend: sign in, open "Applied Jobs" and press "Attend AI Interview" for the role. '
+          + 'It is about 15 questions (around 35 minutes), taken in your browser with your camera and microphone. '
+          + 'Before it starts you will take a photo and accept the interview instructions.'
+        : ''),
     facts: (c) => [
       ['Login Email', c.loginEmail],
       // The password is a fact of this message and of no other. It is
