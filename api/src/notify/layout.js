@@ -19,11 +19,18 @@
  *   - 600px, centred, on a table with its own background. Anything wider
  *     is cut off in a reading pane.
  *   - No external images and no web fonts. Both are blocked by default
- *     in most clients, so a design that needs them arrives broken.
+ *     in most clients, so a design that needs them arrives broken. The one
+ *     exception is the logo, which is not fetched from a server: it travels
+ *     inside the message as an inline attachment (see LOGO_CID).
  *
  * The plain-text alternative is composed separately and is not decorated
  * - a client showing text wants text.
  */
+
+/* The TeamLink logo (web/email-logo.png), shown instead of the company name in the header. It is sent WITH the message as an inline
+   attachment (this content id) so it appears without "show images"; notify/providers.js attaches it, or swaps in the hosted copy for
+   a provider that cannot attach. Set to '' to fall back to the plain company name. */
+export const LOGO_CID = 'tl-logo';
 
 const BRAND = {
   ink: '#0f2540',        // header
@@ -127,12 +134,14 @@ export function emailLayout(opts = {}) {
            style="width:600px;max-width:600px;background:#ffffff;border-radius:10px;
                   border:1px solid ${BRAND.line};overflow:hidden">
 
-      <tr><td bgcolor="${BRAND.ink}" class="tl-pad" style="padding:20px 34px">
+      <tr><td bgcolor="#ffffff" class="tl-pad" style="padding:18px 34px;border-bottom:3px solid ${BRAND.accent}">
         <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"><tr>
-          <td style="font-family:${FONT};font-size:19px;font-weight:800;color:#ffffff;letter-spacing:.2px">
-            ${esc(company)}
+          <td style="font-family:${FONT};font-size:19px;font-weight:800;color:${BRAND.ink};letter-spacing:.2px">
+            ${LOGO_CID
+              ? `<img src="cid:${LOGO_CID}" alt="${esc(company)}" width="188" height="42" style="display:block;border:0;outline:none;height:42px;width:188px;font-family:${FONT};font-size:19px;font-weight:800;color:${BRAND.ink}">`
+              : esc(company)}
           </td>
-          <td align="right" style="font-family:${FONT};font-size:11px;color:#9fb6d4;letter-spacing:.12em;text-transform:uppercase">
+          <td align="right" style="font-family:${FONT};font-size:11px;color:${BRAND.soft};letter-spacing:.12em;text-transform:uppercase">
             Recruitment
           </td>
         </tr></table>

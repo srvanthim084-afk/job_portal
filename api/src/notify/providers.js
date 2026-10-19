@@ -21,6 +21,10 @@
  */
 import { config } from '../config.js';
 import { channelSettings } from './channel-settings.js';
+import { LOGO_CID } from './layout.js';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
 import { sendViaGateway } from './sms-gateways.js';
 
 const NOT_CONFIGURED = (provider, hint) => ({
@@ -114,6 +118,25 @@ export async function verifySmtp() {
  * parsed as a second address and the message is rejected by the server
  * rather than delivered oddly.
  */
+/*
+ * The logo in the email header (layout.js refers to it as cid:tl-logo).
+ *
+ * Over SMTP it is attached to the message as an inline image, so it shows without the reader pressing "show images" and does not
+ * depend on where the portal is hosted. Providers that cannot attach (EmailJS, a generic HTTP API) get the hosted copy instead,
+ * /email-logo.png on the portal's public address; the alt text (the company name) shows where that cannot load.
+ */
+const LOGO_FILE = resolve(dirname(fileURLToPath(import.meta.url)), '../../../web/email-logo.png');
+export function withLogo(html, { attach }) {
+  const body = String(html || '');
+  const ref = `cid:${LOGO_CID}`;
+  if (!LOGO_CID || !body.includes(ref)) return { html: body, attachments: [] };
+  if (attach && existsSync(LOGO_FILE)) {
+    return { html: body, attachments: [{ filename: 'teamlink-logo.png', path: LOGO_FILE, cid: LOGO_CID, contentDisposition: 'inline' }] };
+  }
+  const origin = String(config.publicOrigin || '').replace(/\/$/, '');
+  return { html: body.split(ref).join(`${origin}/email-logo.png`), attachments: [] };
+}
+
 function fromHeader() {
   const addr = config.emailFrom;
   if (!config.emailFromName) return addr;
@@ -309,7 +332,7 @@ export const emailProvider = {
     // set it up has said which one it means.
     if (!smtpReady() && emailjsReady().ready) {
       try {
-        return await sendViaEmailJS({ to, subject, html, text, vars, templateId });
+        return await sendViaEmailJS({ to, subject, html: withLogo(html, { attach: false }).html, text, vars, templateId });
       } catch (err) {
         return { status: 'failed', provider: 'emailjs', error: err.message };
       }
@@ -318,8 +341,9 @@ export const emailProvider = {
     if (smtpReady()) {
       try {
         const t = await getSmtp();
+        const logo = withLogo(html, { attach: true });
         const info = await t.sendMail({
-          from: fromHeader(), to, subject, html, text,
+          from: fromHeader(), to, subject, html: logo.html, text, attachments: logo.attachments,
         });
         // `accepted` is the server's own list. An empty one means the
         // message was handed over but not accepted for this recipient,
@@ -340,7 +364,7 @@ export const emailProvider = {
       // the same shape without a code change.
       const res = await postJson(config.emailApiUrl, {
         headers: { authorization: `Bearer ${config.emailApiKey}` },
-        body: { from: fromHeader(), to: [to], subject, html, text },
+        body: { from: fromHeader(), to: [to], subject, html: withLogo(html, { attach: false }).html, text },
       });
       if (!res.ok) {
         return { status: 'failed', provider: 'email',

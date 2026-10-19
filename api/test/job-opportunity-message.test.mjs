@@ -204,7 +204,8 @@ test('email: escaped HTML with one Apply button, and a plain-text part', () => {
   const evil = { ...FULL, title: '<script>alert("x")</script> Nurse & Co', location: 'Nellore <b>', requirements: ['<img src=x onerror=alert(1)>'] };
   const e = jobOpportunityMessage(evil, { applyUrl: URL, company: 'A & B "Hospitals"', channel: 'email' });
   assert.equal(e.html.includes('<script>'), false, 'a <script> in the title is not markup');
-  assert.equal(e.html.includes('<img'), false);
+  /* the only <img> is the TeamLink logo in the header (cid:tl-logo); an <img> from the job's own text is never markup */
+  assert.equal(e.html.replace(/<img src="cid:tl-logo"[^>]*>/, '').includes('<img'), false);
   assert.ok(e.html.includes('&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; Nurse &amp; Co'));
   assert.ok(e.html.includes('A &amp; B &quot;Hospitals&quot;'));
   assert.ok(e.html.includes('>View Job &amp; Apply</a>'), 'one prominent button');
