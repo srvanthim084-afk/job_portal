@@ -7871,7 +7871,7 @@ mark.fcr-hl{background:#fff3a3;color:inherit;border-radius:3px;padding:0 1px}
           ${contractual?'<span class="fcr-pill orange">Open to Contractual</span>':''}
           ${c.isPrivate?'<span class="badge badge-warn">Private profile</span>':''}
           ${stageBadge(c.stage)}
-          ${c.matchScore!=null?`<span class="score ${scoreClass(c.matchScore)}">${c.matchScore}% match</span>`:''}
+          ${c.matchScore!=null?`<span class="score ${scoreClass(c.matchScore)}" style="cursor:pointer" role="button" tabindex="0" title="Click to see how this score was worked out" onclick="if(window.tlWhyScore){tlWhyScore('${c.id}',${Number(c.matchScore)||0})}" onkeydown="if(event.key==='Enter'&&window.tlWhyScore){tlWhyScore('${c.id}',${Number(c.matchScore)||0})}">${c.matchScore}% match</span>`:''}
         </div>
         <div class="fcr2-meta"><span>${esc(c.exp||'—')}</span><span>${esc(c.ctc||'Salary not disclosed')}</span><span>${esc(c.location||'—')}</span></div>
         <div class="fcr2-line"><span class="ic">🏢</span><div>Current: <b>${fcrHl(c.title||c.preferredRole||'—')}</b>${c.currentCompany?` | ${esc(c.currentCompany)}`:''}
@@ -30560,6 +30560,7 @@ table.data td .tl-af b{white-space:normal}
 <script src="teamlink-interview-verification.js"></script>
 <script src="teamlink-templates-campaigns.js"></script>
 <script src="teamlink-whatsapp-send.js"></script>
+<script src="teamlink-score-why.js"></script>
 <!-- The AI video interview screen (#/ai-interview/<ref>): the owner's layout,
      live transcript, per-question recordings, reconnect. The interview
      itself is still the AIIV module above. -->
