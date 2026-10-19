@@ -622,11 +622,24 @@ export default function candidateRoutes() {
       const list = ['email', 'sms', 'whatsapp'].includes(channel)
         ? TEMPLATES.filter((t) => t.channels.includes(channel))
         : TEMPLATES;
+      /* 0157: the templates the team wrote in Templates & Campaigns and had APPROVED are offered here too, so a
+         template that went through approval is the one people actually send */
+      let approved = [];
+      try {
+        approved = await withUser(req.session, async (c) => (await c.query(
+          `select id, name, kind as channel, subject, body from comm_templates
+            where source = 'portal' and approval_state = 'approved' and not archived
+              and kind in ('email', 'sms', 'whatsapp') ${channel ? 'and kind = $1' : ''}
+            order by name`, channel ? [channel] : [])).rows);
+      } catch { /* the registry unavailable: the built-in list still works */ }
       res.json({
         templates: list.map((t) => ({
           id: t.id, name: t.name, channels: t.channels,
           subject: t.subject, body: t.body,
-        })),
+        })).concat(approved.map((t) => ({
+          id: `comm_${t.id}`, name: t.name, channels: [t.channel],
+          subject: t.subject || '', body: t.body,
+        }))),
         variables: VARIABLES,
       });
     }));

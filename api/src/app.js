@@ -32,6 +32,7 @@ import miscRoutes from './routes/misc.js';
 import uploadRoutes from './routes/uploads.js';
 import aiInterviewRoutes from './routes/ai-interviews.js';
 import interviewVerificationRoutes from './routes/interview-verification.js';
+import commTemplateRoutes from './routes/comm-templates.js';
 import { startVerificationRetentionSweep } from './interview/verification-retention.js';
 import aiCallingRoutes from './routes/ai-calling.js';
 import spreadsheetRoutes from './routes/spreadsheet.js';
@@ -459,6 +460,8 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', profileOnboardingRoutes());
   /* 0149: the photo verification routes go BEFORE the interview's, whose /ai-interviews/:id/... patterns would otherwise read "verification" as an id */
   app.use('/api', interviewVerificationRoutes());
+  /* 0157: Templates & Campaigns (the Recruiter Portal header button) */
+  app.use('/api', commTemplateRoutes());
   app.use('/api', aiInterviewRoutes());
   app.use('/api', aiCallingRoutes());
   app.use('/api', sourceMailboxRoutes());

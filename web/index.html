@@ -3784,6 +3784,7 @@ c-35 31 -71 37 -111 16z"/>
       <div class="topbar">
         <div><h1>${titleHtml}</h1><div class="crumb">${crumb}</div></div>
         <div class="topbar-spacer"></div>
+        ${role==='recruiter'&&typeof window.tcHeaderButtonHtml==='function' ? tcHeaderButtonHtml() : ''}
         ${role==='candidate'&&typeof window.candidateBellHtml==='function' ? candidateBellHtml() : (role==='recruiter'&&typeof window.recruiterBellHtml==='function' ? recruiterBellHtml() : `<button class="icon-btn" title="Notifications">🔔</button>`)}
         ${typeof window.helpMenuHtml==='function' ? helpMenuHtml(role) : `<button class="icon-btn" title="Help">❔</button>`}
         ${role==='recruiter' ? recruiterProfileMenu(who) : ''}
@@ -30555,6 +30556,7 @@ table.data td .tl-af b{white-space:normal}
      The server counts; this watches and reports. -->
 <script src="teamlink-interview-integrity.js"></script>
 <script src="teamlink-interview-verification.js"></script>
+<script src="teamlink-templates-campaigns.js"></script>
 <!-- The AI video interview screen (#/ai-interview/<ref>): the owner's layout,
      live transcript, per-question recordings, reconnect. The interview
      itself is still the AIIV module above. -->
