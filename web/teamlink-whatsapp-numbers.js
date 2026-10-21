@@ -261,29 +261,6 @@
     }, function (e) { if (btn) { btn.disabled = false; btn.textContent = 'Save assignment'; } toast(errText(e), '⚠️'); });
   };
 
-  /* ------------------------------------------------------------------ conversations of one number */
-  window.wnMessages = function (id) {
-    var n = find(id); if (!n) return;
-    modal('Messages · ' + n.displayName, '<div class="wn-sub">Loading…</div>', '<button class="wn-btn" onclick="wnClose()">Close</button>');
-    api().get('/whatsapp/conversations?numberId=' + encodeURIComponent(id)).then(function (r) {
-      var b = $('wnBody'); if (!b) return;
-      var list = (r.contacts || []).map(function (c) {
-        return '<tr style="cursor:pointer" onclick="wnThread(\'' + esc(id) + '\',\'' + esc(c.contact) + '\')"><td><b>' + esc(c.name || '+' + c.contact) + '</b><div class="wn-sub">+' + esc(c.contact) + '</div></td>'
-          + '<td>' + c.received + ' received · ' + c.sent + ' sent</td><td class="wn-sub">' + esc(c.lastAt ? new Date(c.lastAt).toLocaleString() : '') + '</td></tr>'; }).join('');
-      b.innerHTML = list ? '<table class="wn-tbl"><thead><tr><th>Contact</th><th>Messages</th><th>Last</th></tr></thead><tbody>' + list + '</tbody></table>'
-        : '<div class="wn-sub" style="padding:18px 0">No messages through this number yet.</div>';
-    }, function (e) { var b = $('wnBody'); if (b) b.innerHTML = '<div class="wn-note wn-warnbox">' + esc(errText(e)) + '</div>'; });
-  };
-  window.wnThread = function (id, contact) {
-    var b = $('wnBody'); if (b) b.innerHTML = '<div class="wn-sub">Loading…</div>';
-    api().get('/whatsapp/conversations/' + encodeURIComponent(id) + '/' + encodeURIComponent(contact)).then(function (r) {
-      var b2 = $('wnBody'); if (!b2) return;
-      b2.innerHTML = '<button class="wn-btn" onclick="wnMessages(\'' + esc(id) + '\')">← All contacts</button><div style="margin-top:12px;display:grid;gap:8px">'
-        + (r.thread || []).map(function (m) {
-          var inb = m.direction === 'in';
-          return '<div style="justify-self:' + (inb ? 'start' : 'end') + ';max-width:80%;background:' + (inb ? '#f1f3f6' : '#dcf8c6') + ';border-radius:10px;padding:8px 11px;font-size:13px;white-space:pre-wrap">'
-            + esc(m.text) + '<div class="wn-sub">' + esc(m.by || (inb ? 'Contact' : '')) + (m.template ? ' · ' + esc(m.template) : '') + ' · ' + esc(new Date(m.at).toLocaleString()) + (m.status ? ' · ' + esc(m.status) : '') + '</div></div>'; }).join('')
-        + '</div>';
-    }, function (e) { var b2 = $('wnBody'); if (b2) b2.innerHTML = '<div class="wn-note wn-warnbox">' + esc(errText(e)) + '</div>'; });
-  };
+  /* ------------------------------------------------------------------ conversations of one number: the WhatsApp Inbox, on that number */
+  window.wnMessages = function (id) { if (typeof window.tlWhatsAppInbox === 'function') window.tlWhatsAppInbox({ numberId: id }); };
 }());

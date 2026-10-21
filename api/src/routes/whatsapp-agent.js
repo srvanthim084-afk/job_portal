@@ -32,7 +32,7 @@ import { config } from '../config.js';
 import { whatsappProvider } from '../notify/providers.js';
 import { aiConfigured } from '../ai/career-assistant.js';
 import { agentReply } from '../whatsapp/agent.js';
-import { PRIMARY, numberForPhoneId, webhookSecrets, recordMessage } from '../whatsapp/numbers.js';
+import { PRIMARY, numberForPhoneId, webhookSecrets, recordMessage, recordMessageStatus } from '../whatsapp/numbers.js';
 
 const ENGINE = { userId: '', role: 'admin', profileId: null };
 const isLocal = (u) => /^(https?:\/\/)?(localhost|127\.|0\.0\.0\.0|\[::1\])/i.test(String(u || ''));
@@ -82,8 +82,42 @@ async function candidateByPhone(phone10) {
 }
 
 /**
- * One incoming WhatsApp text message. Exported so tests drive it directly.
+ * What a WhatsApp message says, for the Inbox: text, a caption, or a short description of media / a location / a tapped button, plus the
+ * media's reference (to fetch it later) and the id of the message it replies to (WhatsApp's `context.id`).
+ */
+export function describeIncoming(msg) {
+  const t = msg && msg.type;
+  const context = msg && msg.context && msg.context.id ? String(msg.context.id) : null;
+  if (t === 'text') return { body: String((msg.text && msg.text.body) || ''), kind: 'text', media: null, context };
+  if (['image', 'video', 'audio', 'document', 'sticker'].includes(t)) {
+    const m = msg[t] || {};
+    const label = { image: 'Photo', video: 'Video', audio: 'Voice message', document: 'Document', sticker: 'Sticker' }[t];
+    return { body: m.caption ? String(m.caption) : (t === 'document' && m.filename ? `${label}: ${m.filename}` : label), kind: 'media', context,
+      media: { type: t, id: m.id || null, mime: m.mime_type || null, filename: m.filename || null, caption: m.caption || null } };
+  }
+  if (t === 'location') {
+    const l = msg.location || {};
+    return { body: `Location: ${[l.name, l.address].filter(Boolean).join(', ') || `${l.latitude}, ${l.longitude}`}`, kind: 'other', media: null, context };
+  }
+  if (t === 'contacts') return { body: 'Shared a contact', kind: 'other', media: null, context };
+  if (t === 'button' && msg.button) return { body: String(msg.button.text || msg.button.payload || 'Button'), kind: 'text', media: null, context };
+  if (t === 'interactive' && msg.interactive) {
+    const i = msg.interactive.button_reply || msg.interactive.list_reply || {};
+    return { body: String(i.title || 'Selected an option'), kind: 'text', media: null, context };
+  }
+  if (t === 'reaction' && msg.reaction) return { body: `Reacted ${msg.reaction.emoji || ''}`.trim(), kind: 'other', media: null, context: msg.reaction.message_id || context };
+  return { body: 'Message type not supported here', kind: 'other', media: null, context };
+}
+
+/**
+ * One incoming WhatsApp message. Exported so tests drive it directly.
  * Returns what was sent (status), never the text.
+ *
+ * It is SAVED FIRST, and the database says whether it is new: a retried webhook event (WhatsApp sends again when it does not hear back
+ * in time) is the same message id, so it is recognised as a duplicate - after a restart as well - and nothing is answered twice.
+ *
+ * The assistant answers only conversations nobody is looking after: a message that is a reply to a campaign, or that arrives in a
+ * conversation assigned to a recruiter, is left for that recruiter (it shows as unread in the Inbox).
  */
 export async function handleIncoming(msg, base, ctx = {}) {
   /* 0160: the number this message was sent TO. The reply leaves from the same number, and the conversation is kept under it. */
@@ -94,13 +128,16 @@ export async function handleIncoming(msg, base, ctx = {}) {
 
   const from = String(msg.from || '');
   const phone10 = from.replace(/\D/g, '').slice(-10);
+  const d = describeIncoming(msg);
+  const saved = await recordMessage({ numberId, direction: 'in', contact: from, name: ctx.contactName, body: d.body, waId: id, kind: d.kind, media: d.media, context: d.context })
+    .catch((e) => { console.error('[whatsapp-agent] message not recorded:', e && e.message); return null; });
+  if (saved && saved.duplicate) return { status: 'duplicate' };
+  if (saved && (saved.campaign_name || saved.assigned_to)) return { status: 'left_for_recruiter', campaign: saved.campaign_name || null };
+
   const rateKey = `${numberId}:${phone10}`;
   const stamps = (SENT.get(rateKey) || []).filter((t) => t > Date.now() - 3600_000);
   if (stamps.length >= HOURLY_PER_PHONE) return { status: 'rate_limited' };
   stamps.push(Date.now()); SENT.set(rateKey, stamps);
-  const isText = msg.type === 'text' && msg.text && String(msg.text.body || '').trim();
-  await recordMessage({ numberId, direction: 'in', contact: from, name: ctx.contactName, body: isText ? String(msg.text.body) : `[${msg.type || 'message'}]`,
-    waId: id, kind: isText ? 'text' : 'other' }).catch((e) => console.error('[whatsapp-agent] message not recorded:', e && e.message));
 
   let reply;
   if (msg.type !== 'text' || !msg.text || !String(msg.text.body || '').trim()) {
@@ -118,7 +155,7 @@ export async function handleIncoming(msg, base, ctx = {}) {
   }
   const res = await whatsappProvider.send({ to: from, text: String(reply).slice(0, 3800), numberId });
   if (res.status === 'sent') {
-    await recordMessage({ numberId, direction: 'out', contact: from, body: String(reply).slice(0, 3800), waId: res.ref, kind: 'agent_reply' })
+    await recordMessage({ numberId, direction: 'out', contact: from, body: String(reply).slice(0, 3800), waId: res.ref, kind: 'agent_reply', by: 'TeamLink assistant', status: 'sent' })
       .catch((e) => console.error('[whatsapp-agent] reply not recorded:', e && e.message));
   }
   console.log(`[whatsapp-agent] message handled, reply ${res.status}`);
@@ -131,9 +168,12 @@ export async function recordReceipt(st) {
   if (!['delivered', 'read', 'failed'].includes(status)) return 0;
   const at = st.timestamp ? new Date(Number(st.timestamp) * 1000) : new Date();
   const err = st.errors && st.errors[0] ? [st.errors[0].title, st.errors[0].message || (st.errors[0].error_data && st.errors[0].error_data.details)].filter(Boolean).join(': ') : null;
-  return withUser(ENGINE, async (c) => (await c.query(
+  const n = await withUser(ENGINE, async (c) => (await c.query(
     `select message_log_delivery($1,$2,$3,$4,$5) as n`,
     [String(st.id || ''), status, err, at, st.pricing ? JSON.stringify(st.pricing) : null])).rows[0].n);
+  /* and the same tick on the Inbox's own copy of the message */
+  await recordMessageStatus(String(st.id || ''), status, err).catch(() => {});
+  return n;
 }
 
 /**

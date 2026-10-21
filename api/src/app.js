@@ -36,6 +36,7 @@ import commTemplateRoutes from './routes/comm-templates.js';
 import whatsappSendRoutes from './routes/whatsapp-send.js';
 import matchBreakdownRoutes from './routes/match-breakdown.js';
 import whatsappNumberRoutes from './routes/whatsapp-numbers.js';
+import whatsappInboxRoutes from './routes/whatsapp-inbox.js';
 import { startVerificationRetentionSweep } from './interview/verification-retention.js';
 import aiCallingRoutes from './routes/ai-calling.js';
 import spreadsheetRoutes from './routes/spreadsheet.js';
@@ -468,6 +469,7 @@ export function createApp({ serveStatic = null, logger = console } = {}) {
   app.use('/api', whatsappSendRoutes());
   app.use('/api', matchBreakdownRoutes());
   app.use('/api', whatsappNumberRoutes());
+  app.use('/api', whatsappInboxRoutes());
   app.use('/api', aiInterviewRoutes());
   app.use('/api', aiCallingRoutes());
   app.use('/api', sourceMailboxRoutes());

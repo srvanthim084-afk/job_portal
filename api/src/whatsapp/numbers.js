@@ -17,6 +17,7 @@ import { withUser } from '../db.js';
 import { config } from '../config.js';
 import { ApiError, badRequest, forbidden, notFound } from '../errors.js';
 import { sealSecrets, openSecrets, hintFor, secretKeyConfigured, SecretKeyMissing } from '../publishing/secrets.js';
+import { publish } from './events.js';
 
 const ENGINE = { userId: '', role: 'admin', profileId: null };
 export const PRIMARY = 'wan_primary';
@@ -391,7 +392,74 @@ export async function webhookSecrets() {
   return { secrets, tokens };
 }
 
-export async function recordMessage({ numberId, direction, contact, name, body, waId, kind, by }) {
-  return withUser(ENGINE, async (c) => (await c.query(
-    `select whatsapp_message_record($1,$2,$3,$4,$5,$6,$7,$8) as id`, [numberId, direction, contact, name || null, body || '', waId || null, kind || 'text', by || null])).rows[0].id);
+/**
+ * Record one message in the Inbox (conversation, campaign match, summary and duplicate handling are done in the database) and tell the open
+ * inboxes. Returns the database's answer: { id, conversation_id, created, campaign_name, campaign_match, assigned_to } or { duplicate: true }.
+ */
+export async function recordMessage({ numberId, direction, contact, name, body, waId, kind, by, userId, media, context, status, batch, at, error }) {
+  const out = await withUser(ENGINE, async (c) => (await c.query(
+    `select whatsapp_message_record($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15) as r`,
+    [numberId, direction, contact, name || null, body || '', waId || null, kind || 'text', by || null, userId || null,
+     media ? JSON.stringify(media) : null, context || null, status || null, batch || null, at || null, error || null])).rows[0].r);
+  if (out && out.created) publish({ type: 'message', conversationId: out.conversation_id, numberId });
+  return out;
+}
+
+/** A delivery receipt for a message sent from the Inbox. */
+export async function recordMessageStatus(waId, status, error) {
+  const conv = await withUser(ENGINE, async (c) => (await c.query(`select whatsapp_message_status($1,$2,$3) as c`, [waId, status, error || null])).rows[0].c);
+  if (conv) publish({ type: 'status', conversationId: conv });
+  return conv;
+}
+
+/* ------------------------------------------------------------------ *
+ * media: fetch what a contact sent, and send a file back
+ * ------------------------------------------------------------------ */
+/** The bytes of a media file WhatsApp holds for this number's account (a contact's photo or document). */
+export async function fetchMedia(numberId, mediaId) {
+  const cred = await credentialsFor(numberId);
+  if (!cred || !cred.accessToken) throw new ApiError(502, 'WHATSAPP_NOT_AVAILABLE', 'That WhatsApp number is not available.');
+  const meta = await fetch(`${cred.apiUrl}/${encodeURIComponent(mediaId)}`, { headers: { authorization: `Bearer ${cred.accessToken}` }, signal: AbortSignal.timeout(15000) });
+  const mj = await meta.json().catch(() => ({}));
+  if (!meta.ok || !mj.url) throw new ApiError(502, 'WHATSAPP_MEDIA', String((mj.error && mj.error.message) || 'WhatsApp could not find that file.').slice(0, 200));
+  const file = await fetch(mj.url, { headers: { authorization: `Bearer ${cred.accessToken}` }, signal: AbortSignal.timeout(30000) });
+  if (!file.ok) throw new ApiError(502, 'WHATSAPP_MEDIA', 'WhatsApp could not deliver that file.');
+  return { buffer: Buffer.from(await file.arrayBuffer()), mime: mj.mime_type || file.headers.get('content-type') || 'application/octet-stream' };
+}
+
+export const MEDIA_RULES = [
+  { type: 'image',    mimes: ['image/jpeg', 'image/png'], max: 5 * 1024 * 1024 },
+  { type: 'video',    mimes: ['video/mp4', 'video/3gpp'], max: 16 * 1024 * 1024 },
+  { type: 'audio',    mimes: ['audio/aac', 'audio/mp4', 'audio/mpeg', 'audio/amr', 'audio/ogg'], max: 16 * 1024 * 1024 },
+  { type: 'document', mimes: ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.ms-powerpoint',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation', 'text/plain'], max: 10 * 1024 * 1024 },
+];
+export const mediaRuleFor = (mime) => MEDIA_RULES.find((r) => r.mimes.includes(String(mime || '').toLowerCase()));
+
+/** Upload a file to WhatsApp and send it to a contact, from this number (the caller has checked the 24-hour window). */
+export async function sendMedia({ numberId, to, mime, filename, buffer, caption }) {
+  const rule = mediaRuleFor(mime);
+  if (!rule) return { status: 'failed', error: 'That file type cannot be sent on WhatsApp.' };
+  const cred = await credentialsFor(numberId);
+  if (!cred || !cred.accessToken || !cred.phoneNumberId) return { status: 'failed', error: 'That WhatsApp number is not available.' };
+  try {
+    const form = new FormData();
+    form.append('messaging_product', 'whatsapp');
+    form.append('type', mime);
+    form.append('file', new Blob([buffer], { type: mime }), filename || 'file');
+    const up = await fetch(`${cred.apiUrl}/${cred.phoneNumberId}/media`, { method: 'POST', headers: { authorization: `Bearer ${cred.accessToken}` }, body: form, signal: AbortSignal.timeout(60000) });
+    const uj = await up.json().catch(() => ({}));
+    if (!up.ok || !uj.id) return { status: 'failed', error: `WhatsApp ${up.status}: ${String((uj.error && uj.error.message) || 'upload refused').slice(0, 250)}` };
+    const obj = { id: uj.id, ...(caption && rule.type !== 'audio' ? { caption: String(caption).slice(0, 1000) } : {}), ...(rule.type === 'document' ? { filename: filename || 'file' } : {}) };
+    const res = await fetch(`${cred.apiUrl}/${cred.phoneNumberId}/messages`, {
+      method: 'POST', headers: { authorization: `Bearer ${cred.accessToken}`, 'content-type': 'application/json' }, signal: AbortSignal.timeout(20000),
+      body: JSON.stringify({ messaging_product: 'whatsapp', to: String(to).replace(/\D/g, ''), type: rule.type, [rule.type]: obj }),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) return { status: 'failed', error: `WhatsApp ${res.status}: ${String((j.error && j.error.message) || '').slice(0, 250)}` };
+    return { status: 'sent', ref: j.messages && j.messages[0] && j.messages[0].id, mediaId: uj.id, type: rule.type };
+  } catch (err) {
+    return { status: 'failed', error: err.message };
+  }
 }

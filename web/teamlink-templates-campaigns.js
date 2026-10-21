@@ -49,8 +49,8 @@
   window.tcHeaderButtonHtml = function () {
     return '<button type="button" class="tc-hbtn" id="tcHeaderBtn" onclick="tcOpen()" title="Templates &amp; Campaigns"'
       + ' aria-haspopup="dialog"><span class="tc-hico" aria-hidden="true">✉️</span><span class="tc-htxt">Templates &amp; Campaigns</span></button>'
-      /* 0160: the WhatsApp conversations (candidates' replies to campaigns), one click from every recruiter page */
-      + '<button type="button" class="tc-hbtn" id="wxInboxBtn" onclick="if(window.tlWhatsApp)tlWhatsApp({tab:\'chats\'})" title="WhatsApp conversations"><span class="tc-hico" aria-hidden="true">💬</span><span class="tc-htxt">WhatsApp</span></button>';
+      /* 0161: the WhatsApp Inbox, one click from every recruiter page; the badge is the number of unread messages */
+      + '<button type="button" class="tc-hbtn" id="wxInboxBtn" onclick="if(window.tlWhatsAppInbox)tlWhatsAppInbox()" title="WhatsApp Inbox" aria-haspopup="dialog"><span class="tc-hico" aria-hidden="true">💬</span><span class="tc-htxt">WhatsApp</span><span class="wib-hbadge" id="wxInboxBadge" style="display:none"></span></button>';
   };
 
   /* ------------------------------------------------------------------ *

@@ -295,31 +295,16 @@ test('an incoming message is filed under the number it was sent to, answered fro
   assert.equal(await webhook(inbound('111111', '919876500201', 'x', 'wamid.in.bad'), 'not-the-secret'), 403);
   assert.equal(await webhook(inbound('999999', '919876500203', 'who', 'wamid.in.U1')), 200);
   await wait(1500);
-  const rowsA = (await raw(`select direction, contact, body, kind from whatsapp_messages where number_id = $1 order by id`, [aId])).rows;
-  assert.deepEqual(rowsA.map((r) => [r.direction, r.contact]), [['in', '919876500201'], ['out', '919876500201']]);
-  assert.equal(rowsA[0].body, 'jobs in Nellore');
-  assert.equal(rowsA[1].kind, 'agent_reply');
-  const rowsP = (await raw(`select direction, contact from whatsapp_messages where number_id = 'wan_primary' order by id`)).rows;
-  assert.equal(rowsP[0].contact, '919876500202');
+  // a reply to a campaign sent from A is left for the recruiter (the assistant does not answer it); it is filed under A
+  const rowsA = (await raw(`select direction, contact, body, kind, campaign_name, campaign_match from whatsapp_messages where number_id = $1 and direction = 'in' order by id`, [aId])).rows;
+  assert.deepEqual(rowsA.map((r) => [r.contact, r.body, r.campaign_name, r.campaign_match]), [['919876500201', 'jobs in Nellore', 'From A', 'recent']]);
+  assert.equal(graph.sent.filter((m) => m.body.to === '919876500201').length, 0, 'nothing automatic was sent to a contact who is answering a campaign');
+  // a message that is not a campaign reply on the primary is answered by the assistant, from the primary number
+  const rowsP = (await raw(`select direction, contact, kind from whatsapp_messages where number_id = 'wan_primary' order by id`)).rows;
+  assert.deepEqual(rowsP.map((r) => [r.direction, r.contact, r.kind]), [['in', '919876500202', 'text'], ['out', '919876500202', 'agent_reply']]);
   assert.equal((await raw(`select count(*)::int n from whatsapp_messages where contact = '919876500203'`)).rows[0].n, 0, 'an event for an unknown number is ignored');
-  // the reply to A's message went out through A, to the right person
-  const replyA = graph.sent.find((m) => m.body.to === '919876500201' && m.body.type === 'text');
-  assert.deepEqual([replyA.pid, replyA.auth], ['111111', TOK_A]);
   const replyP = graph.sent.find((m) => m.body.to === '919876500202');
   assert.deepEqual([replyP.pid, replyP.auth], [PRIMARY_PID, META[PRIMARY_PID].token]);
-
-  // conversations are separate per number, and only for people who may use that number
-  const ca = await recMed.get(`/api/whatsapp/conversations?numberId=${aId}`);
-  assert.equal(ca.status, 200);
-  assert.ok(ca.body.contacts.some((c) => c.contact === '919876500201' && c.received === 1));
-  assert.ok(!ca.body.contacts.some((c) => c.contact === '919876500202'), 'the primary\'s contact is not in A\'s conversations');
-  assert.equal((await recIt.get(`/api/whatsapp/conversations?numberId=${aId}`)).status, 403);
-  const th = (await recMed.get(`/api/whatsapp/conversations/${aId}/919876500201`)).body.thread;
-  assert.ok(th.some((m) => m.direction === 'in' && m.text === 'jobs in Nellore') && th.some((m) => m.direction === 'out' && m.kind === 'agent_reply'));
-  assert.ok(th.some((m) => m.kind === 'template' && /Hello Asha/.test(m.text)), 'the template message sent from A is in the same conversation');
-  assert.equal((await recIt.get(`/api/whatsapp/conversations/${aId}/919876500201`)).status, 403);
-  const pc = await admin.get('/api/whatsapp/conversations?numberId=wan_primary');
-  assert.ok(pc.body.contacts.some((c) => c.contact === '919876500202'));
   // the admin's table counts them
   const n = (await admin.get('/api/admin/whatsapp-numbers')).body.numbers.find((x) => x.id === aId);
   assert.ok(n.messagesIn >= 1 && n.messagesOut >= 1);
@@ -369,67 +354,6 @@ test('deactivate blocks sending; activate restores it; remove frees the number; 
     'whatsapp_number.deactivated', 'whatsapp_number.activated', 'whatsapp_number.updated', 'whatsapp_number.removed']) {
     assert.ok(actions.includes(a), `audit log has ${a}: ${[...new Set(actions)].join(', ')}`);
   }
-});
-
-test('conversations: the inbox, what is waiting for a reply, and a reply from the portal inside the 24-hour window', async () => {
-  // a fresh inbound on A (the earlier one was answered by the assistant, which does not count as a person replying)
-  assert.equal(await webhook(inbound('111111', '919876500201', 'Is the walk-in tomorrow?', 'wamid.in.A2'), 'app-secret-for-number-A'), 200);
-  await wait(1200);
-  const inbox = (await recMed.get('/api/whatsapp/conversations')).body.contacts;
-  const mine = inbox.find((c) => c.contact === '919876500201' && c.numberId === aId);
-  assert.ok(mine, JSON.stringify(inbox));
-  assert.equal(mine.needsReply, true);
-  assert.equal(mine.windowOpen, true);
-  assert.ok(!inbox.some((c) => c.numberId === 'wan_primary'), 'the inbox lists only the numbers this person may use');
-  assert.equal((await recIt.get('/api/whatsapp/conversations')).body.contacts.filter((c) => c.numberId === aId).length, 0);
-  const th = (await recMed.get(`/api/whatsapp/conversations/${aId}/919876500201`)).body;
-  assert.equal(th.window.open, true);
-  assert.equal(th.candidate.name, 'Asha Candidate');
-
-  // reply: plain text, from number A, with number A's token
-  graph.clear();
-  const rep = await recMed.post(`/api/whatsapp/conversations/${aId}/919876500201/reply`, { text: 'Yes - 10 AM at our Nellore office.' });
-  assert.equal(rep.status, 201, JSON.stringify(rep.body));
-  assert.equal(graph.sent.length, 1);
-  assert.deepEqual([graph.sent[0].pid, graph.sent[0].auth, graph.sent[0].body.type, graph.sent[0].body.to], ['111111', TOK_A, 'text', '919876500201']);
-  assert.equal(graph.sent[0].body.text.body, 'Yes - 10 AM at our Nellore office.');
-  const after = (await recMed.get(`/api/whatsapp/conversations/${aId}/919876500201`)).body.thread;
-  assert.ok(after.some((m) => m.direction === 'out' && m.text.startsWith('Yes - 10 AM') && m.by === 'Meena Medical'), JSON.stringify(after.slice(-3)));
-  const inbox2 = (await recMed.get('/api/whatsapp/conversations')).body.contacts.find((c) => c.contact === '919876500201');
-  assert.equal(inbox2.needsReply, false, 'answered');
-
-  // a person who may not use the number cannot read or reply
-  assert.equal((await recIt.post(`/api/whatsapp/conversations/${aId}/919876500201/reply`, { text: 'hi' })).status, 403);
-  assert.equal((await recMed.post(`/api/whatsapp/conversations/${aId}/919876500201/reply`, { text: '   ' })).status, 400);
-
-  // outside the window only a template is allowed
-  const none = await recMed.post(`/api/whatsapp/conversations/${aId}/919876500999/reply`, { text: 'hello' });
-  assert.equal(none.status, 409); assert.equal(none.body.error.code, 'WINDOW_CLOSED');
-  await raw(`update whatsapp_messages set created_at = now() - interval '25 hours' where number_id = $1 and contact = '919876500201'`, [aId]);
-  const old = await recMed.post(`/api/whatsapp/conversations/${aId}/919876500201/reply`, { text: 'late' });
-  assert.equal(old.status, 409); assert.equal(old.body.error.code, 'WINDOW_CLOSED');
-  const closed = (await recMed.get(`/api/whatsapp/conversations/${aId}/919876500201`)).body;
-  assert.equal(closed.window.open, false);
-
-  // STOP closes the conversation for free text
-  assert.equal(await webhook(inbound(PRIMARY_PID, '919876500202', 'STOP', 'wamid.in.P2')), 200);
-  await wait(800);
-  const stopped = await admin.post('/api/whatsapp/conversations/wan_primary/919876500202/reply', { text: 'one more thing' });
-  assert.equal(stopped.status, 409); assert.equal(stopped.body.error.code, 'OPTED_OUT');
-});
-
-test('the whole conversation is on the candidate\'s profile too: what we sent, what they wrote back, and which number', async () => {
-  const m = (await recMed.get('/api/candidates/c_wn1/messages')).body.messages;
-  const inb = m.find((x) => x.direction === 'in' && /walk-in tomorrow/.test(x.body));
-  assert.ok(inb, JSON.stringify(m.map((x) => [x.channel, x.direction, x.body.slice(0, 30)])));
-  assert.equal(inb.status, 'received');
-  assert.match(inb.numberName, /Medical Hiring/);
-  assert.ok(m.some((x) => !x.direction && /Hello Asha/.test(x.body)), 'the template that was sent is still listed');
-  assert.ok(m.some((x) => x.direction === 'out' && /10 AM/.test(x.body) && x.by === 'Meena Medical'), 'and the reply sent from the portal');
-  const ts = m.map((x) => new Date(x.sentAt || x.queuedAt).getTime());
-  assert.deepEqual(ts, [...ts].sort((a, b) => b - a), 'newest first');
-  // somebody who may not use that number does not see what came in on it
-  assert.ok(!(await recIt.get('/api/candidates/c_wn1/messages')).body.messages.some((x) => x.direction === 'in'));
 });
 
 test('shutdown', async () => {

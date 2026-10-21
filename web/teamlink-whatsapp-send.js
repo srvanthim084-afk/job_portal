@@ -103,13 +103,7 @@
       + '.wx-form input,.wx-form select,.wx-form textarea{width:100%;box-sizing:border-box;border:1px solid var(--border,#dde2ea);border-radius:9px;padding:8px 10px;font:inherit;font-size:13px}'
       + '.wx-form textarea{min-height:140px;resize:vertical}.wx-form .e{color:var(--bad-600,#c0392b);font-size:12px;margin-top:3px}'
       + '.wx-f2{display:grid;grid-template-columns:1fr 1fr;gap:12px}.wx-f3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}'
-      + '.wx-chat{display:grid;grid-template-columns:minmax(260px,1fr) minmax(320px,2fr);gap:14px;height:min(560px,calc(100vh - 220px))}'
-      + '.wx-chatl{display:flex;flex-direction:column;min-height:0}.wx-chatr{display:flex;flex-direction:column;min-height:0;border:1px solid var(--border,#dde2ea);border-radius:12px;padding:10px 12px}'
-      + '.wx-thread{flex:1;min-height:0;overflow:auto;background:#e5ddd5;border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:6px}'
-      + '.wx-msg{max-width:78%;border-radius:9px;padding:7px 10px;font-size:13px;white-space:pre-wrap;word-break:break-word;box-shadow:0 1px 1px rgba(0,0,0,.12)}'
       + '.wx-msg.in{align-self:flex-start;background:#fff}.wx-msg.out{align-self:flex-end;background:#dcf8c6}.wx-msg .wx-cs{font-size:11px;margin-top:3px}'
-      + '.wx-dotn{display:inline-block;width:8px;height:8px;border-radius:50%;background:#e0463a;margin-right:6px}'
-      + '@media (max-width:860px){.wx-chat{grid-template-columns:1fr;height:auto}.wx-thread{min-height:260px}}'
       + '@media (max-width:640px){.wx-f2,.wx-f3{grid-template-columns:1fr}.wx-ov{padding:0}.wx-modal{max-height:100vh;height:100vh;border-radius:0}'
         + '.wx-head{gap:6px;padding:10px 12px}.wx-head h2{font-size:15px}.wx-body{padding:12px}.wx-foot{padding:10px 12px}}';
     var st = document.createElement('style'); st.id = 'wx-style'; st.textContent = css; document.head.appendChild(st);
@@ -139,6 +133,8 @@
   window.tlWhatsApp = function (opts) {
     opts = opts || {};
     if (!api()) { toast('The portal is not ready yet.', '⏳'); return; }
+    /* conversations live in the WhatsApp Inbox */
+    if (opts.tab === 'chats' || opts.chat) { if (typeof window.tlWhatsAppInbox === 'function') window.tlWhatsAppInbox(opts.chat || {}); return; }
     if (S) { return; }                      // one popup, ever
     addStyle();
     var rows = opts.rows || [];
@@ -163,11 +159,6 @@
     document.addEventListener('keydown', onKey);
     window.addEventListener('hashchange', wxClose);
     if (opts.batchId) { S.phase = 'results'; S.loading = false; paint(); startPoll(opts.batchId); return; }
-    if (opts.tab === 'chats' || opts.chat) {
-      S.tab = 'chats'; paint(); load();
-      if (opts.chat) window.wxOpenChat(opts.chat.numberId, opts.chat.contact); else { loadChats(); startChatPoll(); }
-      return;
-    }
     paint();
     load();
   };
@@ -177,7 +168,6 @@
   function wxClose() {
     if (!S) return;
     if (poll) { clearInterval(poll); poll = null; }
-    stopChatPoll();
     clearTimeout(previewTimer);
     document.removeEventListener('keydown', onKey);
     window.removeEventListener('hashchange', wxClose);
@@ -265,18 +255,12 @@
     root.innerHTML = '<div class="wx-ov"><div class="wx-modal" role="dialog" aria-modal="true" aria-labelledby="wxTitle">'
       + '<div class="wx-head"><h2 id="wxTitle"><span class="wx-dot">✆</span>Send WhatsApp Message</h2>'
       + '<div class="wx-tabs"><button class="wx-tab ' + (S.tab === 'send' ? 'on' : '') + '" onclick="wxTab(\'send\')">Send</button>'
-      + '<button class="wx-tab ' + (S.tab === 'chats' ? 'on' : '') + '" onclick="wxTab(\'chats\')">Conversations' + chatBadge() + '</button>'
       + '<button class="wx-tab ' + (S.tab === 'history' ? 'on' : '') + '" onclick="wxTab(\'history\')">History</button></div>'
       + '<button class="wx-x" onclick="wxClose()" aria-label="Close">✕</button></div>'
-      + (S.tab === 'chats' ? chatsHtml() : S.tab === 'history' ? historyHtml() : S.phase === 'results' ? resultsHtml() : S.phase === 'confirm' ? confirmHtml() : composeHtml())
+      + (S.tab === 'history' ? historyHtml() : S.phase === 'results' ? resultsHtml() : S.phase === 'confirm' ? confirmHtml() : composeHtml())
       + '</div></div>';
     var b = root.querySelector('.wx-body'); if (b && scroll) b.scrollTop = scroll;
     if (keep) { var el = $(keep.id); if (el) { el.focus(); try { el.setSelectionRange(keep.s, keep.e); } catch (e) { /* not text */ } } }
-  }
-
-  function chatBadge() {
-    var n = ((S.chat && S.chat.contacts) || []).filter(function (c) { return c.needsReply; }).length;
-    return n ? ' <span class="wx-chip wx-bad" style="margin:0 0 0 4px">' + n + '</span>' : '';
   }
 
   function chips(it) {
@@ -490,9 +474,7 @@
    * ------------------------------------------------------------------ */
   window.wxTab = function (t) {
     if (!S) return;
-    if (t !== 'chats') stopChatPoll();
     S.tab = t; paint();
-    if (t === 'chats') { var C = chatState(); if (C.contacts === null) loadChats(); startChatPoll(); return; }
     if (t === 'history') {
       S.hist = null; S.histError = ''; paint();
       api().get('/whatsapp/history').then(function (r) { if (S) { S.hist = r; paint(); } }, function (e) { if (S) { S.histError = errText(e); paint(); } });
@@ -634,121 +616,11 @@
     refreshPreview(true); paint();
   };
 
-  /* ================================================================== *
-   * Conversations: everything a candidate wrote back, and what we sent, in the portal (0160)
-   * ================================================================== */
-  var chatTimer = null;
-  function chatState() { if (!S.chat) S.chat = { contacts: null, numberId: '', q: '', cur: null, thread: null, windowInfo: null, text: '', busy: false, error: '', onlyReply: false }; return S.chat; }
-
-  function loadChats(quiet) {
-    var C = chatState(), mine = S;
-    api().get('/whatsapp/conversations' + (C.numberId ? '?numberId=' + encodeURIComponent(C.numberId) : '')).then(function (r) {
-      if (S !== mine) return; C.contacts = r.contacts || []; if (S.tab === 'chats') paintChatsKeep();
-    }, function (e) { if (S === mine && !quiet) { C.error = errText(e); paint(); } });
-  }
-  function loadThread(quiet) {
-    var C = chatState(), mine = S; if (!C.cur) return;
-    var cur = C.cur;
-    api().get('/whatsapp/conversations/' + encodeURIComponent(cur.numberId) + '/' + encodeURIComponent(cur.contact)).then(function (r) {
-      if (S !== mine || !C.cur || C.cur.contact !== cur.contact || C.cur.numberId !== cur.numberId) return;
-      var grew = !C.thread || C.thread.length !== (r.thread || []).length;
-      C.thread = r.thread || []; C.windowInfo = r.window; C.candidate = r.candidate; if (S.tab === 'chats') { paintChatsKeep(); if (grew) scrollThread(); }
-    }, function (e) { if (S === mine && !quiet) { C.error = errText(e); paint(); } });
-  }
-  function startChatPoll() {
-    stopChatPoll();
-    chatTimer = setInterval(function () { if (!S || S.tab !== 'chats') return stopChatPoll(); loadChats(true); loadThread(true); }, 8000);
-  }
-  function stopChatPoll() { if (chatTimer) { clearInterval(chatTimer); chatTimer = null; } }
-  function scrollThread() { var t = $('wxThread'); if (t) t.scrollTop = t.scrollHeight; }
-  /* repaint without losing what is being typed */
-  function paintChatsKeep() {
-    var ta = $('wxReply'); var keep = ta ? { v: ta.value, s: ta.selectionStart, f: document.activeElement === ta } : null;
-    var q = $('wxChatQ'); var kq = q && document.activeElement === q ? { s: q.selectionStart } : null;
-    if (keep) chatState().text = keep.v;
-    paint();
-    var ta2 = $('wxReply'); if (ta2 && keep && keep.f) { ta2.focus(); try { ta2.setSelectionRange(keep.s, keep.s); } catch (e) { /* none */ } }
-    var q2 = $('wxChatQ'); if (q2 && kq) { q2.focus(); try { q2.setSelectionRange(kq.s, kq.s); } catch (e) { /* none */ } }
-  }
-
-  function ago(t) {
-    var d = (Date.now() - new Date(t).getTime()) / 1000;
-    if (d < 60) return 'now'; if (d < 3600) return Math.floor(d / 60) + ' min'; if (d < 86400) return Math.floor(d / 3600) + ' h';
-    return new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
-  }
-
-  function chatsHtml() {
-    var C = chatState();
-    var numberSel = S.numbers.length > 1
-      ? '<select class="wx-sel" onchange="wxChatNumber(this.value)" aria-label="WhatsApp number"><option value="">All my numbers</option>'
-        + S.numbers.map(function (n) { return '<option value="' + esc(n.id) + '"' + (C.numberId === n.id ? ' selected' : '') + '>' + esc(n.displayName + (n.displayPhone ? ' · ' + n.displayPhone : '')) + '</option>'; }).join('') + '</select>' : '';
-    var q = (C.q || '').toLowerCase();
-    var list = (C.contacts || []).filter(function (c) {
-      if (C.onlyReply && !c.needsReply) return false;
-      return !q || ((c.name || '') + ' ' + c.contact + ' ' + (c.lastText || '')).toLowerCase().indexOf(q) >= 0;
-    });
-    var items = list.map(function (c) {
-      var on = C.cur && C.cur.contact === c.contact && C.cur.numberId === c.numberId;
-      return '<div class="wx-c ' + (on ? 'cur' : '') + '" onclick="wxOpenChat(\'' + esc(c.numberId) + '\',\'' + esc(c.contact) + '\')">'
-        + '<div style="min-width:0;flex:1"><div class="wx-cn">' + (c.needsReply ? '<span class="wx-dotn" title="Waiting for your reply"></span>' : '') + esc(c.name || '+' + c.contact)
-        + '<span class="wx-cs" style="float:right">' + esc(ago(c.lastAt)) + '</span></div>'
-        + '<div class="wx-cs" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + (c.lastDirection === 'in' ? '' : 'You: ') + esc(c.lastText) + '</div>'
-        + (S.numbers.length > 1 && !C.numberId ? '<div class="wx-cs">via ' + esc(c.numberName) + '</div>' : '') + '</div></div>';
-    }).join('');
-    var left = '<div class="wx-chatl"><div class="wx-row" style="margin-bottom:8px">' + numberSel
-      + '<input id="wxChatQ" class="wx-in" type="search" placeholder="Search conversations…" value="' + esc(C.q) + '" oninput="wxChatQ(this.value)"></div>'
-      + '<label class="wx-cs" style="display:flex;gap:6px;align-items:center;margin-bottom:6px"><input type="checkbox" ' + (C.onlyReply ? 'checked' : '') + ' onchange="wxChatOnly(this.checked)"> Waiting for my reply only</label>'
-      + '<div class="wx-list" style="max-height:none;flex:1;margin-top:0">' + (C.contacts === null ? '<div class="wx-state" style="padding:18px">Loading…</div>'
-        : (items || '<div class="wx-state" style="padding:18px">No conversations yet. Replies to your campaigns appear here.</div>')) + '</div></div>';
-
-    var right;
-    if (!C.cur) right = '<div class="wx-state" style="margin:auto">Choose a conversation.</div>';
-    else {
-      var cur = (C.contacts || []).filter(function (c) { return c.contact === C.cur.contact && c.numberId === C.cur.numberId; })[0] || {};
-      var title = (C.candidate && C.candidate.name) || cur.name || '+' + C.cur.contact;
-      var w = C.windowInfo;
-      var msgs = (C.thread || []).map(function (m) {
-        var inb = m.direction === 'in';
-        return '<div class="wx-msg ' + (inb ? 'in' : 'out') + '">' + esc(m.text) + '<div class="wx-cs">' + esc(m.by || (inb ? '' : 'You')) + (m.template ? ' · template ' + esc(m.template) : '')
-          + ' · ' + esc(new Date(m.at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })) + (m.status ? ' · ' + esc(m.status) : '') + '</div></div>';
-      }).join('');
-      right = '<div class="wx-chatr"><div class="wx-row" style="padding:0 0 8px"><b style="font-size:14px">' + esc(title) + '</b><span class="wx-cs">+' + esc(C.cur.contact) + (cur.numberName ? ' · via ' + esc(cur.numberName) : '') + '</span>'
-        + (C.candidate ? '<a href="javascript:void(0)" style="margin-left:auto;font-size:12px" onclick="wxOpenProfile(\'' + esc(C.candidate.id) + '\')">Open candidate profile</a>' : '') + '</div>'
-        + '<div class="wx-thread" id="wxThread">' + (C.thread === null ? '<div class="wx-state">Loading…</div>' : (msgs || '<div class="wx-state">No messages yet.</div>')) + '</div>'
-        + (C.error ? '<div class="wx-err" style="margin:8px 0 0">' + esc(C.error) + '</div>' : '')
-        + '<div class="wx-cs" style="margin:8px 0 4px">' + (w && w.open
-          ? 'You can reply freely until <b>' + esc(new Date(w.endsAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })) + '</b> (24 hours after their last message).'
-          : '<span style="color:var(--warn-600,#8a5410)">This contact has not written in the last 24 hours, so WhatsApp only allows an approved template. Use <b>Send WhatsApp</b> with a template.</span>') + '</div>'
-        + '<div class="wx-row" style="align-items:flex-end"><textarea id="wxReply" class="wx-in" rows="2" style="flex:1;resize:vertical" placeholder="' + (w && w.open ? 'Type a reply…' : 'Replies are closed for this contact') + '" '
-        + (w && w.open ? '' : 'disabled') + ' oninput="wxReplyText(this.value)">' + esc(C.text || '') + '</textarea>'
-        + '<button class="wx-btn p" onclick="wxSendReply()" ' + (w && w.open && !C.busy && (C.text || '').trim() ? '' : 'disabled') + '>' + (C.busy ? 'Sending…' : 'Reply') + '</button></div></div>';
-    }
-    return '<div class="wx-body" style="padding:12px 16px"><div class="wx-chat">' + left + right + '</div></div>';
-  }
-
-  window.wxChatNumber = function (v) { var C = chatState(); C.numberId = v; C.contacts = null; paint(); loadChats(); };
-  window.wxChatQ = function (v) { chatState().q = v; paintChatsKeep(); };
-  window.wxChatOnly = function (on) { chatState().onlyReply = !!on; paint(); };
-  window.wxReplyText = function (v) {
-    var C = chatState(); var was = (C.text || '').trim() !== ''; C.text = v;
-    var b = document.querySelector('#wxRoot .wx-chatr .wx-btn.p'); if (b) b.disabled = !(C.windowInfo && C.windowInfo.open && !C.busy && v.trim());
-    void was;
-  };
+  /* A conversation is opened in the WhatsApp Inbox (teamlink-whatsapp-inbox.js), the one place they live. */
   window.wxOpenChat = function (numberId, contact) {
-    if (!S) return;
-    S.tab = 'chats'; var C = chatState(); C.cur = { numberId: numberId, contact: String(contact).replace(/\D/g, '') }; C.thread = null; C.windowInfo = null; C.text = ''; C.error = '';
-    if (C.contacts === null) loadChats();
-    paint(); loadThread(); startChatPoll();
+    wxClose();
+    if (typeof window.tlWhatsAppInbox === 'function') window.tlWhatsAppInbox({ numberId: numberId, contact: contact });
   };
-  window.wxSendReply = function () {
-    var C = chatState(); if (!C.cur || C.busy || !(C.text || '').trim()) return;
-    C.busy = true; C.error = ''; paintChatsKeep();
-    var cur = C.cur, mine = S;
-    api().post('/whatsapp/conversations/' + encodeURIComponent(cur.numberId) + '/' + encodeURIComponent(cur.contact) + '/reply', { text: C.text }).then(function () {
-      if (S !== mine) return; C.busy = false; C.text = ''; var box = $('wxReply'); if (box) box.value = ''; loadThread(); loadChats(true); paintChatsKeep();
-    }, function (e) { if (S !== mine) return; C.busy = false; C.error = errText(e); loadThread(true); paintChatsKeep(); });
-  };
-  window.wxOpenProfile = function (id) { wxClose(); if (typeof window.navigate === 'function') window.navigate('/recruiter/candidate-profile?id=' + id); else location.hash = '#/recruiter/candidate-profile?id=' + id; };
 
   /* ================================================================== *
    * template management (administrators)

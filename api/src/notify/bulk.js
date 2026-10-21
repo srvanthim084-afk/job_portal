@@ -22,6 +22,7 @@
  */
 import { withUser } from '../db.js';
 import { providers } from './providers.js';
+import { recordMessage, PRIMARY } from '../whatsapp/numbers.js';
 
 /* The engine identity: the queue belongs to the system, not to whoever
    happened to fill it. */
@@ -223,6 +224,14 @@ export async function drainQueue({ limit = 20 } = {}) {
       [row.id, status, out.provider || row.channel, out.ref || null,
        out.error || out.reason || null]))
       .catch((err) => console.error('[bulk] result not recorded:', err.message));
+
+    /* a WhatsApp message WhatsApp accepted becomes part of that contact's conversation in the Inbox, with its campaign, so a reply can be
+       matched to it and the tick moves as delivery receipts arrive */
+    if (row.channel === 'whatsapp' && status === 'sent' && out.ref && row.to_address) {
+      await recordMessage({ numberId: row.whatsapp_number_id || PRIMARY, direction: 'out', contact: row.to_address, name: row.candidate_name, body: row.body,
+        waId: out.ref, kind: 'template', by: row.recruiter_name, userId: row.sent_by, status: 'sent', batch: row.campaign_name ? row.batch_id : null })
+        .catch((err) => console.error('[bulk] not added to the inbox:', err.message));
+    }
   }
   return tally;
 }
