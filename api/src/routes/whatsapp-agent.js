@@ -32,6 +32,7 @@ import { config } from '../config.js';
 import { whatsappProvider } from '../notify/providers.js';
 import { aiConfigured } from '../ai/career-assistant.js';
 import { agentReply } from '../whatsapp/agent.js';
+import { PRIMARY, numberForPhoneId, webhookSecrets, recordMessage } from '../whatsapp/numbers.js';
 
 const ENGINE = { userId: '', role: 'admin', profileId: null };
 const isLocal = (u) => /^(https?:\/\/)?(localhost|127\.|0\.0\.0\.0|\[::1\])/i.test(String(u || ''));
@@ -84,16 +85,22 @@ async function candidateByPhone(phone10) {
  * One incoming WhatsApp text message. Exported so tests drive it directly.
  * Returns what was sent (status), never the text.
  */
-export async function handleIncoming(msg, base) {
+export async function handleIncoming(msg, base, ctx = {}) {
+  /* 0160: the number this message was sent TO. The reply leaves from the same number, and the conversation is kept under it. */
+  const numberId = ctx.numberId || PRIMARY;
   sweep(SEEN); sweep(LAST_JOBS);
   const id = String(msg.id || '');
   if (id) { if (SEEN.has(id)) return { status: 'duplicate' }; SEEN.set(id, Date.now() + TTL); }
 
   const from = String(msg.from || '');
   const phone10 = from.replace(/\D/g, '').slice(-10);
-  const stamps = (SENT.get(phone10) || []).filter((t) => t > Date.now() - 3600_000);
+  const rateKey = `${numberId}:${phone10}`;
+  const stamps = (SENT.get(rateKey) || []).filter((t) => t > Date.now() - 3600_000);
   if (stamps.length >= HOURLY_PER_PHONE) return { status: 'rate_limited' };
-  stamps.push(Date.now()); SENT.set(phone10, stamps);
+  stamps.push(Date.now()); SENT.set(rateKey, stamps);
+  const isText = msg.type === 'text' && msg.text && String(msg.text.body || '').trim();
+  await recordMessage({ numberId, direction: 'in', contact: from, name: ctx.contactName, body: isText ? String(msg.text.body) : `[${msg.type || 'message'}]`,
+    waId: id, kind: isText ? 'text' : 'other' }).catch((e) => console.error('[whatsapp-agent] message not recorded:', e && e.message));
 
   let reply;
   if (msg.type !== 'text' || !msg.text || !String(msg.text.body || '').trim()) {
@@ -109,7 +116,11 @@ export async function handleIncoming(msg, base) {
     if (out.jobs && out.jobs.length) LAST_JOBS.set(phone10, { ids: out.jobs.map((j) => j.id), until: Date.now() + TTL });
     reply = out.reply;
   }
-  const res = await whatsappProvider.send({ to: from, text: String(reply).slice(0, 3800) });
+  const res = await whatsappProvider.send({ to: from, text: String(reply).slice(0, 3800), numberId });
+  if (res.status === 'sent') {
+    await recordMessage({ numberId, direction: 'out', contact: from, body: String(reply).slice(0, 3800), waId: res.ref, kind: 'agent_reply' })
+      .catch((e) => console.error('[whatsapp-agent] reply not recorded:', e && e.message));
+  }
   console.log(`[whatsapp-agent] message handled, reply ${res.status}`);
   return { status: res.status, error: res.error };
 }
@@ -129,18 +140,19 @@ export async function recordReceipt(st) {
  * "STOP" and "START" on a TeamLink WhatsApp thread: the candidate's opt-out and opt-in, honoured at once.
  * @returns true when the message was one of those and has been dealt with (it is not given to the agent).
  */
-export async function handleOptReply(msg) {
+export async function handleOptReply(msg, ctx = {}) {
   if (!msg || msg.type !== 'text' || !msg.text) return false;
   const t = String(msg.text.body || '').trim().toLowerCase().replace(/[.!]+$/, '');
   const out = /^(stop|stop all|unsubscribe|opt ?out|cancel messages)$/.test(t);
   const back = /^(start|subscribe|opt ?in)$/.test(t);
   if (!out && !back) return false;
+  await recordMessage({ numberId: ctx.numberId || PRIMARY, direction: 'in', contact: msg.from, name: ctx.contactName, body: String(msg.text.body), waId: msg.id, kind: 'text' }).catch(() => {});
   const phone10 = String(msg.from || '').replace(/\D/g, '').slice(-10);
   const n = await withUser(ENGINE, async (c) => (await c.query(`select candidate_whatsapp_opt($1,$2) as n`, [phone10, back])).rows[0].n);
   const text = out
     ? 'You will no longer receive WhatsApp messages from TeamLink Consultants. Reply START any time to receive them again.'
     : 'Thank you - you will receive WhatsApp messages from TeamLink Consultants again. Reply STOP to opt out.';
-  const res = await whatsappProvider.send({ to: String(msg.from || ''), text });
+  const res = await whatsappProvider.send({ to: String(msg.from || ''), text, numberId: ctx.numberId || PRIMARY });
   console.log(`[whatsapp-agent] ${out ? 'opt-out' : 'opt-in'} recorded for ${n} candidate(s), reply ${res.status}`);
   return true;
 }
@@ -191,21 +203,27 @@ export default function whatsappAgentRoutes() {
   }));
 
   r.get('/whatsapp-agent/webhook', (req, res) => {
-    const token = process.env.WHATSAPP_VERIFY_TOKEN;
-    if (!token) return res.status(503).type('text/plain').send('WhatsApp webhook is not configured.');
-    if (req.query['hub.mode'] === 'subscribe' && same(req.query['hub.verify_token'] || '', token)) {
-      return res.status(200).type('text/plain').send(String(req.query['hub.challenge'] || ''));
-    }
-    return res.sendStatus(403);
+    /* the global token, or the verify token of any connected number (each number shows its own in Integrations) */
+    const global = process.env.WHATSAPP_VERIFY_TOKEN;
+    webhookSecrets().then(({ tokens }) => {
+      const all = [global, ...tokens].filter(Boolean);
+      if (!all.length) return res.status(503).type('text/plain').send('WhatsApp webhook is not configured.');
+      const given = req.query['hub.verify_token'] || '';
+      if (req.query['hub.mode'] === 'subscribe' && all.some((t) => same(given, t))) {
+        return res.status(200).type('text/plain').send(String(req.query['hub.challenge'] || ''));
+      }
+      return res.sendStatus(403);
+    }).catch(() => res.sendStatus(503));
   });
 
   r.post('/whatsapp-agent/webhook', wrap(async (req, res) => {
-    const secret = process.env.WHATSAPP_APP_SECRET;
-    if (!secret) throw new ApiError(503, 'WHATSAPP_NOT_CONFIGURED', 'WhatsApp Agent is not configured.');
+    /* signed with the Meta app's secret: the global one, or the one saved for any connected number */
+    const secrets = [process.env.WHATSAPP_APP_SECRET, ...(await webhookSecrets()).secrets].filter(Boolean);
+    if (!secrets.length) throw new ApiError(503, 'WHATSAPP_NOT_CONFIGURED', 'WhatsApp Agent is not configured.');
     const header = String(req.get('x-hub-signature-256') || '');
     const raw = req.rawBody;
-    const want = raw ? `sha256=${crypto.createHmac('sha256', secret).update(raw).digest('hex')}` : '';
-    if (!want || !same(header, want)) return res.sendStatus(403);
+    const ok = raw && secrets.some((secret) => same(header, `sha256=${crypto.createHmac('sha256', secret).update(raw).digest('hex')}`));
+    if (!ok) return res.sendStatus(403);
 
     res.sendStatus(200);              // Meta wants a quick answer; the work follows
     const base = publicBase(req);
@@ -213,18 +231,23 @@ export default function whatsappAgentRoutes() {
     const receipts = [];
     for (const e of (req.body && req.body.entry) || []) {
       for (const ch of (e && e.changes) || []) {
-        for (const m of (ch && ch.value && ch.value.messages) || []) msgs.push(m);
-        for (const st of (ch && ch.value && ch.value.statuses) || []) receipts.push(st);
+        /* each event says which of our numbers it is for (metadata.phone_number_id): that decides the conversation it joins */
+        const v = (ch && ch.value) || {};
+        const numberId = await numberForPhoneId(v.metadata && v.metadata.phone_number_id).catch(() => PRIMARY);
+        const names = new Map(((v.contacts) || []).map((c) => [String(c.wa_id), c.profile && c.profile.name]));
+        if (!numberId) { console.error(`[whatsapp-agent] event for an unknown phone number id ${v.metadata && v.metadata.phone_number_id} ignored`); continue; }
+        for (const m of v.messages || []) msgs.push({ m, ctx: { numberId, contactName: names.get(String(m.from)) } });
+        for (const st of v.statuses || []) receipts.push(st);
       }
     }
     /* 0158: delivery receipts for the template messages recruiters sent: sent -> delivered -> read, or failed */
     for (const st of receipts) {
       try { await recordReceipt(st); } catch (err) { console.error('[whatsapp-agent] receipt failed:', err && err.message); }
     }
-    for (const m of msgs) {
+    for (const { m, ctx } of msgs) {
       try {
-        if (await handleOptReply(m)) continue;
-        await handleIncoming(m, base);
+        if (await handleOptReply(m, ctx)) continue;
+        await handleIncoming(m, base, ctx);
       } catch (err) { console.error('[whatsapp-agent] handling failed:', err && err.message); }
     }
   }));

@@ -513,10 +513,12 @@
           + '<th>Message</th><th>Status</th></tr></thead><tbody>'
           + list.map(function (m) {
             var when = m.sentAt || m.queuedAt;
-            var cls = m.status === 'sent' || m.status === 'delivered' ? 'ok'
+            var cls = m.status === 'sent' || m.status === 'delivered' || m.status === 'received' ? 'ok'
                     : m.status === 'queued' || m.status === 'sending' ? 'wait' : 'bad';
             return '<tr><td>' + esc(new Date(when).toLocaleString()) + '</td>'
-              + '<td>' + esc(CHANNEL[m.channel] ? CHANNEL[m.channel].label : m.channel) + '</td>'
+              + '<td>' + esc(CHANNEL[m.channel] ? CHANNEL[m.channel].label : m.channel)
+                + (m.direction === 'in' ? '<div class="tlbm-h-e" style="color:#1e8e5a">Candidate replied</div>' : '')
+                + (m.numberName ? '<div class="tlbm-h-e">via ' + esc(m.numberName) + '</div>' : '') + '</td>'
               + '<td>' + (m.subject ? '<b>' + esc(m.subject) + '</b><br>' : '')
                 + '<span class="tlbm-h-b">' + esc(String(m.body).slice(0, 180))
                 + (String(m.body).length > 180 ? '…' : '') + '</span></td>'

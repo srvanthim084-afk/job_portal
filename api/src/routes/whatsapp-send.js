@@ -31,6 +31,7 @@ import {
   WA_VARIABLES, cleanTemplate, shapeTemplate, unsendable, loadContext, loadTemplate, listTemplates,
   valuesFor, fill, buildPayload, normalizePhone, syncFromMeta,
 } from '../whatsapp/templates.js';
+import { resolveSender, labelOf } from '../whatsapp/numbers.js';
 
 const ENGINE = { userId: '', role: 'admin', profileId: null };
 const STAFF = ['recruiter', 'bde', 'admin'];
@@ -151,7 +152,7 @@ const batchIdFor = (session, key) =>
 async function batchState(session, batchId) {
   const rows = await withUser(session, async (c) => (await c.query(
     `select id, candidate_id, candidate_name, to_address, status, error, provider_ref, template_name, recruiter_name, sent_by,
-            attempts, queued_at, sent_at, delivered_at, read_at, credits, body, application_id, campaign_name
+            attempts, queued_at, sent_at, delivered_at, read_at, credits, body, application_id, campaign_name, number_label, whatsapp_number_id
        from message_logs
       where batch_id = $1 and channel = 'whatsapp' order by candidate_name, id`, [batchId])).rows);
   const by = (s) => rows.filter((r) => r.status === s).length;
@@ -164,6 +165,8 @@ async function batchState(session, batchId) {
     finished: rows.length > 0 && pending === 0,
     templateName: rows[0] ? rows[0].template_name : null,
     campaignName: rows[0] ? rows[0].campaign_name : null,
+    numberLabel: rows[0] ? rows[0].number_label : null,
+    numberId: rows[0] ? rows[0].whatsapp_number_id : null,
     recruiter: rows[0] ? rows[0].recruiter_name : null,
     rows: rows.map((r) => ({
       id: Number(r.id), candidateId: r.candidate_id, name: r.candidate_name, to: r.to_address,
@@ -260,6 +263,9 @@ export default function whatsappSendRoutes() {
     sendKey: z.string().trim().min(8).max(80),
     /* the send is a named campaign (shown in History and Templates & Campaigns -> Campaigns) */
     campaignName: z.string().trim().max(120).optional(),
+    /* 0160: the WhatsApp number to send from. Optional: the server picks the sender's own number when there is one; it never sends
+       from a number the sender has not been given. */
+    numberId: z.string().trim().max(60).optional(),
     override: z.boolean().optional(),
     overrideReason: z.string().trim().max(500).optional(),
   });
@@ -278,6 +284,9 @@ export default function whatsappSendRoutes() {
     /* The same click, or the same request retried by the network: the batch is already there, so say how it is going. */
     const again = await batchState(req.session, batchId);
     if (again.total > 0) return res.status(200).json({ ...again, duplicate: true, note: 'This send was already submitted; nothing was queued twice.' });
+
+    /* which number: refused with a clear message (nothing queued) when this person has none, or asks for one they may not use */
+    const number = await resolveSender(req.session, b.numberId);
 
     const tpl = await loadTemplate(req.session, b.templateId);
     if (!tpl) throw notFound('That template could not be found.');
@@ -315,9 +324,9 @@ export default function whatsappSendRoutes() {
       const payload = buildPayload(tpl, it._fill);
       const text = [it._fill.header && it._fill.header.text, it._fill.body, it._fill.footer].filter(Boolean).join('\n\n');
       const row = await withUser(ENGINE, async (c) => (await c.query(
-        `select * from message_log_queue_wa($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        `select * from message_log_queue_wa($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
         [batchId, it.candidateId, it.name, it.number, tpl.id, tpl.name, text, JSON.stringify(payload), it.applicationId || null,
-         req.session.userId || null, req.session.role, actor, campaign])).rows[0]);
+         req.session.userId || null, req.session.role, actor, campaign, number.id, labelOf(number)])).rows[0]);
       if (row.status === 'skipped_no_contact') {
         skipped.push({ id: it.candidateId, name: it.name, reasons: ['no mobile number'], kinds: ['number'] });
         await finishContact(req.session, began.id, 'failed');
@@ -332,7 +341,8 @@ export default function whatsappSendRoutes() {
     }
 
     res.status(202).json({
-      batchId, campaignName: campaign, template: { id: tpl.id, name: tpl.name, waName: tpl.wa_name, language: tpl.wa_language },
+      batchId, campaignName: campaign, number: { id: number.id, name: number.displayName, phone: number.displayPhone },
+      template: { id: tpl.id, name: tpl.name, waName: tpl.wa_name, language: tpl.wa_language },
       queued: queued.length, skipped, cooldownSkipped: cooldown.length,
       note: 'Queued. Each message shows as sent only when WhatsApp confirms it.',
     });
@@ -359,7 +369,7 @@ export default function whatsappSendRoutes() {
     const admin = req.session.role === 'admin';
     const mineOnly = !admin || String(req.query.mine) === 'true';
     const batches = await withUser(req.session, async (c) => (await c.query(
-      `select batch_id, max(template_name) as template_name, max(campaign_name) as campaign_name, max(recruiter_name) as recruiter_name, min(queued_at) as at,
+      `select batch_id, max(template_name) as template_name, max(campaign_name) as campaign_name, max(number_label) as number_label, max(recruiter_name) as recruiter_name, min(queued_at) as at,
               count(*)::int as total,
               count(*) filter (where status in ('sent','delivered'))::int as sent,
               count(*) filter (where status = 'delivered')::int as delivered,
@@ -382,7 +392,7 @@ export default function whatsappSendRoutes() {
           group by 1 order by 2 desc limit 100`)).rows));
     }
     res.json({
-      batches: batches.map((x) => ({ batchId: x.batch_id, campaignName: x.campaign_name, templateName: x.template_name, recruiter: x.recruiter_name, at: x.at,
+      batches: batches.map((x) => ({ batchId: x.batch_id, campaignName: x.campaign_name, numberLabel: x.number_label, templateName: x.template_name, recruiter: x.recruiter_name, at: x.at,
         total: x.total, sent: x.sent, delivered: x.delivered, read: x.read, failed: x.failed, pending: x.pending, credits: Number(x.credits) || null })),
       ...(byRecruiter ? { byRecruiter } : {}),
     });

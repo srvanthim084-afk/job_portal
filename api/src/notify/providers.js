@@ -22,6 +22,7 @@
 import { config } from '../config.js';
 import { channelSettings } from './channel-settings.js';
 import { LOGO_CID } from './layout.js';
+import { credentialsFor, PRIMARY as PRIMARY_NUMBER } from '../whatsapp/numbers.js';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
@@ -545,8 +546,13 @@ export function whatsappBody(text, cfg = {}) {
 export const whatsappProvider = {
   channel: 'whatsapp',
   configured: () => !!(config.whatsappApiKey && config.whatsappPhoneId),
-  async send({ to, text, purpose, vars, waTemplate }) {
-    if (!this.configured()) {
+  async send({ to, text, purpose, vars, waTemplate, numberId, freeText }) {
+    /* 0160: which WhatsApp number sends. No numberId (every system message) = the primary, i.e. the existing connection. */
+    const cred = await credentialsFor(numberId);
+    if (!cred || !cred.accessToken || !cred.phoneNumberId) {
+      if (numberId && numberId !== PRIMARY_NUMBER) {
+        return { status: 'failed', provider: 'whatsapp', error: 'That WhatsApp number is not available: it is switched off, removed, or has no readable credentials.' };
+      }
       return NOT_CONFIGURED('whatsapp', 'WHATSAPP_API_KEY / WHATSAPP_PHONE_ID are not set');
     }
     if (!to) return { status: 'skipped_no_address', provider: 'whatsapp', error: 'no phone number' };
@@ -571,10 +577,28 @@ export const whatsappProvider = {
        recruiter previewed it. Nothing is rewritten and there is no free-text fallback. */
     if (waTemplate) {
       try {
-        const url = `${config.whatsappApiUrl.replace(/\/$/, '')}/${config.whatsappPhoneId}/messages`;
+        const url = `${cred.apiUrl}/${cred.phoneNumberId}/messages`;
         const res = await postJson(url, {
-          headers: { authorization: `Bearer ${config.whatsappApiKey}` },
+          headers: { authorization: `Bearer ${cred.accessToken}` },
           body: { messaging_product: 'whatsapp', to: String(to).replace(/[^\d]/g, ''), type: 'template', template: waTemplate },
+        });
+        if (!res.ok) {
+          const reason = String((res.json && res.json.error && res.json.error.message) || res.text || '').slice(0, 300);
+          return { status: 'failed', provider: 'whatsapp', error: `WhatsApp ${res.status}: ${reason}` };
+        }
+        return { status: 'sent', provider: 'whatsapp', ref: res.json?.messages?.[0]?.id || null };
+      } catch (err) {
+        return { status: 'failed', provider: 'whatsapp', error: err.message };
+      }
+    }
+
+    /* 0160: a recruiter's reply inside the customer-service window (the candidate wrote to us in the last 24 hours): plain text, never wrapped
+       in a template. The route that calls this has already checked the window. */
+    if (freeText) {
+      try {
+        const res = await postJson(`${cred.apiUrl}/${cred.phoneNumberId}/messages`, {
+          headers: { authorization: `Bearer ${cred.accessToken}` },
+          body: { messaging_product: 'whatsapp', to: String(to).replace(/[^\d]/g, ''), type: 'text', text: { preview_url: true, body: String(text || '').slice(0, 4000) } },
         });
         if (!res.ok) {
           const reason = String((res.json && res.json.error && res.json.error.message) || res.text || '').slice(0, 300);
@@ -597,9 +621,9 @@ export const whatsappProvider = {
 
     try {
       // WhatsApp Cloud API shape.
-      const url = `${config.whatsappApiUrl.replace(/\/$/, '')}/${config.whatsappPhoneId}/messages`;
+      const url = `${cred.apiUrl}/${cred.phoneNumberId}/messages`;
       const res = await postJson(url, {
-        headers: { authorization: `Bearer ${config.whatsappApiKey}` },
+        headers: { authorization: `Bearer ${cred.accessToken}` },
         body: {
           messaging_product: 'whatsapp',
           to: String(to).replace(/[^\d+]/g, ''),

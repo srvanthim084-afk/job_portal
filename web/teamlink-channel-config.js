@@ -182,7 +182,10 @@
         ? '<div class="tljp-note" style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span style="flex:1;min-width:220px"><b>WhatsApp message templates.</b> '
           + 'The approved WhatsApp Business templates recruiters send to candidates: add them, edit their fields, or pull the approved ones in from WhatsApp.</span>'
           + '<button type="button" class="tlcc-prim" onclick="tlWaTemplates()">Manage WhatsApp templates</button></div>' : '')
-      + '</div></section>';
+      + '</div></section>'
+      /* 0160: several WhatsApp numbers, assigned by the administrator (teamlink-whatsapp-numbers.js draws into this) */
+      + '<div id="tlwnPanel"></div>';
+    if (typeof window.tlWaNumbersMount === 'function') window.tlWaNumbersMount();
   }
 
   /* ------------------------------------------------------------------ modal helpers */

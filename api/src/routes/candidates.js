@@ -25,6 +25,7 @@ import { appearanceToken } from '../profile-viewers/appearances.js';
 import { canEngageMany, recordContact, audit, editableSet, forViewer } from '../candidates/engagement.js';
 import { availabilityOf } from './availability.js';
 import { beginContact, finishContact, canOverride } from '../contact/service.js';
+import { resolveSender, labelOf } from '../whatsapp/numbers.js';
 import { appliedRangeSql } from '../applied-date.js';
 
 const STAFF_ROLES = ['recruiter', 'bde', 'admin'];
@@ -1382,7 +1383,12 @@ export default function candidateRoutes() {
            held candidates are skipped, never sent. */
         override: z.boolean().optional(),
         overrideReason: z.string().trim().max(500).optional(),
+        /* 0160: the WhatsApp number to send from (the sender's own number when omitted) */
+        numberId: z.string().trim().max(60).optional(),
       }), req.body);
+
+      /* A WhatsApp message leaves from a number this person has been given - or it is not queued at all. */
+      const waNumber = b.channel === 'whatsapp' ? await resolveSender(req.session, b.numberId) : null;
 
       if (b.override && !canOverride(req.session)) {
         throw forbidden('Only an administrator or a team lead may override the contact cooldown.');
@@ -1496,6 +1502,9 @@ export default function candidateRoutes() {
            subject, bodyText, to || null,
            req.session.userId || null, req.session.role])).rows[0]);
 
+        if (waNumber && row.status === 'queued') {
+          await withUser(ENGINE, (c) => c.query(`select message_log_set_number($1,$2,$3)`, [row.id, waNumber.id, labelOf(waNumber)]));
+        }
         if (row.status === 'skipped_no_contact') {
           skipped.push({ id: cand.id, name: cand.name });
           await finishContact(req.session, began.id, 'failed');
@@ -1604,8 +1613,20 @@ export default function candidateRoutes() {
         order by coalesce(sent_at, queued_at) desc limit 200`, [req.params.id])).rows);
 
     const staff = ['recruiter', 'bde', 'admin'].includes(req.session.role);
+    /* 0160: what the candidate wrote back on WhatsApp (and the replies sent from the portal), under the numbers this person may use */
+    const chats = staff ? await withUser(req.session, async (c) => (await c.query(
+      `select m.id, m.number_id, m.direction, m.kind, m.body, m.created_at, m.sent_by_name, n.display_name
+         from whatsapp_messages m join whatsapp_my_numbers() n on n.id = m.number_id
+        where m.candidate_id = $1 order by m.created_at desc limit 200`, [req.params.id])).rows) : [];
+    const inbound = chats.map((m) => ({
+      id: `wa${m.id}`, batchId: null, channel: 'whatsapp', templateId: null, subject: '', body: m.body, to: '',
+      status: m.direction === 'in' ? 'received' : 'sent', direction: m.direction, kind: m.kind,
+      numberId: m.number_id, numberName: m.display_name, by: m.sent_by_name || (m.kind === 'agent_reply' ? 'TeamLink assistant' : undefined),
+      error: '', provider: 'whatsapp', queuedAt: m.created_at, sentAt: m.created_at,
+    }));
     res.json({
-      messages: rows.map((m) => ({
+      messages: [...rows.map((m) => ({
+
         id: Number(m.id),
         batchId: m.batch_id,
         channel: m.channel,
@@ -1621,7 +1642,7 @@ export default function candidateRoutes() {
         provider: staff ? m.provider : undefined,
         queuedAt: m.queued_at,
         sentAt: m.sent_at,
-      })),
+      })), ...inbound].sort((x, y) => new Date(y.sentAt || y.queuedAt) - new Date(x.sentAt || x.queuedAt)).slice(0, 300),
     });
   }));
 

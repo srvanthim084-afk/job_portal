@@ -169,6 +169,7 @@ async function deliver(row) {
   try {
     return await provider.send({
       waTemplate: row.channel === 'whatsapp' && row.wa_payload ? row.wa_payload : undefined,
+      numberId: row.channel === 'whatsapp' ? (row.whatsapp_number_id || undefined) : undefined,
       to: row.to_address,
       subject: row.subject || undefined,
       text: row.body,
