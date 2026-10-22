@@ -14,3 +14,8 @@ Import from email) with nobody told. Now the recruiter who owns the mailbox gets
 
 Code: `api/src/notify/unmapped-import.js`, called from `finish()` in `api/src/intake/process.js`.
 Tests: `api/test/intake-unmapped-notice.test.mjs`, and an end-to-end check in `api/test/source-mailboxes.test.mjs`.
+
+## Imported but not in Applications (fix, 22 Oct 2026)
+A response whose role came off the email as a long board title - e.g. `Urgent | Hiring For BRANDING & MARKETING / CREATIVE CONTENT STRATEGIST` - was refused as "a sentence" (`roleTitle` counted the `|`, `&` and `/` as words). No requirement was created, so the candidate was kept in the pool with **no application**: imported, and nowhere in Applications. The rule now counts real words only (a genuine sentence is still refused).
+
+Messages already stuck at *Needs a requirement* are imported again from **Import from Mail -> "Create the requirement and import them"** (`POST /api/intake/messages/reprocess-unmapped`): a recruiter imports the messages of their own mailboxes, an administrator all of them. The requirement is found or created from the title, the existing candidate is matched (never duplicated), the application and resume are created and screened. **Nobody is written to**: these are old messages, so each login is held (`import_login_notified_at` stays empty) and counted under the administrator's **Send login emails**, the one step that sends a backlog after the count has been looked at.

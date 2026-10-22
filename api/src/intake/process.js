@@ -142,7 +142,9 @@ export function roleTitle(raw) {
   if (NOT_A_ROLE.has(t.toLowerCase())) return '';
   if (/[@]|https?:\/\//i.test(t)) return '';          // an address, not a role
   if ((t.match(/[A-Za-z]/g) || []).length < 2) return '';
-  if (t.split(' ').length > 8) return '';               // a sentence
+  /* A sentence has many words; a title such as "Urgent | Hiring For BRANDING & MARKETING / CREATIVE CONTENT STRATEGIST" has many
+     SYMBOLS. Only real words count, or every long marketing title is refused and its candidates wait with no application. */
+  if (t.split(' ').filter((w) => /[A-Za-z0-9]{2,}/.test(w)).length > 8) return '';
   return t;
 }
 
@@ -320,7 +322,7 @@ export function temporaryPassword() {
 /**
  * @returns {{status, reason, candidateId?, applicationId?, reference?, delivery?}}
  */
-export async function processMessage(session, { mailbox, message, rowId, provider }) {
+export async function processMessage(session, { mailbox, message, rowId, provider, hold = false }) {
   /*
    * Which board sent it, before anything else is decided.
    *
@@ -872,6 +874,7 @@ export async function processMessage(session, { mailbox, message, rowId, provide
     applicationId,
     reference,
     credentials,
+    hold,
   });
 
   /* "Sent" is a claim, so it is only made when something was sent. With
@@ -1206,8 +1209,8 @@ function intakeMayNotify() {
   return String(process.env.INTAKE_NOTIFY_CANDIDATES || '').trim().toLowerCase() === 'true';
 }
 
-async function notifyCandidate({ candidate, job, applicationId, reference, credentials }) {
-  if (!intakeMayNotify()) {
+async function notifyCandidate({ candidate, job, applicationId, reference, credentials, hold = false }) {
+  if (hold || !intakeMayNotify()) {
     /*
      * THE PAUSE IS RECORDED, NOT SILENT.
      *
@@ -1222,7 +1225,9 @@ async function notifyCandidate({ candidate, job, applicationId, reference, crede
      * `not_applicable` is the schema's word for a channel that was not
      * used, and the reason goes in `error` where the portal shows it.
      */
-    const reason = 'INTAKE_NOTIFY_CANDIDATES is not set, so imported candidates are not written to';
+    const reason = hold
+      ? 'held for the administrator: the login email goes out with "Send login emails", not when an old message is imported again'
+      : 'INTAKE_NOTIFY_CANDIDATES is not set, so imported candidates are not written to';
     for (const channel of ['email', 'sms', 'whatsapp']) {
       const to = channel === 'email' ? candidate.email : candidate.phone;
       await withUser(ENGINE, (c) => c.query(
@@ -1692,6 +1697,55 @@ export async function mapMessage(session, { messageId, jobId, actor }) {
       `select app_event($1,$2,'application.mapped',$3,$4,'{}'::jsonb)`,
       [out.applicationId, out.candidateId,
        `Mapped to ${job.title} by a recruiter`, actor || 'recruiter']));
+  }
+  return out;
+}
+
+
+/**
+ * Import again the messages that stopped at "needs a requirement" (a candidate was kept, no application was made).
+ *
+ * WHY. Until the title rule was fixed, a long board title ("Urgent | Hiring For BRANDING & MARKETING / CREATIVE CONTENT STRATEGIST") was
+ * refused as "a sentence", so forty-odd responses left their candidates in the pool with NO application: imported, and nowhere in
+ * Applications. This runs the normal import over them again - the requirement is found or created from the title as for any other email, the
+ * existing candidate is matched (never duplicated), the application and the resume are created, the application is screened.
+ *
+ * NOBODY IS WRITTEN TO. These messages are old; the portal login for them is HELD (`hold`) and shows up under the administrator's "Send login
+ * emails" count, which is the one place that sends a backlog and only after the count has been looked at.
+ *
+ * @param ids  only these message ids (what the caller may see); null = every message waiting
+ * @returns {{tried, imported, stillWaiting, failed}}
+ */
+export async function reprocessUnmapped(session, { ids = null, limit = 300 } = {}) {
+  const rows = await withUser(ENGINE, async (c) => (await c.query(
+    `select m.id from email_messages m
+      where m.status = 'needs_mapping' and m.application_id is null ${ids ? 'and m.id = any($2)' : ''}
+      order by m.received_at nulls last limit $1`, ids ? [limit, ids] : [limit])).rows);
+  const out = { tried: 0, imported: 0, stillWaiting: 0, failed: 0 };
+  for (const { id: messageId } of rows) {
+    out.tried += 1;
+    try {
+      const row = await withUser(ENGINE, async (c) => (await c.query(
+        `select m.*, b.recruiter_id, b.rules, b.address, b.source
+           from email_messages m left join email_mailboxes b on b.id = m.mailbox_id where m.id = $1`, [messageId])).rows[0]);
+      if (!row || !row.raw) { out.failed += 1; continue; }
+      const body = bodyOf(row.raw);
+      const attachments = attachmentsOf(row.raw);
+      const message = {
+        messageId: row.message_id, from: row.from_address, to: row.to_address, subject: row.subject,
+        text: (typeof body === 'string' ? body : body.text) || row.raw, raw: row.raw, attachments, receivedAt: row.received_at,
+        attachmentName: (attachments[0] && attachments[0].filename) || row.attachment_name,
+        hasAttachment: attachments.length > 0 || row.has_attachment,
+      };
+      const mailbox = { id: row.mailbox_id, address: row.address, recruiter_id: row.recruiter_id, rules: row.rules || {}, source: row.source };
+      const r = await processMessage(session, { mailbox, message, rowId: messageId, hold: true });
+      if (r.applicationId) out.imported += 1;
+      else if (r.status === 'needs_mapping') out.stillWaiting += 1;
+      else out.failed += 1;
+    } catch (err) {
+      console.error('[intake] a waiting message could not be imported again:', err.message);
+      out.failed += 1;
+    }
   }
   return out;
 }

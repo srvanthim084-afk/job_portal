@@ -14,7 +14,7 @@ import { z } from 'zod';
 import { withUser } from '../db.js';
 import { wrap, badRequest, notFound, forbidden, ApiError } from '../errors.js';
 import { requireAuth, requireRole } from '../auth.js';
-import { syncMailbox, syncAll, mapMessage } from '../intake/process.js';
+import { syncMailbox, syncAll, mapMessage, reprocessUnmapped } from '../intake/process.js';
 import { SOURCES } from '../intake/source.js';
 import { mailboxReadiness, verifyMailbox, SAMPLE_EMAILS } from '../intake/mailbox.js';
 import { sendRegistrationMessage } from '../intake/login-mail.js';
@@ -556,6 +556,26 @@ export default function intakeRoutes() {
       res.json({
         queue: rows.map(toMessage),
         counts: Object.fromEntries(counts.map((x) => [x.status, x.n])),
+      });
+    }));
+
+  /**
+   * POST /api/intake/messages/reprocess-unmapped
+   * Import again what is waiting for a requirement, creating the requirement from the title where that is possible. A recruiter's own
+   * mailboxes, an administrator's all of them. Nobody is emailed: the logins wait for the administrator's "Send login emails".
+   */
+  r.post('/intake/messages/reprocess-unmapped', requireAuth(), requireRole('recruiter', 'bde', 'admin'),
+    wrap(async (req, res) => {
+      const ids = req.session.role === 'admin' ? null
+        : (await withUser(req.session, async (c) => (await c.query(
+            `select id from email_messages where status = 'needs_mapping' and application_id is null`)).rows)).map((x) => x.id);
+      if (ids && !ids.length) return res.json({ tried: 0, imported: 0, stillWaiting: 0, failed: 0, note: 'Nothing is waiting for a requirement.' });
+      const out = await reprocessUnmapped(req.session, { ids });
+      res.json({
+        ...out,
+        note: out.imported
+          ? `${out.imported} application${out.imported === 1 ? '' : 's'} created. No candidate was emailed: their logins wait for the administrator's "Send login emails".`
+          : 'No application could be created: the role in those emails could not be turned into a requirement. Map them by hand.',
       });
     }));
 

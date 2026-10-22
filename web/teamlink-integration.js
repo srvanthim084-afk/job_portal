@@ -4801,6 +4801,15 @@
         '<div style="font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;' +
         'color:var(--text-soft);margin:14px 0 6px">Needs a recruiter ' +
         '<span class="badge badge-neutral">' + queue.length + '</span></div>' +
+        (queue.filter(function (m) { return m.status === 'needs_mapping'; }).length
+          ? '<div class="req-note" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">' +
+            '<span style="flex:1;min-width:200px"><b>' + queue.filter(function (m) { return m.status === 'needs_mapping'; }).length +
+            ' candidate' + (queue.filter(function (m) { return m.status === 'needs_mapping'; }).length === 1 ? ' is' : 's are') +
+            ' imported but have no application yet</b> because no requirement matched the role in their email. ' +
+            'This creates the requirement from the role and adds their applications. Nobody is emailed - their logins wait under ' +
+            '“Send login emails”.</span>' +
+            '<button class="btn btn-primary btn-sm" id="tlReprocess" onclick="TL.intake.reprocess()">Create the requirement and import them</button></div>'
+          : '') +
         (queue.length
           ? queue.map(function (m) {
               var p = m.parsed || {};
@@ -5116,6 +5125,24 @@
       })
       .catch(function (err) {
         intakeOut('<div class="req-note">' + esc(err.message || 'That could not be mapped.') + '</div>');
+      });
+  };
+
+  TL.intake.reprocess = function () {
+    var btn = document.getElementById('tlReprocess');
+    if (btn) { btn.disabled = true; btn.textContent = 'Importing…'; }
+    api.post('/intake/messages/reprocess-unmapped', {}, { timeout: 300000 })
+      .then(function (r) {
+        intakeOut('<div class="req-note" style="background:var(--ok-100);color:var(--ok-600)">' +
+          esc((r.imported ? r.imported + ' of ' + r.tried + ' now have an application. ' : '') + (r.note || '') +
+              (r.stillWaiting ? ' ' + r.stillWaiting + ' still need a requirement chosen by hand.' : '') +
+              (r.failed ? ' ' + r.failed + ' could not be imported.' : '')) + '</div>');
+        if (typeof window.tpInvalidate === 'function') window.tpInvalidate();
+        return refresh().then(function () { return TL.intake.refresh(); });
+      })
+      .catch(function (err) {
+        if (btn) { btn.disabled = false; btn.textContent = 'Create the requirement and import them'; }
+        intakeOut('<div class="req-note">' + esc(err.message || 'That could not be imported.') + '</div>');
       });
   };
 
