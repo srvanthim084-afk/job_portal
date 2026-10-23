@@ -464,6 +464,16 @@ export default function intakeRoutes() {
         ? [await syncMailbox(req.session, b.mailboxId, { limit: b.limit, board, retry })]
         : await syncAll(req.session, { onlyAuto: false, board, retry, onlyIds: visible });
 
+      /* Sync also imports again what is waiting for a requirement (a recruiter's own mailboxes, an administrator's all), so
+         "mails came, I synced" ends with the applications in the portal. Logins stay held; nobody is emailed. */
+      let waiting = { tried: 0, imported: 0, stillWaiting: 0, failed: 0 };
+      try {
+        const ids = req.session.role === 'admin' || req.session.role === 'bde' ? null
+          : (await withUser(req.session, async (c) => (await c.query(
+              `select id from email_messages where status = 'needs_mapping' and application_id is null`)).rows)).map((x) => x.id);
+        if (!ids || ids.length) waiting = await reprocessUnmapped(req.session, { ids });
+      } catch (err) { console.error('[intake] waiting messages could not be imported again:', err.message); }
+
       /*
        * What happened, counted per outcome.
        *
@@ -499,6 +509,7 @@ export default function intakeRoutes() {
       res.json({
         board,
         boards,
+        waiting,
         note: unverified.length && !results.some((r) => unverified
           .some((l) => r.source === l.toLowerCase()))
           ? `No ${unverified.join(' or ')} email has been read here yet, so that `

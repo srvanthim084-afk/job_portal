@@ -38,6 +38,7 @@ let dbh, server, raw, imap, admin, recA, recB, alerts, providers;
 const outbound = [];          // every message handed to any channel
 const accounts = new Map();   // mailbox user -> { password, messages }
 const logins = [];            // every user the IMAP server was asked to log in as
+const fetches = [];           // every FETCH command line
 const tag = Date.now().toString(36);
 const mailA = `amar.${tag}@cand-mailbox-test.in`;
 const mailS = `deepak.${tag}@cand-mailbox-test.in`;
@@ -71,6 +72,7 @@ function startImap(port) {
           sock.write(`* SEARCH ${who.messages.map((_, n) => n + 1).join(' ')}\r\n${tagId} OK SEARCH completed\r\n`);
         } else if (cmd === 'FETCH') {
           const n = Number(line.split(' ')[2]);
+          fetches.push(line);
           const msg = who.messages[n - 1];
           sock.write(`* ${n} FETCH (BODY[] {${Buffer.byteLength(msg, 'latin1')}}\r\n${msg})\r\n${tagId} OK FETCH completed\r\n`);
         } else if (cmd === 'LOGOUT') {
@@ -254,11 +256,15 @@ test('a refused mailbox login is an error in the portal; nothing is sent and no 
 test('reading the same mail again creates and sends nothing', async () => {
   const before = outbound.length;
   const apps = (await raw(`select count(*)::int n from applications`)).rows[0].n;
+  fetches.length = 0;
   await admin.post(`/api/intake/source-connections/${naukriId}/sync`, {}); await waitIdle(naukriId);
   await admin.post(`/api/intake/source-connections/${shineId}/sync`, {}); await waitIdle(shineId);
   await settle();
   assert.equal((await raw(`select count(*)::int n from applications`)).rows[0].n, apps);
   assert.equal(outbound.length, before);
+  /* and mail already read is not downloaded again: only its Message-ID header is asked for */
+  assert.ok(fetches.length >= 2, 'the mailboxes were read');
+  assert.ok(fetches.every((l) => /HEADER\.FIELDS \(MESSAGE-ID\)/i.test(l)), `a full message was fetched again: ${fetches.find((l) => !/HEADER/.test(l))}`);
 });
 
 test('unrelated recruiter email is unchanged: an application that did not come from an import still emails its recruiter', async () => {

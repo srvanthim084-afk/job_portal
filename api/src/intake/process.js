@@ -135,6 +135,8 @@ const NOT_A_ROLE = new Set([
 export function roleTitle(raw) {
   let t = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim();
   if (!t) return '';
+  // Symbols a board puts in front (an emoji that arrived as "????", a bullet): not part of the title.
+  t = t.replace(/^[^A-Za-z0-9]+/, '').trim();
   // A board's phrasing, not part of the job: "Hiring for an OBGY".
   t = t.replace(/^hiring\s+for\s+/i, '').replace(/^(an?|the)\s+/i, '').trim();
   t = t.replace(/[.,;:]+$/, '').trim();
@@ -1416,6 +1418,18 @@ const RETRYABLE = new Set(['needs_review', 'ignored', 'failed', 'needs_mapping',
  * messages at a time returns three months of the most recent fifty and
  * drops the old failures again.
  */
+/**
+ * The provider's ids of mail this mailbox has already been through, so the reader fetches only a header for those and not the whole
+ * message again (a CV attachment is megabytes, and fifty of them per sync was what made big mailboxes time out). Mail waiting to be
+ * retried is left out on a retry, so it is read in full again.
+ */
+async function knownMessageIds(mailboxId, retry) {
+  const rows = await withUser(ENGINE, async (c) => (await c.query(
+    `select message_id from email_messages where mailbox_id = $1 and status <> 'new'
+        and ($2::boolean = false or not (status = any($3)))`, [mailboxId, !!retry, [...RETRYABLE]])).rows);
+  return new Set(rows.map((r) => r.message_id));
+}
+
 async function fetchWindow(mailboxId, { since, limit, retry }) {
   const from = since || null;
   if (!retry) return { since: from, limit };
@@ -1473,6 +1487,7 @@ export async function syncMailbox(session, mailboxId,
       // `limit` come from here - spreading this after a plain `limit`
       // would let the narrow value win and undo the widening.
       ...(await fetchWindow(mailboxId, { since, limit, retry })),
+      known: await knownMessageIds(mailboxId, retry),
     });
   } catch (err) {
     await withUser(ENGINE, (c) => c.query(`select mailbox_synced($1,$2)`, [mailboxId, err.message]));

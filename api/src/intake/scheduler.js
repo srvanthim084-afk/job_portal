@@ -11,7 +11,7 @@
  * import is idempotent - `email_messages` has a unique (mailbox,
  * message_id) - so running it twice imports nothing twice.
  */
-import { syncAll } from './process.js';
+import { syncAll, reprocessUnmapped } from './process.js';
 
 const EVERY_MS = Number(process.env.INTAKE_SYNC_MS || 5 * 60 * 1000);
 
@@ -19,6 +19,7 @@ const EVERY_MS = Number(process.env.INTAKE_SYNC_MS || 5 * 60 * 1000);
 const SYSTEM = { userId: '', role: 'admin', profileId: null };
 
 let running = false;
+let ticks = 0;
 
 export async function tick() {
   // Never overlap: an IMAP round trip can outlast the interval on a slow
@@ -31,8 +32,17 @@ export async function tick() {
     const mapping = out.reduce((n, x) => n + (x.needsMapping || 0), 0);
     const failed = out.filter((x) => x.error);
 
-    if (imported || mapping || failed.length) {
+    /* What is waiting for a requirement is imported again by itself - on the first run after a start, then about once an hour - so
+       nobody has to press a button for it. Logins stay held (see reprocessUnmapped); nobody is emailed. */
+    let again = { imported: 0 };
+    if (ticks++ % 12 === 0) {
+      try { again = await reprocessUnmapped(SYSTEM, { limit: 100 }); }
+      catch (err) { console.error('[intake] waiting messages could not be imported again:', err.message); }
+    }
+
+    if (imported || mapping || failed.length || again.imported) {
       console.log(`[intake] ${imported} imported, ${mapping} awaiting mapping`
+        + (again.imported ? `, ${again.imported} waiting ones imported again` : '')
         + (failed.length ? `, ${failed.length} mailbox(es) failed` : ''));
       for (const f of failed) {
         console.error(`[intake] ${f.mailbox || f.mailboxId}: ${f.message || f.error}`);

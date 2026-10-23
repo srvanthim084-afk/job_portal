@@ -337,8 +337,13 @@ class Imap {
   }
 
   /** Headers and the first part of the body, for one message. */
-  async fetch(seq) {
-    const out = await this.send(`FETCH ${seq} (BODY.PEEK[])`);
+  /** Only the Message-ID header: enough to know whether this message has been read before. */
+  async fetchMessageId(seq) {
+    return this.fetch(seq, 'BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)]');
+  }
+
+  async fetch(seq, part = 'BODY.PEEK[]') {
+    const out = await this.send(`FETCH ${seq} (${part})`);
 
     /*
      * The message, not the conversation about it.
@@ -595,7 +600,7 @@ export async function verifyMailbox(mailbox) {
 
 const imapProvider = {
   name: 'imap',
-  async fetchNew(mailbox, { since, limit = 50 } = {}) {
+  async fetchNew(mailbox, { since, limit = 50, known = null } = {}) {
     const s = mailboxSecrets(mailbox.address, mailbox);
     if (!s.host || !s.password) {
       const err = new Error(`No IMAP credentials are configured for ${mailbox.address}.`);
@@ -603,7 +608,8 @@ const imapProvider = {
       throw err;
     }
 
-    const client = new Imap({ host: s.host, port: s.port || 993, user: s.user, password: s.password });
+    const client = new Imap({ host: s.host, port: s.port || 993, user: s.user, password: s.password,
+      timeout: Number(process.env.MAILBOX_TIMEOUT_MS) || 60000 });
     await client.connect();
     try {
       await client.login();
@@ -613,6 +619,14 @@ const imapProvider = {
 
       const out = [];
       for (const n of wanted) {
+        if (known && known.size) {
+          let id = '';
+          try { id = header(await client.fetchMessageId(n), 'Message-ID'); } catch { /* read it in full below */ }
+          if (id && known.has(id)) {
+            out.push({ messageId: id, from: '', to: mailbox.address, subject: '', text: '', raw: '', receivedAt: new Date(), hasAttachment: false });
+            continue;
+          }
+        }
         let raw;
         try { raw = await client.fetch(n); } catch { continue; }
         const body = bodyOf(raw);

@@ -77,6 +77,9 @@ test('the role rule counts words, not the symbols a board puts between them', ()
   assert.equal(roleTitle('Urgent | HIRING – BRANDING & MARKETING / CREATIVE CONTENT STRATEGIST'), 'Urgent | HIRING – BRANDING & MARKETING / CREATIVE CONTENT STRATEGIST');
   assert.equal(roleTitle('Hiring for Radiologist'), 'Radiologist');
   assert.equal(roleTitle('Staff Nurse'), 'Staff Nurse');
+  /* symbols a board puts in front (an emoji that arrived as ????) are not part of the title */
+  assert.equal(roleTitle('???? Hiring for Prosthodontist – Dental'), 'Prosthodontist – Dental');
+  assert.equal(roleTitle('🚨 Urgent Hiring: Staff Nurse'), 'Urgent Hiring: Staff Nurse');
   // a sentence, a nothing, an address, one that is far too long: still refused
   assert.equal(roleTitle('We are looking for a candidate who can join immediately and work with our team'), '');
   assert.equal(roleTitle('Not mentioned'), '');
@@ -137,6 +140,18 @@ test('the Applications list of the owning recruiter now shows them', async () =>
   const apps = l.body.applications || l.body.items || [];
   const mine = apps.filter((x) => x.jobId && x.candidateId === a1.cand);
   assert.equal(mine.length, 1);
+});
+
+test('"Sync" imports what is waiting by itself - no separate button', async () => {
+  const w = await waiting('mbx_rpa', 'Esha Sync', 'esha.rp@cand-mailbox-test.in', '9811100005', '???? Hiring for Prosthodontist – Dental');
+  const s = await recA.post('/api/intake/sync', {});
+  assert.equal(s.status, 200, JSON.stringify(s.body));
+  assert.equal(s.body.waiting.imported, 1, JSON.stringify(s.body.waiting));
+  const apps = await appsOf(w.cand);
+  assert.equal(apps.length, 1);
+  assert.equal(apps[0].title, 'Prosthodontist – Dental', 'created from the clean title');
+  assert.equal(apps[0].import_login_notified_at, null, 'and the login is held');
+  assert.equal((await status(w.mid)).status, 'processed');
 });
 
 test('shutdown', async () => {

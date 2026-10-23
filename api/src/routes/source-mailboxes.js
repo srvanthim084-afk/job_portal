@@ -19,7 +19,7 @@ import { wrap, notFound, ApiError } from '../errors.js';
 import { requireAuth, requireRole } from '../auth.js';
 import { sealSecrets, secretKeyConfigured } from '../publishing/secrets.js';
 import { testImapLogin, IMAP_HOSTS } from '../intake/mailbox.js';
-import { syncMailbox } from '../intake/process.js';
+import { syncMailbox, reprocessUnmapped } from '../intake/process.js';
 
 const newId = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 const ENGINE = { userId: '', role: 'admin', profileId: null };
@@ -173,11 +173,22 @@ async function loadConnections(session, id) {
   });
 }
 
+/** Read the mailbox, then import again what it has waiting for a requirement (logins held; nobody is emailed). */
+async function syncAndImportWaiting(session, id, opts) {
+  const out = await syncMailbox(session, id, opts);
+  try {
+    const ids = (await withUser(session, async (c) => (await c.query(
+      `select id from email_messages where mailbox_id = $1 and status = 'needs_mapping' and application_id is null`, [id])).rows)).map((x) => x.id);
+    if (ids.length) await reprocessUnmapped(session, { ids });
+  } catch (err) { console.error('[source-mailboxes] waiting messages could not be imported again:', String(err && err.message)); }
+  return out;
+}
+
 /** Sync in the background: Connect and Reconnect answer at once; the table shows "Processing". */
 function syncInBackground(session, id) {
   if (running.has(id)) return;
   running.add(id);
-  syncMailbox(session, id, { limit: 100 })
+  syncAndImportWaiting(session, id, { limit: 100 })
     .catch((err) => console.error('[source-mailboxes] sync failed for', id, String(err && err.message)))
     .finally(() => running.delete(id));
 }
@@ -321,7 +332,7 @@ export default function sourceMailboxRoutes() {
     if (running.has(box.id)) throw new ApiError(409, 'SYNC_RUNNING', 'A sync of this mailbox is already running.');
     running.add(box.id);
     let out;
-    try { out = await syncMailbox(req.session, box.id, { limit: 100 }); } finally { running.delete(box.id); }
+    try { out = await syncAndImportWaiting(req.session, box.id, { limit: 100 }); } finally { running.delete(box.id); }
     const results = out.results || [];
     const n = (...st) => results.filter((x) => st.includes(x.status)).length;
     const [conn] = await loadConnections(req.session, box.id);
