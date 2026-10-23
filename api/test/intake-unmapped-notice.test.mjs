@@ -29,7 +29,8 @@ const row = async (rid) => (await raw(`select mapping_notified_at, mapping_notic
 
 test('boot', async () => {
   dbh = await startTestDb(DB_PORT);
-  applyTestEnv(dbh.url, { PUBLIC_ORIGIN: 'http://portal.test', DISABLE_BACKGROUND_WORK: 'true' });
+  /* the email form of the notice is the opt-in one (INTAKE_RECRUITER_EMAILS); the portal form is covered by intake-responses-portal-only.test.mjs */
+  applyTestEnv(dbh.url, { PUBLIC_ORIGIN: 'http://portal.test', DISABLE_BACKGROUND_WORK: 'true', INTAKE_RECRUITER_EMAILS: 'true' });
   raw = (sql, params) => dbh.db.query(sql, params);
   await raw(`insert into companies (id, name) values ('co_u', 'Unmapped Co')`);
   await raw(`insert into users (email, password_hash, role) values ('ramya.u@tl-sink.local', 'x', 'recruiter')`);

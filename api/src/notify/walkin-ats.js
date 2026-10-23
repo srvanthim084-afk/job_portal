@@ -35,6 +35,7 @@ import { emailLayout } from './layout.js';
 import { inQuietHours } from './saved-search-alerts.js';
 import { toCandidate } from '../shapes.js';
 import { istDate, istHour, addDays, time12, dateLabel, walkinInstant } from '../portal/walkin-jobs.js';
+import { IMPORTED, recruiterResponseEmails } from '../intake/recruiter-policy.js';
 
 export const ENGINE = { userId: '', role: 'admin', profileId: null };
 const EXTERNAL = ['email', 'sms', 'whatsapp'];
@@ -269,7 +270,7 @@ async function claimAlert(recruiterId, jobId, appId, kind, key, channel) {
  * @returns { portal, email } statuses for the channels claimed now, or {}
  *          when this alert was already sent.
  */
-export async function alertRecruiter({ recruiterId, jobId, appId = null, kind, key, title, message, facts = [], url }) {
+export async function alertRecruiter({ recruiterId, jobId, appId = null, kind, key, title, message, facts = [], url, email = true }) {
   if (!recruiterId) return {};
   const out = {};
   const pid = await claimAlert(recruiterId, jobId, appId, kind, key, 'portal');
@@ -286,7 +287,8 @@ export async function alertRecruiter({ recruiterId, jobId, appId = null, kind, k
       out.portal = 'failed';
     }
   }
-  const eid = await claimAlert(recruiterId, jobId, appId, kind, key, 'email');
+  /* email: false - the alert stays in the portal only (a response imported from Naukri / Shine; see intake/recruiter-policy.js) */
+  const eid = email ? await claimAlert(recruiterId, jobId, appId, kind, key, 'email') : null;
   if (eid) {
     const rec = (await withUser(ENGINE, (q) => q.query(`select name, email from recruiters where id=$1`, [recruiterId]))).rows[0];
     let r;
@@ -512,7 +514,7 @@ export async function runApplicationAlerts({ now = Date.now() } = {}) {
   const { rows, set, perJob } = await withUser(ENGINE, async (q) => {
     const set = await settings(q);
     const rows = (await q.query(
-      `select a.id, a.reference, a.job_id, a.applied_at, j.title, j.recruiter_id, j.posting_kind,
+      `select a.id, a.reference, a.job_id, a.applied_at, a.import_method, j.title, j.recruiter_id, j.posting_kind,
               j.walkin_capacity, c.name as cand_name,
               coalesce(s.new_application_alerts, 'auto') as mode
          from applications a
@@ -542,6 +544,8 @@ export async function runApplicationAlerts({ now = Date.now() } = {}) {
       title: `New application: ${a.title}`,
       message: `${a.cand_name} applied for ${a.title} (Job ID ${a.job_id}). Application ID ${a.reference || a.id}.`,
       url: staffUrl(a.job_id, a.id),
+      /* a response imported from a job-board mailbox is shown in the portal, never emailed to the recruiter */
+      email: a.import_method !== IMPORTED || recruiterResponseEmails(),
     });
     if (Object.keys(r).length) out.instant += 1;
   }
@@ -569,7 +573,7 @@ export async function runApplicationAlerts({ now = Date.now() } = {}) {
     const day = istDate(now);
     const jobs = await withUser(ENGINE, async (q) => (await q.query(
       `select j.id, j.title, j.recruiter_id, coalesce(s.new_application_alerts, 'auto') as mode,
-              count(a.id)::int as n
+              count(a.id)::int as n, count(a.id) filter (where a.import_method = '${IMPORTED}')::int as imported
          from jobs j
          join applications a on a.job_id = j.id and a.applied_at > $1::timestamptz - interval '1 day'
                             and a.applied_at >= $2
@@ -583,6 +587,7 @@ export async function runApplicationAlerts({ now = Date.now() } = {}) {
         title: `${j.n} new application${j.n === 1 ? '' : 's'}: ${j.title}`,
         message: `${j.title} (Job ID ${j.id}) received ${j.n} application${j.n === 1 ? '' : 's'} in the last 24 hours.`,
         url: staffUrl(j.id),
+        email: !j.imported || recruiterResponseEmails(),
       });
       if (Object.keys(r).length) out.digest += 1;
     }

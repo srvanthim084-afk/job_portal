@@ -69,6 +69,13 @@ const toMailbox = (r) => {
 const toMessage = (r) => ({
   id: r.id,
   mailboxId: r.mailbox_id,
+  /* 0162: where it came from (provider, mailbox, the provider's own message id), its thread, and who it belongs to */
+  source: r.source || undefined,
+  mailbox: r.mailbox_address || undefined,
+  messageId: r.message_id || undefined,
+  threadId: r.thread_id || undefined,
+  recruiterId: r.mailbox_recruiter_id || undefined,
+  recruiterName: r.mailbox_recruiter_name || undefined,
   from: r.from_address,
   subject: r.subject,
   receivedAt: r.received_at ? new Date(r.received_at).toISOString() : undefined,
@@ -529,10 +536,13 @@ export default function intakeRoutes() {
         if (mailboxId) { vals.push(mailboxId); where.push(`m.mailbox_id = $${vals.length}`); }
         const clause = where.length ? `where ${where.join(' and ')}` : '';
         return (await c.query(
-          `select m.*, c.name as candidate_name, a.reference
+          `select m.*, c.name as candidate_name, a.reference,
+                  mb.address as mailbox_address, mb.recruiter_id as mailbox_recruiter_id, rr.name as mailbox_recruiter_name
              from email_messages m
              left join candidates c on c.id = m.candidate_id
              left join applications a on a.id = m.application_id
+             left join email_mailboxes mb on mb.id = m.mailbox_id
+             left join recruiters rr on rr.id = mb.recruiter_id
              ${clause}
             order by m.received_at desc nulls last
             limit ${Math.min(Number(limit) || 100, 500)}`, vals)).rows;
@@ -544,9 +554,12 @@ export default function intakeRoutes() {
   r.get('/intake/queue', requireAuth(), requireRole('recruiter', 'bde', 'admin'),
     wrap(async (req, res) => {
       const rows = await withUser(req.session, async (c) => (await c.query(
-        `select m.*, c.name as candidate_name
+        `select m.*, c.name as candidate_name,
+                mb.address as mailbox_address, mb.recruiter_id as mailbox_recruiter_id, rr.name as mailbox_recruiter_name
            from email_messages m
            left join candidates c on c.id = m.candidate_id
+           left join email_mailboxes mb on mb.id = m.mailbox_id
+           left join recruiters rr on rr.id = mb.recruiter_id
           where m.status in ('needs_mapping','needs_review','failed')
           order by m.received_at desc nulls last limit 200`)).rows);
 

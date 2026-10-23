@@ -4815,6 +4815,9 @@
               var p = m.parsed || {};
               return '<div class="fcr-modal-row"><span><b>' + esc(p.name || m.subject || 'Unknown') + '</b> ' +
                 '<span class="badge badge-warn">' + esc(INTAKE_STATUS[m.status] || m.status) + '</span>' +
+                (m.source ? ' <span class="badge badge-neutral">' + esc(m.source === 'shine' ? 'Shine' : m.source === 'naukri' ? 'Naukri' : m.source) + '</span>' : '') +
+                '<div style="font-size:11.5px;color:var(--text-soft)" title="' + esc(m.threadId || '') + '">' +
+                (m.mailbox ? 'read from ' + esc(m.mailbox) : '') + (m.recruiterName ? ' · for ' + esc(m.recruiterName) : '') + '</div>' +
                 '<div style="font-size:12px;color:var(--text-soft)">' +
                 (p.email ? esc(p.email) + ' · ' : '') + (p.phone ? esc(p.phone) + ' · ' : '') +
                 (p.appliedRole ? 'applied for ' + esc(p.appliedRole) + ' · ' : '') +

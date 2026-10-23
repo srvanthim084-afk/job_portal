@@ -7,6 +7,7 @@
  */
 import { withUser } from '../db.js';
 import { providers } from './providers.js';
+import { recruiterResponseEmails } from '../intake/recruiter-policy.js';
 
 const ENGINE = { userId: '', role: 'admin', profileId: null };
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -55,12 +56,30 @@ export function composeUnmappedEmail(info) {
   return { subject, text: lines.join('\n'), html, link };
 }
 
-/** @returns {Promise<{status: string}>} 'sent' | 'skipped' (already told, or not waiting) | 'no_recipient' | 'failed' */
+/**
+ * @returns {Promise<{status: string}>} 'portal' (told inside TeamLink) | 'sent' (emailed, only with INTAKE_RECRUITER_EMAILS=true) |
+ *          'skipped' (already told, or not waiting) | 'no_recipient' | 'failed'
+ *
+ * The recruiter is told in the portal - a notification in their own list pointing at Applications. Their own email address is
+ * written to only when the administrator has switched response emails on (see intake/recruiter-policy.js).
+ */
 export async function notifyUnmapped(rowId) {
   let info = null;
   try {
     info = await withUser(ENGINE, async (c) => (await c.query(`select intake_unmapped_notice_claim($1) as j`, [rowId])).rows[0].j);
     if (!info) return { status: 'skipped' };
+
+    if (!recruiterResponseEmails()) {
+      if (!info.recruiterId) return { status: 'no_recipient' };
+      const msg = composeUnmappedEmail(info);
+      const first = String(msg.text).split('\n').filter(Boolean)[1] || msg.subject;
+      await withUser(ENGINE, (c) => c.query(
+        `select notify_create($1,$2,'recruiter',$3,$4,$5,null,null,null,$2,$6::jsonb)`,
+        [`ntf_${rowId}`, info.recruiterId, `IMPORT_NEEDS_REQUIREMENT#${rowId}`, msg.subject, first,
+         JSON.stringify({ kind: 'import_needs_requirement', messageId: rowId, url: msg.link })]));
+      return { status: 'portal' };
+    }
+
     if (!String(info.recruiterEmail || '').trim()) return { status: 'no_recipient' };     // the claim stays: nobody to tell
 
     const msg = composeUnmappedEmail(info);

@@ -492,18 +492,21 @@ test('no response ever carried an app password', async () => {
   assert.ok(!/secrets_sealed|secretsSealed/.test(all));
 });
 
-test('an import that ends with no requirement emails the mailbox owner, once, however often it is read again (0151)', async () => {
-  await new Promise((r) => setTimeout(r, 400));          // the notice is sent in the background after the import
+test('an import that ends with no requirement tells the mailbox owner IN THE PORTAL, once, and emails nobody (0151, 0162)', async () => {
+  await new Promise((r) => setTimeout(r, 400));          // the notice is made in the background after the import
   const waiting = (await raw(`select m.id, m.mapping_notified_at, b.recruiter_id from email_messages m join email_mailboxes b on b.id = m.mailbox_id
                                where m.status = 'needs_mapping' and b.source is not null`)).rows;
-  const notices = mailsSent.filter((x) => /^Action needed:/.test(x.subject));
+  assert.equal(mailsSent.filter((x) => /^Action needed:/.test(x.subject)).length, 0, 'no email about an imported response');
   if (!waiting.length) { console.log('  (no message ended as needs_mapping in this run; the notice itself is covered by intake-unmapped-notice.test.mjs)'); return; }
-  assert.equal(notices.length, waiting.filter((w) => w.recruiter_id).length, 'one email per waiting message');
+  const inPortal = async () => (await raw(`select count(*)::int n from notifications where type like 'IMPORT_NEEDS_REQUIREMENT#%'`)).rows[0].n;
+  assert.equal(await inPortal(), waiting.filter((w) => w.recruiter_id).length, 'one portal notification per waiting message');
   assert.ok(waiting.every((w) => w.mapping_notified_at), 'every one was claimed');
-  /* a sync reads the same messages again: nobody is emailed twice */
+  const n0 = await inPortal();
+  /* a sync reads the same messages again: nobody is told twice */
   for (const id of [naukriId, shineId]) await admin.post(`/api/intake/source-connections/${id}/sync`, {});
   await new Promise((r) => setTimeout(r, 400));
-  assert.equal(mailsSent.filter((x) => /^Action needed:/.test(x.subject)).length, notices.length, 'no second email');
+  assert.equal(await inPortal(), n0, 'no second notification');
+  assert.equal(mailsSent.filter((x) => /^Action needed:/.test(x.subject)).length, 0, 'and still no email');
 });
 
 test('a pasted Gmail app password loses its spaces and line breaks; other providers only lose the ends', async () => {
