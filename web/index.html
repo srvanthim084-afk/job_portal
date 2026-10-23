@@ -12466,8 +12466,19 @@ a.rec-nav-link{text-decoration:none}
     const openJobs=jobs.filter(j=>j.status==='open'&&!j.archived).length;
     const published=jobs.filter(j=>jp(j)==='Published').length;
     const drafts=jobs.filter(j=>j.status==='draft').length;
-    const immediate=DATA.candidates.filter(c=>/immediate/i.test(String(c.noticePeriod||''))).length;
-    const fresh=DATA.candidates.filter(c=>Number(c.profileUpdatedDaysAgo!=null?c.profileUpdatedDaysAgo:999)<=7).length;
+    /* the tiles count only people who applied to this recruiter's posts - the rest of the database is
+       reachable from Find Candidates but is not "your" candidates. NEW = applied to one of the posts in
+       the last 7 days (a brand-new candidate who applied counts at once; one who only registered does not). */
+    const mineIds={}, freshIds={}, weekAgo=Date.now()-7*864e5;
+    const appTime=a=>{ const t=Date.parse(a.appliedAt||a.appliedOn||''); return isNaN(t)?0:t; };
+    apps.forEach(a=>{
+      if(!a||!a.candidateId) return;
+      mineIds[a.candidateId]=1;
+      if(appTime(a)>=weekAgo) freshIds[a.candidateId]=1;
+    });
+    const mineList=DATA.candidates.filter(c=>mineIds[c.id]);
+    const immediate=mineList.filter(c=>/immediate/i.test(String(c.noticePeriod||''))).length;
+    const fresh=Object.keys(freshIds).length;
     let recents=[]; try{ recents=JSON.parse(localStorage.getItem('teamlink_recent_candidate_searches')||'[]').slice(0,5); }catch(e){}
     const today=new Date().toISOString().slice(0,10);
     const upcoming=(DATA.interviews||[]).filter(iv=>{ const j=DATA.jobById(iv.jobId); return j&&j.companyId===rec.companyId&&String(iv.date||'')>=today; }).slice(0,5);
@@ -12480,15 +12491,11 @@ a.rec-nav-link{text-decoration:none}
     return `
     <div class="stat-row">
       ${(function(){
-        /* the database total, plus how many of them are actually this
-           company's — the tile used to show only the first number, which
-           read as "10 candidates" with no relation to the recruiter */
-        const apps2=(typeof allApplicationsForCompany==='function')?allApplicationsForCompany(rec.companyId):[];
-        const mine={}; apps2.forEach(a=>{ if(a&&a.candidateId) mine[a.candidateId]=1; });
-        const n=Object.keys(mine).length;
-        return `<div class="stat-tile rh-tile" onclick="navigate('/recruiter/find-candidates')">
-          <div class="lbl">Total Candidates</div><div class="val tabular">${DATA.candidates.length}</div>
-          <div class="foot"><b>${n}</b> in your talent pool · rest searchable</div></div>`;
+        /* only the candidates who applied to this recruiter's job posts */
+        const n=Object.keys(mineIds).length;
+        return `<div class="stat-tile rh-tile" onclick="navigate('/recruiter/applications')">
+          <div class="lbl">Total Candidates</div><div class="val tabular">${n}</div>
+          <div class="foot">applied to your job posts</div></div>`;
       })()}
       ${statTile('New Candidates (7d)',fresh)}
       ${statTile('Shortlisted',n('shortlisted'))}
