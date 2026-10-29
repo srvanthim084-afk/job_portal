@@ -32,3 +32,6 @@ who sees what (a recruiter sees only their own mailboxes' responses).
 each -> both imported to the right recruiter and visible to that recruiter only; no email, copy or cc/bcc to a recruiter; the no-requirement
 notice is in the portal; a refused login is an error in the portal with nothing sent and no other mailbox tried; reading again repeats nothing;
 an application that did not come from an import still emails its recruiter; only `INTAKE_RECRUITER_EMAILS=true` emails an imported one.
+
+## Who sees an imported response (0164)
+An application imported from a recruiter's Naukri / Shine mailbox belongs to that mailbox's recruiter (and their team lead, and Admin). The owner of the job it attached to no longer sees it (pplications_read); applications that came any other way, and ones with no owner, are unchanged. Candidates stay a shared database for **searching** only (Find Candidates shows results only after a search).
