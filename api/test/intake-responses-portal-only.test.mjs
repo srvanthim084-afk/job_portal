@@ -202,6 +202,10 @@ test('the right recruiter sees the response in the portal; the other does not', 
   const al = (await recA.get('/api/applications')).body;
   const rows = al.applications || al.items || [];
   assert.ok(rows.some((x) => x.candidateId === la[0].candidateId), 'the Naukri application is in recruiter A\'s Applications');
+  /* 0164: recruiter A owns the Java job, but the Shine response was imported by recruiter B's mailbox - it is B's, not A's */
+  assert.ok(!rows.some((x) => x.candidateId === lb[0].candidateId), "recruiter B's imported response is not in A's Applications");
+  const bl = (await recB.get('/api/applications')).body;
+  assert.ok((bl.applications || bl.items || []).some((x) => x.candidateId === lb[0].candidateId), "it is in B's Applications");
   assert.ok((await admin.get('/api/intake/messages?status=processed')).body.messages.length >= 2, 'the administrator sees both');
 });
 
