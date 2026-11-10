@@ -69,14 +69,14 @@ const FIELDS = [
    * below reads the DATA as well - but widening the obvious spellings
    * first keeps the mapping explainable on the Columns step.
    */
-  ['phone', /^(mobile|phone|contact|whats\s*app|wa)|^ph\.?$|^cell|^number$|^num$|mobile|phone\s*(no|number)|contact\s*(no|number)/i],
+  ['phone', /^(mobile|phone|contacts?|whats\s*app|wa)\b|^ph\.?$|^cell|^number$|^num$|mobile|phone\s*(no|number)|contact\s*(no|number)/i],
   // "Mail ID" is the commonest spelling on an Indian recruiter's own
   // sheet and did not match: the pattern required an "e" before "mail".
   ['email', /^e.?mail(\s*(id|address))?$|^email$|^mail(\s*(id|address))?$|e.?mail\s*id/i],
   // "Technical Skills" failed on both halves - "technolog" does not
   // match "technical", and "^skills?$" is anchored.
   ['skills', /key\s*skills|it\s*skills|technical\s*skills|^skills?$|skill\s*set|technolog|stack/i],
-  ['location', /^(current\s*)?(location|city|place)$|current\s*(location|city)|^based|^city\s*name$/i],
+  ['location', /^(current\s*|present\s*)?(location|city|place)$|(current|present)\s*(location|city)|^based|^city\s*name$/i],
   ['preferredLocation', /pref.*location/i],
   ['title', /current\s*designation|^designation$|resume\s*headline|job\s*title|^title$|^position$/i],
   ['currentCompany', /current\s*(employer|company|organi[sz]ation)|^company(\s*name)?$|^employer$|organi[sz]ation|present\s*company/i],
@@ -90,12 +90,12 @@ const FIELDS = [
   // "Annual Salary" and "Expected Annual Salary" are Naukri's wording;
   // the expected one is matched FIRST so it cannot be taken as current.
   ['expectedCtc', /expected\s*(annual\s*)?(ctc|salary|package)|exp(ected)?\s*ctc/i],
-  ['ctc', /current\s*(annual\s*)?(ctc|salary|package)|^annual\s*salary$|^ctc$|^salary$/i],
+  ['ctc', /(current|present)\s*(annual\s*)?(ctc|salary|package)|^annual\s*salary$|^ctc$|^salary$/i],
   // "NP" on its own. Anchored, so it cannot claim a column called
   // "NP Status" or swallow an unrelated two-letter heading elsewhere.
   ['noticePeriod', /notice|^np$|^n\.p\.?$/i],
   ['education', /highest\s*(degree|qualification)|ug\s*course|pg\s*course|education|qualification|degree/i],
-  ['source', /^source$|portal|job\s*board|^referred\s*by$/i],
+  ['source', /^source$|^data\s*source$|portal|job\s*board|^referred\s*by$/i],
   /* Free text the recruiter keeps beside a name. Not stored on the
      candidate today - it is read so the column is not reported as
      "ignored", which is what makes a recruiter think the import lost
@@ -130,7 +130,7 @@ export function parseExperience(v) {
 }
 
 /** Header row -> {field: columnIndex} */
-function mapColumns(header) {
+export function mapColumns(header) {
   const map = {};
   header.forEach((cell, i) => {
     const h = String(cell || '').trim();
@@ -171,7 +171,7 @@ const splitList = (v) => String(v || '')
  * @returns { phone, reason }  phone is '' when none could be read, and
  *                             reason then says what was wrong with it.
  */
-const cleanPhone = (v) => {
+export const cleanPhone = (v) => {
   const raw = String(v === null || v === undefined ? '' : v).trim();
   if (!raw) return { phone: '', reason: 'blank' };
 
@@ -200,7 +200,7 @@ const cleanPhone = (v) => {
 
   /* Two numbers in one cell: take the first that is usable rather than
      gluing them together into a twenty-digit string. */
-  const parts = text.split(/[,;/|]|\s{2,}|or/i).map((p) => p.trim()).filter(Boolean);
+  const parts = text.split(/[,;/|]|\s{2,}|\bor\b/i).map((p) => p.trim()).filter(Boolean);
   const tried = [];
 
   for (const part of (parts.length ? parts : [text])) {
@@ -414,6 +414,12 @@ export default function spreadsheetRoutes() {
       // subject to the same policies as everything else they do.
       await withUser(req.session, async (c) => {
         for (const [index, row] of rows.entries()) {
+          // A row whose name and phone were typed into each other's column ("7095118830" | "Bhargavi"): put each back where it belongs.
+          if (map.name !== undefined && map.phone !== undefined) {
+            const n0 = String(row[map.name] == null ? '' : row[map.name]).trim();
+            const p0 = String(row[map.phone] == null ? '' : row[map.phone]).trim();
+            if (n0 && p0 && cleanPhone(n0).phone && !cleanPhone(p0).phone && !notAName(p0)) { row[map.name] = p0; row[map.phone] = n0; }
+          }
           const name = at(row, 'name');
           const email = extractEmail(at(row, 'email'));
           const phoneRead = cleanPhone(at(row, 'phone'));
