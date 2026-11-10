@@ -1291,6 +1291,33 @@ function scanForHealthOrg(text, full, { needEvidence = false } = {}) {
   return '';
 }
 
+/* gender, address, nationality: only a LABELLED line is believed ("Gender: Female"), never a guess from a name or a photo */
+function findGender(text) {
+  const v = firstMatch(text, LABELLED('(?:^|\\n)[ \\t]*(?:gender|sex)', '[^\\n]{0,24}'));
+  if (!v) return null;
+  const t = v.toLowerCase();
+  if (/\bfemale\b|\bwoman\b/.test(t)) return 'Female';
+  if (/\bmale\b|\bman\b/.test(t)) return 'Male';
+  if (/transgender|non[-\s]?binary|\bother\b/.test(t)) return 'Other';
+  return null;
+}
+
+function findNationality(text) {
+  const v = firstMatch(text, LABELLED('(?:^|\\n)[ \\t]*nationality', '[^\\n]{3,30}'));
+  if (!v) return null;
+  const w = v.replace(/[^A-Za-z \-]/g, ' ').replace(/\s+/g, ' ').trim();
+  return /^[A-Za-z][A-Za-z \-]{2,24}$/.test(w) ? w : null;
+}
+
+function findAddress(text) {
+  // "Email address: x@y.com" is not an address: the label must not be preceded by e-mail / mail / web, and the value must not be one
+  const v = firstMatch(text, LABELLED('(?:^|\\n)[ \\t]*(?:permanent\\s+|current\\s+|present\\s+|residential\\s+|postal\\s+|correspondence\\s+)?address(?:\\s+for\\s+communication)?', '[^\\n]{10,200}'));
+  if (!v) return null;
+  if (/@|https?:\/\/|www\./i.test(v)) return null;
+  if (!/[A-Za-z]{3,}/.test(v) || !/\d|[A-Za-z]{4,}[ ,]+[A-Za-z]{3,}/.test(v)) return null;
+  return v.slice(0, 200);
+}
+
 function findDob(text) {
   const v = firstMatch(text, LABELLED('date\\s*of\\s*birth|dob|d\\.o\\.b', '[^\\n]{0,30}'));
   if (!v) return null;
@@ -1639,6 +1666,9 @@ export function extractFields(text) {
     projects,
     languages,
     dob: findDob(t),
+    gender: findGender(t),
+    nationality: findNationality(t),
+    address: findAddress(t),
     linkedin: links.linkedin,
     github: links.github,
     portfolio: links.portfolio,

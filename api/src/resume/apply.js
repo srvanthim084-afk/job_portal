@@ -23,6 +23,27 @@ import { toRupees } from '../money.js';
  * account ends up with its skills rather than "0 skills detected" beside a
  * resume that plainly lists them.
  */
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+/**
+ * A date of birth out of the words a resume uses ("12/03/1995", "12-Mar-1995", "March 12, 1995", "1995-03-12") as YYYY-MM-DD, or null.
+ * Day first, as on Indian resumes. A date that is not a real date, or that makes the person younger than 16 or older than 75, is not believed.
+ */
+export function toIsoDate(v, now = new Date()) {
+  const s = String(v == null ? '' : v);
+  let d; let mo; let y; let m;
+  if ((m = /\b(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})\b/.exec(s))) { d = +m[1]; mo = +m[2]; y = +m[3]; }
+  else if ((m = /\b(\d{4})[\/.\-](\d{1,2})[\/.\-](\d{1,2})\b/.exec(s))) { y = +m[1]; mo = +m[2]; d = +m[3]; }
+  else if ((m = /\b(\d{1,2})(?:st|nd|rd|th)?[\s\-,.]+([A-Za-z]{3,9})\.?[\s\-,.]+(\d{4})\b/.exec(s))) { d = +m[1]; mo = MONTHS.indexOf(m[2].slice(0, 3).toLowerCase()) + 1; y = +m[3]; }
+  else if ((m = /\b([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\b/.exec(s))) { mo = MONTHS.indexOf(m[1].slice(0, 3).toLowerCase()) + 1; d = +m[2]; y = +m[3]; }
+  else return null;
+  if (!(mo >= 1 && mo <= 12 && d >= 1 && d <= 31)) return null;
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return null;
+  const age = (now.getTime() - dt.getTime()) / (365.25 * 24 * 3600 * 1000);
+  if (age < 16 || age > 75) return null;
+  return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
 export async function applyExtractedFields(c, candidateId, fields) {
   if (!fields || !Object.keys(fields).length) return 0;
 
@@ -50,6 +71,11 @@ export async function applyExtractedFields(c, candidateId, fields) {
     }],
     ['internships', 'internships', 'jsonb', (line) => ({ role: line })],
     ['achievements', 'achievements', 'jsonb', (line) => ({ title: line })],
+    // what a resume states about the person (only a labelled line is read; see resume/fields.js)
+    ['gender', 'gender', 'text'],
+    ['nationality', 'nationality', 'text'],
+    ['address', 'address', 'text'],
+    ['dob', 'date_of_birth', 'date'],
     ['expYears', 'exp_years', 'number'],
     /* 0117: what the reading already had and nothing kept. */
     ['relevantExpYears', 'relevant_exp_years', 'number'],
@@ -100,6 +126,7 @@ export async function applyExtractedFields(c, candidateId, fields) {
     }
     if (kind === 'array') { v = Array.isArray(v) ? v : [v]; if (!v.length) continue; }
     else if (kind === 'number') { v = Number(v); if (!Number.isFinite(v)) continue; }
+    else if (kind === 'date') { v = toIsoDate(v); if (!v) continue; }
     else if (kind === 'money') { v = toRupees(v); if (v === null) continue; }
     else { v = String(v).trim(); if (!v) continue; }
 
@@ -132,6 +159,27 @@ export async function applyExtractedFields(c, candidateId, fields) {
         await c.query(`select candidate_records_replace($1, null, $2::jsonb)`,
           [candidateId, JSON.stringify(rows)]);
         filled.push('employment');
+      }
+    }
+  }
+
+  /*
+   * EDUCATION, as rows, when the profile has none: the page's Education card reads candidate_education, and a resume listing a degree, the
+   * college, the year and the marks left it empty (the records were read and thrown away). Only when there are no rows at all.
+   */
+  const eduRecords = Array.isArray(fields.educationRecords) ? fields.educationRecords : [];
+  if (eduRecords.length) {
+    const hasEdu = (await c.query('select 1 from candidate_education where candidate_id=$1 limit 1', [candidateId])).rowCount;
+    if (!hasEdu) {
+      const rows = eduRecords.slice(0, 10)
+        .map((e) => ({
+          qualification: (e && e.qualification) || '', specialization: (e && e.specialization) || '', institution: (e && e.institution) || '',
+          passingYear: (e && e.passingYear) || '', score: (e && e.score) || '', educationType: (e && (e.educationType || e.level)) || '',
+        }))
+        .filter((e) => e.qualification || e.institution);
+      if (rows.length) {
+        await c.query('select candidate_records_replace($1, $2::jsonb, null)', [candidateId, JSON.stringify(rows)]);
+        filled.push('educationRecords');
       }
     }
   }
