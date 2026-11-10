@@ -227,6 +227,36 @@ const cleanPhone = (v) => {
     reason: `not a usable number: "${tried.join(' / ').slice(0, 60)}"` };
 };
 
+/**
+ * An email address out of a cell, or '' when there is none.
+ *
+ * Cells say "Email-id : rajaranijew@gmail.com" or hold a stray number (410, 8.27E9) from another block of the
+ * sheet. Only something shaped like an address is kept; the old code kept ANY non-empty text as the email, so a row
+ * whose "email" was 164 passed the "has a way to contact them" check and was imported with a number for a name.
+ */
+export function extractEmail(v) {
+  const m = /[A-Z0-9._%+'-]+@[A-Z0-9-]+(?:\.[A-Z0-9-]+)*\.[A-Z]{2,}/i.exec(String(v == null ? '' : v));
+  return m ? m[0].toLowerCase() : '';
+}
+
+/**
+ * Is this cell a person's name? Returns '' for one, or the reason it is not.
+ *
+ * A number (7.56947364E9, 46045.0 - a phone or an Excel date), punctuation ("....") or mostly symbols ("$p#@|i")
+ * is not a name. Such a row belongs to another table in the same sheet; importing it fills the Talent Pool with
+ * candidates called "7.588735942E9".
+ */
+export function notAName(v) {
+  const t = String(v == null ? '' : v).trim();
+  if (!t) return 'no name';
+  const letters = (t.match(/\p{L}/gu) || []).length;
+  const visible = t.replace(/\s/g, '').length;
+  // vowel signs of Telugu, Hindi and other scripts are marks, not letters: count them as part of the word
+  const wordy = (t.match(/[\p{L}\p{M}]/gu) || []).length;
+  if (letters < 2 || wordy / visible < 0.5) return `the name cell is not a name ("${t.slice(0, 30)}")`;
+  return '';
+}
+
 export default function spreadsheetRoutes() {
   const r = Router();
 
@@ -381,7 +411,7 @@ export default function spreadsheetRoutes() {
       await withUser(req.session, async (c) => {
         for (const [index, row] of rows.entries()) {
           const name = at(row, 'name');
-          const email = at(row, 'email').toLowerCase();
+          const email = extractEmail(at(row, 'email'));
           const phoneRead = cleanPhone(at(row, 'phone'));
           const phone = phoneRead.phone;
           const line = index + (header ? 2 : 1);
@@ -410,7 +440,8 @@ export default function spreadsheetRoutes() {
               }));
           }
 
-          if (!name) { skipped.push({ line, reason: 'no name' }); continue; }
+          const badName = notAName(name);
+          if (badName) { skipped.push({ line, name: name || undefined, reason: badName }); continue; }
           if (!email && !phone) {
             /*
              * WHICH of the four things went wrong, not "no contact".
