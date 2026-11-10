@@ -30308,6 +30308,8 @@ table.data td .tl-af b{white-space:normal}
             }).join('')
           + '</tbody></table></div>' : '')
 
+      + iwJobBlock(w)
+
       + '<label style="display:flex;gap:8px;align-items:flex-start;margin-top:15px;font-size:12.5px">'
       +   '<input type="checkbox" '+(w.invite?'checked':'')+' onchange="iwInvite(this.checked)" style="margin-top:2px">'
       +   '<span>Send each imported candidate their portal login by email, SMS and WhatsApp'
@@ -30348,6 +30350,31 @@ table.data td .tl-af b{white-space:normal}
 
   window.iwDecide = function(line, choice){ iw().decisions[line] = choice; iwPaint(); };
   window.iwInvite = function(on){ iw().invite = !!on; };
+  window.iwJob = function(id){ iw().jobId = id || ''; iwPaint(); };
+
+  /* The job role this list is for. People whose status says "interested" are put on it and reach the ATS; nobody is contacted.
+     Only jobs that come from the ATS (tl_...) are offered, because only those can be delivered there. */
+  function iwJobBlock(w){
+    var r = w.result || {};
+    var n = r.interestedRows || 0;
+    var jobs = (window.DATA && DATA.jobs ? DATA.jobs : []).filter(function(j){
+      return String(j.id).indexOf('tl_') === 0 && j.status !== 'closed' && j.status !== 'draft' && !j.archived;
+    });
+    if(!n && !jobs.length) return '';
+    return '<div style="margin-top:15px;border:1px solid var(--line);border-radius:10px;padding:12px 14px">'
+      + '<div style="font-size:12.5px;font-weight:700">Send interested candidates to the ATS</div>'
+      + '<div style="font-size:12px;color:var(--text-soft);margin:3px 0 8px">'
+      +   (n ? '<b>'+n+'</b> row'+(n===1?'':'s')+' in this file say <b>interested</b> (status columns; "not interested" is not counted). '
+         : 'No row in this file says interested. ')
+      +   'Choose the job role this list is for: only the interested ones are added to that job and appear in the ATS. '
+      +   'Nobody is sent a login or any message. Everyone else stays in the Talent Pool only.</div>'
+      + '<select onchange="iwJob(this.value)" style="width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px">'
+      +   '<option value="">— Do not send anyone to a job —</option>'
+      +   jobs.map(function(j){
+            return '<option value="'+E(j.id)+'"'+(w.jobId===j.id?' selected':'')+'>'+E(j.title)+(j.location?' · '+E(j.location):'')+'</option>';
+          }).join('')
+      + '</select></div>';
+  }
   window.iwView = function(id){
     fcrCloseModal();
     navigate('/recruiter/candidate-profile?id='+id);
@@ -30374,6 +30401,7 @@ table.data td .tl-af b{white-space:normal}
     fd.append('mapping', JSON.stringify(full));
     if(skip.length) fd.append('skip', JSON.stringify(skip));
     if(w.invite) fd.append('invite', 'true');
+    if(w.jobId) fd.append('jobId', w.jobId);
 
     var headers = {};
     try{
@@ -30414,6 +30442,11 @@ table.data td .tl-af b{white-space:normal}
       + (r.importId ? '<div style="font-size:11.5px;color:var(--text-soft);margin-top:9px;text-align:center">'
           + 'Recorded as import <b>'+E(r.importId)+'</b> — who ran it, what the file was called and how '
           + 'each column was mapped are all on file.</div>' : '')
+      + (r.sentToAts ? '<div style="font-size:12.5px;margin-top:10px;color:'+(r.sentToAts.error?'#b42318':'var(--text-soft)')+'">'
+          + (r.sentToAts.error ? E(r.sentToAts.error)
+             : '<b>'+r.sentToAts.sent+'</b> interested candidate'+(r.sentToAts.sent===1?'':'s')+' added to <b>'+E(r.sentToAts.jobTitle||'the job')+'</b> and on their way to the ATS'
+               + (r.sentToAts.already ? ' ('+r.sentToAts.already+' already on that job)' : '')+'. No login or message was sent.')
+          + '</div>' : '')
       + (r.invited ? '<div style="font-size:12.5px;color:var(--text-soft);margin-top:10px">'
           + r.invited+' invitation'+(r.invited===1?'':'s')+' are being sent.</div>' : '')
       + '<div class="iw-bar"><div class="sp">'

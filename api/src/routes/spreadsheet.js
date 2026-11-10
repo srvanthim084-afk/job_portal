@@ -21,6 +21,8 @@ import { requireAuth, requireRole } from '../auth.js';
 import { readSpreadsheet, writeSheet } from '../xlsx.js';
 import { toRupees } from '../money.js';
 import { inviteCandidates } from '../notify/invite.js';
+import { matchCandidate } from '../ai/match.js';
+import { toJob, toCandidate } from '../shapes.js';
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -319,6 +321,21 @@ export function sniffColumns(rows, map, pinned = new Set()) {
   return moved;
 }
 
+/**
+ * Is a candidate INTERESTED, going by the status cells ("status 1", "status 2", "Call status" ...)? The LAST word about interest decides,
+ * because a status log runs oldest to newest ("24-11 interested ... 26-11 not interested"). Returns 'interested', 'not' or null (nothing said).
+ * "Not interested", "no interest", "uninterested" and "not at all interested" are NOT interested.
+ */
+export function interestOf(v) {
+  const t = String(v == null ? '' : v);
+  let last = null;
+  for (const m of t.matchAll(/(not\s*|no\s*|un|dis)?\s*(interest|intrest)\w*/gi)) last = m;
+  if (!last) return null;
+  const before = t.slice(Math.max(0, last.index - 18), last.index);
+  const negated = !!last[1] || /\b(not|no|never|dont|don't|doesn't|isn't|wont|won't)\b[\w\s']{0,14}$/i.test(before);
+  return negated ? 'not' : 'interested';
+}
+
 export default function spreadsheetRoutes() {
   const r = Router();
 
@@ -463,6 +480,16 @@ export default function spreadsheetRoutes() {
           'No name column was found. Name the first column "Name", or include a header row.');
       }
 
+      // The columns that say how the call went ("status 1", "status 2", "Call status"): read for INTEREST, nothing else.
+      const statusCols = headerCells
+        .map((h, i) => (/^status(\s*\d+)?$|call\s*status|^response$|^feedback$|^interest(ed)?(\s*status)?$/i.test(h) ? i : -1))
+        .filter((i) => i >= 0);
+      // The job role this list is being imported FOR: interested people are put on it (and so reach the ATS); nobody is contacted.
+      const jobId = String(req.body?.jobId || '').trim();
+      if (jobId && !/^tl_/.test(jobId)) throw badRequest('That job is not linked to the ATS, so interested candidates cannot be sent to it.');
+      const interestedIds = new Set();
+      let interestedRows = 0;
+
       const at = (row, field) => (map[field] === undefined ? '' : String(row[map[field]] || '').trim());
 
       const imported = [];
@@ -511,6 +538,7 @@ export default function spreadsheetRoutes() {
               }));
           }
 
+          const interest = interestOf(statusCols.map((i) => String(row[i] == null ? '' : row[i])).join(' \n '));
           const badName = notAName(name);
           if (badName) { skipped.push({ line, name: name || undefined, reason: badName }); continue; }
           if (!email && !phone) {
@@ -687,6 +715,7 @@ export default function spreadsheetRoutes() {
                              noticePeriod: at(row, 'noticePeriod') || null,
                              skills,
                            } : undefined });
+            if (interest === 'interested') { interestedRows++; interestedIds.add(existing.id); }
             continue;
           }
 
@@ -700,6 +729,7 @@ export default function spreadsheetRoutes() {
             /* Everything above ran - the parse, the mapping, the search
                for an existing profile - and found nobody. That is the
                answer the preview needs; the row is not written. */
+            if (interest === 'interested') interestedRows++;
             imported.push({ line, id: null, name, email: fields.email, phone: fields.phone,
                             incoming: {
                               name,
@@ -731,8 +761,39 @@ export default function spreadsheetRoutes() {
              sourceRaw || 'Bulk Import',
              sourceRaw || null]);
           imported.push({ line, id, name, email: fields.email, phone: fields.phone });
+          if (interest === 'interested') { interestedRows++; interestedIds.add(id); }
         }
       });
+
+      /*
+       * INTERESTED -> THE CHOSEN JOB -> THE ATS (founder 2026-11-10: "interested ayina candidate ni aa job role ki send cheyyali, login
+       * credentials vaddu"). An interested candidate gets an application on the job this list was imported for, as a recruiter adding them
+       * would; the portal's own push (embed/teamlink-integration.mjs pushRecent, every few seconds) hands each to TeamLink as a candidate
+       * and an application at NEW. NOBODY IS MESSAGED: this writes the row, the candidate messages belong to the apply route and are not
+       * involved. Not-interested people and people with no status stay in the portal only.
+       */
+      let sentToAts = null;
+      if (!preview && jobId && interestedIds.size) {
+        sentToAts = await withUser(ENGINE, async (c) => {
+          const job = (await c.query('select * from jobs where id = $1', [jobId])).rows[0];
+          if (!job) return { jobId, sent: 0, already: 0, error: 'That job was not found.' };
+          let sent = 0; let already = 0;
+          for (const cid of interestedIds) {
+            // eslint-disable-next-line no-await-in-loop
+            const cand = (await c.query('select * from candidates where id = $1', [cid])).rows[0];
+            let score = null;
+            try { if (cand) score = matchCandidate(toJob(job), toCandidate(cand)).score; } catch { /* a score is optional */ }
+            // eslint-disable-next-line no-await-in-loop
+            const ins = await c.query(
+              `insert into applications (id, job_id, candidate_id, recruiter_id, stage, match_score, source, posting_type)
+               values ($1,$2,$3,$4,'applied',$5,$6,$7)
+               on conflict (candidate_id, job_id) do nothing returning id`,
+              [newId('app'), jobId, cid, req.session.role === 'recruiter' ? req.session.profileId : null, score, 'Bulk Import', job.posting_type || 'job']);
+            if (ins.rows.length) sent++; else already++;
+          }
+          return { jobId, jobTitle: job.title, sent, already };
+        }).catch((err) => { console.error('[import] interested -> job failed:', err.message); return { jobId, sent: 0, already: 0, error: 'Could not put them on the job.' }; });
+      }
 
       /*
        * Give them a way in.
@@ -867,6 +928,9 @@ export default function spreadsheetRoutes() {
         // What the recruiter is told will happen, so "did they get their
         // login?" is answerable from the same screen that imported them.
         invited: invitable.length,
+        // how many rows say INTERESTED, and (after a real import with a job chosen) how many were put on that job
+        interestedRows,
+        sentToAts,
         detail: { imported, updated, skipped },
       });
     }));
