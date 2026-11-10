@@ -30371,6 +30371,9 @@ table.data td .tl-af b{white-space:normal}
       +   'Choose the job role this list is for: only the interested ones are added to that job and appear in the ATS. '
       +   'The not interested stay in the Talent Pool and are noted as not interested in THAT role: later, in the Talent Pool, set Status to Not Interested and pick the job under Linked job to see them. '
       +   'Nobody is sent a login or any message.</div>'
+      + ((n || nn) && !w.jobId ? '<div style="font-size:12.5px;font-weight:700;color:#b42318;background:#fdecec;border-radius:8px;padding:8px 10px;margin-bottom:8px">'
+          + 'Choose the job role first. Without it the system cannot know which role these answers are for: nobody is sent to the ATS and '
+          + 'no "not interested" is noted for any role.</div>' : '')
       + '<select onchange="iwJob(this.value)" style="width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px">'
       +   '<option value="">— Do not send anyone to a job —</option>'
       +   jobs.map(function(j){
@@ -30386,6 +30389,10 @@ table.data td .tl-af b{white-space:normal}
   /** Do it for real. */
   window.iwCommit = function(){
     var w = iw();
+    var rr = w.result || {};
+    if((rr.interestedRows || rr.notInterestedRows) && !w.jobId &&
+       !window.confirm('This file says '+(rr.interestedRows||0)+' interested and '+(rr.notInterestedRows||0)+' not interested, but no job role is chosen.\n\n' +
+         'Without a job role these answers are not recorded for any role, and nobody is sent to the ATS.\n\nImport anyway?')) return;
     w.busy = true; w.error=''; iwPaint();
 
     var cells = (w.result||{}).headerCells || [];
