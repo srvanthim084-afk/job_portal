@@ -261,6 +261,64 @@ export function notAName(v) {
   return '';
 }
 
+/**
+ * READ THE DATA, NOT ONLY THE HEADER (founder 2026-11-10: "phone number unte phone, name unte name").
+ *
+ * A header can be missing ("Sandhya Gopalakrishnan | 7760327478" on row 1), spelled in a way no list has thought of, or sit over the wrong
+ * column. So the columns are also judged by what is IN them: a column is "phones" when most of its cells are phone numbers, "emails" when
+ * most are addresses, "names" when most are words that could be a person. Used only to FILL a field that has no column, or to MOVE a field
+ * whose column is clearly something else (under 30 % of its cells fit); a header that agrees with its data is left exactly as it is, and a
+ * column the recruiter set by hand on the Columns step (pinned) is never touched.
+ */
+export function sniffColumns(rows, map, pinned = new Set()) {
+  const sample = rows.slice(0, 300);
+  const width = Math.max(0, ...sample.map((r) => r.length));
+  const stat = Array.from({ length: width }, () => ({ n: 0, phone: 0, email: 0, name: 0, seen: new Set() }));
+  for (const row of sample) {
+    for (let i = 0; i < width; i++) {
+      const t = String(row[i] == null ? '' : row[i]).trim();
+      if (!t) continue;
+      const st = stat[i];
+      st.n++;
+      if (extractEmail(t)) st.email++;
+      else if (cleanPhone(t).phone) st.phone++;
+      else if (!notAName(t) && t.length <= 60 && !/\d/.test(t)) { st.name++; st.seen.add(t.toLowerCase()); }
+    }
+  }
+  // how well column i fits a field. A NAME column must also be varied: "Mtech", "Hyderabad" repeat; people do not.
+  const fit = (i, key) => {
+    const st = stat[i];
+    if (i === undefined || !st || st.n < 5) return null;
+    if (key === 'name' && st.name > 0 && st.seen.size / st.name < 0.5) return 0;
+    return st[key] / st.n;
+  };
+  const fields = [['phone', 'phone', 0.6], ['email', 'email', 0.5], ['name', 'name', 0.6]].filter(([f]) => !pinned.has(f));
+  // a field whose own column does not fit it (under 30 %) gives that column up, so two fields typed over each other's column can swap
+  const failing = fields.filter(([f, k]) => { const own = fit(map[f], k); return own !== null && own < 0.3; }).map(([f]) => f);
+  const unmapped = fields.filter(([f]) => map[f] === undefined).map(([f]) => f);
+  const moved = [];
+  const todo = new Set([...failing, ...unmapped]);
+  if (!todo.size) return moved;
+  const taken = new Set(Object.entries(map).filter(([f]) => !todo.has(f)).map(([, i]) => i));
+  const offers = [];
+  for (const [f, k, need] of fields) {
+    if (!todo.has(f)) continue;
+    for (let i = 0; i < width; i++) {
+      if (taken.has(i)) continue;
+      const sh = fit(i, k);
+      if (sh !== null && sh >= need) offers.push({ f, i, sh });
+    }
+  }
+  offers.sort((x, y) => y.sh - x.sh || x.i - y.i);
+  const done = new Set(); const used = new Set();
+  for (const o of offers) {
+    if (done.has(o.f) || used.has(o.i)) continue;
+    done.add(o.f); used.add(o.i);
+    if (map[o.f] !== o.i) { map[o.f] = o.i; moved.push(o.f); }
+  }
+  return moved;
+}
+
 export default function spreadsheetRoutes() {
   const r = Router();
 
@@ -396,6 +454,9 @@ export default function spreadsheetRoutes() {
         if (!known.has(field)) throw badRequest(`"${field}" is not a TeamLink field.`);
         map[field] = i;
       }
+
+      // header missing or over the wrong column: judge the columns by what is in them (never one the recruiter set by hand)
+      sniffColumns(rows, map, new Set(Object.values(override).filter(Boolean)));
 
       if (map.name === undefined) {
         throw new ApiError(422, 'NO_NAME_COLUMN',
