@@ -30094,7 +30094,7 @@ table.data td .tl-af b{white-space:normal}
       + iwJobPicker(w, true)
       + '<div class="iw-bar"><button class="btn btn-ghost" onclick="fcrCloseModal()">Cancel</button>'
       + '<div class="sp"><button class="btn btn-primary" onclick="iwRead()"'
-      +   (w.file?'':' disabled')+'>Continue</button></div></div>';
+      +   (w.file && w.jobId ? '' : ' disabled')+'>Continue</button></div></div>';
   }
 
   window.iwTemplate = function(){
@@ -30119,6 +30119,7 @@ table.data td .tl-af b{white-space:normal}
   window.iwRead = function(mapping){
     var w = iw();
     if(!w.file) return;
+    if(!w.jobId){ w.error = 'Choose the job role this list is for.'; iwPaint(); return; }
     w.busy = true; w.error=''; iwPaint();
 
     var fd = new FormData();
@@ -30379,7 +30380,7 @@ table.data td .tl-af b{white-space:normal}
     var jobs = w.jobsList || [];
     var chosen = jobs.filter(function(j){ return j.id === w.jobId; })[0];
     return '<div style="margin-top:14px;border:1px solid var(--line);border-radius:10px;padding:12px 14px">'
-      + '<div style="font-size:12.5px;font-weight:700">Job role this list is for <span style="font-weight:500;color:var(--text-soft)">(optional)</span></div>'
+      + '<div style="font-size:12.5px;font-weight:700">Job role this list is for <span style="font-weight:800;color:#b42318">* required</span></div>'
       + '<div style="font-size:12px;color:var(--text-soft);margin:3px 0 8px">'
       +   'If the file has a status column (interested / not interested): the <b>interested</b> go to this job and the ATS, the <b>not interested</b> stay in the '
       +   'Talent Pool and are noted as not interested in <b>this role</b>. Nobody is sent a login or any message.</div>'
@@ -30389,7 +30390,8 @@ table.data td .tl-af b{white-space:normal}
       + '<datalist id="iwJobList">'+jobs.map(function(j){ return '<option value="'+E(iwJobLabel(j))+'">'; }).join('')+'</datalist>'
       + (chosen ? '<div style="font-size:12px;margin-top:6px;color:#1c7c4a">Chosen: <b>'+E(chosen.title)+'</b> '
           + '<a href="#" onclick="event.preventDefault();iwJob(\'\')">clear</a></div>'
-        : (w.jobText && jobs.length ? '<div style="font-size:12px;margin-top:6px;color:#b42318">Choose one from the list.</div>' : ''))
+        : (w.jobText && jobs.length ? '<div style="font-size:12px;margin-top:6px;color:#b42318">Choose one from the list.</div>'
+          : (w.file ? '<div style="font-size:12px;margin-top:6px;font-weight:700;color:#b42318">Choose the job role to continue.</div>' : '')))
       + '</div>';
   }
 
@@ -30425,10 +30427,7 @@ table.data td .tl-af b{white-space:normal}
   /** Do it for real. */
   window.iwCommit = function(){
     var w = iw();
-    var rr = w.result || {};
-    if((rr.interestedRows || rr.notInterestedRows) && !w.jobId &&
-       !window.confirm('This file says '+(rr.interestedRows||0)+' interested and '+(rr.notInterestedRows||0)+' not interested, but no job role is chosen.\n\n' +
-         'Without a job role these answers are not recorded for any role, and nobody is sent to the ATS.\n\nImport anyway?')) return;
+    if(!w.jobId){ w.error = 'Choose the job role this list is for before importing.'; iwPaint(); return; }
     w.busy = true; w.error=''; iwPaint();
 
     var cells = (w.result||{}).headerCells || [];
