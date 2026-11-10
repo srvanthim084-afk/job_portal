@@ -30359,14 +30359,14 @@ table.data td .tl-af b{white-space:normal}
   function iwJobsLoad(w){
     if(w.jobsList || w.jobsLoading) return;
     w.jobsLoading = true;
-    TL.api.get('/jobs?view=all&limit=200').then(function(r){
+    TL.api.get('/candidates/import/jobs').then(function(r){
       w.jobsList = (r.jobs||[]).filter(function(j){
-        return String(j.id).indexOf('tl_') === 0 && j.status !== 'closed' && j.status !== 'draft';
-      }).map(function(j){ return { id:j.id, title:j.title||j.id, location:j.location||'' }; });
+        return String(j.id).indexOf('tl_') === 0;
+      }).map(function(j){ return { id:j.id, title:j.title||j.id, location:j.location||'', status:j.status||'' }; });
       w.jobsLoading = false; iwPaint();
     }, function(){ w.jobsList = []; w.jobsLoading = false; iwPaint(); });
   }
-  function iwJobLabel(j){ return j.title + (j.location ? ' · ' + j.location : ''); }
+  function iwJobLabel(j){ return j.title + (j.location ? ' · ' + j.location : '') + (j.status === 'closed' ? ' (closed)' : ''); }
   /* roles whose title / place contain EVERY word typed (any order, any case) */
   function iwJobMatches(w, text){
     var words = String(text||'').toLowerCase().split(/\s+/).filter(Boolean);

@@ -340,6 +340,18 @@ export default function spreadsheetRoutes() {
   const r = Router();
 
   /**
+   * GET /api/candidates/import/jobs?q=
+   *
+   * The job roles a list may be imported FOR: the TeamLink jobs of the caller's department (admin: all), closed ones included - a past
+   * requirement is still a requirement. app_import_jobs (migration 0167) applies the department rule; this only asks it.
+   */
+  r.get('/candidates/import/jobs', requireAuth(), requireRole('recruiter', 'bde', 'admin'), wrap(async (req, res) => {
+    const q = String(req.query.q || '').trim().slice(0, 80);
+    const rows = await withUser(req.session, async (c) => (await c.query('select * from app_import_jobs($1)', [q])).rows);
+    res.json({ jobs: rows });
+  }));
+
+  /**
    * POST /api/candidates/import
    *
    * Accepts .xlsx or .csv, as a file or as pasted text. Reports exactly
@@ -487,6 +499,10 @@ export default function spreadsheetRoutes() {
       // The job role this list is being imported FOR: interested people are put on it (and so reach the ATS); nobody is contacted.
       const jobId = String(req.body?.jobId || '').trim();
       if (jobId && !/^tl_/.test(jobId)) throw badRequest('That job is not linked to the ATS, so interested candidates cannot be sent to it.');
+      if (jobId) {
+        const inDept = await withUser(req.session, async (c) => (await c.query('select app_job_in_department($1) as ok', [jobId])).rows[0].ok);
+        if (!inDept) throw new ApiError(403, 'JOB_NOT_YOURS', 'That job role is not in your department.');
+      }
       const interestedIds = new Set();
       // every answer, interested or not, by candidate: recorded for the chosen job so "who said no for THIS role" can be filtered later
       const interestById = new Map();
