@@ -40,7 +40,9 @@ export function getPool() {
       connectionString: config.databaseUrl,
       max: config.dbPoolMax,
       idleTimeoutMillis: 30_000,
-      connectionTimeoutMillis: 10_000,
+      // The embedded database serves ONE connection (tools/dev-server.mjs sets DB_POOL_MAX=1), so a request that needs it waits its turn.
+      // 10 s was shorter than a busy minute, and the waiting request failed with "timeout exceeded when trying to connect".
+      connectionTimeoutMillis: parseInt(process.env.DB_CONNECT_TIMEOUT_MS, 10) || 10_000,
       ssl: config.dbSsl ? { rejectUnauthorized: false } : undefined,
     });
 

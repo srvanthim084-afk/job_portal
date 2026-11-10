@@ -180,6 +180,7 @@ if (REAL_DB) {
   process.env.DATABASE_URL = `postgres://postgres:postgres@127.0.0.1:${PG_PORT}/postgres`;
   process.env.DB_ROLE = 'app_api';      // drop privileges so RLS applies
   process.env.DB_POOL_MAX = '1';        // pglite-socket serves one connection
+  process.env.DB_CONNECT_TIMEOUT_MS = process.env.DB_CONNECT_TIMEOUT_MS || '45000'; // so it waits for its turn instead of failing after 10 s
 
   describeDb = `embedded (${DEV_DB})`;
 

@@ -336,7 +336,12 @@ export function attachSession() {
       req.sessionToken = token || null;
       req.session = token ? await resolveSession(token) : null;
       next();
-    } catch (err) { next(err); }
+    } catch (err) {
+      // A page or file (anything outside /api) needs no session. If the database is busy, serve it as signed-out
+      // instead of answering the whole page with a JSON error (hrms-sso.html did exactly that). The API still reports the error.
+      if (!String(req.originalUrl || req.url || '').startsWith('/api')) { req.session = null; return next(); }
+      next(err);
+    }
   };
 }
 
