@@ -793,20 +793,52 @@ export default function spreadsheetRoutes() {
               [cid, jobId, answer, importId]);
             if (answer === 'not_interested') notInterested++;
           }
+          const MOVABLE = ['applied', 'ai_screening', 'ai_interview_pending', 'ai_interview_in_progress', 'ai_interview_done'];
+          let moved = 0;
           for (const cid of interestedIds) {
+            // one savepoint per person: one that cannot be added must not undo the others
             // eslint-disable-next-line no-await-in-loop
-            const cand = (await c.query('select * from candidates where id = $1', [cid])).rows[0];
-            let score = null;
-            try { if (cand) score = matchCandidate(toJob(job), toCandidate(cand)).score; } catch { /* a score is optional */ }
-            // eslint-disable-next-line no-await-in-loop
-            const ins = await c.query(
-              `insert into applications (id, job_id, candidate_id, recruiter_id, stage, match_score, source, posting_type)
-               values ($1,$2,$3,$4,'applied',$5,$6,$7)
-               on conflict (candidate_id, job_id) do nothing returning id`,
-              [newId('app'), jobId, cid, req.session.role === 'recruiter' ? req.session.profileId : null, score, 'Bulk Import', job.posting_type || 'job']);
-            if (ins.rows.length) sent++; else already++;
+            await c.query('savepoint one');
+            try {
+              // eslint-disable-next-line no-await-in-loop
+              const cand = (await c.query('select * from candidates where id = $1', [cid])).rows[0];
+              // eslint-disable-next-line no-await-in-loop
+              let app = (await c.query('select * from applications where candidate_id = $1 and job_id = $2', [cid, jobId])).rows[0];
+              let outcome;
+              if (!app) {
+                let score = null;
+                try { if (cand) score = matchCandidate(toJob(job), toCandidate(cand)).score; } catch { /* a score is optional */ }
+                // eslint-disable-next-line no-await-in-loop
+                app = (await c.query(
+                  `insert into applications (id, job_id, candidate_id, recruiter_id, stage, match_score, source, posting_type)
+                   values ($1,$2,$3,$4,'applied',$5,$6,$7) returning *`,
+                  [newId('app'), jobId, cid, req.session.role === 'recruiter' ? req.session.profileId : null, score, 'Bulk Import', job.posting_type || 'job'])).rows[0];
+                outcome = 'added';
+              } else if (MOVABLE.includes(app.stage)) {
+                outcome = 'moved';
+              } else {
+                already++;
+                // eslint-disable-next-line no-await-in-loop
+                await c.query('release savepoint one');
+                continue;
+              }
+              // the same move and the same stamp as the portal's own "Send to ATS": Shortlisted, and remembered as moved to the ATS
+              // eslint-disable-next-line no-await-in-loop
+              await c.query("select set_config('app.stage_note', $1, true)", ['Sent to ATS from the import (interested)']);
+              // eslint-disable-next-line no-await-in-loop
+              await c.query(`update applications set stage = 'shortlisted',
+                               ats_pushed_at = coalesce(ats_pushed_at, now()), ats_pushed_via = coalesce(ats_pushed_via, 'send_to_ats')
+                             where id = $1`, [app.id]);
+              if (outcome === 'added') sent++; else moved++;
+              // eslint-disable-next-line no-await-in-loop
+              await c.query('release savepoint one');
+            } catch (err) {
+              // eslint-disable-next-line no-await-in-loop
+              await c.query('rollback to savepoint one');
+              console.error('[import] interested -> ATS, one person not added:', err.message);
+            }
           }
-          return { jobId, jobTitle: job.title, sent, already, notInterested };
+          return { jobId, jobTitle: job.title, sent: sent + moved, added: sent, moved, already, notInterested };
         }).catch((err) => { console.error('[import] interested -> job failed:', err.message); return { jobId, sent: 0, already: 0, error: 'Could not put them on the job.' }; });
       }
 

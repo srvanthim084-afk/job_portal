@@ -30091,6 +30091,7 @@ table.data td .tl-af b{white-space:normal}
       + '<div class="iw-sup">Supported: CSV, XLSX'
       +   ' · <a href="#" onclick="event.preventDefault();iwTemplate()" style="font-weight:700">Download Template</a></div>'
       + '</div>'
+      + iwJobPicker(w, true)
       + '<div class="iw-bar"><button class="btn btn-ghost" onclick="fcrCloseModal()">Cancel</button>'
       + '<div class="sp"><button class="btn btn-primary" onclick="iwRead()"'
       +   (w.file?'':' disabled')+'>Continue</button></div></div>';
@@ -30352,6 +30353,46 @@ table.data td .tl-af b{white-space:normal}
   window.iwInvite = function(on){ iw().invite = !!on; };
   window.iwJob = function(id){ iw().jobId = id || ''; iwPaint(); };
 
+  /* The caller's OWN job roles (the same list as their Jobs screen; a team lead gets the team's), loaded once when the wizard shows.
+     Only ATS jobs (tl_...) are offered: only those can be delivered to the ATS. */
+  function iwJobsLoad(w){
+    if(w.jobsList || w.jobsLoading) return;
+    w.jobsLoading = true;
+    TL.api.get('/jobs?view=all&limit=200').then(function(r){
+      w.jobsList = (r.jobs||[]).filter(function(j){
+        return String(j.id).indexOf('tl_') === 0 && j.status !== 'closed' && j.status !== 'draft';
+      }).map(function(j){ return { id:j.id, title:j.title||j.id, location:j.location||'' }; });
+      w.jobsLoading = false; iwPaint();
+    }, function(){ w.jobsList = []; w.jobsLoading = false; iwPaint(); });
+  }
+  function iwJobLabel(j){ return j.title + (j.location ? ' · ' + j.location : ''); }
+  window.iwJobPick = function(text){
+    var w = iw(); var t = String(text||'').trim().toLowerCase();
+    var hit = (w.jobsList||[]).filter(function(j){ return iwJobLabel(j).toLowerCase() === t || j.title.toLowerCase() === t; })[0];
+    w.jobId = hit ? hit.id : '';
+    w.jobText = hit ? iwJobLabel(hit) : String(text||'');
+    iwPaint();
+  };
+  /* Type to search, or choose from the list. */
+  function iwJobPicker(w, onUpload){
+    iwJobsLoad(w);
+    var jobs = w.jobsList || [];
+    var chosen = jobs.filter(function(j){ return j.id === w.jobId; })[0];
+    return '<div style="margin-top:14px;border:1px solid var(--line);border-radius:10px;padding:12px 14px">'
+      + '<div style="font-size:12.5px;font-weight:700">Job role this list is for <span style="font-weight:500;color:var(--text-soft)">(optional)</span></div>'
+      + '<div style="font-size:12px;color:var(--text-soft);margin:3px 0 8px">'
+      +   'If the file has a status column (interested / not interested): the <b>interested</b> go to this job and the ATS, the <b>not interested</b> stay in the '
+      +   'Talent Pool and are noted as not interested in <b>this role</b>. Nobody is sent a login or any message.</div>'
+      + '<input list="iwJobList" value="'+E(chosen ? iwJobLabel(chosen) : (w.jobText||''))+'" onchange="iwJobPick(this.value)" '
+      +   'placeholder="'+(w.jobsList ? (jobs.length ? 'Type or choose the job role' : 'No ATS job roles found for you') : 'Loading your job roles…')+'" '
+      +   'style="width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px">'
+      + '<datalist id="iwJobList">'+jobs.map(function(j){ return '<option value="'+E(iwJobLabel(j))+'">'; }).join('')+'</datalist>'
+      + (chosen ? '<div style="font-size:12px;margin-top:6px;color:#1c7c4a">Chosen: <b>'+E(chosen.title)+'</b> '
+          + '<a href="#" onclick="event.preventDefault();iwJob(\'\')">clear</a></div>'
+        : (w.jobText && jobs.length ? '<div style="font-size:12px;margin-top:6px;color:#b42318">Choose one from the list.</div>' : ''))
+      + '</div>';
+  }
+
   /* The job role this list is for. People whose status says "interested" are put on it and reach the ATS; nobody is contacted.
      Only jobs that come from the ATS (tl_...) are offered, because only those can be delivered there. */
   function iwJobBlock(w){
@@ -30361,7 +30402,6 @@ table.data td .tl-af b{white-space:normal}
     var jobs = (window.DATA && DATA.jobs ? DATA.jobs : []).filter(function(j){
       return String(j.id).indexOf('tl_') === 0 && j.status !== 'closed' && j.status !== 'draft' && !j.archived;
     });
-    if(!n && !jobs.length) return '';
     return '<div style="margin-top:15px;border:1px solid var(--line);border-radius:10px;padding:12px 14px">'
       + '<div style="font-size:12.5px;font-weight:700">Send interested candidates to the ATS</div>'
       + '<div style="font-size:12px;color:var(--text-soft);margin:3px 0 8px">'
@@ -30374,12 +30414,8 @@ table.data td .tl-af b{white-space:normal}
       + ((n || nn) && !w.jobId ? '<div style="font-size:12.5px;font-weight:700;color:#b42318;background:#fdecec;border-radius:8px;padding:8px 10px;margin-bottom:8px">'
           + 'Choose the job role first. Without it the system cannot know which role these answers are for: nobody is sent to the ATS and '
           + 'no "not interested" is noted for any role.</div>' : '')
-      + '<select onchange="iwJob(this.value)" style="width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px">'
-      +   '<option value="">— Do not send anyone to a job —</option>'
-      +   jobs.map(function(j){
-            return '<option value="'+E(j.id)+'"'+(w.jobId===j.id?' selected':'')+'>'+E(j.title)+(j.location?' · '+E(j.location):'')+'</option>';
-          }).join('')
-      + '</select></div>';
+      + iwJobPicker(w).replace('margin-top:14px;border:1px solid var(--line);border-radius:10px;padding:12px 14px', 'margin-top:4px')
+      + '</div>';
   }
   window.iwView = function(id){
     fcrCloseModal();
@@ -30454,7 +30490,7 @@ table.data td .tl-af b{white-space:normal}
           + 'each column was mapped are all on file.</div>' : '')
       + (r.sentToAts ? '<div style="font-size:12.5px;margin-top:10px;color:'+(r.sentToAts.error?'#b42318':'var(--text-soft)')+'">'
           + (r.sentToAts.error ? E(r.sentToAts.error)
-             : '<b>'+r.sentToAts.sent+'</b> interested candidate'+(r.sentToAts.sent===1?'':'s')+' added to <b>'+E(r.sentToAts.jobTitle||'the job')+'</b> and on their way to the ATS'
+             : '<b>'+r.sentToAts.sent+'</b> interested candidate'+(r.sentToAts.sent===1?'':'s')+' added to <b>'+E(r.sentToAts.jobTitle||'the job')+'</b> and marked <b>Moved to ATS</b> (Talent Pool, Moved to ATS filter)'
                + (r.sentToAts.already ? ' ('+r.sentToAts.already+' already on that job)' : '')+'. '
                + (r.sentToAts.notInterested ? '<b>'+r.sentToAts.notInterested+'</b> not interested noted for this job: Talent Pool, Status Not Interested, Linked job. ' : '')
                + 'No login or message was sent.')
