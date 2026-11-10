@@ -204,6 +204,8 @@ const cleanPhone = (v) => {
   const tried = [];
 
   for (const part of (parts.length ? parts : [text])) {
+    // a phone cell holds digits and a few separators; real words in it ("Exp 5 years 3 months") are not a phone number
+    if ((part.match(/[A-Za-z]/g) || []).length > 4) { tried.push(part); continue; }
     let digits = part.replace(/\D/g, '');
     if (!digits) { tried.push(part); continue; }
     // +91 / 0091 / 91 in front of a ten-digit mobile, and the 0 an STD
@@ -253,6 +255,8 @@ export function notAName(v) {
   const visible = t.replace(/\s/g, '').length;
   // vowel signs of Telugu, Hindi and other scripts are marks, not letters: count them as part of the word
   const wordy = (t.match(/[\p{L}\p{M}]/gu) || []).length;
+  if (extractEmail(t)) return `the name cell holds an email address ("${t.slice(0, 30)}")`;
+  if (/\d{6,}/.test(t.replace(/[\s-]/g, ''))) return `the name cell holds a number ("${t.slice(0, 30)}")`;
   if (letters < 2 || wordy / visible < 0.5) return `the name cell is not a name ("${t.slice(0, 30)}")`;
   return '';
 }
