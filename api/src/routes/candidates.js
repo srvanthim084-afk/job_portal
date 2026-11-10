@@ -371,9 +371,27 @@ export default function candidateRoutes() {
          * recruiter asked.
          */
         const poolStatuses = list(q.poolStatus);
+        // "Interested" / "Not Interested" also mean what a sheet said for a JOB ROLE (candidate_job_interest, migration 0165):
+        // with a job chosen in Linked job, ONLY the people who gave that answer for THAT job; with none, anybody who gave it for any job.
+        const interestVals = poolStatuses.filter((x) => x === 'interested' || x === 'not_interested');
+        const jobInterestScoped = !!q.jobId && interestVals.length > 0;
         if (poolStatuses.length) {
-          params.push(poolStatuses);
-          push(`pool_status = any($${params.length})`);
+          const otherVals = poolStatuses.filter((x) => !interestVals.includes(x));
+          const conds = [];
+          if (otherVals.length) { params.push(otherVals); conds.push(`pool_status = any($${params.length})`); }
+          if (interestVals.length) {
+            params.push(interestVals);
+            const iv = params.length;
+            if (jobInterestScoped) {
+              params.push(String(q.jobId));
+              conds.push(`exists (select 1 from candidate_job_interest i where i.candidate_id = candidates.id
+                                    and i.job_id = $${params.length} and i.interest = any($${iv}))`);
+            } else {
+              conds.push(`pool_status = any($${iv}) or exists (select 1 from candidate_job_interest i
+                                    where i.candidate_id = candidates.id and i.interest = any($${iv}))`);
+            }
+          }
+          push(`(${conds.join(' or ')})`);
         }
 
         /*
@@ -427,7 +445,8 @@ export default function candidateRoutes() {
         }
 
         // Everyone linked to one requirement, however far along they are.
-        if (q.jobId) {
+        // (with Status = Interested / Not Interested the Linked job is answered by the per-job answer above, not by an application)
+        if (q.jobId && !jobInterestScoped) {
           params.push(String(q.jobId));
           push(`exists (select 1 from applications a
                          where a.candidate_id = candidates.id

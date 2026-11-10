@@ -488,7 +488,10 @@ export default function spreadsheetRoutes() {
       const jobId = String(req.body?.jobId || '').trim();
       if (jobId && !/^tl_/.test(jobId)) throw badRequest('That job is not linked to the ATS, so interested candidates cannot be sent to it.');
       const interestedIds = new Set();
+      // every answer, interested or not, by candidate: recorded for the chosen job so "who said no for THIS role" can be filtered later
+      const interestById = new Map();
       let interestedRows = 0;
+      let notInterestedRows = 0;
 
       const at = (row, field) => (map[field] === undefined ? '' : String(row[map[field]] || '').trim());
 
@@ -715,7 +718,8 @@ export default function spreadsheetRoutes() {
                              noticePeriod: at(row, 'noticePeriod') || null,
                              skills,
                            } : undefined });
-            if (interest === 'interested') { interestedRows++; interestedIds.add(existing.id); }
+            if (interest === 'interested') { interestedRows++; interestedIds.add(existing.id); interestById.set(existing.id, 'interested'); }
+            else if (interest === 'not') { notInterestedRows++; interestById.set(existing.id, 'not_interested'); }
             continue;
           }
 
@@ -730,6 +734,7 @@ export default function spreadsheetRoutes() {
                for an existing profile - and found nobody. That is the
                answer the preview needs; the row is not written. */
             if (interest === 'interested') interestedRows++;
+            else if (interest === 'not') notInterestedRows++;
             imported.push({ line, id: null, name, email: fields.email, phone: fields.phone,
                             incoming: {
                               name,
@@ -761,7 +766,8 @@ export default function spreadsheetRoutes() {
              sourceRaw || 'Bulk Import',
              sourceRaw || null]);
           imported.push({ line, id, name, email: fields.email, phone: fields.phone });
-          if (interest === 'interested') { interestedRows++; interestedIds.add(id); }
+          if (interest === 'interested') { interestedRows++; interestedIds.add(id); interestById.set(id, 'interested'); }
+          else if (interest === 'not') { notInterestedRows++; interestById.set(id, 'not_interested'); }
         }
       });
 
@@ -773,11 +779,20 @@ export default function spreadsheetRoutes() {
        * involved. Not-interested people and people with no status stay in the portal only.
        */
       let sentToAts = null;
-      if (!preview && jobId && interestedIds.size) {
+      if (!preview && jobId && interestById.size) {
         sentToAts = await withUser(ENGINE, async (c) => {
           const job = (await c.query('select * from jobs where id = $1', [jobId])).rows[0];
-          if (!job) return { jobId, sent: 0, already: 0, error: 'That job was not found.' };
-          let sent = 0; let already = 0;
+          if (!job) return { jobId, sent: 0, already: 0, notInterested: 0, error: 'That job was not found.' };
+          let sent = 0; let already = 0; let notInterested = 0;
+          // the answer of every person in the file, for THIS job (a later import overwrites it)
+          for (const [cid, answer] of interestById) {
+            // eslint-disable-next-line no-await-in-loop
+            await c.query(
+              `insert into candidate_job_interest (candidate_id, job_id, interest, import_id) values ($1,$2,$3,$4)
+               on conflict (candidate_id, job_id) do update set interest = excluded.interest, import_id = excluded.import_id, updated_at = now()`,
+              [cid, jobId, answer, importId]);
+            if (answer === 'not_interested') notInterested++;
+          }
           for (const cid of interestedIds) {
             // eslint-disable-next-line no-await-in-loop
             const cand = (await c.query('select * from candidates where id = $1', [cid])).rows[0];
@@ -791,7 +806,7 @@ export default function spreadsheetRoutes() {
               [newId('app'), jobId, cid, req.session.role === 'recruiter' ? req.session.profileId : null, score, 'Bulk Import', job.posting_type || 'job']);
             if (ins.rows.length) sent++; else already++;
           }
-          return { jobId, jobTitle: job.title, sent, already };
+          return { jobId, jobTitle: job.title, sent, already, notInterested };
         }).catch((err) => { console.error('[import] interested -> job failed:', err.message); return { jobId, sent: 0, already: 0, error: 'Could not put them on the job.' }; });
       }
 
@@ -930,6 +945,7 @@ export default function spreadsheetRoutes() {
         invited: invitable.length,
         // how many rows say INTERESTED, and (after a real import with a job chosen) how many were put on that job
         interestedRows,
+        notInterestedRows,
         sentToAts,
         detail: { imported, updated, skipped },
       });

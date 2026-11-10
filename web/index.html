@@ -30357,6 +30357,7 @@ table.data td .tl-af b{white-space:normal}
   function iwJobBlock(w){
     var r = w.result || {};
     var n = r.interestedRows || 0;
+    var nn = r.notInterestedRows || 0;
     var jobs = (window.DATA && DATA.jobs ? DATA.jobs : []).filter(function(j){
       return String(j.id).indexOf('tl_') === 0 && j.status !== 'closed' && j.status !== 'draft' && !j.archived;
     });
@@ -30366,8 +30367,10 @@ table.data td .tl-af b{white-space:normal}
       + '<div style="font-size:12px;color:var(--text-soft);margin:3px 0 8px">'
       +   (n ? '<b>'+n+'</b> row'+(n===1?'':'s')+' in this file say <b>interested</b> (status columns; "not interested" is not counted). '
          : 'No row in this file says interested. ')
+      +   (nn ? '<b>'+nn+'</b> say <b>not interested</b>. ' : '')
       +   'Choose the job role this list is for: only the interested ones are added to that job and appear in the ATS. '
-      +   'Nobody is sent a login or any message. Everyone else stays in the Talent Pool only.</div>'
+      +   'The not interested stay in the Talent Pool and are noted as not interested in THAT role: later, in the Talent Pool, set Status to Not Interested and pick the job under Linked job to see them. '
+      +   'Nobody is sent a login or any message.</div>'
       + '<select onchange="iwJob(this.value)" style="width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px">'
       +   '<option value="">— Do not send anyone to a job —</option>'
       +   jobs.map(function(j){
@@ -30445,7 +30448,9 @@ table.data td .tl-af b{white-space:normal}
       + (r.sentToAts ? '<div style="font-size:12.5px;margin-top:10px;color:'+(r.sentToAts.error?'#b42318':'var(--text-soft)')+'">'
           + (r.sentToAts.error ? E(r.sentToAts.error)
              : '<b>'+r.sentToAts.sent+'</b> interested candidate'+(r.sentToAts.sent===1?'':'s')+' added to <b>'+E(r.sentToAts.jobTitle||'the job')+'</b> and on their way to the ATS'
-               + (r.sentToAts.already ? ' ('+r.sentToAts.already+' already on that job)' : '')+'. No login or message was sent.')
+               + (r.sentToAts.already ? ' ('+r.sentToAts.already+' already on that job)' : '')+'. '
+               + (r.sentToAts.notInterested ? '<b>'+r.sentToAts.notInterested+'</b> not interested noted for this job: Talent Pool, Status Not Interested, Linked job. ' : '')
+               + 'No login or message was sent.')
           + '</div>' : '')
       + (r.invited ? '<div style="font-size:12.5px;color:var(--text-soft);margin-top:10px">'
           + r.invited+' invitation'+(r.invited===1?'':'s')+' are being sent.</div>' : '')
