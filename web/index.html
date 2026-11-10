@@ -30093,7 +30093,7 @@ table.data td .tl-af b{white-space:normal}
       + '</div>'
       + iwJobPicker(w, true)
       + '<div class="iw-bar"><button class="btn btn-ghost" onclick="fcrCloseModal()">Cancel</button>'
-      + '<div class="sp"><button class="btn btn-primary" onclick="iwRead()"'
+      + '<div class="sp"><button class="btn btn-primary" id="iwContinue" onclick="iwRead()"'
       +   (w.file && w.jobId ? '' : ' disabled')+'>Continue</button></div></div>';
   }
 
@@ -30367,12 +30367,53 @@ table.data td .tl-af b{white-space:normal}
     }, function(){ w.jobsList = []; w.jobsLoading = false; iwPaint(); });
   }
   function iwJobLabel(j){ return j.title + (j.location ? ' · ' + j.location : ''); }
-  window.iwJobPick = function(text){
-    var w = iw(); var t = String(text||'').trim().toLowerCase();
-    var hit = (w.jobsList||[]).filter(function(j){ return iwJobLabel(j).toLowerCase() === t || j.title.toLowerCase() === t; })[0];
-    w.jobId = hit ? hit.id : '';
-    w.jobText = hit ? iwJobLabel(hit) : String(text||'');
+  /* roles whose title / place contain EVERY word typed (any order, any case) */
+  function iwJobMatches(w, text){
+    var words = String(text||'').toLowerCase().split(/\s+/).filter(Boolean);
+    return (w.jobsList||[]).filter(function(j){
+      var l = iwJobLabel(j).toLowerCase();
+      return words.every(function(x){ return l.indexOf(x) >= 0; });
+    });
+  }
+  function iwJobSuggest(w){
+    var jobs = w.jobsList || [];
+    if(!w.jobsList) return '';
+    if(!jobs.length) return '<div style="font-size:12px;margin-top:6px;color:#b42318">No ATS job roles found for you. Publish the requirement in the ATS first, then it appears here.</div>';
+    var typed = String(w.jobText||'').trim();
+    if(w.jobId && jobs.filter(function(j){ return j.id === w.jobId; })[0]) return '';
+    var hits = typed ? iwJobMatches(w, typed) : jobs;
+    var note = !typed ? 'Your job roles:' : (hits.length ? 'Choose one:' : 'No job role matches "'+E(typed)+'". Your job roles:');
+    if(typed && !hits.length) hits = jobs;
+    return '<div style="font-size:12px;margin-top:6px;color:var(--text-soft)">'+note+'</div>'
+      + '<div style="max-height:150px;overflow:auto;border:1px solid var(--line);border-radius:8px;margin-top:4px">'
+      + hits.slice(0, 30).map(function(j){
+          return '<div onmousedown="iwJobChoose(\''+E(j.id)+'\')" style="padding:7px 10px;font-size:13px;cursor:pointer;border-bottom:1px solid var(--line)">'
+            + E(j.title) + (j.location ? ' <span style="color:var(--text-soft)">· '+E(j.location)+'</span>' : '') + '</div>';
+        }).join('')
+      + '</div>';
+  }
+  window.iwJobChoose = function(id){
+    var w = iw(); var j = (w.jobsList||[]).filter(function(x){ return x.id === id; })[0];
+    w.jobId = j ? j.id : ''; w.jobText = j ? iwJobLabel(j) : '';
     iwPaint();
+  };
+  /* typing: an exact title selects it; anything else just filters the list below (no repaint, so the cursor stays) */
+  window.iwJobType = function(text){
+    var w = iw(); var t = String(text||'').trim().toLowerCase();
+    w.jobText = String(text||'');
+    var exact = (w.jobsList||[]).filter(function(j){ return iwJobLabel(j).toLowerCase() === t || j.title.toLowerCase() === t; });
+    var was = w.jobId;
+    w.jobId = exact.length === 1 ? exact[0].id : '';
+    if(w.jobId !== was){ iwPaint(); var el = document.getElementById('iwJobInput'); if(el){ try{ el.focus(); el.setSelectionRange(el.value.length, el.value.length); }catch(e){} } return; }
+    var box = document.getElementById('iwJobSug'); if(box) box.innerHTML = iwJobSuggest(w);
+    var btn = document.getElementById('iwContinue'); if(btn) btn.disabled = !(w.file && w.jobId);
+  };
+  window.iwJobPick = window.iwJobType;
+  /* Enter, or leaving the box: if what was typed matches exactly ONE job role, that one is chosen */
+  window.iwJobEnter = function(){
+    var w = iw(); if(w.jobId) return;
+    var hits = iwJobMatches(w, w.jobText);
+    if(hits.length === 1) window.iwJobChoose(hits[0].id);
   };
   /* Type to search, or choose from the list. */
   function iwJobPicker(w, onUpload){
@@ -30384,14 +30425,13 @@ table.data td .tl-af b{white-space:normal}
       + '<div style="font-size:12px;color:var(--text-soft);margin:3px 0 8px">'
       +   'If the file has a status column (interested / not interested): the <b>interested</b> go to this job and the ATS, the <b>not interested</b> stay in the '
       +   'Talent Pool and are noted as not interested in <b>this role</b>. Nobody is sent a login or any message.</div>'
-      + '<input list="iwJobList" value="'+E(chosen ? iwJobLabel(chosen) : (w.jobText||''))+'" onchange="iwJobPick(this.value)" '
-      +   'placeholder="'+(w.jobsList ? (jobs.length ? 'Type or choose the job role' : 'No ATS job roles found for you') : 'Loading your job roles…')+'" '
+      + '<input id="iwJobInput" autocomplete="off" value="'+E(chosen ? iwJobLabel(chosen) : (w.jobText||''))+'" oninput="iwJobType(this.value)" onfocus="iwJobType(this.value)" onchange="iwJobEnter()" onkeydown="if(event.key===\'Enter\'){event.preventDefault();iwJobEnter();}" '
+      +   'placeholder="'+(w.jobsList ? 'Type the job role, or choose from the list' : 'Loading your job roles…')+'" '
       +   'style="width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px">'
-      + '<datalist id="iwJobList">'+jobs.map(function(j){ return '<option value="'+E(iwJobLabel(j))+'">'; }).join('')+'</datalist>'
       + (chosen ? '<div style="font-size:12px;margin-top:6px;color:#1c7c4a">Chosen: <b>'+E(chosen.title)+'</b> '
-          + '<a href="#" onclick="event.preventDefault();iwJob(\'\')">clear</a></div>'
-        : (w.jobText && jobs.length ? '<div style="font-size:12px;margin-top:6px;color:#b42318">Choose one from the list.</div>'
-          : (w.file ? '<div style="font-size:12px;margin-top:6px;font-weight:700;color:#b42318">Choose the job role to continue.</div>' : '')))
+          + '<a href="#" onclick="event.preventDefault();iwJobChoose(\'\')">change</a></div>' : '')
+      + '<div id="iwJobSug">'+(chosen ? '' : iwJobSuggest(w))+'</div>'
+      + (!chosen && w.file ? '<div style="font-size:12px;margin-top:6px;font-weight:700;color:#b42318">Choose the job role to continue.</div>' : '')
       + '</div>';
   }
 
