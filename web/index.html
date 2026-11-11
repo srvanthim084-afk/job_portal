@@ -26792,15 +26792,11 @@ table.data td .tl-af b{white-space:normal}
   }
 
   var AIIV_LANGS={ en:{ name:'English', stt:'en-IN' }, te:{ name:'Telugu', stt:'te-IN' }, hi:{ name:'Hindi', stt:'hi-IN' } };
-  function aiivSavedLang(){ try{ var v=localStorage.getItem('tlAiivLang'); return AIIV_LANGS[v]?v:'en'; }catch(e){ return 'en'; } }
-  window.aiivPickLang=function(v){ try{ localStorage.setItem('tlAiivLang', AIIV_LANGS[v]?v:'en'); }catch(e){} };
+  function aiivSavedLang(){ return 'en'; } // every interview starts in English (founder 2026-11-11)
   /* The candidate answered in another language (TeamLink's listeners heard it, server side): the next question is asked in it. */
-  window.aiivLanguageHeard=function(lang){
-    if(!AIIV_LANGS[lang] || !AIIV.started || AIIV.lang===lang) return;
-    AIIV.lang=lang; window.TLVI_LANG=lang;
-    try{ localStorage.setItem('tlAiivLang', lang); }catch(e){}
-    if(window.TLVI && TLVI.transcript) TLVI.transcript.add('AI', 'Switching to '+AIIV_LANGS[lang].name+'.');
-  };
+  /* (The page used to switch here after an answer's upload; TeamLink's interview add-on switches during the answer instead, and two
+     switches would disagree - so this only notes the language heard.) */
+  window.aiivLanguageHeard=function(lang){ if(AIIV_LANGS[lang]) AIIV.heardLang=lang; };
   window.aiivStart=function(appId){
     stopSpeak(); resetSpoken();
     var keep=AIIV;
@@ -27085,12 +27081,9 @@ table.data td .tl-af b{white-space:normal}
       +'<li>About 15 questions, each with '+ANSWER_SECS+' seconds to answer. You can submit an answer early.</li>'
       +'<li>Use a quiet room and keep your camera on. Leaving this tab suspends the interview.</li>'
       +'<li>If your connection drops, the interview carries on from the same question when it is back.</li></ul></div>'
-      /* THE LANGUAGE (founder 2026-11-11: the interview talks like TeamLink's AI calls - English, Telugu or Hindi - and follows a
-         candidate who answers in another one). Chosen here; the interview switches by itself if the candidate answers in another. */
-      +'<div class="req-note" style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><label for="aiivLangPick"><b>Interview language</b></label>'
-      +'<select id="aiivLangPick" onchange="aiivPickLang(this.value)" style="padding:6px 8px;border-radius:8px;border:1px solid var(--border,#d0d5dd)">'
-      +[['en','English'],['te','తెలుగు (Telugu)'],['hi','हिंदी (Hindi)']].map(function(o){ return '<option value="'+o[0]+'"'+(aiivSavedLang()===o[0]?' selected':'')+'>'+o[1]+'</option>'; }).join('')
-      +'</select><span style="font-size:12.5px;color:var(--text-muted,#667085)">Answer in the language you are comfortable with: the interviewer follows you.</span></div>'
+      /* NO LANGUAGE CHOICE HERE (founder 2026-11-11: "first start english tho start avvali, tharvatha candidate matladey language ni batti
+         switch avvali"): every interview starts in English, and only what the candidate speaks switches it - TeamLink's interview add-on
+         (job-portal-app/embed/interview-addon.js) hears that while they answer. */
       +'<div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap"><button class="btn btn-ai" onclick="aiivStart(\''+rec.applicationId+'\')">Start AI Video Interview</button><button class="btn btn-ghost" onclick="navigate(\'/candidate-app/'+rec.applicationId+'\')">Back to application</button></div>'
       +'</div></div></div>';
     return shell('applications','AI Interview',crumb,content);

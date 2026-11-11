@@ -802,18 +802,21 @@ export default function aiInterviewRoutes() {
             `select transcript, submitted_at from ai_interview_answer_parts
               where interview_id=$1 and seq=$2 and part=$3`, [iv.id, seq, part])).rows[0]);
           const empty = have && have.submitted_at && !String(have.transcript || '').trim();
+          // Only an EMPTY answer is filled in (the browser caught nothing). The language is reported, never acted on here: TeamLink's
+          // interview add-on switches the interview while the candidate speaks and saves Telugu / Hindi answers in English for the score,
+          // so an answer it saved is never overwritten (founder 2026-11-11: one way of switching, by what the candidate speaks).
+          if (!empty) throw Object.assign(new Error('answer already captured'), { quiet: true });
           const heard = await transcribeEx(req.file.buffer, stored.mime, askedIn);
           const words = String(heard.text || '').trim().split(/\s+/).filter(Boolean).length;
-          const switched = heard.language && heard.language !== askedIn && words >= 3;
-          if (switched) language = heard.language;
-          if (heard.text && have && have.submitted_at && (empty || switched)) {
+          if (heard.language && heard.language !== askedIn && words >= 3) language = heard.language;
+          if (heard.text) {
             await withUser(req.session, (c) => c.query(
               `select ai_interview_part_save($1,$2,$3,$4,$5,$6)`,
               [iv.id, req.session.profileId, seq, part, true, heard.text]));
             transcribed = true;
           }
         } catch (err) {
-          console.error('[interview] server speech-to-text failed:', err.message);
+          if (!err.quiet) console.error('[interview] server speech-to-text failed:', err.message);
         }
       }
 
