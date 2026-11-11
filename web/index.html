@@ -30394,15 +30394,23 @@ table.data td .tl-af b{white-space:normal}
   /* The caller's OWN job roles (the same list as their Jobs screen; a team lead gets the team's), loaded once when the wizard shows.
      Only ATS jobs (tl_...) are offered: only those can be delivered to the ATS. */
   function iwJobsLoad(w){
-    if(w.jobsList || w.jobsLoading) return;
+    if(w.jobsList || w.jobsLoading || w.jobsFailed) return;
     w.jobsLoading = true;
-    TL.api.get('/candidates/import/jobs').then(function(r){
-      w.jobsList = (r.jobs||[]).filter(function(j){
-        return String(j.id).indexOf('tl_') === 0;
-      }).map(function(j){ return { id:j.id, title:j.title||j.id, location:j.location||'', status:j.status||'' }; });
-      w.jobsLoading = false; iwPaint();
-    }, function(){ w.jobsList = []; w.jobsLoading = false; iwPaint(); });
+    var attempt = 0;
+    (function go(){
+      TL.api.get('/candidates/import/jobs').then(function(r){
+        w.jobsList = (r.jobs||[]).filter(function(j){
+          return String(j.id).indexOf('tl_') === 0;
+        }).map(function(j){ return { id:j.id, title:j.title||j.id, location:j.location||'', status:j.status||'' }; });
+        w.jobsLoading = false; iwPaint();
+      }, function(){
+        /* the portal restarts for a minute after an update: ask again before saying anything */
+        if(++attempt < 5){ setTimeout(go, 2000 * attempt); return; }
+        w.jobsLoading = false; w.jobsFailed = true; iwPaint();
+      });
+    })();
   }
+  window.iwJobsRetry = function(){ var w = iw(); w.jobsList = null; w.jobsFailed = false; w.jobsLoading = false; iwJobsLoad(w); iwPaint(); };
   function iwJobLabel(j){ return j.title + (j.location ? ' · ' + j.location : '') + (j.status === 'closed' ? ' (closed)' : ''); }
   /* roles whose title / place contain EVERY word typed (any order, any case) */
   function iwJobMatches(w, text){
@@ -30421,7 +30429,7 @@ table.data td .tl-af b{white-space:normal}
   function iwJobById(w, id){ return (w.jobsList||[]).filter(function(j){ return j.id === id; })[0]; }
   function iwJobSuggest(w){
     var jobs = w.jobsList || [];
-    if(!w.jobsList) return '';
+    if(!w.jobsList) return w.jobsFailed ? '<div style="font-size:12px;margin-top:6px;color:#b42318">The job roles could not be loaded (the server was busy or restarting). <a href="#" onclick="event.preventDefault();iwJobsRetry()">Try again</a></div>' : '';
     if(!jobs.length){ w._hits = []; return '<div style="font-size:12px;margin-top:6px;color:#b42318">No ATS job roles found. Publish the requirement in the ATS first, then it appears here.</div>'; }
     var typed = String(w.jobText||'').trim();
     var hits = typed ? iwJobMatches(w, typed) : jobs;
@@ -30528,7 +30536,7 @@ table.data td .tl-af b{white-space:normal}
       +   'the <b>not interested</b> stay in the Talent Pool and are noted as not interested in <b>each chosen role</b>. Nobody is sent a login or any message.</div>'
       + (chips ? '<div>'+chips+'</div>' : '')
       + '<input id="iwJobInput" autocomplete="off" value="'+E(w.jobText||'')+'" oninput="iwJobType(this.value)" onfocus="iwJobType(this.value)" onchange="iwJobEnter()" onkeydown="iwJobKey(event)" '
-      +   'placeholder="'+(w.jobsList ? (jobs.length ? 'Type to search the job roles, then tap to choose' : 'No job roles found') : 'Loading the job roles…')+'" '
+      +   'placeholder="'+(w.jobsList ? (jobs.length ? 'Type to search the job roles, then tap to choose' : 'No job roles found') : (w.jobsFailed ? 'Could not load the job roles' : 'Loading the job roles…'))+'" '
       +   'style="width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px">'
       + '<div id="iwJobSug">'+iwJobSuggest(w)+'</div>'
       + ((w.jobIds||[]).length ? '<div style="font-size:12px;margin-top:6px;color:#1c7c4a"><b>'+(w.jobIds||[]).length+'</b> job role'+((w.jobIds||[]).length===1?'':'s')+' chosen '
