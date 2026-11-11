@@ -165,7 +165,7 @@ test('style: with NO AI key the server\'s own plan follows the same rules', asyn
   assert.equal(r.status, 201, JSON.stringify(r.body));
   session = r.body;
   assert.equal(session.questions.length, 15, 'the blueprint still adds up');
-  assert.deepEqual(session.speech, { stt: 'browser', tts: 'browser' }, 'server speech is off by default');
+  assert.deepEqual(session.speech, { stt: 'browser', tts: 'browser', languages: ['en'] }, 'server speech is off by default, and without TeamLink the interview is in English only');
   for (const q of session.questions) {
     assert.ok(style.wordCount(q.question) <= style.MAX_QUESTION_WORDS, `${style.wordCount(q.question)} words: ${q.question}`);
     assert.equal(style.bannedPhrase(q.question), null, `gap phrasing: ${q.question}`);

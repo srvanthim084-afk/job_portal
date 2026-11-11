@@ -27,7 +27,8 @@ import { toJob, toCandidate } from '../shapes.js';
 import { dispatchEvent } from '../notify/events.js';
 import { CODES } from '../errors.js';
 import { storeRecording, getStorage, RECORDING_MAX_BYTES } from '../storage.js';
-import { speechModes, sttEnabled, ttsEnabled, transcribe, synthesise } from '../ai/interview-speech.js';
+import { speechModes, sttEnabled, ttsEnabled, transcribeEx, synthesise, langCode } from '../ai/interview-speech.js';
+import { textIn, translatedNow, prefetch } from '../ai/interview-lang.js';
 import { retakePolicy, questionSeconds, PAGE_STOPS, formatWhen } from '../interview/policy.js';
 import { afterSuspension, sendRetakeChangedEmail } from '../notify/interview-suspension.js';
 import { kickApplicationNotices } from '../notify/application-notices.js';
@@ -788,20 +789,28 @@ export default function aiInterviewRoutes() {
          browser could not caption. Never overwrites words the candidate
          already has on file, and a provider failure loses nothing - the
          recording is stored either way. */
+      /* THE LANGUAGE OF THE ANSWER (founder 2026-11-11: the interview switches language the way TeamLink's calls do). With
+         TeamLink's listeners (INTERVIEW_STT_PROVIDER=teamlink) every answer is heard for its words AND its language. An answer
+         clearly in another language than the interview's (3+ words) is reported back, and the screen asks the next question in
+         it; its words then replace the browser's caption, which was listening for the wrong language. */
       let transcribed = false;
+      let language = null;
+      const askedIn = langCode(req.body?.lang);
       if (sttEnabled() && !lateOk) {
         try {
           const have = await withUser(req.session, async (c) => (await c.query(
             `select transcript, submitted_at from ai_interview_answer_parts
               where interview_id=$1 and seq=$2 and part=$3`, [iv.id, seq, part])).rows[0]);
-          if (have && have.submitted_at && !String(have.transcript || '').trim()) {
-            const text = await transcribe(req.file.buffer, stored.mime);
-            if (text) {
-              await withUser(req.session, (c) => c.query(
-                `select ai_interview_part_save($1,$2,$3,$4,$5,$6)`,
-                [iv.id, req.session.profileId, seq, part, true, text]));
-              transcribed = true;
-            }
+          const empty = have && have.submitted_at && !String(have.transcript || '').trim();
+          const heard = await transcribeEx(req.file.buffer, stored.mime, askedIn);
+          const words = String(heard.text || '').trim().split(/\s+/).filter(Boolean).length;
+          const switched = heard.language && heard.language !== askedIn && words >= 3;
+          if (switched) language = heard.language;
+          if (heard.text && have && have.submitted_at && (empty || switched)) {
+            await withUser(req.session, (c) => c.query(
+              `select ai_interview_part_save($1,$2,$3,$4,$5,$6)`,
+              [iv.id, req.session.profileId, seq, part, true, heard.text]));
+            transcribed = true;
           }
         } catch (err) {
           console.error('[interview] server speech-to-text failed:', err.message);
@@ -811,6 +820,8 @@ export default function aiInterviewRoutes() {
       res.status(201).json({
         recording: { seq, part, mime: stored.mime, size: stored.size },
         transcribed,
+        // set only when the candidate answered in another language: the next question is asked in it
+        language,
       });
     }));
 
@@ -869,11 +880,39 @@ export default function aiInterviewRoutes() {
    * this. The text spoken is the server's own question, never the
    * caller's.
    */
+  /**
+   * GET /api/ai-interviews/:id/text?seq=N&part=main&lang=te - the question in the interview's language (English, Telugu, Hindi).
+   * A translation not ready within ~40 s leaves it in English ({ language: 'en' }): the interview never stops for it. The next few
+   * questions are put into that language in the background while this one is answered.
+   */
+  r.get('/ai-interviews/:id/text', requireAuth(), wrap(async (req, res) => {
+    const seq = Number(req.query.seq);
+    const part = String(req.query.part || 'main') === 'followup' ? 'followup' : 'main';
+    const lang = langCode(req.query.lang);
+    const { text, upcoming } = await withUser(req.session, async (c) => {
+      const iv = (await c.query(`select id, status from ai_interviews where id=$1 and candidate_id=$2`,
+        [req.params.id, req.session.profileId])).rows[0];
+      assertRunning(iv);
+      const q = part === 'followup'
+        ? (await c.query(`select question from ai_interview_answer_parts where interview_id=$1 and seq=$2 and part='followup'`, [iv.id, seq])).rows[0]?.question
+        : (await c.query(`select question from ai_interview_answers where ai_interview_id=$1 and seq=$2`, [iv.id, seq])).rows[0]?.question;
+      const next = (await c.query(`select question from ai_interview_answers where ai_interview_id=$1 and seq>$2 order by seq limit 3`,
+        [iv.id, seq])).rows.map((x) => x.question);
+      return { text: q, upcoming: next };
+    });
+    if (!text) throw notFound('That question could not be found.');
+    if (lang === 'en') return res.json({ text, language: 'en' });
+    const out = await textIn(text, lang, 40_000);
+    prefetch(upcoming, lang);
+    return res.json(out ? { text: out, language: lang } : { text, language: 'en', note: 'not translated in time' });
+  }));
+
   r.get('/ai-interviews/:id/speech', requireAuth(), wrap(async (req, res) => {
     if (!ttsEnabled()) throw new ApiError(404, 'TTS_NOT_CONFIGURED', 'Server text-to-speech is not configured.');
     const seq = Number(req.query.seq);
     const part = String(req.query.part || 'main');
-    const text = await withUser(req.session, async (c) => {
+    const lang = langCode(req.query.lang);
+    const english = await withUser(req.session, async (c) => {
       const iv = (await c.query(`select id, status from ai_interviews where id=$1 and candidate_id=$2`,
         [req.params.id, req.session.profileId])).rows[0];
       assertRunning(iv);
@@ -884,8 +923,11 @@ export default function aiInterviewRoutes() {
       return (await c.query(`select question from ai_interview_answers where ai_interview_id=$1 and seq=$2`,
         [iv.id, seq])).rows[0]?.question;
     });
-    if (!text) throw notFound('That question could not be found.');
-    const audio = await synthesise(text).catch((err) => {
+    if (!english) throw notFound('That question could not be found.');
+    // spoken in the interview's language when its translation is ready (the screen fetched it first), else in English
+    const inLang = lang === 'en' ? null : translatedNow(english, lang);
+    const text = inLang || english;
+    const audio = await synthesise(text, inLang ? lang : 'en').catch((err) => {
       console.error('[interview] server text-to-speech failed:', err.message);
       throw new ApiError(502, 'TTS_FAILED', 'The interviewer voice is unavailable; the question is on screen.');
     });

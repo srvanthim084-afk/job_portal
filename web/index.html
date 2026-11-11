@@ -26122,6 +26122,7 @@ table.data td .tl-af b{white-space:normal}
           if(i >= chunks.length) return finish();
           var u = new SpeechSynthesisUtterance(chunks[i++]);
           u.rate = 1; u.pitch = 1;
+          try{ var lg = (typeof AIIV !== 'undefined' && AIIV && AIIV.phase === 'interview') ? questionLang() : 'en'; u.lang = (AIIV_LANGS[lg] || AIIV_LANGS.en).stt; }catch(e){}
           u.onend = next;
           u.onerror = finish;
           synth.speak(u);
@@ -26178,7 +26179,7 @@ table.data td .tl-af b{white-space:normal}
      screen says "Live captions aren't available in this browser - your
      spoken answer is still recorded", and no caption is shown at all. */
   function sttOk(){ return !!(window.SpeechRecognition||window.webkitSpeechRecognition); }
-  function startSTT(){ try{ var SR=window.SpeechRecognition||window.webkitSpeechRecognition; if(!SR || AIIV.micOff){ AIIV.rec=null; return; } var r=new SR(); r.lang='en-IN'; r.continuous=true; r.interimResults=true;
+  function startSTT(){ try{ var SR=window.SpeechRecognition||window.webkitSpeechRecognition; if(!SR || AIIV.micOff){ AIIV.rec=null; return; } var r=new SR(); r.lang=(AIIV_LANGS[AIIV.lang]||AIIV_LANGS.en).stt; r.continuous=true; r.interimResults=true;
     r.onresult=function(e){ var interim=''; for(var i=e.resultIndex;i<e.results.length;i++){ var res=e.results[i]; if(res.isFinal){ AIIV.sttFinal+=res[0].transcript+' '; if(res[0].confidence>0){ AIIV.confSum=(AIIV.confSum||0)+res[0].confidence; AIIV.confN=(AIIV.confN||0)+1; } } else { interim+=res[0].transcript; } } AIIV.sttText=(AIIV.sttFinal+interim).trim(); if(AIIV.sttText){ AIIV.spoke=true; setTranscript(AIIV.sttText); } };
     r.onerror=function(ev){ if(ev && (ev.error==='not-allowed'||ev.error==='service-not-allowed')) AIIV.sttBlocked=true; };
     r.onend=function(){ if(AIIV.listening && !AIIV.sttBlocked && !AIIV.micOff){ try{ r.start(); }catch(e){} } };
@@ -26548,7 +26549,10 @@ table.data td .tl-af b{white-space:normal}
      ================================================================ */
   function aiSession(){ var s=window.TL&&window.TL.__aiivSession; return (s && s.appId===AIIV.appId)?s:null; }
   function curQ(){ var rec=recById(AIIV.appId); var qs=curQs(rec); return qs[AIIV.idx]||null; }
-  function questionText(){ var q=curQ(); if(!q) return ''; return (AIIV.part==='followup'&&AIIV.followUp)?AIIV.followUp.text:q.q; }
+  function questionKey(){ var q=curQ(); return q ? (AIIV.lang||'en')+'|'+q.seq+'|'+AIIV.part : ''; }
+  function questionText(){ var q=curQ(); if(!q) return ''; var t=AIIV.tx&&AIIV.tx[questionKey()]; if(t) return t.text; return (AIIV.part==='followup'&&AIIV.followUp)?AIIV.followUp.text:q.q; }
+  /* the language the question on screen is in: the interview's, or English when its translation was not ready in time */
+  function questionLang(){ var t=AIIV.tx&&AIIV.tx[questionKey()]; return t ? t.language : 'en'; }
   function saveLocal(){
     if(!window.TLVI) return; var s=aiSession();
     TLVI.store.save(AIIV.appId, { interviewId:s?s.interviewId:null, idx:AIIV.idx, part:AIIV.part,
@@ -26563,7 +26567,7 @@ table.data td .tl-af b{white-space:normal}
     if(s && s.speech && s.speech.tts==='server' && q && typeof window.Audio==='function'){
       try{
         var base=(window.TL&&window.TL.apiBase)||'/api';
-        var a=new Audio(base+'/ai-interviews/'+encodeURIComponent(s.interviewId)+'/speech?seq='+q.seq+'&part='+AIIV.part);
+        var a=new Audio(base+'/ai-interviews/'+encodeURIComponent(s.interviewId)+'/speech?seq='+q.seq+'&part='+AIIV.part+'&lang='+questionLang());
         var done=false; var fin=function(){ if(done) return; done=true; AIIV.audio=null; cb&&cb(); };
         a.onended=fin; a.onerror=function(){ if(!done) speak(text, fin); };
         AIIV.audio=a; a.play().catch(function(){ if(!done) speak(text, fin); });
@@ -26574,7 +26578,17 @@ table.data td .tl-af b{white-space:normal}
   }
   function hushAudio(){ if(AIIV.audio){ try{ AIIV.audio.pause(); }catch(e){} AIIV.audio=null; } }
 
+  /* A question in Telugu / Hindi is fetched in that language first (the server translated it ahead, while the last one was answered). */
   function askCurrent(){
+    var q=curQ(); var s=aiSession();
+    if(!q || !s || !AIIV.lang || AIIV.lang==='en' || (AIIV.tx&&AIIV.tx[questionKey()]) || !window.TL || !window.TL.api){ askCurrentNow(); return; }
+    var k=questionKey(); var mine=AIIV.askToken;
+    setStatus('Preparing the question in '+AIIV_LANGS[AIIV.lang].name+'…', 'speak');
+    window.TL.api.get('/ai-interviews/'+encodeURIComponent(s.interviewId)+'/text?seq='+q.seq+'&part='+AIIV.part+'&lang='+AIIV.lang)
+      .then(function(r){ if(r && r.text){ AIIV.tx=AIIV.tx||{}; AIIV.tx[k]={ text:r.text, language:r.language||'en' }; } }, function(){})
+      .then(function(){ if(AIIV.askToken===mine && AIIV.phase==='interview') askCurrentNow(); });
+  }
+  function askCurrentNow(){
     var rec=recById(AIIV.appId); if(!rec) return; var q=curQ(); if(!q) return;
     var text=questionText();
     AIIV.speaking=true;
@@ -26777,12 +26791,24 @@ table.data td .tl-af b{white-space:normal}
     });
   }
 
+  var AIIV_LANGS={ en:{ name:'English', stt:'en-IN' }, te:{ name:'Telugu', stt:'te-IN' }, hi:{ name:'Hindi', stt:'hi-IN' } };
+  function aiivSavedLang(){ try{ var v=localStorage.getItem('tlAiivLang'); return AIIV_LANGS[v]?v:'en'; }catch(e){ return 'en'; } }
+  window.aiivPickLang=function(v){ try{ localStorage.setItem('tlAiivLang', AIIV_LANGS[v]?v:'en'); }catch(e){} };
+  /* The candidate answered in another language (TeamLink's listeners heard it, server side): the next question is asked in it. */
+  window.aiivLanguageHeard=function(lang){
+    if(!AIIV_LANGS[lang] || !AIIV.started || AIIV.lang===lang) return;
+    AIIV.lang=lang; window.TLVI_LANG=lang;
+    try{ localStorage.setItem('tlAiivLang', lang); }catch(e){}
+    if(window.TLVI && TLVI.transcript) TLVI.transcript.add('AI', 'Switching to '+AIIV_LANGS[lang].name+'.');
+  };
   window.aiivStart=function(appId){
     stopSpeak(); resetSpoken();
     var keep=AIIV;
     AIIV={ appId:appId, phase:'camera', idx:0, part:'main', followUp:null, started:true, stream:keep.stream, camState:keep.camState||'off', camErr:keep.camErr||null,
       answers:[], listening:false, timeLeft:0, timerId:null, rafId:null, voicedMs:0, spoke:false, audioCtx:keep.audioCtx, analyser:keep.analyser, rec:null,
-      sttText:'', sttFinal:'', briefSpoken:false, micHeard:false, micOff:false, camOff:false, net:{state:'wait'} };
+      sttText:'', sttFinal:'', briefSpoken:false, micHeard:false, micOff:false, camOff:false, net:{state:'wait'},
+      lang:aiivSavedLang(), tx:{} };
+    window.TLVI_LANG=AIIV.lang;
     if(AIIV.stream){ try{ AIIV.stream.getTracks().forEach(function(t){ t.enabled=true; }); }catch(e){} }
     bindNet();
     if(window.TLVI) TLVI.transcript.reset([]);
@@ -27059,6 +27085,12 @@ table.data td .tl-af b{white-space:normal}
       +'<li>About 15 questions, each with '+ANSWER_SECS+' seconds to answer. You can submit an answer early.</li>'
       +'<li>Use a quiet room and keep your camera on. Leaving this tab suspends the interview.</li>'
       +'<li>If your connection drops, the interview carries on from the same question when it is back.</li></ul></div>'
+      /* THE LANGUAGE (founder 2026-11-11: the interview talks like TeamLink's AI calls - English, Telugu or Hindi - and follows a
+         candidate who answers in another one). Chosen here; the interview switches by itself if the candidate answers in another. */
+      +'<div class="req-note" style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><label for="aiivLangPick"><b>Interview language</b></label>'
+      +'<select id="aiivLangPick" onchange="aiivPickLang(this.value)" style="padding:6px 8px;border-radius:8px;border:1px solid var(--border,#d0d5dd)">'
+      +[['en','English'],['te','తెలుగు (Telugu)'],['hi','हिंदी (Hindi)']].map(function(o){ return '<option value="'+o[0]+'"'+(aiivSavedLang()===o[0]?' selected':'')+'>'+o[1]+'</option>'; }).join('')
+      +'</select><span style="font-size:12.5px;color:var(--text-muted,#667085)">Answer in the language you are comfortable with: the interviewer follows you.</span></div>'
       +'<div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap"><button class="btn btn-ai" onclick="aiivStart(\''+rec.applicationId+'\')">Start AI Video Interview</button><button class="btn btn-ghost" onclick="navigate(\'/candidate-app/'+rec.applicationId+'\')">Back to application</button></div>'
       +'</div></div></div>';
     return shell('applications','AI Interview',crumb,content);

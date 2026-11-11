@@ -762,13 +762,16 @@
       fd.append('seq', String(job.seq));
       fd.append('part', job.part || 'main');
       fd.append('durationMs', String(Math.round(job.durationMs || 0)));
+      // the language the interview was in: the server tells back when the answer was clearly in another one
+      fd.append('lang', window.TLVI_LANG || 'en');
       var ext = /mp4/.test(job.blob.type) ? 'mp4' : 'webm';
       fd.append('recording', job.blob, 'answer-' + job.seq + '-' + (job.part || 'main') + '.' + ext);
       return a.post('/ai-interviews/' + encodeURIComponent(job.interviewId) + '/recordings', fd, { timeout: 120000 });
     };
     var attempt = 0;
     (function go() {
-      send().then(function () {
+      send().then(function (r) {
+        try { var d = r && (r.data || r); if (d && d.language && typeof window.aiivLanguageHeard === 'function') window.aiivLanguageHeard(d.language); } catch (e) { /* never stops the uploads */ }
         queue.shift(); busy = false; TLVI.uploads.paint(); pump();
       }, function (err) {
         if (retryable(err) && attempt < 12) {
