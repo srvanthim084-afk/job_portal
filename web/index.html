@@ -29746,6 +29746,7 @@ table.data td .tl-af b{white-space:normal}
         + '<div class="sp">'
         + '<button class="btn btn-ghost btn-sm" onclick="tpAssign()">Assign to Job</button>'
         + '<button class="btn btn-ghost btn-sm" onclick="tlSendAts(tpPickedIds())">Send to ATS</button>'
+        + '<button class="btn btn-ghost btn-sm" onclick="tpExportResumes()">Export resumes</button>'
         + '<button class="btn btn-primary btn-sm" onclick="tpBulkCall()">AI Call</button>'
         /* WhatsApp, Email and SMS. Outline, like "Assign to Job" — "AI
            Call" stays the only solid button on this bar. Each opens a
@@ -29827,6 +29828,10 @@ table.data td .tl-af b{white-space:normal}
               + '<td class="act">'
               +   '<button class="btn btn-primary btn-sm" onclick="tpCall(\''+Q(c.id)+'\')">AI Call</button>'
               +   '<button class="btn btn-ghost btn-sm" onclick="navigate(\'/recruiter/candidate-profile?id='+Q(c.id)+'\')">View</button>'
+              +   '<button class="btn btn-ghost btn-sm" onclick="tpEdit(\''+Q(c.id)+'\')">Edit</button>'
+              +   (c.resumeFile
+                    ? '<button class="btn btn-ghost btn-sm" title="'+E(c.resumeFile)+'" onclick="tpResume(\''+Q(c.id)+'\')">Resume</button>'
+                    : '<button class="btn btn-ghost btn-sm" disabled title="No resume on file">No resume</button>')
               /* Send to ATS: into a job's pipeline at Shortlisted (teamlink-send-to-ats.js) */
               +   '<button class="btn btn-ghost btn-sm" onclick="tlSendAts([\''+Q(c.id)+'\'])">Send to ATS</button>'
               /* Sending the portal login again. The endpoint has always
@@ -30560,6 +30565,7 @@ table.data td .tl-af b{white-space:normal}
       + '<div class="acts">'
       + '<button class="btn btn-primary" onclick="tpImport()">Import Data</button>'
       + '<button class="btn btn-ghost" onclick="tpExport()">⭳ Export</button>'
+      + '<button class="btn btn-ghost" onclick="tpExportResumes()">⭳ Export resumes</button>'
       + '<button class="btn btn-ghost" onclick="tpAdd()">+ Add Candidate</button>'
       + '</div></div>'
       + '<div id="tpHost"></div>';
@@ -30633,6 +30639,140 @@ table.data td .tl-af b{white-space:normal}
     }, function(e){
       alert('The export could not be prepared: ' + (e && e.message || 'unknown error'));
     });
+  };
+
+  /* ------------------------------------------------------------------ *
+   * Edit a candidate's profile, and download / export resumes (founder 2026-11-11)
+   * ------------------------------------------------------------------ */
+  function tpToastMsg(m, i){ if(typeof toast==='function') toast(m, i||'ℹ️'); else alert(m); }
+  function tpCsrf(){
+    var h = {};
+    try{ var m = document.cookie.match(/(?:^|;\s*)tl_csrf=([^;]+)/); if(m) h['x-csrf-token'] = decodeURIComponent(m[1]); }catch(e){}
+    return h;
+  }
+
+  window.tpEdit = function(id){
+    TL.api.get('/candidates/'+encodeURIComponent(id)).then(function(r){
+      var c = (r && r.candidate) || r || {};
+      var inp = function(key, label, val, type, wide){
+        return '<label style="display:block;'+(wide?'grid-column:1/-1;':'')+'font-size:12px;font-weight:700;color:var(--text-soft)">'+E(label)
+          + '<input id="tpe_'+key+'" type="'+(type||'text')+'" value="'+E(val==null?'':val)+'" autocomplete="off" '
+          + 'style="display:block;width:100%;margin-top:3px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font:13px system-ui;font-weight:400;color:var(--text)"></label>';
+      };
+      var gender = String(c.gender||'');
+      fcrModal('<div class="fcr-jd-head"><h3>Edit profile · '+E(c.name||'')+'</h3>'
+        + '<button class="fcr-jd-x" onclick="fcrCloseModal()">✕</button></div>'
+        + '<div style="padding:4px 2px;max-height:68vh;overflow:auto">'
+        + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
+        +   inp('name','Name',c.name)
+        +   inp('phone','Phone',c.phone)
+        +   '<label style="display:block;font-size:12px;font-weight:700;color:var(--text-soft)">Email<input value="'+E(c.email||'')+'" disabled '
+        +     'style="display:block;width:100%;margin-top:3px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font:13px system-ui;font-weight:400;background:#f4f6f8"></label>'
+        +   '<label style="display:block;font-size:12px;font-weight:700;color:var(--text-soft)">Gender'
+        +     '<select id="tpe_gender" style="display:block;width:100%;margin-top:3px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font:13px system-ui;font-weight:400">'
+        +     ['','Male','Female','Other'].map(function(g){ return '<option value="'+g+'"'+(gender===g?' selected':'')+'>'+(g||'—')+'</option>'; }).join('')
+        +     '</select></label>'
+        +   inp('title','Current title',c.title)
+        +   inp('currentCompany','Current company',c.currentCompany)
+        +   inp('location','Current location',c.location)
+        +   inp('preferredLocation','Preferred location',c.preferredLocation)
+        +   inp('expYears','Experience (years)',c.expYears,'number')
+        +   inp('noticePeriod','Notice period',c.noticePeriod)
+        +   inp('ctc','Current salary',c.ctc)
+        +   inp('expectedCtc','Expected salary (₹ per year)',c.expectedCtc,'number')
+        +   inp('education','Education',c.education,'text',true)
+        +   inp('skills','Skills (comma separated)',[].concat(c.skills||[]).join(', '),'text',true)
+        +   '<label style="display:block;grid-column:1/-1;font-size:12px;font-weight:700;color:var(--text-soft)">Summary'
+        +     '<textarea id="tpe_summary" rows="3" style="display:block;width:100%;margin-top:3px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font:13px system-ui;font-weight:400">'+E(c.summary||'')+'</textarea></label>'
+        + '</div><div id="tpe_err" class="iw-err" style="display:none;margin-top:10px"></div></div>'
+        + '<div class="iw-bar"><button class="btn btn-ghost" onclick="fcrCloseModal()">Cancel</button>'
+        + '<div class="sp"><button class="btn btn-primary" id="tpe_save" onclick="tpEditSave(\''+Q(id)+'\')">Save changes</button></div></div>');
+    }, function(e){ tpToastMsg('That profile could not be opened: '+(e&&e.message||'unknown error'), '⚠️'); });
+  };
+
+  window.tpEditSave = function(id){
+    var v = function(k){ var el = document.getElementById('tpe_'+k); return el ? String(el.value||'').trim() : ''; };
+    var body = {};
+    ['name','phone','title','currentCompany','location','preferredLocation','noticePeriod','ctc','education','summary','gender'].forEach(function(k){
+      body[k] = v(k);   /* an emptied box clears the value (the name must stay 2+ letters, checked below) */
+    });
+    if(v('expYears') !== '') body.expYears = Number(v('expYears'));
+    if(v('expectedCtc') !== '') body.expectedCtc = Number(v('expectedCtc'));
+    body.skills = v('skills').split(/[;,]/).map(function(x){ return x.trim(); }).filter(Boolean).slice(0, 100);
+    var err = document.getElementById('tpe_err'); var btn = document.getElementById('tpe_save');
+    var show = function(m){ if(err){ err.textContent = m; err.style.display = 'block'; } if(btn){ btn.disabled = false; btn.textContent = 'Save changes'; } };
+    if(body.name !== undefined && body.name.length < 2) return show('The name needs at least 2 letters.');
+    if(body.expYears !== undefined && !(body.expYears >= 0 && body.expYears <= 60)) return show('Experience must be between 0 and 60 years.');
+    if(btn){ btn.disabled = true; btn.textContent = 'Saving…'; }
+    TL.api.put('/candidates/'+encodeURIComponent(id), body).then(function(){
+      fcrCloseModal();
+      tpToastMsg('Profile saved', '✅');
+      tpLoad();
+    }, function(e){
+      show((e && (e.message || (e.error && e.error.message))) || 'That did not save. Please check the values and try again.');
+    });
+  };
+
+  /* one candidate's resume: the portal answers with a short-lived signed address, opened in a new tab */
+  window.tpResume = function(id){
+    TL.api.get('/candidates/'+encodeURIComponent(id)+'/resume').then(function(r){
+      if(r && r.url) window.open(r.url, '_blank'); else tpToastMsg('No resume is on file for this candidate.', 'ℹ️');
+    }, function(e){ tpToastMsg((e && e.message) || 'No resume is on file for this candidate.', 'ℹ️'); });
+  };
+
+  /* the original resume files of the ticked candidates (or this page when none is ticked), as one ZIP; the people without a file are listed in it */
+  function tpSaveBlob(blob, name){
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.appendChild(a); a.click();
+    setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+  }
+  window.tpExportResumes = function(){
+    var s = st();
+    var ids = s.rows.filter(function(c){ return s.picked[c.id]; }).map(function(c){ return c.id; });
+    var scope = 'selected';
+    if(!ids.length){
+      ids = s.rows.map(function(c){ return c.id; }); scope = 'page';
+      if(!ids.length){ tpToastMsg('There is nobody to export.', 'ℹ️'); return; }
+      if(!confirm('Nobody is ticked. Download the resumes of the '+ids.length+' candidates on this page?')) return;
+    }
+    var json = Object.assign({ 'content-type':'application/json' }, tpCsrf());
+    var fail = function(r){
+      return r.json().catch(function(){ return {}; }).then(function(b){
+        tpToastMsg((b && b.error && (b.error.message || b.error)) || b.message || 'The resumes could not be exported.', '⚠️');
+      });
+    };
+    tpToastMsg('Preparing '+ids.length+' resume'+(ids.length===1?'':'s')+'…', '⏳');
+    if(ids.length <= 100){
+      fetch('/api/recruiter/candidates/export-resumes', { method:'POST', credentials:'include', headers:json, body:JSON.stringify({ ids:ids, scope:scope }) })
+        .then(function(r){
+          if(!r.ok) return fail(r);
+          var missing = Number(r.headers.get('x-teamlink-missing')||0);
+          return r.blob().then(function(b){
+            tpSaveBlob(b, 'teamlink-resumes-'+new Date().toISOString().slice(0,10)+'.zip');
+            tpToastMsg('Resumes downloaded'+(missing?' ('+missing+' without a file are listed in missing_resumes.txt)':''), '✅');
+          });
+        }, function(){ tpToastMsg('The resumes could not be exported.', '⚠️'); });
+      return;
+    }
+    /* more than a hundred: a background job, polled, then downloaded */
+    fetch('/api/recruiter/candidates/export-resumes/jobs', { method:'POST', credentials:'include', headers:json, body:JSON.stringify({ ids:ids, scope:scope }) })
+      .then(function(r){ return r.ok ? r.json() : fail(r).then(function(){ return null; }); })
+      .then(function(d){
+        if(!d || !d.job) return;
+        var id = d.job.id; var tries = 0;
+        (function poll(){
+          fetch('/api/recruiter/candidates/export-resumes/jobs/'+encodeURIComponent(id), { credentials:'include' })
+            .then(function(r){ return r.json(); })
+            .then(function(x){
+              var j = (x && x.job) || {};
+              if(j.status === 'ready'){ tpToastMsg('Your resumes are ready', '✅'); window.location.href = '/api/recruiter/candidates/export-resumes/jobs/'+encodeURIComponent(id)+'/download'; return; }
+              if(j.status === 'failed'){ tpToastMsg(j.error || 'The archive could not be built.', '⚠️'); return; }
+              if(++tries > 400){ tpToastMsg('The export is taking long. Try a smaller selection.', '⚠️'); return; }
+              setTimeout(poll, 1500);
+            }, function(){ tpToastMsg('The export status could not be read.', '⚠️'); });
+        })();
+      });
   };
 
   window.tpAdd = function(){
