@@ -30380,63 +30380,92 @@ table.data td .tl-af b{white-space:normal}
       return words.every(function(x){ return l.indexOf(x) >= 0; });
     });
   }
+  /* the chosen roles are w.jobIds (one or several); w.jobId is the first, which the older checks read */
+  function iwJobSync(w){
+    var seen = {};
+    w.jobIds = (w.jobIds||[]).filter(function(id){ if(seen[id]) return false; seen[id] = 1; return true; });
+    w.jobId = w.jobIds[0] || '';
+  }
+  function iwJobById(w, id){ return (w.jobsList||[]).filter(function(j){ return j.id === id; })[0]; }
   function iwJobSuggest(w){
     var jobs = w.jobsList || [];
     if(!w.jobsList) return '';
-    if(!jobs.length) return '<div style="font-size:12px;margin-top:6px;color:#b42318">No ATS job roles found for you. Publish the requirement in the ATS first, then it appears here.</div>';
+    if(!jobs.length) return '<div style="font-size:12px;margin-top:6px;color:#b42318">No ATS job roles found. Publish the requirement in the ATS first, then it appears here.</div>';
     var typed = String(w.jobText||'').trim();
-    if(w.jobId && jobs.filter(function(j){ return j.id === w.jobId; })[0]) return '';
     var hits = typed ? iwJobMatches(w, typed) : jobs;
-    var note = !typed ? 'Your job roles:' : (hits.length ? 'Choose one:' : 'No job role matches "'+E(typed)+'". Your job roles:');
+    var note = !typed ? 'Choose one or more job roles:' : (hits.length ? 'Tap to choose (you can pick several):' : 'No job role matches "'+E(typed)+'". All job roles:');
     if(typed && !hits.length) hits = jobs;
+    var on = {}; (w.jobIds||[]).forEach(function(id){ on[id] = 1; });
     return '<div style="font-size:12px;margin-top:6px;color:var(--text-soft)">'+note+'</div>'
-      + '<div style="max-height:150px;overflow:auto;border:1px solid var(--line);border-radius:8px;margin-top:4px">'
-      + hits.slice(0, 30).map(function(j){
-          return '<div onmousedown="iwJobChoose(\''+E(j.id)+'\')" style="padding:7px 10px;font-size:13px;cursor:pointer;border-bottom:1px solid var(--line)">'
-            + E(j.title) + (j.location ? ' <span style="color:var(--text-soft)">· '+E(j.location)+'</span>' : '') + '</div>';
+      + '<div style="max-height:180px;overflow:auto;border:1px solid var(--line);border-radius:8px;margin-top:4px">'
+      + hits.slice(0, 80).map(function(j){
+          return '<div onmousedown="iwJobToggle(\''+E(j.id)+'\')" style="padding:7px 10px;font-size:13px;cursor:pointer;border-bottom:1px solid var(--line);'
+            + (on[j.id] ? 'background:#e8f7ef;font-weight:600;' : '') + '">'
+            + (on[j.id] ? '&#9745; ' : '&#9744; ') + E(j.title)
+            + (j.location ? ' <span style="color:var(--text-soft);font-weight:400">· '+E(j.location)+'</span>' : '')
+            + (j.status === 'closed' ? ' <span style="color:var(--text-soft);font-weight:400">(closed)</span>' : '') + '</div>';
         }).join('')
       + '</div>';
   }
-  window.iwJobChoose = function(id){
-    var w = iw(); var j = (w.jobsList||[]).filter(function(x){ return x.id === id; })[0];
-    w.jobId = j ? j.id : ''; w.jobText = j ? iwJobLabel(j) : '';
-    iwPaint();
+  function iwJobFocus(){
+    var el = document.getElementById('iwJobInput');
+    if(el){ try{ el.focus(); el.setSelectionRange(el.value.length, el.value.length); }catch(e){} }
+  }
+  /* tap a role: add it, tap again: remove it. The typed words stay, so several roles can be picked from one search */
+  window.iwJobToggle = function(id){
+    var w = iw(); w.jobIds = w.jobIds || [];
+    var i = w.jobIds.indexOf(id);
+    if(i >= 0) w.jobIds.splice(i, 1); else w.jobIds.push(id);
+    iwJobSync(w); iwPaint(); iwJobFocus();
   };
-  /* typing: an exact title selects it; anything else just filters the list below (no repaint, so the cursor stays) */
+  window.iwJobChoose = function(id){
+    var w = iw(); w.jobIds = w.jobIds || [];
+    if(id && w.jobIds.indexOf(id) < 0) w.jobIds.push(id);
+    iwJobSync(w); iwPaint();
+  };
+  /* clear every chosen role */
+  window.iwJob = function(id){
+    var w = iw();
+    if(id){ window.iwJobChoose(id); return; }
+    w.jobIds = []; w.jobText = ''; iwJobSync(w); iwPaint();
+  };
+  /* typing only filters the list below (no repaint, so the cursor stays) */
   window.iwJobType = function(text){
-    var w = iw(); var t = String(text||'').trim().toLowerCase();
+    var w = iw();
     w.jobText = String(text||'');
-    var exact = (w.jobsList||[]).filter(function(j){ return iwJobLabel(j).toLowerCase() === t || j.title.toLowerCase() === t; });
-    var was = w.jobId;
-    w.jobId = exact.length === 1 ? exact[0].id : '';
-    if(w.jobId !== was){ iwPaint(); var el = document.getElementById('iwJobInput'); if(el){ try{ el.focus(); el.setSelectionRange(el.value.length, el.value.length); }catch(e){} } return; }
     var box = document.getElementById('iwJobSug'); if(box) box.innerHTML = iwJobSuggest(w);
     var btn = document.getElementById('iwContinue'); if(btn) btn.disabled = !(w.file && w.jobId);
   };
   window.iwJobPick = window.iwJobType;
-  /* Enter, or leaving the box: if what was typed matches exactly ONE job role, that one is chosen */
+  /* Enter, or leaving the box: if what was typed matches exactly ONE job role, that one is added */
   window.iwJobEnter = function(){
-    var w = iw(); if(w.jobId) return;
+    var w = iw();
     var hits = iwJobMatches(w, w.jobText);
-    if(hits.length === 1) window.iwJobChoose(hits[0].id);
+    if(hits.length === 1 && (w.jobIds||[]).indexOf(hits[0].id) < 0){ w.jobText = ''; window.iwJobChoose(hits[0].id); iwJobFocus(); }
   };
-  /* Type to search, or choose from the list. */
+  /* Type to search, tap to choose, as many roles as the list is for. */
   function iwJobPicker(w, onUpload){
     iwJobsLoad(w);
+    iwJobSync(w);
     var jobs = w.jobsList || [];
-    var chosen = jobs.filter(function(j){ return j.id === w.jobId; })[0];
+    var chips = (w.jobIds||[]).map(function(id){
+      var j = iwJobById(w, id);
+      return '<span style="display:inline-flex;align-items:center;gap:6px;background:#e8f7ef;color:#1c7c4a;border-radius:14px;padding:3px 6px 3px 10px;font-size:12.5px;font-weight:600;margin:0 6px 6px 0">'
+        + E(j ? j.title : id) + '<a href="#" title="Remove" onclick="event.preventDefault();iwJobToggle(\''+E(id)+'\')" style="text-decoration:none;color:#1c7c4a;font-size:15px;line-height:1">&times;</a></span>';
+    }).join('');
     return '<div style="margin-top:14px;border:1px solid var(--line);border-radius:10px;padding:12px 14px">'
-      + '<div style="font-size:12.5px;font-weight:700">Job role this list is for <span style="font-weight:800;color:#b42318">* required</span></div>'
+      + '<div style="font-size:12.5px;font-weight:700">Job role(s) this list is for <span style="font-weight:800;color:#b42318">* required</span></div>'
       + '<div style="font-size:12px;color:var(--text-soft);margin:3px 0 8px">'
-      +   'If the file has a status column (interested / not interested): the <b>interested</b> go to this job and the ATS, the <b>not interested</b> stay in the '
-      +   'Talent Pool and are noted as not interested in <b>this role</b>. Nobody is sent a login or any message.</div>'
-      + '<input id="iwJobInput" autocomplete="off" value="'+E(chosen ? iwJobLabel(chosen) : (w.jobText||''))+'" oninput="iwJobType(this.value)" onfocus="iwJobType(this.value)" onchange="iwJobEnter()" onkeydown="if(event.key===\'Enter\'){event.preventDefault();iwJobEnter();}" '
-      +   'placeholder="'+(w.jobsList ? 'Type the job role, or choose from the list' : 'Loading your job roles…')+'" '
+      +   'Choose one or several. Any job role can be chosen, not only the ones assigned to you. If the file has a status column (interested / not interested): the <b>interested</b> go to every chosen role and the ATS, '
+      +   'the <b>not interested</b> stay in the Talent Pool and are noted as not interested in <b>each chosen role</b>. Nobody is sent a login or any message.</div>'
+      + (chips ? '<div>'+chips+'</div>' : '')
+      + '<input id="iwJobInput" autocomplete="off" value="'+E(w.jobText||'')+'" oninput="iwJobType(this.value)" onfocus="iwJobType(this.value)" onchange="iwJobEnter()" onkeydown="if(event.key===\'Enter\'){event.preventDefault();iwJobEnter();}" '
+      +   'placeholder="'+(w.jobsList ? (jobs.length ? 'Type to search the job roles, then tap to choose' : 'No job roles found') : 'Loading the job roles…')+'" '
       +   'style="width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px">'
-      + (chosen ? '<div style="font-size:12px;margin-top:6px;color:#1c7c4a">Chosen: <b>'+E(chosen.title)+'</b> '
-          + '<a href="#" onclick="event.preventDefault();iwJobChoose(\'\')">change</a></div>' : '')
-      + '<div id="iwJobSug">'+(chosen ? '' : iwJobSuggest(w))+'</div>'
-      + (!chosen && w.file ? '<div style="font-size:12px;margin-top:6px;font-weight:700;color:#b42318">Choose the job role to continue.</div>' : '')
+      + '<div id="iwJobSug">'+iwJobSuggest(w)+'</div>'
+      + ((w.jobIds||[]).length ? '<div style="font-size:12px;margin-top:6px;color:#1c7c4a"><b>'+(w.jobIds||[]).length+'</b> job role'+((w.jobIds||[]).length===1?'':'s')+' chosen '
+          + '<a href="#" onclick="event.preventDefault();iwJob(\'\')">clear all</a></div>'
+        : (w.file ? '<div style="font-size:12px;margin-top:6px;font-weight:700;color:#b42318">Choose at least one job role to continue.</div>' : ''))
       + '</div>';
   }
 
@@ -30491,7 +30520,7 @@ table.data td .tl-af b{white-space:normal}
     fd.append('mapping', JSON.stringify(full));
     if(skip.length) fd.append('skip', JSON.stringify(skip));
     if(w.invite) fd.append('invite', 'true');
-    if(w.jobId) fd.append('jobId', w.jobId);
+    if(w.jobIds && w.jobIds.length) fd.append('jobIds', JSON.stringify(w.jobIds));
 
     var headers = {};
     try{
@@ -30534,7 +30563,7 @@ table.data td .tl-af b{white-space:normal}
           + 'each column was mapped are all on file.</div>' : '')
       + (r.sentToAts ? '<div style="font-size:12.5px;margin-top:10px;color:'+(r.sentToAts.error?'#b42318':'var(--text-soft)')+'">'
           + (r.sentToAts.error ? E(r.sentToAts.error)
-             : '<b>'+r.sentToAts.sent+'</b> interested candidate'+(r.sentToAts.sent===1?'':'s')+' added to <b>'+E(r.sentToAts.jobTitle||'the job')+'</b> and marked <b>Moved to ATS</b> (Talent Pool, Moved to ATS filter)'
+             : '<b>'+r.sentToAts.sent+'</b> interested candidate'+(r.sentToAts.sent===1?'':'s')+' added'+((r.sentToAts.jobs||[]).length>1 ? ' across '+r.sentToAts.jobs.length+' roles' : '')+' to <b>'+E(r.sentToAts.jobTitle||'the job')+'</b> and marked <b>Moved to ATS</b> (Talent Pool, Moved to ATS filter)'
                + (r.sentToAts.already ? ' ('+r.sentToAts.already+' already on that job)' : '')+'. '
                + (r.sentToAts.notInterested ? '<b>'+r.sentToAts.notInterested+'</b> not interested noted for this job: Talent Pool, Status Not Interested, Linked job. ' : '')
                + 'No login or message was sent.')
