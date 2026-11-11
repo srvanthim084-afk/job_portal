@@ -264,14 +264,14 @@
     return '<h2>Is this photo clear?</h2>'
       + '<p class="tlv-sub">Check that your face is clear and you are the only person in the picture. If not, retake it.</p>'
       + errHtml()
-      + (multi ? '<div class="tlv-warn">We could see more than one face in this photo. Please retake it with only you in view.</div>' : '')
+      + (multi ? '<div class="tlv-warn">We could see more than one face in this photo. Please retake it with only you in view. You can continue only after a photo with just you.</div>' : '')
       + (none ? '<div class="tlv-warn">We could not clearly see a face in this photo. Please retake it, or confirm it if it is fine.</div>' : '')
       + '<div class="tlv-cam">' + (src ? '<img src="' + esc(src) + '" alt="Your photo for the interview">' : '') + '</div>'
       + (S.uploading ? '<p class="tlv-sub" aria-live="polite">Saving your photo…</p>' : '')
       + '<div class="tlv-row">'
       +   '<button type="button" class="btn btn-ghost" data-act="retake"' + (S.busy || S.uploading ? ' disabled' : '') + '>Retake photo</button>'
       +   (S.uploaded || (!S.blob && S.v.hasPhoto)
-            ? '<button type="button" class="btn btn-primary" data-act="confirm"' + (S.busy ? ' disabled' : '') + '>Confirm photo</button>'
+            ? '<button type="button" class="btn btn-primary" data-act="confirm"' + (S.busy || multi ? ' disabled' : '') + (multi ? ' title="Retake the photo with only you in view"' : '') + '>Confirm photo</button>'
             : '<button type="button" class="btn btn-primary" data-act="retryUpload"' + (S.uploading ? ' disabled' : '') + '>' + (S.error ? 'Try again' : 'Saving…') + '</button>')
       + '</div>';
   }
@@ -354,7 +354,7 @@
     if (act === 'help') { S.helpOpen = !S.helpOpen; return render(); }
     if (act === 'sendhelp') return sendHelp();
     if (act === 'toInstructions') { S.step = 'instructions'; S.error = null; return render(); }
-    if (act === 'confirm') return confirmPhoto();
+    if (act === 'confirm') { if (S.facesAtCapture > 1) return undefined; return confirmPhoto(); }
     if (act === 'consent') return sendConsent();
     if (act === 'begin') return begin();
   }
