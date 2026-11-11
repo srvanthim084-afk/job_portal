@@ -326,6 +326,18 @@ export function sniffColumns(rows, map, pinned = new Set()) {
  * because a status log runs oldest to newest ("24-11 interested ... 26-11 not interested"). Returns 'interested', 'not' or null (nothing said).
  * "Not interested", "no interest", "uninterested" and "not at all interested" are NOT interested.
  */
+/**
+ * Is this column header one that can say "interested" / "not interested"? "Status 1", "staus 2" (typo), "Call status", "Lead status", "Response",
+ * "Feedback", "Remark(s)", "Comments", "Disposition", "Outcome", "Result", or any header with "interest" in it. The words in the CELLS decide (interestOf), so a
+ * Remark that says nothing about interest changes nothing.
+ */
+export function isStatusHeader(h) {
+  const t = String(h == null ? '' : h).replace(/\s+/g, ' ').trim();
+  return /^(?:status|staus|stauts|statuss|satus)\s*\d*$/i.test(t)
+    || /(?:call|lead|candidate|interest)\s*(?:status|response)|^(?:response|feedback|remarks?|comments?|disposition|outcome|result)\s*\d*$/i.test(t)
+    || /interest|intrest/i.test(t);
+}
+
 export function interestOf(v) {
   const t = String(v == null ? '' : v);
   let last = null;
@@ -494,7 +506,7 @@ export default function spreadsheetRoutes() {
 
       // The columns that say how the call went ("status 1", "status 2", "Call status"): read for INTEREST, nothing else.
       const statusCols = headerCells
-        .map((h, i) => (/^status(\s*\d+)?$|call\s*status|^response$|^feedback$|^interest(ed)?(\s*status)?$/i.test(h) ? i : -1))
+        .map((h, i) => (isStatusHeader(h) ? i : -1))
         .filter((i) => i >= 0);
       // The job roles this list is being imported FOR (one or several): interested people are put on each of them (and so reach the ATS);
       // nobody is contacted. ANY TeamLink job role may be chosen, not only the ones assigned to this recruiter: importing is sourcing for a role.

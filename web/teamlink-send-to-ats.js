@@ -31,11 +31,31 @@
   }
   var IDS = [];
 
+  /* the jobs this recruiter already has on screen, plus EVERY other open TeamLink job role (any department), from the same list the import uses;
+     if that list cannot be read the dialog still opens with the first part */
+  function loadAllJobs(cb) {
+    var base = jobs();
+    var done = false;
+    var finish = function (list) { if (done) return; done = true; cb(list); };
+    try {
+      window.TL.api.get('/candidates/import/jobs').then(function (r) {
+        var seen = {};
+        base.forEach(function (j) { seen[j.id] = 1; });
+        var extra = ((r && r.jobs) || []).filter(function (j) { return j && j.status === 'open' && !seen[j.id]; })
+          .map(function (j) { return { id: j.id, title: j.title, location: j.location }; });
+        finish(base.concat(extra).sort(function (a, b) { return String(a.title).localeCompare(String(b.title)); }));
+      }, function () { finish(base); });
+    } catch (e) { finish(base); }
+  }
+
   window.tlSendAts = function (ids) {
     IDS = (ids || []).filter(Boolean);
     if (!IDS.length) { say('Select at least one candidate first', '⚠️'); return; }
     if (typeof window.fcrModal !== 'function') return;
-    var list = jobs();
+    loadAllJobs(function (list) { openSendModal(list); });
+  };
+
+  function openSendModal(list) {
     var n = IDS.length;
     window.fcrModal('<div class="fcr-jd-head"><h3>Send to ATS</h3>'
       + '<button class="fcr-jd-x" onclick="fcrCloseModal()">✕</button></div>'
