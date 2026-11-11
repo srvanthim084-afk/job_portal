@@ -30630,6 +30630,9 @@ table.data td .tl-af b{white-space:normal}
       + (r.importId ? '<div style="font-size:11.5px;color:var(--text-soft);margin-top:9px;text-align:center">'
           + 'Recorded as import <b>'+E(r.importId)+'</b> — who ran it, what the file was called and how '
           + 'each column was mapped are all on file.</div>' : '')
+      + (r.statusSet && (r.statusSet.interested || r.statusSet.notInterested) ? '<div style="font-size:12.5px;margin-top:10px;color:var(--text-soft)">'
+          + 'Talent Pool status set from the file: <b>'+(r.statusSet.interested||0)+'</b> Interested, <b>'+(r.statusSet.notInterested||0)+'</b> Not Interested'
+          + (r.statusSet.unchanged ? ' ('+r.statusSet.unchanged+' already had that status or are further along).' : '.') + '</div>' : '')
       + (r.sentToAts ? '<div style="font-size:12.5px;margin-top:10px;color:'+(r.sentToAts.error?'#b42318':'var(--text-soft)')+'">'
           + (r.sentToAts.error ? E(r.sentToAts.error)
              : '<b>'+r.sentToAts.sent+'</b> interested candidate'+(r.sentToAts.sent===1?'':'s')+' added'+((r.sentToAts.jobs||[]).length>1 ? ' across '+r.sentToAts.jobs.length+' roles' : '')+' to <b>'+E(r.sentToAts.jobTitle||'the job')+'</b> and marked <b>Moved to ATS</b> (Talent Pool, Moved to ATS filter)'

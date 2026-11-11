@@ -816,6 +816,26 @@ export default function spreadsheetRoutes() {
        * and an application at NEW. NOBODY IS MESSAGED: this writes the row, the candidate messages belong to the apply route and are not
        * involved. Not-interested people and people with no status stay in the portal only.
        */
+      // The status in the file is also the candidate's Talent Pool status (founder 2026-11-11: "status kuda change cheyyi"): interested -> Interested,
+      // not interested -> Not Interested, for everybody in the file whether or not a job role was chosen. Somebody already Registered, in the interview
+      // process or Selected / Joined keeps that status; so does somebody who already has the same one.
+      let statusSet = null;
+      if (!preview && interestById.size) {
+        statusSet = await withUser(ENGINE, async (c) => {
+          let interested = 0; let notInterested = 0;
+          for (const [cid, answer] of interestById) {
+            // eslint-disable-next-line no-await-in-loop
+            const r = await c.query(
+              `update candidates set pool_status = $2
+                where id = $1 and pool_status <> $2
+                  and pool_status in ('sourced','ai_contacted','interested','not_interested','callback_requested','unreachable','invited','invited_no_response')
+                returning id`, [cid, answer]);
+            if (r.rows.length) { if (answer === 'interested') interested++; else notInterested++; }
+          }
+          return { interested, notInterested, unchanged: interestById.size - interested - notInterested };
+        }).catch((err) => { console.error('[import] status from the file not set:', err.message); return null; });
+      }
+
       let sentToAts = null;
       if (!preview && jobIds.length && interestById.size) {
         const MOVABLE = ['applied', 'ai_screening', 'ai_interview_pending', 'ai_interview_in_progress', 'ai_interview_done'];
@@ -1030,6 +1050,7 @@ export default function spreadsheetRoutes() {
         // how many rows say INTERESTED, and (after a real import with a job chosen) how many were put on that job
         interestedRows,
         notInterestedRows,
+        statusSet,
         sentToAts,
         detail: { imported, updated, skipped },
       });
