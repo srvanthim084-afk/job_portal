@@ -101,9 +101,21 @@ export async function applyExtractedFields(c, candidateId, fields) {
   const suggestions = {};
   const same = (a, b) => JSON.stringify(a).toLowerCase() === JSON.stringify(b).toLowerCase();
 
+  // A sheet import writes "0" for an experience it did not have (founder 2026-11-13: matched candidates got no experience from their resume): 0 years is "not known",
+  // so the resume's number may fill it. The same for the display string ("0 yrs").
+  const NOT_KNOWN_NUMBER = new Set(['exp_years', 'relevant_exp_years']);
+  const blank = (col, v) => isEmpty(v) || (NOT_KNOWN_NUMBER.has(col) && Number(v) === 0);
   for (const [key, col, kind, toItem] of MAP) {
     if (fields[key] === undefined) continue;
-    if (!isEmpty(current[col])) {
+    // SKILLS: the resume's skills are ADDED to the ones the candidate already has (nothing removed, nothing twice)
+    if (key === 'skills' && !isEmpty(current[col])) {
+      const have = [].concat(current[col] || []).map((x) => String(x).trim()).filter(Boolean);
+      const seen = new Set(have.map((x) => x.toLowerCase()));
+      const add = [].concat(fields[key]).map((x) => String(x).trim()).filter((x) => x && !seen.has(x.toLowerCase()));
+      if (add.length) { vals.push(have.concat(add)); sets.push(`${col}=$${vals.length}`); filled.push(key); }
+      continue;
+    }
+    if (!blank(col, current[col])) {
       /* The candidate's own value wins - but when the resume says
          something different, the page offers it for review instead of
          either overwriting or saying nothing. Text and lists only. */
@@ -136,7 +148,7 @@ export async function applyExtractedFields(c, candidateId, fields) {
   }
 
   // The display string the prototype reads in a hundred places.
-  if (isEmpty(current.exp) && Number.isFinite(Number(fields.expYears))) {
+  if ((isEmpty(current.exp) || /^0+(\.0+)?\s*(yrs?|years?)?$/i.test(String(current.exp).trim())) && Number.isFinite(Number(fields.expYears)) && Number(fields.expYears) > 0) {
     vals.push(`${Number(fields.expYears)} yrs`);
     sets.push(`exp=$${vals.length}`);
   }
