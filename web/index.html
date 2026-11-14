@@ -30010,7 +30010,10 @@ table.data td .tl-af b{white-space:normal}
        calls, so this hands it the list rather than looping here. */
     TL.api.post('/ai-calling/campaign', { jobId:jobId, candidateIds:ids }).then(function(r){
       fcrCloseModal();
-      if(typeof toast==='function') toast((r&&r.queued!=null?r.queued:ids.length)+' AI calls queued', '📞');
+      /* the API answers { campaign:{queued,skipped}, queued:[...], skipped:[...] }: the lists are arrays, so print their LENGTH (it showed "[object Object] AI calls queued") */
+      var nQ = r && r.campaign && typeof r.campaign.queued === 'number' ? r.campaign.queued : (r && Array.isArray(r.queued) ? r.queued.length : ids.length);
+      var nS = r && Array.isArray(r.skipped) ? r.skipped.length : 0;
+      if(typeof toast==='function') toast(nQ+' AI call'+(nQ===1?'':'s')+' queued'+(nS?', '+nS+' skipped (already contacted, no phone or a call is running)':''), '📞');
       s.picked = {};
       tpLoad();
     }, function(e){ alert('The calls could not be queued: '+(e&&e.message||'unknown error')); });
