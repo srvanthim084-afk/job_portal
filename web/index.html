@@ -19843,6 +19843,23 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
     window.render=function(){ const r=prevRender.apply(this,arguments); try{ saveSession(); }catch(e){} return r; };
   }
 
+  /* A SERVER RESTART MUST NOT COST THE USER THEIR PLACE (founder 2026-11-14: "server restart ayina vallu aa page lone undali, malli starting nunchi ravodhu").
+     fetch that waits out a restart: a refused connection or a 502/503/504 (the proxy answering while the portal comes back) is tried again,
+     for about a minute and a half, so an upload or an import in the middle of a deploy simply finishes - the file is still in memory, nobody picks it again. */
+  window.tlRetryFetch=function(url,opts){
+    var left=12;
+    function once(){
+      return fetch(url,opts).then(function(r){
+        if((r.status===502||r.status===503||r.status===504)&&left>0){ left--; return new Promise(function(ok){ setTimeout(ok,7500); }).then(once); }
+        return r;
+      },function(err){
+        if(left>0){ left--; return new Promise(function(ok){ setTimeout(ok,7500); }).then(once); }
+        throw err;
+      });
+    }
+    return once();
+  };
+
   /* restore the session before the first paint */
   (function restoreSession(){
     try{
@@ -19852,7 +19869,9 @@ window.TL_BUILD='2026-09-16 20:30 UTC';
         :(s.role==='recruiter')?DATA.recruiterById(s.id)
         :(s.role==='client'&&DATA.clientById)?DATA.clientById(s.id)
         :(s.role==='admin')?{id:s.id}:null;
-      if(!exists){ DEL(SKEY); DEL(HKEY); return; }
+      /* The saved sign-in and the saved page are NOT thrown away just because the data is not there yet: right after a restart the lists
+         have not loaded, so "not found" only means "not loaded". The server decides (GET /auth/me; a real 401 signs out - see Session expiry). */
+      if(!exists){ console.info('TeamLink: data not loaded yet - keeping the saved sign-in and page'); }
       STATE.session={role:s.role,id:s.id};
       const h=RJ(HKEY,'');
       if(h&&(!location.hash||location.hash==='#/'||location.hash==='')) location.hash=h;
@@ -30169,7 +30188,7 @@ table.data td .tl-af b{white-space:normal}
       if(m) headers['x-csrf-token'] = decodeURIComponent(m[1]);
     }catch(e){}
 
-    fetch('/api/candidates/import', { method:'POST', body:fd, credentials:'include', headers:headers })
+    window.tlRetryFetch('/api/candidates/import', { method:'POST', body:fd, credentials:'include', headers:headers })
       .then(function(r){ return r.json().then(function(b){ return { ok:r.ok, b:b }; }); })
       .then(function(out){
         w.busy = false;
@@ -30600,7 +30619,7 @@ table.data td .tl-af b{white-space:normal}
       if(m) headers['x-csrf-token'] = decodeURIComponent(m[1]);
     }catch(e){}
 
-    fetch('/api/candidates/import', { method:'POST', body:fd, credentials:'include', headers:headers })
+    window.tlRetryFetch('/api/candidates/import', { method:'POST', body:fd, credentials:'include', headers:headers })
       .then(function(r){ return r.json().then(function(b){ return { ok:r.ok, b:b }; }); })
       .then(function(out){
         w.busy = false;
