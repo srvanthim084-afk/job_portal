@@ -977,6 +977,16 @@ export default function spreadsheetRoutes() {
              out loud and is not worth failing the import over. */
           console.error('[import] audit trail not written:', err.message);
         }
+        /* The same upload as a row in the recruiter's Audit Log (who, which file, how many), written as the person who ran it so the
+           Recruiter Activity page and its CSV show "Candidates imported" against their name. Never fails the import. */
+        try {
+          await withUser(req.session, async (c) => {
+            await c.query('select audit_write($1, $2, $3, $4::jsonb)', ['candidate.imported', 'candidate', importId, JSON.stringify({
+              title: `${imported.length} new, ${updated.length} merged, ${skipped.length} skipped of ${rows.length} rows${(req.file && req.file.originalname) ? ` (${req.file.originalname})` : ''}`,
+              filename: (req.file && req.file.originalname) || null, format, total: rows.length, created: imported.length, merged: updated.length, skipped: skipped.length,
+            })]);
+          });
+        } catch (err) { console.error('[import] activity row not written:', err.message); }
       }
 
       /*

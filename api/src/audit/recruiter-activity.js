@@ -38,6 +38,7 @@ export const ACTIVITY = [
   { code: 'job.draft_saved', label: 'Draft saved', group: 'job' },
   { code: 'job.updated', label: 'Job updated', group: 'job' },
   { code: 'candidate.shortlisted', label: 'Candidate shortlisted', group: 'candidate' },
+  { code: 'candidate.imported', label: 'Candidates imported', group: 'candidate' },
   { code: 'status.changed', label: 'Candidate stage changed', group: 'candidate' },
 ];
 
