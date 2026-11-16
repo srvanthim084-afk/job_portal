@@ -175,11 +175,33 @@ test('a voice has its own count: a warning for leaving the window does not use o
 
 test('the other detections keep their two strikes', async () => {
   const { c, id } = await running(7);
+  const a = await report(c, id, 'left_interview', 0.9, 2);
+  assert.equal(a.body.action, 'warn');
+  const b = await report(c, id, 'left_interview', 0.9, 2);
+  assert.equal(b.body.action, 'suspend');
+  assert.equal((await row(id)).suspension_code, 'left_interview');
+});
+
+test('another person in the background: two warnings, the third suspends (founder 2026-11-16)', async () => {
+  const { c, id } = await running(17);
   const a = await report(c, id, 'additional_person', 0.9, 2);
   assert.equal(a.body.action, 'warn');
+  assert.match(a.body.message, /Warning 1 of 2: Another person appeared in the background/);
   const b = await report(c, id, 'additional_person', 0.9, 2);
-  assert.equal(b.body.action, 'suspend');
+  assert.equal(b.body.action, 'warn', JSON.stringify(b.body));
+  assert.match(b.body.message, /Warning 2 of 2: Another person appeared in the background again/);
+  const s = await report(c, id, 'additional_person', 0.9, 2);
+  assert.equal(s.body.action, 'suspend', JSON.stringify(s.body));
   assert.equal((await row(id)).suspension_code, 'additional_person');
+  assert.match(s.body.message, /Another person was detected during your answer to Question 2/);
+});
+
+test('a person then a voice are warnings 1 and 2 of the same count', async () => {
+  const { c, id } = await running(18);
+  assert.equal((await report(c, id, 'additional_person', 0.9, 2)).body.action, 'warn');
+  const v = await report(c, id, 'additional_voice', 0.9, 2);
+  assert.equal(v.body.action, 'warn');
+  assert.equal((await report(c, id, 'additional_person', 0.9, 2)).body.action, 'suspend');
 });
 
 test('lips that do not match the voice suspend at once, with their own reason', async () => {

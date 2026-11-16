@@ -114,7 +114,7 @@ test('Submit, a timeout and an empty answer are never detections and send no ema
 });
 
 test('one moment reported by two detectors is ONE strike, not a suspension', async () => {
-  const w = await detect(candA, a1, 'additional_person', 0.9, 3);
+  const w = await detect(candA, a1, 'left_interview', 0.9, 3);
   assert.equal(w.body.action, 'warn', JSON.stringify(w.body));
   // the page hears the same sound as noise a moment later
   const same = await candA.post(`/api/ai-interviews/${a1}/stop`, { kind: 'background_noise', questionSeq: 3 });
@@ -137,11 +137,11 @@ test('a low-confidence detection warns and is recorded, but never counts', async
   for (let i = 0; i < 3; i++) {
     // three separate moments, a minute apart
     await raw(`update ai_interviews set last_detection_at = now() - interval '1 minute' where id=$1`, [id]);
-    const r = await detect(candB, id, 'additional_person', 0.5, 2);
+    const r = await detect(candB, id, 'left_interview', 0.5, 2);
     assert.equal(r.body.action, 'warn', JSON.stringify(r.body));
   }
   // the same uncertain moment reported again at once is just noted
-  assert.equal((await detect(candB, id, 'additional_person', 0.5, 2)).body.action, 'noted');
+  assert.equal((await detect(candB, id, 'left_interview', 0.5, 2)).body.action, 'noted');
   const row = await iv(id);
   assert.equal(row.integrity_strikes, 0, 'three uncertain detections, no strike');
   assert.notEqual(row.status, 'suspended');
@@ -158,7 +158,7 @@ test('after the last answer nothing is counted: the final Submit can never be su
   }
   // scoring is running; the candidate relaxes, somebody walks in - twice, well apart
   await raw(`update ai_interviews set last_detection_at = now() - interval '5 minutes' where id=$1`, [a1]);
-  const late = await detect(candA, a1, 'additional_person', 0.95, n);
+  const late = await detect(candA, a1, 'left_interview', 0.95, n);
   assert.equal(late.body.action, 'ignored', JSON.stringify(late.body));
   const stop = await candA.post(`/api/ai-interviews/${a1}/stop`, { kind: 'left_interview', questionSeq: n });
   assert.equal(stop.body.action, 'ignored', JSON.stringify(stop.body));
@@ -175,10 +175,10 @@ test('two separate moments suspend: the 12-hour retake, enforced by the server',
   const s = await candC.post('/api/ai-interviews/session', { applicationId: appC });
   assert.equal(s.status, 201, JSON.stringify(s.body));
   c1 = s.body.interviewId;
-  assert.equal((await detect(candC, c1, 'additional_person', 0.9, 2)).body.action, 'warn');
+  assert.equal((await detect(candC, c1, 'left_interview', 0.9, 2)).body.action, 'warn');
   // a minute later: a separate moment
   await raw(`update ai_interviews set last_detection_at = now() - interval '1 minute' where id=$1`, [c1]);
-  const x = await detect(candC, c1, 'additional_person', 0.9, 4);
+  const x = await detect(candC, c1, 'left_interview', 0.9, 4);
   assert.equal(x.body.action, 'suspend', JSON.stringify(x.body));
   const row = await iv(c1);
   assert.equal(row.status, 'suspended');
@@ -229,16 +229,16 @@ test('12h00m after the suspension the retake opens as a new attempt', async () =
 
 test('a recruiter reopening an interview resets its strikes', async () => {
   const c2 = (await rows(appC))[1].id;
-  assert.equal((await detect(candC, c2, 'additional_person', 0.9, 1)).body.action, 'warn');
+  assert.equal((await detect(candC, c2, 'left_interview', 0.9, 1)).body.action, 'warn');
   await raw(`update ai_interviews set last_detection_at = now() - interval '1 minute' where id=$1`, [c2]);
-  assert.equal((await detect(candC, c2, 'additional_person', 0.9, 2)).body.action, 'suspend');
+  assert.equal((await detect(candC, c2, 'left_interview', 0.9, 2)).body.action, 'suspend');
   const r = await rec.post(`/api/ai-interviews/${c2}/reopen`, { reason: 'Camera driver crashed - checked with the candidate' });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   const row = await iv(c2);
   assert.equal(row.integrity_strikes, 0);
   assert.equal(row.last_detection_at, null);
   // the first detection after the reopen is a warning again, not an instant suspension
-  const w = await detect(candC, c2, 'additional_person', 0.9, 3);
+  const w = await detect(candC, c2, 'left_interview', 0.9, 3);
   assert.equal(w.body.action, 'warn', JSON.stringify(w.body));
 });
 
